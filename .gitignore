@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.venv/
+.pytest_cache/
+.ruff_cache/
+.validator/logs/
+.validator/state.json
+.validator/state.local.json
+__pycache__/
+*.egg-info/
+*.py[cod]
+build/
+dist/
+
+validator_logs
