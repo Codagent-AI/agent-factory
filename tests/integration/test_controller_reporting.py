@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
+from agent_factory.github import GitHubApiError, IssueComment
 from agent_factory.store import ClaimStore
 from agent_factory.work_kinds.eval import EvalDefaults
 
@@ -47,6 +48,9 @@ class Comments:
         self.posted.append(body)
         return str(len(self.posted))
 
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
+        return []
+
 
 def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
@@ -59,7 +63,9 @@ def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path:
     assert len(comments.posted) == 1
     assert store.claims_for_item("P1") == []
 
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot("```eval\nrepetitions = 1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+    )
     assert claim is not None
     assert controller.reserve_next(claim.id, readiness=lambda: "Docker unavailable") is None
     assert controller.reserve_next(claim.id, readiness=lambda: None) is None
@@ -111,3 +117,60 @@ def test_controller_preserves_product_failure_and_stops_after_second_technical_f
 
     assert controller.presentation(claim.id).verdict == "infra-error"
     assert controller.reserve_next(claim.id, readiness=lambda: None) is None
+
+
+def test_controller_does_not_trust_user_markers_and_records_delivery_failure(
+    tmp_path: Path,
+) -> None:
+    @dataclass
+    class FailingComments(Comments):
+        def create_comment(self, repository: str, number: int, body: str) -> str:
+            raise GitHubApiError("permission revoked")
+
+        def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
+            return [
+                IssueComment("user-comment", "<!-- agent-factory:event:x:accepted -->", "writer")
+            ]
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, FailingComments(), defaults(), harness_sha="c" * 40)
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+
+    controller.deliver_reports(claim.id)
+
+    assert store.pending_events(claim.id)
+    assert (
+        store.delivery_failures(claim.id)["accepted"]["error"]
+        == "GitHubApiError: permission revoked"
+    )
+
+
+def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> None:
+    controller = Controller(
+        ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults(), harness_sha="c" * 40
+    )
+    claim = controller.accept(
+        snapshot("```eval\nrepetitions = 1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+    )
+    assert claim is not None
+    first = controller.reserve_next(claim.id, readiness=lambda: None)
+    assert first is not None
+
+    controller.record_result(first.id, AttemptResult("cancelled", None, {}))
+
+    assert controller.presentation(claim.id).status != "Review"
+
+
+def test_delivery_diagnostics_survive_later_event_acknowledgement(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, Comments(), defaults(), harness_sha="c" * 40)
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    store.record_delivery_failure(claim.id, "accepted", GitHubApiError("temporary outage"))
+
+    controller.deliver_reports(claim.id)
+
+    assert (
+        store.delivery_failures(claim.id)["accepted"]["error"] == "GitHubApiError: temporary outage"
+    )

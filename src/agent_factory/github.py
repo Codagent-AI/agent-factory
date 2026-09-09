@@ -29,6 +29,13 @@ class ProjectQueueItem:
     source: SourceItem
 
 
+@dataclass(frozen=True)
+class IssueComment:
+    id: str
+    body: str
+    author: str
+
+
 class GhRunner(Protocol):
     def run(
         self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
@@ -187,7 +194,8 @@ class GitHubClient:
                     (
                         "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
                         "... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id ",
-                        "content { ... on Issue { id number body state author { login } ",
+                        "content { __typename ... on Issue { id number body state ",
+                        "author { login } ",
                         "repository { nameWithOwner } labels(first: 100) { nodes { name } } ",
                         "issueType { name } } } fieldValues(first: 50) { nodes { ... on ",
                         "ProjectV2ItemFieldSingleSelectValue ",
@@ -201,33 +209,17 @@ class GitHubClient:
             items = _object(node.get("items"))
             for value in _list(items.get("nodes")):
                 project_item = _object(value)
-                content = _object(project_item.get("content"))
-                # The Project connection may omit native Type. It belongs to issue data.
-                issue_type = _object(content.get("issueType")).get("name")
-                labels = frozenset(
-                    name
-                    for label in _list(_object(content.get("labels")).get("nodes"))
-                    if isinstance((name := _object(label).get("name")), str)
-                )
-                author = _object(content.get("author"))
-                repository = _object(content.get("repository"))
-                result.append(
-                    ProjectQueueItem(
-                        id=_required_string(project_item, "id"),
-                        content_id=_required_string(content, "id"),
-                        fields=_single_select_fields(project_item),
-                        source=SourceItem(
-                            id=_required_string(content, "id"),
-                            repository=_required_string(repository, "nameWithOwner"),
-                            number=_required_int(content, "number"),
-                            author=_required_string(author, "login"),
-                            labels=labels,
-                            issue_type=issue_type if isinstance(issue_type, str) else None,
-                            state=_required_string(content, "state"),
-                            body=_optional_string(content, "body"),
-                        ),
-                    )
-                )
+                raw_content = project_item.get("content")
+                if not isinstance(raw_content, Mapping):
+                    continue
+                content = cast(Mapping[str, object], raw_content)
+                if content.get("__typename") != "Issue":
+                    continue
+                try:
+                    result.append(_queue_item(project_item, content))
+                except GitHubApiError:
+                    # A draft, pull request, or malformed card is not eligible work.
+                    continue
             page_info = _object(items.get("pageInfo"))
             if page_info.get("hasNextPage") is not True:
                 return result
@@ -298,7 +290,10 @@ class GitHubClient:
         )
 
     def list_comments(self, repository: str, number: int) -> list[str]:
-        comments: list[str] = []
+        return [comment.body for comment in self.list_comment_records(repository, number)]
+
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
+        comments: list[IssueComment] = []
         page = 1
         while True:
             response = self._request(
@@ -311,9 +306,18 @@ class GitHubClient:
                 None,
             )
             values = _list(json.loads(response))
-            comments.extend(
-                body for value in values if isinstance((body := _object(value).get("body")), str)
-            )
+            for value in values:
+                comment = _object(value)
+                body = comment.get("body")
+                user = _object(comment.get("user"))
+                identifier = comment.get("id")
+                login = user.get("login")
+                if (
+                    isinstance(body, str)
+                    and isinstance(identifier, (int, str))
+                    and isinstance(login, str)
+                ):
+                    comments.append(IssueComment(str(identifier), body, login))
             if len(values) < 100:
                 return comments
             page += 1
@@ -358,6 +362,36 @@ def _single_select_fields(item: Mapping[str, object]) -> dict[str, str]:
         if isinstance(field_id, str) and isinstance(option_id, str):
             parsed[field_id] = option_id
     return parsed
+
+
+def _queue_item(
+    project_item: Mapping[str, object], content: Mapping[str, object]
+) -> ProjectQueueItem:
+    """Build an eligible Issue-shaped card; callers skip malformed cards."""
+    # The Project connection may omit native Type. It belongs to issue data.
+    issue_type = _object(content.get("issueType")).get("name")
+    labels = frozenset(
+        name
+        for label in _list(_object(content.get("labels")).get("nodes"))
+        if isinstance((name := _object(label).get("name")), str)
+    )
+    author = _object(content.get("author"))
+    repository = _object(content.get("repository"))
+    return ProjectQueueItem(
+        id=_required_string(project_item, "id"),
+        content_id=_required_string(content, "id"),
+        fields=_single_select_fields(project_item),
+        source=SourceItem(
+            id=_required_string(content, "id"),
+            repository=_required_string(repository, "nameWithOwner"),
+            number=_required_int(content, "number"),
+            author=_required_string(author, "login"),
+            labels=labels,
+            issue_type=issue_type if isinstance(issue_type, str) else None,
+            state=_required_string(content, "state"),
+            body=_optional_string(content, "body"),
+        ),
+    )
 
 
 def _base64url(value: bytes) -> str:

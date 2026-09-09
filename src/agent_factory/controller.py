@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol, cast
 
+from agent_factory.github import GitHubApiError, IssueComment
 from agent_factory.store import Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
 
@@ -79,7 +80,7 @@ class ClaimPresentation:
 
 
 class ReportingClient(Protocol):
-    def list_comments(self, repository: str, number: int) -> list[str]: ...
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
@@ -97,6 +98,7 @@ class Controller:
         *,
         harness_sha: str,
         suite: str = "and-scene",
+        factory_login: str = "codagent-factory[bot]",
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
@@ -104,6 +106,7 @@ class Controller:
         self._defaults = defaults
         self._harness_sha = harness_sha
         self._suite = suite
+        self._factory_login = factory_login
         self._now = now or (lambda: datetime.now(UTC))
 
     def pause(self) -> None:
@@ -275,18 +278,27 @@ class Controller:
 
     def deliver_reports(self, claim_id: str) -> None:
         claim = self._required_claim(claim_id)
-        comments = self._github.list_comments(claim.repository, claim.issue_number)
+        comments = self._github.list_comment_records(claim.repository, claim.issue_number)
         for event in self._store.pending_events(claim.id):
             marker = _marker(claim.id, event.key)
-            if any(marker in body for body in comments):
-                self._store.acknowledge_event(claim.id, event.key, "reconciled")
+            existing = next(
+                (
+                    comment
+                    for comment in comments
+                    if comment.author == self._factory_login and marker in comment.body
+                ),
+                None,
+            )
+            if existing is not None:
+                self._store.acknowledge_event(claim.id, event.key, existing.id)
                 continue
             try:
                 comment_id = self._github.create_comment(
                     claim.repository, claim.issue_number, f"{marker}\n{event.body}"
                 )
-            except Exception:
+            except GitHubApiError as error:
                 # The next cycle searches all pages before considering a retry.
+                self._store.record_delivery_failure(claim.id, event.key, error)
                 continue
             self._store.acknowledge_event(claim.id, event.key, comment_id or "acknowledged")
 
@@ -344,7 +356,7 @@ class Controller:
             if not unit_runs:
                 return
             latest = unit_runs[-1]
-            if latest.status not in {"completed", "failed", "cancelled"}:
+            if latest.status not in {"completed", "failed"}:
                 return
             if _run_needs_recovery(latest):
                 return

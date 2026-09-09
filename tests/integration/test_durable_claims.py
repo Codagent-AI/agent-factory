@@ -125,3 +125,12 @@ def test_fresh_claim_supersedes_only_idle_unfinished_history(tmp_path: Path) -> 
 
     assert store.get_claim(old.id).lifecycle == "superseded"  # type: ignore[union-attr]
     assert replacement.id != old.id
+
+
+def test_store_rejects_missing_or_stale_run_transitions(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "factory.sqlite3")
+
+    with pytest.raises(KeyError, match="missing"):
+        store.mark_running("missing", {})
+    with pytest.raises(KeyError, match="missing"):
+        store.finish_run("missing", execution_status="completed", result={})

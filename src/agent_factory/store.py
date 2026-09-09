@@ -24,6 +24,10 @@ class NonterminalRunError(RuntimeError):
     """A run is already reserving the factory's one execution slot."""
 
 
+class RunTransitionError(RuntimeError):
+    """A supervisor attempted a run transition from an invalid prior state."""
+
+
 @dataclass(frozen=True)
 class ClaimDraft:
     repository: str
@@ -173,28 +177,8 @@ class ClaimStore:
 
     def create_claim(self, draft: ClaimDraft) -> Claim:
         claim_id = str(uuid.uuid4())
-        now = _now()
         with self._transaction():
-            self._connection.execute(
-                """INSERT INTO claim VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    claim_id,
-                    draft.repository,
-                    draft.issue_number,
-                    draft.issue_id,
-                    draft.project_item_id,
-                    draft.kind,
-                    draft.request_fingerprint,
-                    _dump(draft.frozen_spec),
-                    "preparing",
-                    "{}",
-                    "{}",
-                    "{}",
-                    "{}",
-                    now,
-                    now,
-                ),
-            )
+            self._insert_claim(draft, claim_id)
         claim = self.get_claim(claim_id)
         if claim is None:  # pragma: no cover - SQLite INSERT is synchronous
             raise RuntimeError("new claim was not persisted")
@@ -220,6 +204,7 @@ class ClaimStore:
             )
 
     def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
+        replacement_id = str(uuid.uuid4())
         with self._transaction():
             active = self._connection.execute(
                 "SELECT 1 FROM run WHERE claim_id = ? "
@@ -232,7 +217,34 @@ class ClaimStore:
                 "UPDATE claim SET lifecycle = 'superseded', updated_at = ? WHERE id = ?",
                 (_now(), claim_id),
             )
-        return self.create_claim(draft)
+            self._insert_claim(draft, replacement_id)
+        replacement = self.get_claim(replacement_id)
+        if replacement is None:  # pragma: no cover
+            raise RuntimeError("replacement claim was not persisted")
+        return replacement
+
+    def _insert_claim(self, draft: ClaimDraft, claim_id: str) -> None:
+        now = _now()
+        self._connection.execute(
+            """INSERT INTO claim VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                claim_id,
+                draft.repository,
+                draft.issue_number,
+                draft.issue_id,
+                draft.project_item_id,
+                draft.kind,
+                draft.request_fingerprint,
+                _dump(draft.frozen_spec),
+                "preparing",
+                "{}",
+                "{}",
+                "{}",
+                "{}",
+                now,
+                now,
+            ),
+        )
 
     def reserve_run(self, claim_id: str, unit_key: str, *, reason: str, evidence_path: str) -> Run:
         run_id = str(uuid.uuid4())
@@ -281,11 +293,12 @@ class ClaimStore:
 
     def mark_running(self, run_id: str, supervisor: Mapping[str, object]) -> None:
         with self._transaction():
-            self._connection.execute(
+            cursor = self._connection.execute(
                 "UPDATE run SET status = 'running', supervisor_json = ?, started_at = ? "
                 "WHERE id = ? AND status = 'reserved'",
                 (_dump(supervisor), _now(), run_id),
             )
+            self._require_run_transition(cursor, run_id, "reserved")
 
     def finish_run(
         self, run_id: str, *, execution_status: str, result: Mapping[str, object]
@@ -293,16 +306,21 @@ class ClaimStore:
         if execution_status in NONTERMINAL_RUN_STATUSES:
             raise ValueError("a terminal result must have a terminal execution status")
         with self._transaction():
-            self._connection.execute(
-                "UPDATE run SET status = ?, result_json = ?, finished_at = ? WHERE id = ?",
+            cursor = self._connection.execute(
+                "UPDATE run SET status = ?, result_json = ?, finished_at = ? WHERE id = ? "
+                "AND status IN ('reserved', 'running', 'observing')",
                 (execution_status, _dump(result), _now(), run_id),
             )
+            self._require_run_transition(cursor, run_id, "nonterminal")
 
     def request_cancellation(self, run_id: str) -> None:
         with self._transaction():
-            self._connection.execute(
-                "UPDATE run SET cancellation_requested = 1 WHERE id = ?", (run_id,)
+            cursor = self._connection.execute(
+                "UPDATE run SET cancellation_requested = 1 WHERE id = ? "
+                "AND status IN ('reserved', 'running', 'observing')",
+                (run_id,),
             )
+            self._require_run_transition(cursor, run_id, "nonterminal")
 
     def recovery_attempts(self, claim_id: str, unit_key: str) -> int:
         row = self._connection.execute(
@@ -346,7 +364,9 @@ class ClaimStore:
         events = _events(claim.reporting)
         if key not in events:
             events[key] = {"body": body, "comment_id": None}
-            self._set_reporting(claim_id, {"events": events})
+            reporting = dict(claim.reporting)
+            reporting["events"] = events
+            self._set_reporting(claim_id, reporting)
 
     def pending_events(self, claim_id: str) -> list[Event]:
         claim = self.get_claim(claim_id)
@@ -369,7 +389,47 @@ class ClaimStore:
         if key not in events:
             raise KeyError(key)
         events[key]["comment_id"] = comment_id
-        self._set_reporting(claim_id, {"events": events})
+        reporting = dict(claim.reporting)
+        reporting["events"] = events
+        self._set_reporting(claim_id, reporting)
+
+    def record_delivery_failure(self, claim_id: str, key: str, error: Exception) -> None:
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        reporting = dict(claim.reporting)
+        failures_raw = reporting.get("delivery_failures")
+        failures = (
+            dict(cast(Mapping[str, object], failures_raw))
+            if isinstance(failures_raw, Mapping)
+            else {}
+        )
+        prior = failures.get(key)
+        prior_values: Mapping[str, object] = (
+            cast(Mapping[str, object], prior) if isinstance(prior, Mapping) else {}
+        )
+        attempts = prior_values.get("attempts")
+        failures[key] = {
+            "attempts": attempts + 1 if isinstance(attempts, int) else 1,
+            "error": f"{type(error).__name__}: {error}",
+            "at": _now(),
+        }
+        reporting["delivery_failures"] = failures
+        self._set_reporting(claim_id, reporting)
+
+    def delivery_failures(self, claim_id: str) -> dict[str, dict[str, object]]:
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        raw = claim.reporting.get("delivery_failures")
+        if not isinstance(raw, Mapping):
+            return {}
+        values = cast(Mapping[str, object], raw)
+        return {
+            key: cast(dict[str, object], value)
+            for key, value in values.items()
+            if isinstance(value, Mapping)
+        }
 
     def _set_reporting(self, claim_id: str, reporting: Mapping[str, object]) -> None:
         with self._transaction():
@@ -377,6 +437,16 @@ class ClaimStore:
                 "UPDATE claim SET reporting_json = ?, updated_at = ? WHERE id = ?",
                 (_dump(reporting), _now(), claim_id),
             )
+
+    def _require_run_transition(
+        self, cursor: sqlite3.Cursor, run_id: str, expected_status: str
+    ) -> None:
+        if cursor.rowcount == 1:
+            return
+        exists = self._connection.execute("SELECT 1 FROM run WHERE id = ?", (run_id,)).fetchone()
+        if exists is None:
+            raise KeyError(f"run is missing: {run_id}")
+        raise RunTransitionError(f"run {run_id} is not {expected_status}")
 
 
 def _events(reporting: Mapping[str, object]) -> dict[str, dict[str, object]]:

@@ -65,14 +65,20 @@ def test_client_interprets_missing_collaborator_permission_as_untrusted() -> Non
 
 
 def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data() -> None:
-    response = {
+    response: dict[str, object] = {
         "data": {
             "node": {
                 "items": {
                     "nodes": [
                         {
+                            "id": "PR",
+                            "content": {"__typename": "PullRequest"},
+                            "fieldValues": {"nodes": []},
+                        },
+                        {
                             "id": "P2",
                             "content": {
+                                "__typename": "Issue",
                                 "id": "I2",
                                 "number": 2,
                                 "body": "```eval\nrepetitions = 1\n```",
@@ -85,7 +91,7 @@ def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data
                             "fieldValues": {
                                 "nodes": [{"field": {"id": "status"}, "optionId": "ready"}]
                             },
-                        }
+                        },
                     ],
                     "pageInfo": {"hasNextPage": False, "endCursor": None},
                 }
