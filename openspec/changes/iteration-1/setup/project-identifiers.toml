@@ -1,0 +1,51 @@
+# Provisioned identifiers for implementation; not the final configuration schema.
+[project]
+organization = "Codagent-AI"
+number = 1
+id = "PVT_kwDOEARcIs4Bi5pP"
+url = "https://github.com/orgs/Codagent-AI/projects/1"
+
+[fields.status]
+name = "Status"
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg"
+database_id = 409993464
+[fields.status.options]
+"Backlog" = "d5afe107"
+"Ready" = "2262e12d"
+"Running" = "c39bcdf2"
+"Review" = "20c36f71"
+"Done" = "47d53512"
+
+[fields.type]
+name = "Type"
+id = "PVTF_lADOEARcIs4Bi5pPzhhwAP0"
+database_id = 409993469
+
+[fields.owner]
+name = "Owner"
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE"
+database_id = 409993633
+[fields.owner.options]
+"factory" = "ee3b16d6"
+"human" = "b6f46d6b"
+
+[fields.refs]
+name = "Refs"
+id = "PVTF_lADOEARcIs4Bi5pPzhhwAbA"
+database_id = 409993648
+
+[fields.verdict]
+name = "Verdict"
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAbE"
+database_id = 409993649
+[fields.verdict.options]
+"pending-human-review" = "1279dcf1"
+"failed" = "9c4eddb9"
+"quota-deferred" = "e446e882"
+"infra-error" = "e852ed91"
+
+
+[issue_type]
+name = "Eval"
+id = 863718063
+node_id = "IT_kwDOEARcIs4ze0qv"

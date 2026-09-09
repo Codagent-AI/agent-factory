@@ -1,0 +1,42 @@
+{
+  "app": {
+    "app_id": 4880516,
+    "client_id": "Iv23liKlgOKEsLE5Bqpo",
+    "app_slug": "codagent-factory",
+    "installation_id": 160216883,
+    "private_key_path": "/Users/paul/.agent-factory/credentials/codagent-factory.pem",
+    "permissions": {
+      "contents": "read",
+      "issues": "write",
+      "metadata": "read",
+      "organization_projects": "write",
+      "pull_requests": "write",
+      "repository_projects": "write"
+    },
+    "repository_selection": "all"
+  },
+  "accessible_repositories": [
+    "Codagent-AI/agent-validator",
+    "Codagent-AI/agent-skills",
+    "Codagent-AI/newsletter",
+    "Codagent-AI/codagent",
+    "Codagent-AI/agent-runner",
+    "Codagent-AI/.github",
+    "Codagent-AI/homebrew-tap",
+    "Codagent-AI/agent-plugin",
+    "Codagent-AI/and-scene",
+    "Codagent-AI/agent-evals",
+    "Codagent-AI/agent-factory"
+  ],
+  "author_permission": "admin",
+  "issues_read": "passed",
+  "projects": {
+    "data": {
+      "organization": {
+        "projectsV2": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

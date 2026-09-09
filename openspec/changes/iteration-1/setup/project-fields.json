@@ -1,0 +1,266 @@
+[
+  {
+    "id": 409993462,
+    "name": "Title",
+    "data_type": "title",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPY",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993463,
+    "name": "Assignees",
+    "data_type": "assignees",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPc",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993464,
+    "name": "Status",
+    "data_type": "single_select",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:40:38Z",
+    "node_id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "options": [
+      {
+        "id": "d5afe107",
+        "name": {
+          "raw": "Backlog",
+          "html": "Backlog"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "GRAY"
+      },
+      {
+        "id": "2262e12d",
+        "name": {
+          "raw": "Ready",
+          "html": "Ready"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "BLUE"
+      },
+      {
+        "id": "c39bcdf2",
+        "name": {
+          "raw": "Running",
+          "html": "Running"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "YELLOW"
+      },
+      {
+        "id": "20c36f71",
+        "name": {
+          "raw": "Review",
+          "html": "Review"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "PURPLE"
+      },
+      {
+        "id": "47d53512",
+        "name": {
+          "raw": "Done",
+          "html": "Done"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "GREEN"
+      }
+    ]
+  },
+  {
+    "id": 409993465,
+    "name": "Labels",
+    "data_type": "labels",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPk",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993466,
+    "name": "Linked pull requests",
+    "data_type": "linked_pull_requests",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPo",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993467,
+    "name": "Milestone",
+    "data_type": "milestone",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPs",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993468,
+    "name": "Repository",
+    "data_type": "repository",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAPw",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993469,
+    "name": "Type",
+    "data_type": "issue_type",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAP0",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993470,
+    "name": "Reviewers",
+    "data_type": "reviewers",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAP4",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993471,
+    "name": "Parent issue",
+    "data_type": "parent_issue",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAP8",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993472,
+    "name": "Sub-issues progress",
+    "data_type": "sub_issues_progress",
+    "created_at": "2026-09-09T03:39:54Z",
+    "updated_at": "2026-09-09T03:39:54Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAQA",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993633,
+    "name": "Owner",
+    "data_type": "single_select",
+    "created_at": "2026-09-09T03:40:38Z",
+    "updated_at": "2026-09-09T03:40:38Z",
+    "node_id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "options": [
+      {
+        "id": "ee3b16d6",
+        "name": {
+          "raw": "factory",
+          "html": "factory"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "BLUE"
+      },
+      {
+        "id": "b6f46d6b",
+        "name": {
+          "raw": "human",
+          "html": "human"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "GRAY"
+      }
+    ]
+  },
+  {
+    "id": 409993648,
+    "name": "Refs",
+    "data_type": "text",
+    "created_at": "2026-09-09T03:40:38Z",
+    "updated_at": "2026-09-09T03:40:38Z",
+    "node_id": "PVTF_lADOEARcIs4Bi5pPzhhwAbA",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1"
+  },
+  {
+    "id": 409993649,
+    "name": "Verdict",
+    "data_type": "single_select",
+    "created_at": "2026-09-09T03:40:39Z",
+    "updated_at": "2026-09-09T03:40:39Z",
+    "node_id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAbE",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "options": [
+      {
+        "id": "1279dcf1",
+        "name": {
+          "raw": "pending-human-review",
+          "html": "pending-human-review"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "YELLOW"
+      },
+      {
+        "id": "9c4eddb9",
+        "name": {
+          "raw": "failed",
+          "html": "failed"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "RED"
+      },
+      {
+        "id": "e446e882",
+        "name": {
+          "raw": "quota-deferred",
+          "html": "quota-deferred"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "PURPLE"
+      },
+      {
+        "id": "e852ed91",
+        "name": {
+          "raw": "infra-error",
+          "html": "infra-error"
+        },
+        "description": {
+          "raw": "",
+          "html": ""
+        },
+        "color": "ORANGE"
+      }
+    ]
+  }
+]

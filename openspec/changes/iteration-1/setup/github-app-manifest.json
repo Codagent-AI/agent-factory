@@ -1,0 +1,20 @@
+{
+  "name": "Codagent Factory",
+  "url": "https://github.com/Codagent-AI/agent-factory",
+  "description": "Routes Codagent work into GitHub Projects and reports Agent Factory execution activity and evaluation results.",
+  "public": false,
+  "hook_attributes": {
+    "url": "https://github.com/Codagent-AI/agent-factory",
+    "active": false
+  },
+  "default_permissions": {
+    "organization_projects": "write",
+    "issues": "write",
+    "pull_requests": "write",
+    "contents": "read",
+    "metadata": "read",
+    "repository_projects": "write"
+  },
+  "default_events": [],
+  "request_oauth_on_install": false
+}

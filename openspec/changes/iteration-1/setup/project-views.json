@@ -1,0 +1,149 @@
+[
+  {
+    "id": 48623562,
+    "number": 2,
+    "name": "All work",
+    "layout": "board",
+    "node_id": "PVTV_lADOEARcIs4Bi5pPzgLl78o",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "html_url": "https://github.com/orgs/Codagent-AI/projects/1/views/2",
+    "creator": {
+      "login": "codagent-factory[bot]",
+      "id": 326775355,
+      "node_id": "BOT_kgDOE3oyOw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/268721186?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/codagent-factory%5Bbot%5D",
+      "html_url": "https://github.com/apps/codagent-factory",
+      "followers_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-09T03:41:20Z",
+    "updated_at": "2026-09-09T03:41:20Z",
+    "filter": "",
+    "visible_fields": [
+      409993462,
+      409993465,
+      409993468,
+      409993469,
+      409993633,
+      409993648,
+      409993649
+    ],
+    "sort_by": [],
+    "group_by": [
+      409993469
+    ],
+    "vertical_group_by": [
+      409993464
+    ]
+  },
+  {
+    "id": 48623563,
+    "number": 3,
+    "name": "Eval queue",
+    "layout": "board",
+    "node_id": "PVTV_lADOEARcIs4Bi5pPzgLl78s",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "html_url": "https://github.com/orgs/Codagent-AI/projects/1/views/3",
+    "creator": {
+      "login": "codagent-factory[bot]",
+      "id": 326775355,
+      "node_id": "BOT_kgDOE3oyOw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/268721186?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/codagent-factory%5Bbot%5D",
+      "html_url": "https://github.com/apps/codagent-factory",
+      "followers_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-09T03:41:20Z",
+    "updated_at": "2026-09-09T03:41:20Z",
+    "filter": "type:Eval owner:factory status:Ready",
+    "visible_fields": [
+      409993462,
+      409993465,
+      409993468,
+      409993469,
+      409993633,
+      409993648,
+      409993649
+    ],
+    "sort_by": [],
+    "group_by": [
+      409993469
+    ],
+    "vertical_group_by": [
+      409993464
+    ]
+  },
+  {
+    "id": 48623564,
+    "number": 4,
+    "name": "Active factory work",
+    "layout": "board",
+    "node_id": "PVTV_lADOEARcIs4Bi5pPzgLl78w",
+    "project_url": "https://api.github.com/orgs/Codagent-AI/projectsV2/1",
+    "html_url": "https://github.com/orgs/Codagent-AI/projects/1/views/4",
+    "creator": {
+      "login": "codagent-factory[bot]",
+      "id": 326775355,
+      "node_id": "BOT_kgDOE3oyOw",
+      "avatar_url": "https://avatars.githubusercontent.com/u/268721186?v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/codagent-factory%5Bbot%5D",
+      "html_url": "https://github.com/apps/codagent-factory",
+      "followers_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/followers",
+      "following_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/following{/other_user}",
+      "gists_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/subscriptions",
+      "organizations_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/orgs",
+      "repos_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/repos",
+      "events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/codagent-factory%5Bbot%5D/received_events",
+      "type": "Bot",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "created_at": "2026-09-09T03:41:20Z",
+    "updated_at": "2026-09-09T03:41:20Z",
+    "filter": "owner:factory status:Ready,Running,Review",
+    "visible_fields": [
+      409993462,
+      409993465,
+      409993468,
+      409993469,
+      409993633,
+      409993648,
+      409993649
+    ],
+    "sort_by": [],
+    "group_by": [
+      409993469
+    ],
+    "vertical_group_by": [
+      409993464
+    ]
+  }
+]
