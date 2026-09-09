@@ -8,15 +8,20 @@ import time
 from pathlib import Path
 
 from agent_factory.store import ClaimStore
-from agent_factory.supervisor import resume_supervisor
+from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
 
 
-def _tick(state: Path) -> None:
+def _tick(state: Path, config_path: Path | None = None) -> None:
     """Reattach short-lived watchers; this never waits for suite completion."""
     store = ClaimStore(state)
     try:
         for run in store.nonterminal_runs():
-            resume_supervisor(state, run.id)
+            if run.status not in {"running", "observing"}:
+                continue
+            try:
+                resume_supervisor(state, run.id, config_path=config_path)
+            except SupervisorLaunchError as error:
+                store.report_uncertainty(run.id, f"supervisor replacement failed: {error}")
     finally:
         store.close()
 
@@ -44,10 +49,10 @@ def main() -> None:
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
     resident = subcommands.add_parser("resident")
-    resident.add_argument("--poll-seconds", type=float, default=300)
+    resident.add_argument("--poll-seconds", type=_positive_seconds, default=300)
     args = parser.parse_args()
     if args.command == "tick":
-        _tick(args.state)
+        _tick(args.state, args.config)
     elif args.command == "status":
         print(_status(args.state))
     elif args.command in {"pause", "resume"}:
@@ -66,8 +71,18 @@ def main() -> None:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         while keep_running:
-            _tick(args.state)
+            _tick(args.state, args.config)
             time.sleep(args.poll_seconds)
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("poll seconds must be a number") from error
+    if seconds <= 0:
+        raise argparse.ArgumentTypeError("poll seconds must be greater than zero")
+    return seconds
 
 
 if __name__ == "__main__":

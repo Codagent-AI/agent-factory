@@ -24,6 +24,15 @@ from agent_factory.controller import ExecutionPlan
 from agent_factory.store import ClaimStore, Run
 
 _POLL_SECONDS = 0.05
+_PROGRESS_HEARTBEAT_SECONDS = 5.0
+
+
+class SupervisorLaunchError(RuntimeError):
+    """A replacement watcher could not be started locally."""
+
+
+class ProcessProbeError(RuntimeError):
+    """The process probe could not provide a definitive answer."""
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,12 @@ class SupervisionLimits:
     inactivity_seconds: float = 30 * 60
     execution_seconds: float = 6 * 60 * 60
     total_seconds: float = 12 * 60 * 60
+
+
+@dataclass(frozen=True)
+class ResultRead:
+    result: dict[str, object] | None
+    error: str | None = None
 
 
 def launch_supervisor(
@@ -68,34 +83,51 @@ def launch_supervisor(
         store.close()
 
 
-def resume_supervisor(state_path: Path, run_id: str) -> subprocess.Popen[bytes] | None:
+def resume_supervisor(
+    state_path: Path, run_id: str, *, config_path: Path | None = None
+) -> subprocess.Popen[bytes] | None:
     """Attach a fresh watcher to a nonterminal durable run without relaunching it."""
     store = ClaimStore(state_path)
     try:
         run = store.get_run(run_id)
-        if run is None or run.status not in {"reserved", "running", "observing"}:
+        if run is None or run.status not in {"running", "observing"}:
             return None
-        log_dir = state_path.parent / "logs" / "runs" / run_id
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with (log_dir / "supervisor.log").open("ab", buffering=0) as output:
-            return subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "agent_factory.supervisor",
-                    "--state",
-                    str(state_path),
-                    "--run-id",
-                    run_id,
-                    "--nonce",
-                    run.launch_nonce,
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
+        watcher_status = _identity_status(run.supervisor)
+        if watcher_status == "alive":
+            return None
+        if watcher_status == "unknown":
+            store.report_uncertainty(run.id, "supervisor process identity cannot be verified")
+            return None
+        if not store.claim_watcher_launch(run.id):
+            return None
+        arguments = [
+            sys.executable,
+            "-m",
+            "agent_factory.supervisor",
+            "--state",
+            str(state_path),
+            "--run-id",
+            run_id,
+            "--nonce",
+            run.launch_nonce,
+        ]
+        if config_path is not None:
+            arguments.extend(("--config", str(config_path)))
+        try:
+            log_dir = state_path.parent / "logs" / "runs" / run_id
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with (log_dir / "supervisor.log").open("ab", buffering=0) as output:
+                return subprocess.Popen(
+                    arguments,
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+        except OSError as error:
+            store.release_watcher_launch(run.id)
+            raise SupervisorLaunchError(str(error)) from error
     finally:
         store.close()
 
@@ -110,14 +142,22 @@ def supervise(state_path: Path, run_id: str, nonce: str) -> None:
                 return
             if run.status not in {"reserved", "running", "observing"}:
                 return
-            plan = _plan_from_document(run.plan)
-            limits = _limits_from_document(run.plan)
+            try:
+                plan = _plan_from_document(run.plan)
+                limits = _limits_from_document(run.plan)
+            except RuntimeError:
+                store.report_uncertainty(run.id, "invalid persisted plan")
+                return
             existing = run.process
-            if existing and _process_matches(existing):
+            existing_status = _identity_status(existing)
+            if existing and existing_status == "alive":
                 watcher = _supervisor_identity()
                 watcher["process"] = existing
                 store.update_supervisor(run.id, watcher)
                 _observe(store, run.id, plan, limits, existing)
+                return
+            if existing_status == "unknown":
+                store.report_uncertainty(run.id, "recorded execution identity cannot be probed")
                 return
             if existing:
                 # PID reuse or an unverified vanishing process is deliberately not a
@@ -139,19 +179,36 @@ def _launch_and_observe(
 ) -> None:
     output = Path(run.evidence_path) / "factory-suite.log"
     output.parent.mkdir(parents=True, exist_ok=True)
-    environment = {str(key): str(value) for key, value in plan.allowed_environment.items()}
-    with output.open("ab", buffering=0) as stream:
-        child = subprocess.Popen(
-            list(plan.argv),
-            cwd=plan.working_directory,
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
+    environment = {
+        key: os.environ[key]
+        for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+        if key in os.environ
+    }
+    environment.update({str(key): str(value) for key, value in plan.allowed_environment.items()})
+    try:
+        with output.open("ab", buffering=0) as stream:
+            child = subprocess.Popen(
+                list(plan.argv),
+                cwd=plan.working_directory,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                close_fds=True,
+            )
+    except OSError as error:
+        store.finish_run(
+            run.id,
+            execution_status="failed",
+            result={"reason": "suite launch failed", "error": str(error)},
         )
-    identity = _process_identity(child.pid, plan)
+        return
+    try:
+        identity = _process_identity(child.pid, plan)
+    except ProcessProbeError:
+        store.report_uncertainty(run.id, "new execution identity cannot be probed")
+        return
     if identity is None or not store.begin_run(
         run.id,
         launch_nonce=run.launch_nonce,
@@ -159,7 +216,7 @@ def _launch_and_observe(
         process=identity,
     ):
         # A stale watcher must not leave an untracked child behind.
-        if identity is not None and _process_matches(identity):
+        if identity is not None and _identity_status(identity) == "alive":
             _terminate(identity)
         return
     _observe(store, run.id, plan, limits, identity)
@@ -173,32 +230,60 @@ def _observe(
     identity: Mapping[str, object],
 ) -> None:
     run = _required_run(store, run_id)
-    progress = dict(run.progress)
+    progress: dict[str, object] = dict(run.progress)
     started = _number(progress.get("started_at"), time.time())
     last_progress = _number(progress.get("last_progress_at"), started)
-    observed_sources = _source_versions(plan.progress_sources)
+    observed_sources = _saved_source_versions(progress.get("sources")) or _source_versions(
+        plan.progress_sources
+    )
+    last_persisted = _number(progress.get("persisted_at"), 0)
     if not progress:
         progress = {
             "started_at": started,
             "last_progress_at": last_progress,
             "sources": observed_sources,
+            "persisted_at": time.time(),
         }
         store.update_progress(run_id, progress)
+        last_persisted = _number(progress["persisted_at"], 0)
     while True:
         run = _required_run(store, run_id)
-        result = _load_result(plan.ownership_hints.get("artifact_path", run.evidence_path))
         now = time.time()
+        result_read = _load_result(_artifact_root(plan, run.evidence_path))
+        process_status = _identity_status(identity)
+        if process_status == "unknown":
+            store.report_uncertainty(run_id, "owned process identity cannot be probed")
+            return
         changed, observed_sources = _progress_changed(plan.progress_sources, observed_sources)
         if changed:
             last_progress = now
         progress.update(
             {"started_at": started, "last_progress_at": last_progress, "sources": observed_sources}
         )
-        store.update_progress(run_id, progress)
-        if result is not None:
-            store.finish_run(run_id, execution_status=_result_status(result), result=result)
+        diagnostic_changed = progress.get("result_error") != result_read.error
+        if result_read.error is not None:
+            progress["result_error"] = result_read.error
+        else:
+            progress.pop("result_error", None)
+        if changed or diagnostic_changed or now - last_persisted >= _PROGRESS_HEARTBEAT_SECONDS:
+            progress["persisted_at"] = now
+            store.update_progress(run_id, progress)
+            last_persisted = now
+        if result_read.result is not None and process_status == "missing":
+            store.finish_run(
+                run_id,
+                execution_status=_result_status(result_read.result),
+                result=result_read.result,
+            )
             return
-        if not _process_matches(identity):
+        if result_read.error is not None and process_status == "missing":
+            store.finish_run(
+                run_id,
+                execution_status="failed",
+                result={"reason": "invalid result.json", "error": result_read.error},
+            )
+            return
+        if process_status == "missing":
             store.finish_run(
                 run_id,
                 execution_status="interrupted",
@@ -312,6 +397,22 @@ def _source_versions(sources: tuple[str, ...]) -> dict[str, float]:
     return {source: _mtime(source) for source in sources}
 
 
+def _saved_source_versions(value: object) -> dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    saved = cast(Mapping[object, object], value)
+    result: dict[str, float] = {}
+    for source, version in saved.items():
+        if (
+            not isinstance(source, str)
+            or isinstance(version, bool)
+            or not isinstance(version, int | float)
+        ):
+            return None
+        result[source] = float(version)
+    return result
+
+
 def _progress_changed(
     sources: tuple[str, ...], prior: Mapping[str, float]
 ) -> tuple[bool, dict[str, float]]:
@@ -326,13 +427,24 @@ def _mtime(source: str) -> float:
         return -1.0
 
 
-def _load_result(evidence_path: str) -> dict[str, object] | None:
+def _artifact_root(plan: ExecutionPlan, fallback: str) -> str:
+    artifact = plan.ownership_hints.get("artifact_path")
+    return artifact if isinstance(artifact, str) and artifact.strip() else fallback
+
+
+def _load_result(evidence_path: str) -> ResultRead:
     path = Path(evidence_path) / "result.json"
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return cast(dict[str, object], parsed) if isinstance(parsed, dict) else None
+    except FileNotFoundError:
+        return ResultRead(None)
+    except OSError as error:
+        return ResultRead(None, f"cannot read {path}: {error}")
+    except json.JSONDecodeError as error:
+        return ResultRead(None, f"invalid JSON in {path}: {error.msg}")
+    if not isinstance(parsed, dict):
+        return ResultRead(None, f"invalid JSON object in {path}")
+    return ResultRead(cast(dict[str, object], parsed))
 
 
 def _result_status(result: Mapping[str, object]) -> str:
@@ -356,32 +468,57 @@ def _process_identity(pid: int, plan: ExecutionPlan) -> dict[str, object] | None
 
 
 def _supervisor_identity() -> dict[str, object]:
-    start = _process_start(os.getpid())
+    try:
+        start = _process_start(os.getpid())
+    except ProcessProbeError:
+        start = None
     return {"pid": os.getpid(), "start": start or "unknown"}
 
 
 def _process_start(pid: int) -> str | None:
-    completed = subprocess.run(
-        ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "stat=", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ProcessProbeError(str(error)) from error
     value = completed.stdout.strip()
-    if completed.returncode != 0 or not value:
+    if completed.returncode == 1:
         return None
+    if completed.returncode != 0:
+        raise ProcessProbeError(completed.stderr.strip() or "ps probe failed")
+    if not value:
+        raise ProcessProbeError("ps returned no process state")
     state, _, started = value.partition(" ")
     return started.strip() if "Z" not in state and started.strip() else None
 
 
-def _process_matches(identity: Mapping[str, object]) -> bool:
+def process_start_identity(pid: int) -> str | None:
+    """Expose a process start identity for integration-boundary verification."""
+    return _process_start(pid)
+
+
+def _identity_status(identity: Mapping[str, object]) -> str:
     pid = identity.get("pid")
     start = identity.get("start")
-    return isinstance(pid, int) and isinstance(start, str) and _process_start(pid) == start
+    if not isinstance(pid, int) or not isinstance(start, str):
+        return "missing"
+    if start == "unknown":
+        return "unknown"
+    try:
+        current = _process_start(pid)
+    except ProcessProbeError:
+        return "unknown"
+    return "alive" if current == start else "missing"
 
 
 def _terminate(identity: Mapping[str, object]) -> bool:
-    if not _process_matches(identity):
+    if _identity_status(identity) == "missing":
+        return True
+    if _identity_status(identity) != "alive":
         return False
     pid = cast(int, identity["pid"])
     try:
@@ -391,13 +528,17 @@ def _terminate(identity: Mapping[str, object]) -> bool:
     except PermissionError:
         return False
     deadline = time.monotonic() + 1
-    while _process_matches(identity) and time.monotonic() < deadline:
+    while _identity_status(identity) == "alive" and time.monotonic() < deadline:
         time.sleep(_POLL_SECONDS)
-    if not _process_matches(identity):
+    if _identity_status(identity) == "missing":
         return True
+    if _identity_status(identity) != "alive":
+        return False
     try:
         os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+    except ProcessLookupError:
+        return True
+    except PermissionError:
         return False
     return True
 

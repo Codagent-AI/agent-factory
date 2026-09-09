@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -385,6 +386,51 @@ class ClaimStore:
                 (_dump({"reason": reason, "uncertain": True}), run_id),
             )
             self._require_run_transition(cursor, run_id, "nonterminal")
+
+    def claim_watcher_launch(self, run_id: str, *, lease_seconds: float = 5.0) -> bool:
+        """Atomically reserve a short watcher-launch lease for one replacement."""
+        with self._transaction():
+            row = self._connection.execute(
+                "SELECT supervisor_json FROM run WHERE id = ? "
+                "AND status IN ('running', 'observing')",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            supervisor = _load(cast(str, row["supervisor_json"]))
+            active_until = supervisor.get("launching_until")
+            if isinstance(active_until, int | float) and active_until > time.time():
+                return False
+            process = supervisor.get("process")
+            lease: dict[str, object] = {"launching_until": time.time() + lease_seconds}
+            if isinstance(process, Mapping):
+                lease["process"] = dict(cast(Mapping[str, object], process))
+            cursor = self._connection.execute(
+                "UPDATE run SET supervisor_json = ? WHERE id = ? "
+                "AND status IN ('running', 'observing')",
+                (_dump(lease), run_id),
+            )
+            return cursor.rowcount == 1
+
+    def release_watcher_launch(self, run_id: str) -> None:
+        """Clear an unstarted watcher lease after a local spawn failure."""
+        with self._transaction():
+            row = self._connection.execute(
+                "SELECT supervisor_json FROM run WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return
+            supervisor = _load(cast(str, row["supervisor_json"]))
+            if "launching_until" not in supervisor:
+                return
+            process = supervisor.get("process")
+            replacement: dict[str, object] = {}
+            if isinstance(process, Mapping):
+                replacement["process"] = dict(cast(Mapping[str, object], process))
+            self._connection.execute(
+                "UPDATE run SET supervisor_json = ? WHERE id = ?",
+                (_dump(replacement), run_id),
+            )
 
     def finish_run(
         self, run_id: str, *, execution_status: str, result: Mapping[str, object]
