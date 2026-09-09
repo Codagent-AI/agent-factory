@@ -19,6 +19,16 @@ class GitHubApiError(RuntimeError):
     """A GitHub response did not have the expected contract."""
 
 
+@dataclass(frozen=True)
+class ProjectQueueItem:
+    """One Project item in GitHub's delivered manual POSITION order."""
+
+    id: str
+    content_id: str
+    fields: dict[str, str]
+    source: SourceItem
+
+
 class GhRunner(Protocol):
     def run(
         self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
@@ -164,7 +174,64 @@ class GitHubClient:
             labels=labels,
             issue_type=type_name if isinstance(type_name, str) else None,
             state=_required_string(payload, "state"),
+            body=_optional_string(payload, "body"),
         )
+
+    def list_project_items(self, project_id: str) -> list[ProjectQueueItem]:
+        """Read all Project cards in API order; callers apply eligibility afterwards."""
+        cursor: str | None = None
+        result: list[ProjectQueueItem] = []
+        while True:
+            payload = self._graphql(
+                "".join(
+                    (
+                        "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
+                        "... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id ",
+                        "content { ... on Issue { id number body state author { login } ",
+                        "repository { nameWithOwner } labels(first: 100) { nodes { name } } ",
+                        "issueType { name } } } fieldValues(first: 50) { nodes { ... on ",
+                        "ProjectV2ItemFieldSingleSelectValue ",
+                        "{ field { ... on ProjectV2Field { id } } optionId } } } } pageInfo { ",
+                        "hasNextPage endCursor } } } }",
+                    )
+                ),
+                {"project": project_id, "cursor": cursor},
+            )
+            node = _object(payload.get("node"))
+            items = _object(node.get("items"))
+            for value in _list(items.get("nodes")):
+                project_item = _object(value)
+                content = _object(project_item.get("content"))
+                # The Project connection may omit native Type. It belongs to issue data.
+                issue_type = _object(content.get("issueType")).get("name")
+                labels = frozenset(
+                    name
+                    for label in _list(_object(content.get("labels")).get("nodes"))
+                    if isinstance((name := _object(label).get("name")), str)
+                )
+                author = _object(content.get("author"))
+                repository = _object(content.get("repository"))
+                result.append(
+                    ProjectQueueItem(
+                        id=_required_string(project_item, "id"),
+                        content_id=_required_string(content, "id"),
+                        fields=_single_select_fields(project_item),
+                        source=SourceItem(
+                            id=_required_string(content, "id"),
+                            repository=_required_string(repository, "nameWithOwner"),
+                            number=_required_int(content, "number"),
+                            author=_required_string(author, "login"),
+                            labels=labels,
+                            issue_type=issue_type if isinstance(issue_type, str) else None,
+                            state=_required_string(content, "state"),
+                            body=_optional_string(content, "body"),
+                        ),
+                    )
+                )
+            page_info = _object(items.get("pageInfo"))
+            if page_info.get("hasNextPage") is not True:
+                return result
+            cursor = _required_string(page_info, "endCursor")
 
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None:
         cursor: str | None = None
@@ -251,8 +318,8 @@ class GitHubClient:
                 return comments
             page += 1
 
-    def create_comment(self, repository: str, number: int, body: str) -> None:
-        self._request(
+    def create_comment(self, repository: str, number: int, body: str) -> str | None:
+        response = self._request(
             [
                 "api",
                 f"repos/{repository}/issues/{number}/comments",
@@ -263,6 +330,9 @@ class GitHubClient:
             ],
             {"body": body},
         )
+        payload = _json_object(response)
+        comment_id = payload.get("id")
+        return str(comment_id) if isinstance(comment_id, int | str) else None
 
     def _graphql(self, query: str, variables: dict[str, object]) -> Mapping[str, object]:
         response = self._request(
@@ -318,3 +388,15 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise GitHubApiError(f"GitHub response does not include {key}")
     return value
+
+
+def _required_int(payload: Mapping[str, object], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GitHubApiError(f"GitHub response does not include {key}")
+    return value
+
+
+def _optional_string(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    return value if isinstance(value, str) else ""

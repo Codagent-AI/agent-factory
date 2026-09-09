@@ -23,6 +23,7 @@ class SourceItem:
     labels: frozenset[str]
     issue_type: str | None
     state: str
+    body: str = ""
 
 
 @dataclass
@@ -56,7 +57,7 @@ class GitHubRoutingClient(Protocol):
 
     def list_comments(self, repository: str, number: int) -> list[str]: ...
 
-    def create_comment(self, repository: str, number: int, body: str) -> None: ...
+    def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
 
 class Router:

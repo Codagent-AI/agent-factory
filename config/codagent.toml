@@ -23,6 +23,17 @@ id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE"
 factory = "ee3b16d6"
 human = "b6f46d6b"
 
+[fields.refs]
+id = "PVTF_lADOEARcIs4Bi5pPzhhwAbA"
+
+[fields.verdict]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAbE"
+[fields.verdict.options]
+pending-human-review = "1279dcf1"
+failed = "9c4eddb9"
+quota-deferred = "e446e882"
+infra-error = "e852ed91"
+
 [routing]
 eval_source = "Codagent-AI/agent-evals"
 general_sources = [

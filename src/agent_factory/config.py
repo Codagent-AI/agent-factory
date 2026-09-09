@@ -43,11 +43,18 @@ class SelectField:
 
 
 @dataclass(frozen=True)
+class TextField:
+    id: str
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     id: str
     number: int
     status: SelectField
     owner: SelectField
+    refs: TextField
+    verdict: SelectField
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,10 @@ class SharedConfig:
                 number=project_number,
                 status=_select_field(fields, "status"),
                 owner=_select_field(fields, "owner"),
+                refs=TextField(
+                    _string(_table(fields.get("refs"), "fields.refs"), "id", "fields.refs")
+                ),
+                verdict=_select_field(fields, "verdict"),
             ),
             routing=RoutingConfig(
                 eval_source=_string(routing, "eval_source", "routing"),

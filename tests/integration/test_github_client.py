@@ -62,3 +62,41 @@ def test_client_interprets_missing_collaborator_permission_as_untrusted() -> Non
         "--method",
         "GET",
     ]
+
+
+def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data() -> None:
+    response = {
+        "data": {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "P2",
+                            "content": {
+                                "id": "I2",
+                                "number": 2,
+                                "body": "```eval\nrepetitions = 1\n```",
+                                "state": "OPEN",
+                                "author": {"login": "writer"},
+                                "repository": {"nameWithOwner": "example/evals"},
+                                "labels": {"nodes": [{"name": "run-eval"}]},
+                                "issueType": {"name": "Eval"},
+                            },
+                            "fieldValues": {
+                                "nodes": [{"field": {"id": "status"}, "optionId": "ready"}]
+                            },
+                        }
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+    }
+    gh = RecordingGh([json.dumps(response)])
+
+    items = GitHubClient(gh, lambda: "installation-token").list_project_items("PROJECT")
+
+    assert [item.id for item in items] == ["P2"]
+    assert items[0].source.issue_type == "Eval"
+    assert items[0].fields == {"status": "ready"}
+    assert "issueType" in gh.calls[0].body["query"]  # type: ignore[index]

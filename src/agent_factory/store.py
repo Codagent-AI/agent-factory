@@ -1,0 +1,420 @@
+"""Durable, small SQLite persistence for factory claims and attempts.
+
+The store deliberately contains no GitHub or suite calls.  Every method performs
+one short transaction, which keeps controller and supervisor ownership separate.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import uuid
+from collections.abc import Generator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import cast
+
+SCHEMA_VERSION = 1
+NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
+
+
+class NonterminalRunError(RuntimeError):
+    """A run is already reserving the factory's one execution slot."""
+
+
+@dataclass(frozen=True)
+class ClaimDraft:
+    repository: str
+    issue_number: int
+    issue_id: str
+    project_item_id: str
+    kind: str
+    request_fingerprint: str
+    frozen_spec: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class Claim:
+    id: str
+    repository: str
+    issue_number: int
+    issue_id: str
+    project_item_id: str
+    kind: str
+    request_fingerprint: str
+    frozen_spec: dict[str, object]
+    lifecycle: str
+    outcome: dict[str, object]
+    reporting: dict[str, object]
+
+
+@dataclass(frozen=True)
+class Run:
+    id: str
+    claim_id: str
+    unit_key: str
+    attempt_number: int
+    reason: str
+    status: str
+    evidence_path: str
+    result: dict[str, object]
+
+
+@dataclass(frozen=True)
+class Event:
+    key: str
+    body: str
+    comment_id: str | None
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _dump(value: Mapping[str, object]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _load(value: str) -> dict[str, object]:
+    parsed = json.loads(value)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("factory database contains an invalid JSON object")
+    return cast(dict[str, object], parsed)
+
+
+class ClaimStore:
+    """SQLite claim history with explicit controller/supervisor write boundaries."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+        self._connection.row_factory = sqlite3.Row
+        self._connection.execute("PRAGMA foreign_keys = ON")
+        self._connection.execute("PRAGMA journal_mode = WAL")
+        self._connection.execute("PRAGMA busy_timeout = 5000")
+        self._migrate()
+
+    def close(self) -> None:
+        self._connection.close()
+
+    def _migrate(self) -> None:
+        version = cast(int, self._connection.execute("PRAGMA user_version").fetchone()[0])
+        if version > SCHEMA_VERSION:
+            raise RuntimeError("factory database is newer than this controller")
+        if version == SCHEMA_VERSION:
+            return
+        self._connection.executescript(
+            f"""
+                BEGIN IMMEDIATE;
+                CREATE TABLE claim (
+                    id TEXT PRIMARY KEY,
+                    repository TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    issue_id TEXT NOT NULL,
+                    project_item_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    request_fingerprint TEXT NOT NULL,
+                    frozen_spec_json TEXT NOT NULL,
+                    lifecycle TEXT NOT NULL,
+                    outcome_json TEXT NOT NULL,
+                    preparation_json TEXT NOT NULL,
+                    reporting_json TEXT NOT NULL,
+                    cleanup_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE run (
+                    id TEXT PRIMARY KEY,
+                    claim_id TEXT NOT NULL REFERENCES claim(id),
+                    unit_key TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    launch_nonce TEXT NOT NULL,
+                    supervisor_json TEXT NOT NULL,
+                    plan_json TEXT NOT NULL,
+                    evidence_path TEXT NOT NULL,
+                    progress_json TEXT NOT NULL,
+                    cancellation_requested INTEGER NOT NULL DEFAULT 0,
+                    result_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    UNIQUE(claim_id, unit_key, attempt_number)
+                );
+                CREATE UNIQUE INDEX one_nonterminal_run
+                    ON run((CASE WHEN status IN ('reserved', 'running', 'observing') THEN 1 END))
+                    WHERE status IN ('reserved', 'running', 'observing');
+                CREATE TABLE settings (
+                    namespace TEXT NOT NULL,
+                    key TEXT NOT NULL,
+                    value_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(namespace, key)
+                );
+                PRAGMA user_version = {SCHEMA_VERSION};
+                COMMIT;
+                """
+        )
+
+    @contextmanager
+    def _transaction(self) -> Generator[None, None, None]:
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+        else:
+            self._connection.execute("COMMIT")
+
+    def create_claim(self, draft: ClaimDraft) -> Claim:
+        claim_id = str(uuid.uuid4())
+        now = _now()
+        with self._transaction():
+            self._connection.execute(
+                """INSERT INTO claim VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    claim_id,
+                    draft.repository,
+                    draft.issue_number,
+                    draft.issue_id,
+                    draft.project_item_id,
+                    draft.kind,
+                    draft.request_fingerprint,
+                    _dump(draft.frozen_spec),
+                    "preparing",
+                    "{}",
+                    "{}",
+                    "{}",
+                    "{}",
+                    now,
+                    now,
+                ),
+            )
+        claim = self.get_claim(claim_id)
+        if claim is None:  # pragma: no cover - SQLite INSERT is synchronous
+            raise RuntimeError("new claim was not persisted")
+        return claim
+
+    def get_claim(self, claim_id: str) -> Claim | None:
+        row = self._connection.execute("SELECT * FROM claim WHERE id = ?", (claim_id,)).fetchone()
+        return _claim(row) if row is not None else None
+
+    def claims_for_item(self, project_item_id: str) -> list[Claim]:
+        rows = self._connection.execute(
+            "SELECT * FROM claim WHERE project_item_id = ? ORDER BY created_at", (project_item_id,)
+        ).fetchall()
+        return [_claim(row) for row in rows]
+
+    def set_claim_lifecycle(
+        self, claim_id: str, lifecycle: str, outcome: Mapping[str, object]
+    ) -> None:
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
+                (lifecycle, _dump(outcome), _now(), claim_id),
+            )
+
+    def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
+        with self._transaction():
+            active = self._connection.execute(
+                "SELECT 1 FROM run WHERE claim_id = ? "
+                "AND status IN ('reserved', 'running', 'observing')",
+                (claim_id,),
+            ).fetchone()
+            if active is not None:
+                raise NonterminalRunError("cannot supersede a claim with active execution")
+            self._connection.execute(
+                "UPDATE claim SET lifecycle = 'superseded', updated_at = ? WHERE id = ?",
+                (_now(), claim_id),
+            )
+        return self.create_claim(draft)
+
+    def reserve_run(self, claim_id: str, unit_key: str, *, reason: str, evidence_path: str) -> Run:
+        run_id = str(uuid.uuid4())
+        with self._transaction():
+            try:
+                row = self._connection.execute(
+                    "SELECT COALESCE(MAX(attempt_number), -1) + 1 FROM run "
+                    "WHERE claim_id = ? AND unit_key = ?",
+                    (claim_id, unit_key),
+                ).fetchone()
+                attempt_number = cast(int, row[0])
+                self._connection.execute(
+                    """INSERT INTO run (id, claim_id, unit_key, attempt_number, reason, status,
+                    launch_nonce, supervisor_json, plan_json, evidence_path, progress_json,
+                    cancellation_requested, result_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, 'reserved', ?, '{}', '{}', ?, '{}', 0, '{}', ?)""",
+                    (
+                        run_id,
+                        claim_id,
+                        unit_key,
+                        attempt_number,
+                        reason,
+                        uuid.uuid4().hex,
+                        evidence_path,
+                        _now(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise NonterminalRunError(
+                    "another nonterminal run already occupies the execution slot"
+                ) from error
+        run = self.get_run(run_id)
+        if run is None:  # pragma: no cover
+            raise RuntimeError("reserved run was not persisted")
+        return run
+
+    def get_run(self, run_id: str) -> Run | None:
+        row = self._connection.execute("SELECT * FROM run WHERE id = ?", (run_id,)).fetchone()
+        return _run(row) if row is not None else None
+
+    def runs_for_claim(self, claim_id: str) -> list[Run]:
+        rows = self._connection.execute(
+            "SELECT * FROM run WHERE claim_id = ? ORDER BY unit_key, attempt_number", (claim_id,)
+        ).fetchall()
+        return [_run(row) for row in rows]
+
+    def mark_running(self, run_id: str, supervisor: Mapping[str, object]) -> None:
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE run SET status = 'running', supervisor_json = ?, started_at = ? "
+                "WHERE id = ? AND status = 'reserved'",
+                (_dump(supervisor), _now(), run_id),
+            )
+
+    def finish_run(
+        self, run_id: str, *, execution_status: str, result: Mapping[str, object]
+    ) -> None:
+        if execution_status in NONTERMINAL_RUN_STATUSES:
+            raise ValueError("a terminal result must have a terminal execution status")
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE run SET status = ?, result_json = ?, finished_at = ? WHERE id = ?",
+                (execution_status, _dump(result), _now(), run_id),
+            )
+
+    def request_cancellation(self, run_id: str) -> None:
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE run SET cancellation_requested = 1 WHERE id = ?", (run_id,)
+            )
+
+    def recovery_attempts(self, claim_id: str, unit_key: str) -> int:
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM run WHERE claim_id = ? AND unit_key = ? AND reason = 'recovery'",
+            (claim_id, unit_key),
+        ).fetchone()
+        return cast(int, row[0])
+
+    def set_hold(self, claim_id: str, name: str, value: Mapping[str, object]) -> None:
+        self.set_setting("claim-hold", f"{claim_id}:{name}", value)
+
+    def get_hold(self, claim_id: str, name: str) -> dict[str, object] | None:
+        return self.get_setting("claim-hold", f"{claim_id}:{name}")
+
+    def set_setting(self, namespace: str, key: str, value: Mapping[str, object]) -> None:
+        with self._transaction():
+            self._connection.execute(
+                """INSERT INTO settings(namespace, key, value_json, updated_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT(namespace, key) DO UPDATE SET value_json = excluded.value_json,
+                updated_at = excluded.updated_at""",
+                (namespace, key, _dump(value), _now()),
+            )
+
+    def get_setting(self, namespace: str, key: str) -> dict[str, object] | None:
+        row = self._connection.execute(
+            "SELECT value_json FROM settings WHERE namespace = ? AND key = ?", (namespace, key)
+        ).fetchone()
+        return _load(cast(str, row[0])) if row is not None else None
+
+    def set_paused(self, paused: bool) -> None:
+        self.set_setting("control", "pause", {"paused": paused})
+
+    def is_paused(self) -> bool:
+        saved = self.get_setting("control", "pause")
+        return bool(saved and saved.get("paused") is True)
+
+    def record_event(self, claim_id: str, key: str, body: str) -> None:
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        events = _events(claim.reporting)
+        if key not in events:
+            events[key] = {"body": body, "comment_id": None}
+            self._set_reporting(claim_id, {"events": events})
+
+    def pending_events(self, claim_id: str) -> list[Event]:
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            return []
+        result: list[Event] = []
+        for key, item in _events(claim.reporting).items():
+            comment_id = item.get("comment_id")
+            if comment_id is None:
+                body = item.get("body")
+                if isinstance(body, str):
+                    result.append(Event(key, body, None))
+        return result
+
+    def acknowledge_event(self, claim_id: str, key: str, comment_id: str) -> None:
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        events = _events(claim.reporting)
+        if key not in events:
+            raise KeyError(key)
+        events[key]["comment_id"] = comment_id
+        self._set_reporting(claim_id, {"events": events})
+
+    def _set_reporting(self, claim_id: str, reporting: Mapping[str, object]) -> None:
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE claim SET reporting_json = ?, updated_at = ? WHERE id = ?",
+                (_dump(reporting), _now(), claim_id),
+            )
+
+
+def _events(reporting: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    raw = reporting.get("events", {})
+    if not isinstance(raw, Mapping):
+        return {}
+    values = cast(Mapping[str, object], raw)
+    return {
+        key: cast(dict[str, object], value)
+        for key, value in values.items()
+        if isinstance(value, dict)
+    }
+
+
+def _claim(row: sqlite3.Row) -> Claim:
+    return Claim(
+        id=cast(str, row["id"]),
+        repository=cast(str, row["repository"]),
+        issue_number=cast(int, row["issue_number"]),
+        issue_id=cast(str, row["issue_id"]),
+        project_item_id=cast(str, row["project_item_id"]),
+        kind=cast(str, row["kind"]),
+        request_fingerprint=cast(str, row["request_fingerprint"]),
+        frozen_spec=_load(cast(str, row["frozen_spec_json"])),
+        lifecycle=cast(str, row["lifecycle"]),
+        outcome=_load(cast(str, row["outcome_json"])),
+        reporting=_load(cast(str, row["reporting_json"])),
+    )
+
+
+def _run(row: sqlite3.Row) -> Run:
+    return Run(
+        id=cast(str, row["id"]),
+        claim_id=cast(str, row["claim_id"]),
+        unit_key=cast(str, row["unit_key"]),
+        attempt_number=cast(int, row["attempt_number"]),
+        reason=cast(str, row["reason"]),
+        status=cast(str, row["status"]),
+        evidence_path=cast(str, row["evidence_path"]),
+        result=_load(cast(str, row["result_json"])),
+    )

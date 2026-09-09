@@ -43,6 +43,17 @@ id = "owner-field"
 [fields.owner.options]
 factory = "factory-option"
 
+[fields.refs]
+id = "refs-field"
+
+[fields.verdict]
+id = "verdict-field"
+[fields.verdict.options]
+pending-human-review = "pending-option"
+failed = "failed-option"
+quota-deferred = "quota-option"
+infra-error = "infra-option"
+
 [routing]
 eval_source = "example/evals"
 general_sources = ["example/evals", "example/work"]
@@ -169,3 +180,10 @@ def test_closure_moves_existing_project_card_to_done_without_reinitializing() ->
 def test_shared_config_rejects_mutable_harness_revision() -> None:
     with pytest.raises(ConfigurationError, match="full 40-character commit SHA"):
         SharedConfig.from_toml(config_text(harness_sha="main"))
+
+
+def test_shared_config_exposes_configured_reporting_field_mappings() -> None:
+    config = SharedConfig.from_toml(config_text())
+
+    assert config.project.refs.id == "refs-field"
+    assert config.project.verdict.option("infra-error") == "infra-option"
