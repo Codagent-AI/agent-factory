@@ -54,7 +54,6 @@ def cycle(state: Path, config_path: Path) -> None:
         runner,
         InstallationTokenProvider(
             AppCredentials(shared.app_id, shared.installation_id, local.credentials.github_app_key),
-            runner,
         ),
     )
     sources = SourceRepositories(

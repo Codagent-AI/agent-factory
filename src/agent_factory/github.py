@@ -5,7 +5,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket
+import ssl
 import subprocess
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -76,11 +80,8 @@ class AppCredentials:
 class InstallationTokenProvider:
     """Mints and caches a short-lived installation token entirely in process memory."""
 
-    def __init__(
-        self, credentials: AppCredentials, runner: GhRunner, openssl: str = "openssl"
-    ) -> None:
+    def __init__(self, credentials: AppCredentials, openssl: str = "openssl") -> None:
         self._credentials = credentials
-        self._runner = runner
         self._openssl = openssl
         self._token: str | None = None
         self._expires_at: datetime | None = None
@@ -94,16 +95,28 @@ class InstallationTokenProvider:
         ):
             return self._token
         jwt = self._signed_jwt(now)
-        response = self._runner.run(
-            [
-                "api",
-                f"app/installations/{self._credentials.installation_id}/access_tokens",
-                "--method",
-                "POST",
-            ],
-            None,
-            {"GH_TOKEN": jwt},
+        host = os.environ.get("GH_HOST") or "github.com"
+        api_base = "https://api.github.com" if host == "github.com" else f"https://{host}/api/v3"
+        # gh's GH_TOKEN path sends `Authorization: token`, which GitHub rejects
+        # for App JWTs. Keep the Bearer credential in memory, not process argv.
+        request = urllib.request.Request(
+            f"{api_base}/app/installations/{self._credentials.installation_id}/access_tokens",
+            headers={
+                "Authorization": f"Bearer {jwt}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "agent-factory",
+            },
+            method="POST",
         )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as result:
+                response = result.read().decode("utf-8")
+        except urllib.error.HTTPError as error:
+            raise GitHubApiError(f"installation token exchange failed: HTTP {error.code}") from None
+        except (OSError, urllib.error.URLError) as error:
+            raise GitHubApiError(
+                f"installation token exchange failed: {_network_error_detail(error)}"
+            ) from None
         payload = _json_object(response)
         token = _required_string(payload, "token")
         expires_at = _required_string(payload, "expires_at")
@@ -137,6 +150,20 @@ class InstallationTokenProvider:
         if completed.returncode != 0:
             raise GitHubApiError("unable to sign GitHub App JWT")
         return f"{header}.{payload}.{_base64url(completed.stdout)}"
+
+
+def _network_error_detail(error: OSError | urllib.error.URLError) -> str:
+    """Describe the underlying failure without reflecting remote text or credentials."""
+    cause = error.reason if isinstance(error, urllib.error.URLError) else error
+    if isinstance(cause, ssl.SSLCertVerificationError):
+        return "TLS certificate verification failed"
+    if isinstance(cause, socket.gaierror):
+        return "DNS resolution failed"
+    if isinstance(cause, TimeoutError):
+        return "connection timed out"
+    if isinstance(cause, OSError) and cause.errno is not None:
+        return f"{type(cause).__name__}: {os.strerror(cause.errno)}"
+    return type(cause).__name__
 
 
 class GitHubClient:
@@ -237,7 +264,7 @@ class GitHubClient:
                         "ProjectV2ItemFieldSingleSelectValue ",
                         "{ field { ... on ProjectV2SingleSelectField { id } } optionId } } } } ",
                         "pageInfo { ",
-                        "hasNextPage endCursor } } } }",
+                        "hasNextPage endCursor } } } } }",
                     )
                 ),
                 {"project": project_id, "cursor": cursor},

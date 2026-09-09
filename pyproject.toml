@@ -19,6 +19,7 @@ agent-factory = "agent_factory.cli:main"
 
 [dependency-groups]
 dev = [
+  "graphql-core>=3.2,<3.3",
   "pyright>=1.1.405",
   "pytest>=8.4.2",
   "ruff>=0.12.12",

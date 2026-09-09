@@ -158,9 +158,7 @@ import json,sys,pathlib
 p=pathlib.Path({str(board)!r});s=json.loads(p.read_text());args=sys.argv
 body=json.load(sys.stdin) if '--input' in args else {{}}
 endpoint=args[2];q=body.get('query','');v=body.get('variables',{{}})
-if endpoint.endswith('/access_tokens'):
- result={{'token':'test','expires_at':'2099-01-01T00:00:00Z'}}
-elif '/collaborators/' in endpoint: result={{'permission':'write'}}
+if '/collaborators/' in endpoint: result={{'permission':'write'}}
 elif endpoint=='graphql':
  if 'query Fields' in q:
   result={{'data':{{'node':{{'fields':{{'nodes':s['fields'],'pageInfo':{{'hasNextPage':False}}}}}}}}}}
@@ -193,8 +191,21 @@ p.write_text(json.dumps(s));print(json.dumps(result))
 
 
 def _cli(config: Path, environment: dict[str, str], command: str) -> None:
+    # Stub the HTTP authentication boundary just as gh stubs the Project API.
+    # The real Bearer exchange is covered with a local HTTP server separately.
+    entrypoint = """
+import io, runpy, urllib.request
+def token_response(request, *, timeout):
+    assert request.full_url.startswith('https://api.github.com/app/installations/')
+    assert request.full_url.endswith('/access_tokens')
+    assert request.get_method() == 'POST'
+    assert request.get_header('Authorization').startswith('Bearer ')
+    return io.BytesIO(b'{"token":"test","expires_at":"2099-01-01T00:00:00Z"}')
+urllib.request.urlopen = token_response
+runpy.run_module('agent_factory.cli', run_name='__main__')
+"""
     done = subprocess.run(
-        [sys.executable, "-m", "agent_factory.cli", "--config", str(config), command],
+        [sys.executable, "-c", entrypoint, "--config", str(config), command],
         env=environment,
         capture_output=True,
         text=True,

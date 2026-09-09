@@ -182,7 +182,7 @@ def _github_access(shared: SharedConfig, key: Path) -> Diagnostic:
     try:
         runner = SubprocessGhRunner()
         token = InstallationTokenProvider(
-            AppCredentials(shared.app_id, shared.installation_id, key), runner
+            AppCredentials(shared.app_id, shared.installation_id, key)
         )
         client = GitHubClient(runner, token)
         client.validate_project(shared.project)

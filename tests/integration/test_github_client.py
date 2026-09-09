@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from graphql import parse
+
 from agent_factory.github import GitHubClient
 
 
@@ -106,3 +108,12 @@ def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data
     assert items[0].source.issue_type == "Eval"
     assert items[0].fields == {"status": "ready"}
     assert "issueType" in gh.calls[0].body["query"]  # type: ignore[index]
+
+
+def test_project_item_query_is_valid_graphql() -> None:
+    gh = RecordingGh(['{"data":{"node":{"items":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}'])
+    GitHubClient(gh, lambda: "installation-token").list_project_items("PROJECT")
+    assert gh.calls[0].body is not None
+    query = gh.calls[0].body["query"]
+    assert isinstance(query, str)
+    parse(query)
