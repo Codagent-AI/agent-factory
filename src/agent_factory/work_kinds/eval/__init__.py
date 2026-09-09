@@ -12,7 +12,6 @@ from typing import cast
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
 _ROLES = frozenset({"lead", "implementor", "reviewer"})
-_ALIASES = {f"{role}_profile": role for role in _ROLES}
 _KEYS = frozenset(
     {
         "agent_runner_ref",
@@ -75,10 +74,9 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
         raise ValueError(f"invalid eval TOML: {error}") from error
     document_values = cast(Mapping[str, object], document)
     parsed: dict[str, object] = {}
-    for raw_key, value in document_values.items():
-        key = _ALIASES.get(raw_key, raw_key)
-        if key not in _KEYS or key in parsed:
-            raise ValueError(f"unsupported eval setting: {raw_key}")
+    for key, value in document_values.items():
+        if key not in _KEYS:
+            raise ValueError(f"unsupported eval setting: {key}")
         parsed[key] = value
     _validate_overrides(parsed, defaults)
     effective: dict[str, object] = {

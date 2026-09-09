@@ -61,6 +61,20 @@ def test_shipped_eval_template_is_a_valid_production_request() -> None:
     assert request.settings["repetitions"] == 3
 
 
+@pytest.mark.parametrize("role", ["lead", "implementor", "reviewer"])
+def test_eval_request_rejects_legacy_profile_aliases(role: str) -> None:
+    with pytest.raises(ValueError, match=f"unsupported eval setting: {role}_profile"):
+        parse_request(f"```eval\n{role}_profile = 'codex:gpt-5.6-sol:high'\n```", defaults())
+
+
+@pytest.mark.parametrize("role", ["lead", "implementor", "reviewer"])
+def test_eval_request_applies_canonical_role_override(role: str) -> None:
+    profile = "codex:gpt-6-astra:high"
+    request = parse_request(f"```eval\n{role} = '{profile}'\n```", defaults())
+
+    assert request.settings["roles"] == {**defaults().roles, role: profile}
+
+
 def test_sqlite_claim_history_retry_budget_and_holds_survive_restart(tmp_path: Path) -> None:
     database = tmp_path / "factory.sqlite3"
     claim = ClaimStore(database).create_claim(

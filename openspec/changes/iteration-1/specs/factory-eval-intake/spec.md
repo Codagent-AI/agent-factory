@@ -53,7 +53,7 @@ Routing and execution admission SHALL verify that the issue author has effective
 
 ### Requirement: Interpret one evaluation configuration per request
 
-The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `lead`, `implementor`, `reviewer`, `skip_validator`, and `repetitions`. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
+The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `lead`, `implementor`, `reviewer`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, and `reviewer_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
 
 Revision selection SHALL apply to Agent Runner and Agent Skills. The factory SHALL use the deployed `agent-evals` harness version; request-level selection or evaluation of harness revisions is outside iteration 1. Recording the harness revision SHALL identify the test environment used for the result.
 
@@ -67,7 +67,7 @@ Repetitions SHALL be a positive integer. An optional configured maximum SHALL re
 
 #### Scenario: Supply invalid execution settings
 
-- **WHEN** a block is malformed, a supplied role profile is incomplete, or repetitions is not a positive integer
+- **WHEN** a block is malformed, a supplied role profile is incomplete, an unsupported key is supplied, or repetitions is not a positive integer
 - **THEN** the request is invalid and no evaluation starts
 
 #### Scenario: Exceed an optional repetition limit
