@@ -39,6 +39,7 @@ addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
 markers = [
   "darwin: requires macOS process-session semantics",
+  "docker: requires a Docker-enabled host and test-owned containers",
 ]
 
 [tool.ruff]

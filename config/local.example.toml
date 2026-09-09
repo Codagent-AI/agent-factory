@@ -1,6 +1,6 @@
 # Machine-local configuration. Copy outside the repository and set portable local paths.
 shared_config = "/opt/agent-factory/config/codagent.toml"
-storage_root = "/var/lib/agent-factory"
+storage_root = "~/.agent-factory"
 
 [repositories]
 agent_evals = "/srv/src/agent-evals"

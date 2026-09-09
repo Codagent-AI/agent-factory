@@ -12,6 +12,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.github import GitHubApiError, IssueComment
@@ -99,6 +100,7 @@ class Controller:
         harness_sha: str,
         suite: str = "and-scene",
         factory_login: str = "codagent-factory[bot]",
+        artifact_root: Path | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
@@ -107,6 +109,9 @@ class Controller:
         self._harness_sha = harness_sha
         self._suite = suite
         self._factory_login = factory_login
+        self._artifact_root = (
+            artifact_root or (Path.home() / ".agent-factory" / "artifacts")
+        ).resolve()
         self._now = now or (lambda: datetime.now(UTC))
 
     def pause(self) -> None:
@@ -193,7 +198,7 @@ class Controller:
                 claim.id,
                 next_unit,
                 reason=reason,
-                evidence_path=f"artifacts/{claim.id}-{next_unit}",
+                evidence_path=str(self._artifact_root / f"{claim.id}-{next_unit}"),
             )
             self._store.set_claim_lifecycle(claim.id, "active", {})
             self._store.record_event(
@@ -447,7 +452,7 @@ def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | No
     if not isinstance(failure_raw, Mapping):
         return False
     failure = cast(Mapping[str, object], failure_raw)
-    return failure.get("owner") == "workflow" and resumable is False
+    return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
 
 
 def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:

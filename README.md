@@ -53,6 +53,12 @@ role profiles, `skip_validator`, and a positive `repetitions` count. Defaults
 are applied solely while a new claim is frozen. The snapshot used by its parser
 contract is kept in `tests/fixtures/eval-request.md` with its source revision.
 
+The pinned `and-scene` integration, suite prerequisites, companion wrapper
+revision, retained review-command lifetime, and safe storage cleanup procedure
+are documented in [suite integration](docs/suite-integration.md). In particular,
+the configured harness is a deployment commit—not a branch or the sibling
+checkout currently open on the Mac.
+
 ## Planned stack
 
 - Python 3.12 with `asyncio`

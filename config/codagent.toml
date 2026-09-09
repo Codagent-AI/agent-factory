@@ -47,8 +47,9 @@ eval_label = "eval-request"
 eval_type = "Eval"
 
 [eval]
-# Provisional immutable pin: routing is compatible, but suite readiness remains separately gated.
-harness_sha = "a26f2919010b486d8337f1efe3cab06a4b554b92"
+# Immutable deployed harness: includes the 40/70 outcome contract, calibration-gate
+# removal (2fc8443), and read-only linked-worktree Git metadata mounts (01b5a0e).
+harness_sha = "01b5a0ef5ee600a96a11737f134df05fa30cd887"
 suite = "and-scene"
 repetitions = 3
 

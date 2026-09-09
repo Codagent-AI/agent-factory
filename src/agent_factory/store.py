@@ -52,7 +52,9 @@ class Claim:
     frozen_spec: dict[str, object]
     lifecycle: str
     outcome: dict[str, object]
+    preparation: dict[str, object]
     reporting: dict[str, object]
+    cleanup: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -220,6 +222,22 @@ class ClaimStore:
             self._connection.execute(
                 "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
                 (lifecycle, _dump(outcome), _now(), claim_id),
+            )
+
+    def set_preparation(self, claim_id: str, preparation: Mapping[str, object]) -> None:
+        """Persist owned preparation references before external work begins."""
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE claim SET preparation_json = ?, updated_at = ? WHERE id = ?",
+                (_dump(preparation), _now(), claim_id),
+            )
+
+    def set_cleanup(self, claim_id: str, cleanup: Mapping[str, object]) -> None:
+        """Persist worktree cleanup progress independently from suite evidence."""
+        with self._transaction():
+            self._connection.execute(
+                "UPDATE claim SET cleanup_json = ?, updated_at = ? WHERE id = ?",
+                (_dump(cleanup), _now(), claim_id),
             )
 
     def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
@@ -605,7 +623,9 @@ def _claim(row: sqlite3.Row) -> Claim:
         frozen_spec=_load(cast(str, row["frozen_spec_json"])),
         lifecycle=cast(str, row["lifecycle"]),
         outcome=_load(cast(str, row["outcome_json"])),
+        preparation=_load(cast(str, row["preparation_json"])),
         reporting=_load(cast(str, row["reporting_json"])),
+        cleanup=_load(cast(str, row["cleanup_json"])),
     )
 
 
