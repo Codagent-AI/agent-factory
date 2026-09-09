@@ -1,0 +1,320 @@
+"""GitHub App authentication and the narrow API surface used by routing."""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import subprocess
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Protocol, cast
+
+from agent_factory.routing import ProjectItem, SourceItem
+
+
+class GitHubApiError(RuntimeError):
+    """A GitHub response did not have the expected contract."""
+
+
+class GhRunner(Protocol):
+    def run(
+        self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+    ) -> str: ...
+
+
+class SubprocessGhRunner:
+    """Runs gh without ever placing an authentication value in argv or request JSON."""
+
+    def __init__(self, executable: str = "gh") -> None:
+        self._executable = executable
+
+    def run(
+        self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+    ) -> str:
+        child_environment = os.environ | environment
+        completed = subprocess.run(
+            [self._executable, *arguments],
+            input=None if body is None else json.dumps(body),
+            text=True,
+            capture_output=True,
+            check=False,
+            env=child_environment,
+        )
+        if completed.returncode != 0:
+            raise GitHubApiError("gh api request failed")
+        return completed.stdout
+
+
+@dataclass(frozen=True)
+class AppCredentials:
+    app_id: str
+    installation_id: str
+    private_key_path: Path
+
+
+class InstallationTokenProvider:
+    """Mints and caches a short-lived installation token entirely in process memory."""
+
+    def __init__(
+        self, credentials: AppCredentials, runner: GhRunner, openssl: str = "openssl"
+    ) -> None:
+        self._credentials = credentials
+        self._runner = runner
+        self._openssl = openssl
+        self._token: str | None = None
+        self._expires_at: datetime | None = None
+
+    def __call__(self) -> str:
+        now = datetime.now(UTC)
+        if (
+            self._token is not None
+            and self._expires_at is not None
+            and now + timedelta(minutes=5) < self._expires_at
+        ):
+            return self._token
+        jwt = self._signed_jwt(now)
+        response = self._runner.run(
+            [
+                "api",
+                f"app/installations/{self._credentials.installation_id}/access_tokens",
+                "--method",
+                "POST",
+            ],
+            None,
+            {"GH_TOKEN": jwt},
+        )
+        payload = _json_object(response)
+        token = _required_string(payload, "token")
+        expires_at = _required_string(payload, "expires_at")
+        try:
+            parsed_expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise GitHubApiError("installation token expiry is invalid") from error
+        self._token = token
+        self._expires_at = parsed_expiry
+        return token
+
+    def _signed_jwt(self, now: datetime) -> str:
+        header = _base64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+        payload = _base64url(
+            json.dumps(
+                {
+                    "iat": int(now.timestamp()) - 60,
+                    "exp": int((now + timedelta(minutes=9)).timestamp()),
+                    "iss": self._credentials.app_id,
+                },
+                separators=(",", ":"),
+            ).encode()
+        )
+        signing_input = f"{header}.{payload}".encode()
+        completed = subprocess.run(
+            [self._openssl, "dgst", "-sha256", "-sign", str(self._credentials.private_key_path)],
+            input=signing_input,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise GitHubApiError("unable to sign GitHub App JWT")
+        return f"{header}.{payload}.{_base64url(completed.stdout)}"
+
+
+class GitHubClient:
+    """Concrete routing client using documented REST and ProjectV2 GraphQL shapes."""
+
+    def __init__(self, runner: GhRunner, token: Callable[[], str]) -> None:
+        self._runner = runner
+        self._token = token
+
+    def get_permission(self, repository: str, login: str) -> str | None:
+        try:
+            response = self._request(
+                ["api", f"repos/{repository}/collaborators/{login}/permission", "--method", "GET"],
+                None,
+            )
+        except GitHubApiError:
+            return None
+        payload = _json_object(response)
+        permission = payload.get("permission")
+        return permission if isinstance(permission, str) else None
+
+    def get_source_item(self, repository: str, number: int) -> SourceItem:
+        payload = _json_object(
+            self._request(["api", f"repos/{repository}/issues/{number}", "--method", "GET"], None)
+        )
+        user = _object(payload.get("user"))
+        labels = frozenset(
+            name
+            for value in _list(payload.get("labels"))
+            if isinstance((name := _object(value).get("name")), str)
+        )
+        issue_type = payload.get("issue_type")
+        type_name = (
+            _object(cast(Mapping[str, object], issue_type)).get("name")
+            if isinstance(issue_type, Mapping)
+            else None
+        )
+        return SourceItem(
+            id=_required_string(payload, "node_id"),
+            repository=repository,
+            number=number,
+            author=_required_string(user, "login"),
+            labels=labels,
+            issue_type=type_name if isinstance(type_name, str) else None,
+            state=_required_string(payload, "state"),
+        )
+
+    def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None:
+        cursor: str | None = None
+        while True:
+            payload = self._graphql(
+                "".join(
+                    (
+                        "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
+                        "... on ProjectV2 { ",
+                        "items(first: 100, after: $cursor) { nodes { id content { ",
+                        "... on Issue { id } ... on PullRequest { id } } ",
+                        "fieldValues(first: 50) { nodes { ... on ",
+                        "ProjectV2ItemFieldSingleSelectValue { field { ... on ",
+                        "ProjectV2Field { id } } optionId } } } } ",
+                        "pageInfo { hasNextPage endCursor } } } }",
+                    )
+                ),
+                {"project": project_id, "cursor": cursor},
+            )
+            node = _object(payload.get("node"))
+            items = _object(node.get("items"))
+            nodes = _list(items.get("nodes"))
+            for value in nodes:
+                project_item = _object(value)
+                content = _object(project_item.get("content"))
+                if content.get("id") == content_id:
+                    return ProjectItem(
+                        _required_string(project_item, "id"),
+                        content_id,
+                        _single_select_fields(project_item),
+                    )
+            page_info = _object(items.get("pageInfo"))
+            if page_info.get("hasNextPage") is not True:
+                return None
+            cursor = _required_string(page_info, "endCursor")
+
+    def add_project_item(self, project_id: str, content_id: str) -> ProjectItem:
+        payload = self._graphql(
+            "".join(
+                (
+                    "mutation Add($project: ID!, $content: ID!) { addProjectV2ItemById(input: ",
+                    "{projectId: $project, contentId: $content}) { item { id } } }",
+                )
+            ),
+            {"project": project_id, "content": content_id},
+        )
+        added = _object(payload.get("addProjectV2ItemById"))
+        item = _object(added.get("item"))
+        return ProjectItem(_required_string(item, "id"), content_id, {})
+
+    def set_single_select_field(
+        self, project_id: str, item_id: str, field_id: str, option_id: str
+    ) -> None:
+        self._graphql(
+            "".join(
+                (
+                    "mutation Set($project: ID!, $item: ID!, $field: ID!, $option: String!) { ",
+                    "updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, ",
+                    "fieldId: $field, value: {singleSelectOptionId: $option}}) { projectV2Item { ",
+                    "id } } }",
+                )
+            ),
+            {"project": project_id, "item": item_id, "field": field_id, "option": option_id},
+        )
+
+    def list_comments(self, repository: str, number: int) -> list[str]:
+        comments: list[str] = []
+        page = 1
+        while True:
+            response = self._request(
+                [
+                    "api",
+                    f"repos/{repository}/issues/{number}/comments?per_page=100&page={page}",
+                    "--method",
+                    "GET",
+                ],
+                None,
+            )
+            values = _list(json.loads(response))
+            comments.extend(
+                body for value in values if isinstance((body := _object(value).get("body")), str)
+            )
+            if len(values) < 100:
+                return comments
+            page += 1
+
+    def create_comment(self, repository: str, number: int, body: str) -> None:
+        self._request(
+            [
+                "api",
+                f"repos/{repository}/issues/{number}/comments",
+                "--method",
+                "POST",
+                "--input",
+                "-",
+            ],
+            {"body": body},
+        )
+
+    def _graphql(self, query: str, variables: dict[str, object]) -> Mapping[str, object]:
+        response = self._request(
+            ["api", "graphql", "--input", "-"], {"query": query, "variables": variables}
+        )
+        envelope = _json_object(response)
+        if "errors" in envelope:
+            raise GitHubApiError("GitHub GraphQL request failed")
+        return _object(envelope.get("data"))
+
+    def _request(self, arguments: list[str], body: dict[str, object] | None) -> str:
+        return self._runner.run(arguments, body, {"GH_TOKEN": self._token()})
+
+
+def _single_select_fields(item: Mapping[str, object]) -> dict[str, str]:
+    field_values = _object(item.get("fieldValues"))
+    parsed: dict[str, str] = {}
+    for value in _list(field_values.get("nodes")):
+        selection = _object(value)
+        option_id = selection.get("optionId")
+        field = _object(selection.get("field"))
+        field_id = field.get("id")
+        if isinstance(field_id, str) and isinstance(option_id, str):
+            parsed[field_id] = option_id
+    return parsed
+
+
+def _base64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode()
+
+
+def _object(raw: object) -> Mapping[str, object]:
+    if not isinstance(raw, dict):
+        raise GitHubApiError("GitHub response has an unexpected shape")
+    return cast(Mapping[str, object], raw)
+
+
+def _json_object(response: str) -> Mapping[str, object]:
+    try:
+        return _object(json.loads(response))
+    except json.JSONDecodeError as error:
+        raise GitHubApiError("GitHub response is not JSON") from error
+
+
+def _list(raw: object) -> list[object]:
+    if not isinstance(raw, list):
+        raise GitHubApiError("GitHub response has an unexpected shape")
+    return cast(list[object], raw)
+
+
+def _required_string(payload: Mapping[str, object], key: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise GitHubApiError(f"GitHub response does not include {key}")
+    return value

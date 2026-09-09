@@ -1,0 +1,45 @@
+# Versioned shared deployment configuration. No paths or credentials belong here.
+[github]
+organization = "Codagent-AI"
+app_id = "4880516"
+installation_id = "160216883"
+
+[project]
+id = "PVT_kwDOEARcIs4Bi5pP"
+number = 1
+
+[fields.status]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg"
+[fields.status.options]
+backlog = "d5afe107"
+ready = "2262e12d"
+running = "c39bcdf2"
+review = "20c36f71"
+done = "47d53512"
+
+[fields.owner]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE"
+[fields.owner.options]
+factory = "ee3b16d6"
+human = "b6f46d6b"
+
+[routing]
+eval_source = "Codagent-AI/agent-evals"
+general_sources = [
+  "Codagent-AI/agent-evals",
+  "Codagent-AI/agent-runner",
+  "Codagent-AI/agent-skills",
+  "Codagent-AI/agent-validator",
+  "Codagent-AI/agent-plugin",
+]
+eval_label = "eval-request"
+eval_type = "Eval"
+
+[eval]
+# Provisional immutable pin: routing is compatible, but suite readiness remains separately gated.
+harness_sha = "a26f2919010b486d8337f1efe3cab06a4b554b92"
+suite = "and-scene"
+repetitions = 3
+
+[eval.defaults]
+skip_validator = false
