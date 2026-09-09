@@ -231,8 +231,14 @@ def _observe(
 ) -> None:
     run = _required_run(store, run_id)
     progress: dict[str, object] = dict(run.progress)
-    started = _number(progress.get("started_at"), time.time())
+    wall_anchor = time.time()
+    monotonic_anchor = time.monotonic()
+    started = _number(progress.get("started_at"), wall_anchor)
     last_progress = _number(progress.get("last_progress_at"), started)
+    if "elapsed_seconds" in progress:
+        gap = max(0.0, wall_anchor - _number(progress.get("persisted_at"), wall_anchor))
+        started = wall_anchor - _number(progress.get("elapsed_seconds"), 0) - gap
+        last_progress = wall_anchor - _number(progress.get("idle_seconds"), 0) - gap
     observed_sources = _saved_source_versions(progress.get("sources")) or _source_versions(
         plan.progress_sources
     )
@@ -246,11 +252,43 @@ def _observe(
         }
         store.update_progress(run_id, progress)
         last_persisted = _number(progress["persisted_at"], 0)
+    last_container_probe = float("-inf")
     while True:
         run = _required_run(store, run_id)
-        now = time.time()
+        # The wall clock is used only to anchor persisted timestamps on attachment.
+        # All decisions during this watcher lifetime advance by monotonic elapsed time.
+        now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
+        if plan.ownership_hints.get("suite") == "and-scene" and now - last_container_probe >= 5:
+            try:
+                recorded = progress.get("container")
+                if not isinstance(recorded, Mapping):
+                    discovered = discover_container(_artifact_root(plan, run.evidence_path))
+                    if discovered is not None:
+                        progress["container"] = discovered
+                        store.update_progress(run_id, progress)
+                last_container_probe = now
+            except (OSError, subprocess.TimeoutExpired, ProcessProbeError) as error:
+                store.report_uncertainty(run_id, str(error))
+                return
+        container = progress.get("container")
+        if process_status == "missing" and isinstance(container, Mapping):
+            try:
+                record = cast(Mapping[str, object], container)
+                observed = inspect_container(str(record["id"]))
+                if observed is not None:
+                    if not container_matches_recorded_ownership(record, observed):
+                        raise ProcessProbeError("recorded container ownership changed")
+                    state = observed.get("State")
+                    if (
+                        isinstance(state, Mapping)
+                        and cast(Mapping[str, object], state).get("Running") is True
+                    ):
+                        process_status = "alive"
+            except (OSError, subprocess.TimeoutExpired, ProcessProbeError) as error:
+                store.report_uncertainty(run_id, str(error))
+                return
         if process_status == "unknown":
             store.report_uncertainty(run_id, "owned process identity cannot be probed")
             return
@@ -266,7 +304,9 @@ def _observe(
         else:
             progress.pop("result_error", None)
         if changed or diagnostic_changed or now - last_persisted >= _PROGRESS_HEARTBEAT_SECONDS:
-            progress["persisted_at"] = now
+            progress["persisted_at"] = time.time()
+            progress["elapsed_seconds"] = now - started
+            progress["idle_seconds"] = now - last_progress
             store.update_progress(run_id, progress)
             last_persisted = now
         if result_read.result is not None and process_status == "missing":
@@ -291,7 +331,7 @@ def _observe(
             )
             return
         if run.cancellation_requested:
-            if _terminate(identity):
+            if _terminate_execution(identity, progress.get("container")):
                 store.finish_run(
                     run_id, execution_status="cancelled", result={"reason": "cancelled"}
                 )
@@ -300,7 +340,7 @@ def _observe(
             return
         timeout = _timeout(now, started, last_progress, limits)
         if timeout is not None:
-            if _terminate(identity):
+            if _terminate_execution(identity, progress.get("container")):
                 store.finish_run(run_id, execution_status="timed_out", result={"timeout": timeout})
             else:
                 store.report_uncertainty(
@@ -308,6 +348,86 @@ def _observe(
                 )
             return
         time.sleep(_POLL_SECONDS)
+
+
+def inspect_container(container_id: str) -> dict[str, object] | None:
+    result = subprocess.run(
+        ["docker", "inspect", container_id], capture_output=True, text=True, check=False, timeout=10
+    )
+    if result.returncode != 0:
+        listing = subprocess.run(
+            ["docker", "ps", "-a", "--no-trunc", "-q"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if listing.returncode != 0 or container_id in listing.stdout.splitlines():
+            raise ProcessProbeError("container state cannot be verified")
+        return None
+    try:
+        values: object = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ProcessProbeError("invalid Docker inspection") from error
+    if not isinstance(values, list):
+        raise ProcessProbeError("invalid Docker inspection")
+    entries = cast(list[object], values)
+    if len(entries) != 1 or not isinstance(entries[0], dict):
+        raise ProcessProbeError("invalid Docker inspection")
+    return cast(dict[str, object], entries[0])
+
+
+def discover_container(artifact: str) -> dict[str, object] | None:
+    result = subprocess.run(
+        ["docker", "ps", "--no-trunc", "-q", "--filter", f"volume={artifact}"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise ProcessProbeError("Docker ownership discovery unavailable")
+    matches: list[dict[str, object]] = []
+    for container_id in result.stdout.splitlines():
+        observed = inspect_container(container_id)
+        if observed is None:
+            continue
+        record = {"id": container_id, "image": observed.get("Image"), "artifact_path": artifact}
+        if container_matches_recorded_ownership(record, observed):
+            matches.append(record)
+    if len(matches) > 1:
+        raise ProcessProbeError("multiple containers match the repetition artifact mount")
+    return matches[0] if matches else None
+
+
+def stop_owned_container(recorded: Mapping[str, object]) -> bool:
+    """Stop only the recorded container whose current immutable identity and mount agree."""
+    container_id = recorded.get("id")
+    if not isinstance(container_id, str):
+        return False
+    try:
+        observed = inspect_container(container_id)
+        if observed is None:
+            return True
+        if not container_matches_recorded_ownership(recorded, observed):
+            return False
+        stopped = subprocess.run(
+            ["docker", "stop", "--time", "10", container_id],
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        return stopped.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, ProcessProbeError):
+        return False
+
+
+def _terminate_execution(identity: Mapping[str, object], container: object) -> bool:
+    if isinstance(container, Mapping) and not stop_owned_container(
+        cast(Mapping[str, object], container)
+    ):
+        return False
+    return _terminate(identity)
 
 
 def container_matches_recorded_ownership(

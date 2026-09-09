@@ -50,3 +50,8 @@ in Done, Factory removes only its recorded Runner, Skills, and evals worktrees.
 It records partial failures and retries later; it does not prune evidence or
 touch source checkouts, other claims, candidate branches, or PRs. Before manual
 storage cleanup, confirm no remaining item is Running, waiting, or in Review.
+
+Candidate environment files follow the selected Runner launcher's literal
+`NAME=value` format: quotes, backslashes, spaces after `=`, and inline `#` are
+part of the value. Do not add shell quotes around tokens or expect variable
+expansion. Factory readiness and suite execution interpret these files identically.

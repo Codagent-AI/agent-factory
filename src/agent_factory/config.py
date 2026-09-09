@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -96,6 +96,7 @@ class EvalConfig:
     harness_sha: str
     suite: str
     repetitions: int
+    defaults: Mapping[str, object] = field(default_factory=lambda: dict[str, object]())
 
 
 @dataclass(frozen=True)
@@ -211,6 +212,7 @@ class SharedConfig:
     project: ProjectConfig
     routing: RoutingConfig
     eval: EvalConfig
+    bot_login: str = ""
 
     @classmethod
     def from_file(cls, path: Path) -> SharedConfig:
@@ -251,6 +253,7 @@ class SharedConfig:
             raise ConfigurationError("project.number must be a positive integer")
         return cls(
             organization=_string(github, "organization", "github"),
+            bot_login=str(github.get("bot_login", "")),
             app_id=_string(github, "app_id", "github"),
             installation_id=_string(github, "installation_id", "github"),
             project=ProjectConfig(
@@ -273,6 +276,7 @@ class SharedConfig:
                 harness_sha=harness_sha,
                 suite=_string(eval_config, "suite", "eval"),
                 repetitions=repetitions,
+                defaults=dict(_table(eval_config.get("defaults", {}), "eval.defaults")),
             ),
         )
 

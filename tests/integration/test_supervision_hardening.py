@@ -57,6 +57,11 @@ def test_tick_replaces_only_running_or_observing_watchers(
 
     monkeypatch.setattr(cli, "resume_supervisor", record_resume)
 
+    def no_cycle(_state: Path, _config: Path) -> None:
+        pass
+
+    monkeypatch.setattr("agent_factory.runtime.cycle", no_cycle)
+
     cli._tick(state, tmp_path / "local.toml")  # pyright: ignore[reportPrivateUsage]
 
     assert calls == [(running.id, tmp_path / "local.toml")]

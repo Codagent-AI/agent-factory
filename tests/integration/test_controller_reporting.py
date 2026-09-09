@@ -174,3 +174,51 @@ def test_delivery_diagnostics_survive_later_event_acknowledgement(tmp_path: Path
     assert (
         store.delivery_failures(claim.id)["accepted"]["error"] == "GitHubApiError: temporary outage"
     )
+
+
+def test_nondefault_bot_recovers_a_lost_successful_comment_response(tmp_path: Path) -> None:
+    class LostResponse(Comments):
+        def create_comment(self, repository: str, number: int, body: str) -> str:
+            self.posted.append(body)
+            raise GitHubApiError("response lost after successful creation")
+
+        def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
+            return [
+                IssueComment(str(i), body, "example-worker[bot]")
+                for i, body in enumerate(self.posted)
+            ]
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    comments = LostResponse()
+    controller = Controller(
+        store, comments, defaults(), harness_sha="c" * 40, factory_login="example-worker[bot]"
+    )
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    controller.deliver_reports(claim.id)
+    controller.deliver_reports(claim.id)
+    assert len(comments.posted) == 1 and not store.pending_events(claim.id)
+    store.close()
+
+
+def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, Comments(), defaults(), harness_sha="c" * 40)
+    first = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert first is not None
+    run = controller.reserve_next(first.id, readiness=lambda: None)
+    assert run is not None
+    controller.record_result(
+        run.id,
+        AttemptResult("failed", None, {}, quota_until=datetime.now(UTC) + timedelta(hours=1)),
+    )
+    second = controller.accept(
+        replace(snapshot(), issue_id="I2", project_item_id="P2", issue_number=2),
+        resolve=lambda _: ("a" * 40, "b" * 40),
+    )
+    assert second is not None
+    assert controller.reserve_next(second.id, readiness=lambda: None) is None
+    store.close()

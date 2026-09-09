@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol, cast
 
+from agent_factory.config import ProjectConfig
 from agent_factory.routing import ProjectItem, SourceItem
 
 
@@ -145,6 +146,40 @@ class GitHubClient:
         self._runner = runner
         self._token = token
 
+    def validate_project(self, project: ProjectConfig) -> None:
+        """Validate configured field types and option membership without writing."""
+        fields: dict[str, Mapping[str, object]] = {}
+        cursor: str | None = None
+        while True:
+            data = self._graphql(
+                "query Fields($project: ID!, $cursor: String) { node(id: $project) { "
+                "... on ProjectV2 { fields(first: 100, after: $cursor) { nodes { "
+                "... on ProjectV2Field { id dataType } "
+                "... on ProjectV2SingleSelectField { id dataType options { id name } } "
+                "} pageInfo { hasNextPage endCursor } } } } }",
+                {"project": project.id, "cursor": cursor},
+            )
+            connection = _object(_object(data.get("node")).get("fields"))
+            for raw in _list(connection.get("nodes")):
+                field = _object(raw)
+                fields[_required_string(field, "id")] = field
+            page = _object(connection.get("pageInfo"))
+            if page.get("hasNextPage") is not True:
+                break
+            cursor = _required_string(page, "endCursor")
+        for configured in (project.status, project.owner, project.verdict):
+            observed = fields.get(configured.id)
+            if observed is None or observed.get("dataType") != "SINGLE_SELECT":
+                raise GitHubApiError(
+                    f"configured select field is missing or changed: {configured.id}"
+                )
+            options = {_required_string(_object(v), "id") for v in _list(observed.get("options"))}
+            if not set(configured.options.values()) <= options:
+                raise GitHubApiError(f"configured field has missing options: {configured.id}")
+        refs = fields.get(project.refs.id)
+        if refs is None or refs.get("dataType") != "TEXT":
+            raise GitHubApiError(f"configured text field is missing or changed: {project.refs.id}")
+
     def get_permission(self, repository: str, login: str) -> str | None:
         try:
             response = self._request(
@@ -167,7 +202,7 @@ class GitHubClient:
             for value in _list(payload.get("labels"))
             if isinstance((name := _object(value).get("name")), str)
         )
-        issue_type = payload.get("issue_type")
+        issue_type = payload.get("type", payload.get("issue_type"))
         type_name = (
             _object(cast(Mapping[str, object], issue_type)).get("name")
             if isinstance(issue_type, Mapping)
@@ -193,13 +228,15 @@ class GitHubClient:
                 "".join(
                     (
                         "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
-                        "... on ProjectV2 { items(first: 100, after: $cursor) { nodes { id ",
+                        "... on ProjectV2 { items(first: 100, after: $cursor, ",
+                        "orderBy: {field: POSITION, direction: ASC}) { nodes { id ",
                         "content { __typename ... on Issue { id number body state ",
                         "author { login } ",
                         "repository { nameWithOwner } labels(first: 100) { nodes { name } } ",
                         "issueType { name } } } fieldValues(first: 50) { nodes { ... on ",
                         "ProjectV2ItemFieldSingleSelectValue ",
-                        "{ field { ... on ProjectV2Field { id } } optionId } } } } pageInfo { ",
+                        "{ field { ... on ProjectV2SingleSelectField { id } } optionId } } } } ",
+                        "pageInfo { ",
                         "hasNextPage endCursor } } } }",
                     )
                 ),
@@ -233,11 +270,12 @@ class GitHubClient:
                     (
                         "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
                         "... on ProjectV2 { ",
-                        "items(first: 100, after: $cursor) { nodes { id content { ",
+                        "items(first: 100, after: $cursor, ",
+                        "orderBy: {field: POSITION, direction: ASC}) { nodes { id content { ",
                         "... on Issue { id } ... on PullRequest { id } } ",
                         "fieldValues(first: 50) { nodes { ... on ",
                         "ProjectV2ItemFieldSingleSelectValue { field { ... on ",
-                        "ProjectV2Field { id } } optionId } } } } ",
+                        "ProjectV2SingleSelectField { id } } optionId } } } } ",
                         "pageInfo { hasNextPage endCursor } } } }",
                     )
                 ),
@@ -288,6 +326,26 @@ class GitHubClient:
             ),
             {"project": project_id, "item": item_id, "field": field_id, "option": option_id},
         )
+
+    def set_text_field(self, project: str, item: str, field: str, value: str) -> None:
+        self._graphql(
+            "mutation Text($project: ID!, $item: ID!, $field: ID!, $text: String!) { "
+            "updateProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, "
+            "fieldId: $field, value: {text: $text}}) { projectV2Item { id } } }",
+            {"project": project, "item": item, "field": field, "text": value},
+        )
+
+    def set_attention_label(self, repository: str, number: int, needed: bool) -> None:
+        endpoint = f"repos/{repository}/issues/{number}/labels"
+        if needed:
+            self._request(
+                ["api", endpoint, "--method", "POST", "--input", "-"], {"labels": ["needs-input"]}
+            )
+        else:
+            # Read before deleting so an absent label is not a failed API request.
+            labels = json.loads(self._request(["api", endpoint, "--method", "GET"], None))
+            if any(_object(label).get("name") == "needs-input" for label in _list(labels)):
+                self._request(["api", endpoint + "/needs-input", "--method", "DELETE"], None)
 
     def list_comments(self, repository: str, number: int) -> list[str]:
         return [comment.body for comment in self.list_comment_records(repository, number)]

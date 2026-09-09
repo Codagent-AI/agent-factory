@@ -16,3 +16,14 @@ Publish `agent-factory` first. Then replace each caller workflow's `FACTORY_REVI
 The configured `agent-evals` harness SHA is a real immutable execution pin, not a local `HEAD` or branch. Routing does not establish suite readiness. Before changing it, verify the selected revision contains the score-failure contract, calibration-gate removal, and linked-worktree metadata mounts described in [suite integration](suite-integration.md); then deploy the same explicit revision before unpausing admission.
 
 The reusable workflow mints a short-lived App installation token and passes it only through `GH_TOKEN` to `gh api`. It never checks out contributor pull-request code and reads the current source item from the base-repository event context. Routing checks the author's effective collaborator permission; only `write`, `maintain`, and `admin` receive factory ownership and Ready. Unknown or denied permission is Backlog without ownership. A stable issue/PR receipt records one-time initialization, so retries preserve later human changes. Closing a tracked issue or PR moves its card to Done.
+
+The shared `[github].bot_login` identifies the installed App's comment author
+(for example, `codagent-factory[bot]`). Set it for your own App so lost-response
+reconciliation recognizes its existing comments. The controller will not admit
+work without an explicit identity.
+
+The parser's ordinary CI contract uses the vendored `tests/fixtures/eval-request.md`
+and its recorded companion revision, without requiring a sibling checkout.
+Before publishing a changed issue template, compare that fixture with the delivered
+`agent-evals/.github/ISSUE_TEMPLATE/eval-request.md` and refresh both fixture and
+source revision together. Live template behavior remains part of AT-001.

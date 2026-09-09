@@ -21,6 +21,7 @@ from agent_factory.github import (
     SubprocessGhRunner,
 )
 from agent_factory.store import Claim, ClaimStore, Event
+from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
 
 if TYPE_CHECKING:
     from agent_factory.store import Run
@@ -65,13 +66,15 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
     diagnostics.append(
         _command_check("Docker", ("docker", "info"), "Start Docker Desktop, then rerun doctor.")
     )
-    diagnostics.append(
-        _command_check(
-            "model authentication",
-            ("codex", "login", "status"),
-            "Authenticate the configured model CLI on this Mac, then rerun doctor.",
-        )
+    profiles = (
+        {
+            role: str(shared.eval.defaults.get(role, ""))
+            for role in ("lead", "implementor", "reviewer")
+        }
+        if shared is not None
+        else {}
     )
+    diagnostics.extend(model_authentication(profiles))
     diagnostics.append(_free_space(config))
     if shared is not None and config.credentials.github_app_key.is_file():
         diagnostics.append(_github_access(shared, config.credentials.github_app_key))
@@ -86,6 +89,21 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
             )
         )
     return diagnostics
+
+
+def model_authentication(profiles: Mapping[str, str]) -> list[Diagnostic]:
+    try:
+        commands = AndSceneAdapter.authentication_commands(profiles)
+    except ReadinessError as error:
+        return [Diagnostic("model authentication", False, str(error), "Correct the role profiles.")]
+    return [
+        _command_check(
+            f"{command[0]} model authentication",
+            command,
+            f"Authenticate {command[0]} on this Mac, then rerun doctor.",
+        )
+        for command in commands
+    ]
 
 
 def format_doctor(diagnostics: Iterable[Diagnostic]) -> str:
@@ -107,6 +125,9 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
         lines.append("current: none")
+    readiness = store.get_setting("runtime", "readiness")
+    if readiness and readiness.get("reason"):
+        lines.append(f"readiness: {readiness['reason']}")
     for claim in claims:
         run = active_by_claim.get(claim.id)
         if run is not None:
@@ -162,7 +183,9 @@ def _github_access(shared: SharedConfig, key: Path) -> Diagnostic:
         token = InstallationTokenProvider(
             AppCredentials(shared.app_id, shared.installation_id, key), runner
         )
-        GitHubClient(runner, token).list_project_items(shared.project.id)
+        client = GitHubClient(runner, token)
+        client.validate_project(shared.project)
+        client.list_project_items(shared.project.id)
     except (GitHubApiError, OSError) as error:
         return Diagnostic(
             "GitHub authentication and Project mapping",

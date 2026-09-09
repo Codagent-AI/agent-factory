@@ -7,9 +7,10 @@ admission decision, normalized observations, and report delivery state.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
-import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,8 +90,6 @@ class ReportingClient(Protocol):
 class Controller:
     """Serializes admission while allowing supervisors to own running attempts."""
 
-    _cycle_lock = threading.Lock()
-
     def __init__(
         self,
         store: ClaimStore,
@@ -128,6 +127,7 @@ class Controller:
         snapshot: RequestSnapshot,
         *,
         resolve: Callable[[ParsedRequest], tuple[str, str]],
+        fresh: bool = False,
     ) -> Claim | None:
         """Validate and freeze a new request, never creating a claim for bad input."""
         if not self._eligible(snapshot):
@@ -148,7 +148,7 @@ class Controller:
         )
         if current is not None and self._is_active(current):
             return current
-        if current is not None and current.request_fingerprint == request.fingerprint:
+        if current is not None and current.request_fingerprint == request.fingerprint and not fresh:
             return current
         runner_sha, skills_sha = resolve(request)
         frozen = request.freeze(
@@ -177,7 +177,7 @@ class Controller:
 
     def reserve_next(self, claim_id: str, *, readiness: Callable[[], str | None]) -> Run | None:
         """Reserve exactly one ready work unit after all launch-time controls pass."""
-        with self._cycle_lock:
+        with advisory_lock(self._store.path, "admission"):
             claim = self._required_claim(claim_id)
             if claim.lifecycle in {"settled", "cancelled", "superseded"} or self.paused():
                 return None
@@ -185,6 +185,9 @@ class Controller:
             if issue is not None:
                 self._store.set_hold(claim.id, "readiness", {"reason": issue})
                 self._store.record_event(claim.id, f"readiness:{issue}", f"Waiting: {issue}")
+                return None
+            global_quota = self._store.get_setting("admission", "quota")
+            if global_quota is not None and _hold_active(global_quota, self._now()):
                 return None
             quota = self._store.get_hold(claim.id, "quota")
             if quota is not None and _hold_active(quota, self._now()):
@@ -216,10 +219,16 @@ class Controller:
             stored_result["product_verdict"] = result.product_verdict
         if result.resumable is not None:
             stored_result["resumable"] = result.resumable
+        persist = (
+            self._store.finish_run
+            if run.status in {"reserved", "running", "observing"}
+            else self._store.normalize_terminal_result
+        )
         if result.quota_until is not None:
             stored_result["quota_until"] = result.quota_until.isoformat()
-            self._store.finish_run(run.id, execution_status="deferred", result=stored_result)
+            persist(run.id, execution_status="deferred", result=stored_result)
             self._store.set_hold(run.claim_id, "quota", {"until": result.quota_until.isoformat()})
+            self._store.set_setting("admission", "quota", {"until": result.quota_until.isoformat()})
             self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "quota-deferred"})
             self._store.record_event(
                 run.claim_id,
@@ -227,9 +236,7 @@ class Controller:
                 f"{run.unit_key} is waiting for usage reset at {result.quota_until.isoformat()}.",
             )
             return
-        self._store.finish_run(
-            run.id, execution_status=result.execution_status, result=stored_result
-        )
+        persist(run.id, execution_status=result.execution_status, result=stored_result)
         if _technical_failure(result):
             if run.reason == "recovery":
                 self._store.set_claim_lifecycle(
@@ -460,3 +467,16 @@ def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
     score = result.get("score", "unavailable")
     cost = result.get("cost", "unavailable")
     return f"{unit_key} settled: verdict={verdict}; score={score}; cost={cost}."
+
+
+@contextmanager
+def advisory_lock(state: Path, name: str) -> Generator[None, None, None]:
+    """Serialize controller entry points across processes sharing this database."""
+    directory = state.resolve().parent / "locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{name}.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)

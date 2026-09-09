@@ -1,6 +1,7 @@
 # Versioned shared deployment configuration. No paths or credentials belong here.
 [github]
 organization = "Codagent-AI"
+bot_login = "codagent-factory[bot]"
 app_id = "4880516"
 installation_id = "160216883"
 

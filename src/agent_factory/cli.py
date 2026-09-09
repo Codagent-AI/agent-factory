@@ -26,6 +26,10 @@ def _tick(state: Path, config_path: Path | None = None) -> None:
                 store.report_uncertainty(run.id, f"supervisor replacement failed: {error}")
     finally:
         store.close()
+    if config_path is not None:
+        from agent_factory.runtime import cycle
+
+        cycle(state, config_path)
 
 
 def _status(state: Path, config: LocalConfig | None = None) -> str:

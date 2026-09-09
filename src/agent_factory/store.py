@@ -481,6 +481,20 @@ class ClaimStore:
             )
             self._require_run_transition(cursor, run_id, "nonterminal")
 
+    def normalize_terminal_result(
+        self, run_id: str, *, execution_status: str, result: Mapping[str, object]
+    ) -> None:
+        """Apply suite interpretation after the watcher durably establishes termination."""
+        if execution_status in NONTERMINAL_RUN_STATUSES:
+            raise ValueError("normalization must remain terminal")
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET status = ?, result_json = ? WHERE id = ? "
+                "AND status NOT IN ('reserved', 'running', 'observing')",
+                (execution_status, _dump(result), run_id),
+            )
+            self._require_run_transition(cursor, run_id, "terminal")
+
     def request_cancellation(self, run_id: str) -> None:
         with self._transaction():
             cursor = self._connection.execute(

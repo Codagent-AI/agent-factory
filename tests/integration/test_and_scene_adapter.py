@@ -202,10 +202,10 @@ def test_adapter_reads_suite_outcomes_and_renders_only_reviewable_handoffs(tmp_p
     assert adapter.review_handoff(failed.result, review_script, artifact) is None
 
 
-def test_candidate_environment_unquotes_dotenv_values_and_rejects_malformed_quotes(
+def test_candidate_environment_preserves_literal_runner_values(
     tmp_path: Path,
 ) -> None:
-    from agent_factory.suites.and_scene import ReadinessError, candidate_environment
+    from agent_factory.suites.and_scene import candidate_environment
 
     environment = tmp_path / "candidate.env"
     environment.write_text(
@@ -214,13 +214,12 @@ def test_candidate_environment_unquotes_dotenv_values_and_rejects_malformed_quot
     )
 
     assert candidate_environment(environment) == {
-        "CANDIDATE_TOKEN": "abc 123",
-        "SECOND": "value with spaces",
+        "CANDIDATE_TOKEN": '"abc 123"',
+        "SECOND": "'value with spaces'",
     }
 
     environment.write_text('CANDIDATE_TOKEN="unterminated\n', encoding="utf-8")
-    with pytest.raises(ReadinessError, match="invalid value"):
-        candidate_environment(environment)
+    assert candidate_environment(environment) == {"CANDIDATE_TOKEN": '"unterminated'}
 
 
 def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path) -> None:

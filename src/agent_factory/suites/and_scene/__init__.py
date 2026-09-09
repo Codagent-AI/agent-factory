@@ -177,6 +177,18 @@ class AndSceneAdapter:
         self._environment_file = environment_file.resolve()
         self._mac_name = mac_name
 
+    @staticmethod
+    def authentication_commands(roles: Mapping[str, str]) -> list[tuple[str, ...]]:
+        """The suite always judges with Codex and may execute Claude role profiles."""
+        clis = {value.split(":", 1)[0] for value in roles.values() if value}
+        unsupported = clis - {"codex", "claude"}
+        if unsupported:
+            raise ReadinessError("unsupported suite model CLI: " + ", ".join(sorted(unsupported)))
+        commands = [("codex", "login", "status")]
+        if "claude" in clis:
+            commands.append(("claude", "auth", "status"))
+        return commands
+
     def readiness(self, worktrees: PreparedWorktrees) -> str | None:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
@@ -289,7 +301,29 @@ class AndSceneAdapter:
             "to Done."
         )
 
-    def quota_until(self, diagnostic: str, *, now: datetime | None = None) -> datetime | None:
+    def failure_quota_until(
+        self, artifact: Path, result: Mapping[str, object], *, fallback_seconds: int = 18000
+    ) -> datetime | None:
+        """Inspect durable failure diagnostics without treating arbitrary errors as limits."""
+        diagnostics = [json.dumps(dict(result))]
+        paths = [artifact / "run-state.json", artifact / "factory-suite.log"]
+        log_root = artifact / "logs"
+        if log_root.is_dir():
+            paths.extend(path for path in log_root.rglob("*.log") if path.is_file())
+        for path in paths:
+            if path.is_file():
+                with path.open("rb") as handle:
+                    handle.seek(max(0, path.stat().st_size - 65536))
+                    diagnostics.append(handle.read().decode("utf-8", errors="replace"))
+        for diagnostic in diagnostics:
+            deadline = self.quota_until(diagnostic, fallback_seconds=fallback_seconds)
+            if deadline is not None:
+                return deadline
+        return None
+
+    def quota_until(
+        self, diagnostic: str, *, now: datetime | None = None, fallback_seconds: int = 18000
+    ) -> datetime | None:
         """Recognize explicit Codex quota diagnostics, never arbitrary suite errors."""
         lower = diagnostic.lower()
         if "codex" not in lower or not any(
@@ -302,9 +336,9 @@ class AndSceneAdapter:
             try:
                 return datetime.fromisoformat(iso.group(1).replace("Z", "+00:00"))
             except ValueError:
-                return reference + timedelta(hours=5)
+                return reference + timedelta(seconds=fallback_seconds)
         # A recognized limit with no parseable reset gets the documented bounded fallback.
-        return reference + timedelta(hours=5)
+        return reference + timedelta(seconds=fallback_seconds)
 
     def _recovery_mode(self, artifact: Path, recovery: bool, pre_checkpoint_proven: bool) -> bool:
         if not recovery:
@@ -454,9 +488,10 @@ def candidate_environment(path: Path) -> dict[str, str]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
+        if re.match(r"export\s", line):
+            line = line[6:].lstrip()
         name, separator, value = line.partition("=")
+        name = name.rstrip()
         if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             raise ReadinessError(f"candidate delivery environment has an invalid entry: {raw}")
         if (
@@ -467,7 +502,8 @@ def candidate_environment(path: Path) -> dict[str, str]:
             raise ReadinessError(
                 "candidate delivery environment must not contain factory App credentials"
             )
-        environment[name] = _dotenv_value(value, raw)
+        # Runner exports the literal right-hand side; quotes and escapes are data.
+        environment[name] = value
     if not environment:
         raise ReadinessError("candidate delivery environment has no allowed credentials")
     return environment
@@ -477,20 +513,6 @@ def _canonical_product_verdict(value: object) -> str | None:
     if not isinstance(value, str):
         return None
     return {"fail": "failed", "pass": "passed"}.get(value, value)
-
-
-def _dotenv_value(value: str, raw: str) -> str:
-    if not value:
-        return ""
-    try:
-        values = shlex.split(value, posix=True)
-    except ValueError as error:
-        raise ReadinessError(
-            f"candidate delivery environment has an invalid value: {raw}"
-        ) from error
-    if len(values) != 1:
-        raise ReadinessError(f"candidate delivery environment has an invalid value: {raw}")
-    return values[0]
 
 
 def _recorded_worktrees(claim_id: str, cleanup: Mapping[str, object]) -> PreparedWorktrees:

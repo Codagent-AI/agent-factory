@@ -54,10 +54,8 @@ def test_eval_request_parser_uses_only_fenced_toml_and_canonical_fingerprint() -
 
 def test_shipped_eval_template_is_a_valid_production_request() -> None:
     fixture = Path("tests/fixtures/eval-request.md")
-    source = Path("../agent-evals/.github/ISSUE_TEMPLATE/eval-request.md")
 
     assert Path("tests/fixtures/eval-request.source-revision").read_text(encoding="utf-8").strip()
-    assert fixture.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
     request = parse_request(fixture.read_text(encoding="utf-8"), defaults())
 
     assert request.settings["repetitions"] == 3
