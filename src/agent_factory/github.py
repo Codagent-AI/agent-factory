@@ -303,7 +303,7 @@ class GitHubClient:
                         "fieldValues(first: 50) { nodes { ... on ",
                         "ProjectV2ItemFieldSingleSelectValue { field { ... on ",
                         "ProjectV2SingleSelectField { id } } optionId } } } } ",
-                        "pageInfo { hasNextPage endCursor } } } }",
+                        "pageInfo { hasNextPage endCursor } } } } }",
                     )
                 ),
                 {"project": project_id, "cursor": cursor},

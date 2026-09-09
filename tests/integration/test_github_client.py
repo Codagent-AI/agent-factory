@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+import pytest
 from graphql import parse
 
 from agent_factory.github import GitHubClient
@@ -110,9 +111,14 @@ def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data
     assert "issueType" in gh.calls[0].body["query"]  # type: ignore[index]
 
 
-def test_project_item_query_is_valid_graphql() -> None:
+@pytest.mark.parametrize("lookup", [False, True], ids=["queue", "routing-lookup"])
+def test_project_item_query_is_valid_graphql(lookup: bool) -> None:
     gh = RecordingGh(['{"data":{"node":{"items":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}'])
-    GitHubClient(gh, lambda: "installation-token").list_project_items("PROJECT")
+    client = GitHubClient(gh, lambda: "installation-token")
+    if lookup:
+        client.find_project_item("PROJECT", "ISSUE")
+    else:
+        client.list_project_items("PROJECT")
     assert gh.calls[0].body is not None
     query = gh.calls[0].body["query"]
     assert isinstance(query, str)
