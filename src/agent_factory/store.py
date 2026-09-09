@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
 
 
@@ -64,6 +64,19 @@ class Run:
     status: str
     evidence_path: str
     result: dict[str, object]
+    launch_nonce: str
+    supervisor: dict[str, object]
+    plan: dict[str, object]
+    progress: dict[str, object]
+    cancellation_requested: bool
+    started_at: str | None
+    finished_at: str | None
+
+    @property
+    def process(self) -> dict[str, object]:
+        """The recorded suite identity, kept separately from its watcher."""
+        value = self.supervisor.get("process")
+        return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}
 
 
 @dataclass(frozen=True)
@@ -109,6 +122,11 @@ class ClaimStore:
         if version > SCHEMA_VERSION:
             raise RuntimeError("factory database is newer than this controller")
         if version == SCHEMA_VERSION:
+            return
+        if version == 1:
+            # Version one deliberately reserved JSON columns for launch state.  Promote the
+            # schema marker rather than copy rows, preserving every live reservation.
+            self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             return
         self._connection.executescript(
             f"""
@@ -285,6 +303,13 @@ class ClaimStore:
         row = self._connection.execute("SELECT * FROM run WHERE id = ?", (run_id,)).fetchone()
         return _run(row) if row is not None else None
 
+    def nonterminal_runs(self) -> list[Run]:
+        rows = self._connection.execute(
+            "SELECT * FROM run WHERE status IN ('reserved', 'running', 'observing') "
+            "ORDER BY created_at"
+        ).fetchall()
+        return [_run(row) for row in rows]
+
     def runs_for_claim(self, claim_id: str) -> list[Run]:
         rows = self._connection.execute(
             "SELECT * FROM run WHERE claim_id = ? ORDER BY unit_key, attempt_number", (claim_id,)
@@ -299,6 +324,67 @@ class ClaimStore:
                 (_dump(supervisor), _now(), run_id),
             )
             self._require_run_transition(cursor, run_id, "reserved")
+
+    def configure_run(
+        self, run_id: str, *, plan: Mapping[str, object], limits: Mapping[str, object]
+    ) -> None:
+        """Persist immutable launch inputs before an external supervisor is spawned."""
+        saved = dict(plan)
+        saved["limits"] = dict(limits)
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET plan_json = ? WHERE id = ? AND status = 'reserved'",
+                (_dump(saved), run_id),
+            )
+            self._require_run_transition(cursor, run_id, "reserved")
+
+    def begin_run(
+        self,
+        run_id: str,
+        *,
+        launch_nonce: str,
+        supervisor: Mapping[str, object],
+        process: Mapping[str, object],
+    ) -> bool:
+        """Claim a persisted reservation once, rejecting a stale replacement watcher."""
+        values = dict(supervisor)
+        values["process"] = dict(process)
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET status = 'running', supervisor_json = ?, started_at = ? "
+                "WHERE id = ? AND status = 'reserved' AND launch_nonce = ?",
+                (_dump(values), _now(), run_id, launch_nonce),
+            )
+            return cursor.rowcount == 1
+
+    def update_supervisor(self, run_id: str, supervisor: Mapping[str, object]) -> None:
+        """Record a replacement watcher without changing the owned child identity."""
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET supervisor_json = ? WHERE id = ? "
+                "AND status IN ('running', 'observing')",
+                (_dump(supervisor), run_id),
+            )
+            self._require_run_transition(cursor, run_id, "nonterminal")
+
+    def update_progress(self, run_id: str, progress: Mapping[str, object]) -> None:
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET progress_json = ? WHERE id = ? "
+                "AND status IN ('reserved', 'running', 'observing')",
+                (_dump(progress), run_id),
+            )
+            self._require_run_transition(cursor, run_id, "nonterminal")
+
+    def report_uncertainty(self, run_id: str, reason: str) -> None:
+        """Keep the single-run slot while ownership or completion is ambiguous."""
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE run SET status = 'observing', result_json = ? WHERE id = ? "
+                "AND status IN ('reserved', 'running', 'observing')",
+                (_dump({"reason": reason, "uncertain": True}), run_id),
+            )
+            self._require_run_transition(cursor, run_id, "nonterminal")
 
     def finish_run(
         self, run_id: str, *, execution_status: str, result: Mapping[str, object]
@@ -487,4 +573,11 @@ def _run(row: sqlite3.Row) -> Run:
         status=cast(str, row["status"]),
         evidence_path=cast(str, row["evidence_path"]),
         result=_load(cast(str, row["result_json"])),
+        launch_nonce=cast(str, row["launch_nonce"]),
+        supervisor=_load(cast(str, row["supervisor_json"])),
+        plan=_load(cast(str, row["plan_json"])),
+        progress=_load(cast(str, row["progress_json"])),
+        cancellation_requested=cast(int, row["cancellation_requested"]) == 1,
+        started_at=cast(str | None, row["started_at"]),
+        finished_at=cast(str | None, row["finished_at"]),
     )

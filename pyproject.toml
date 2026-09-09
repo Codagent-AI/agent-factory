@@ -14,6 +14,9 @@ authors = [
 ]
 dependencies = []
 
+[project.scripts]
+agent-factory = "agent_factory.cli:main"
+
 [dependency-groups]
 dev = [
   "pyright>=1.1.405",
@@ -28,10 +31,15 @@ packages = ["src/agent_factory"]
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "darwin: requires macOS process-session semantics",
+]
 
 [tool.ruff]
 line-length = 100

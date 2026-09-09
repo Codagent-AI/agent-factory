@@ -16,6 +16,10 @@ stop_hour = 15
 [limits]
 minimum_free_gib = 30
 max_recovery_attempts = 1
+inactivity_seconds = 1800
+execution_seconds = 21600
+total_seconds = 43200
+codex_reset_fallback_seconds = 18000
 
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"

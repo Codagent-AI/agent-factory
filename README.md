@@ -2,8 +2,30 @@
 
 Agent Factory will run Codagent's unattended evaluation and improvement workflows. The first iteration is a nightly evaluation tracer bullet: it will claim evaluation requests from the Codagent GitHub Project, run the existing `and-scene` suite, persist operational state in SQLite, and report results back to the project.
 
-The durable controller/store boundary is implemented here; command-line and
-service-entry-point wiring are delivered separately.
+The durable controller/store boundary includes an independent supervisor and
+public command-line entry points. The controller/service is intentionally not
+the parent of a suite process: it reserves the run in SQLite, then starts a
+new-session supervisor with file-backed output. A controller crash therefore
+does not close suite pipes or terminate its process group.
+
+## Operations
+
+Install the package into the retained Python environment and invoke the command
+with explicit portable paths (a launchd agent can use the same resident form):
+
+```sh
+agent-factory --state /var/lib/agent-factory/state.sqlite3 --config /etc/agent-factory/local.toml resident
+agent-factory --state /var/lib/agent-factory/state.sqlite3 tick
+agent-factory --state /var/lib/agent-factory/state.sqlite3 status
+agent-factory --state /var/lib/agent-factory/state.sqlite3 pause
+agent-factory --state /var/lib/agent-factory/state.sqlite3 resume
+```
+
+`tick` and the resident poll only reconcile and attach short-lived supervisors;
+they never wait for an evaluation. `pause` affects later admission only, while
+`status` reads saved state and remains available during execution. Keep the
+installed package environment available until all previously launched attempts
+have completed, since each supervisor starts from that installed environment.
 
 ## Durable controller boundary
 
