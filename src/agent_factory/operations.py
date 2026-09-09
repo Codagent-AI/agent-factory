@@ -125,9 +125,10 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
         lines.append("current: none")
-    readiness = store.get_setting("runtime", "readiness")
-    if readiness and readiness.get("reason"):
-        lines.append(f"readiness: {readiness['reason']}")
+    for diagnostic in ("readiness", "quota-error"):
+        saved = store.get_setting("runtime", diagnostic)
+        if saved and saved.get("reason"):
+            lines.append(f"{diagnostic}: {saved['reason']}")
     for claim in claims:
         run = active_by_claim.get(claim.id)
         if run is not None:

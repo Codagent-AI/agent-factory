@@ -247,3 +247,16 @@ def test_container_termination_refuses_wrong_artifact_mount() -> None:
     ) as run:
         assert not supervisor.stop_owned_container(recorded)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
     assert run.call_count == 1
+
+
+@pytest.mark.parametrize("value", ["false", "123", "[]", '""'])
+def test_bot_login_requires_a_nonempty_toml_string(value: str) -> None:
+    from agent_factory.config import ConfigurationError
+
+    document = (
+        Path("config/codagent.toml")
+        .read_text()
+        .replace('bot_login = "codagent-factory[bot]"', f"bot_login = {value}")
+    )
+    with pytest.raises(ConfigurationError, match="github.bot_login"):
+        SharedConfig.from_toml(document)

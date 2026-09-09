@@ -252,7 +252,7 @@ class SharedConfig:
         project_number = _positive_int(project, "number", "project")
         return cls(
             organization=_string(github, "organization", "github"),
-            bot_login=str(github.get("bot_login", "")),
+            bot_login=_string(github, "bot_login", "github"),
             app_id=_string(github, "app_id", "github"),
             installation_id=_string(github, "installation_id", "github"),
             project=ProjectConfig(

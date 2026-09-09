@@ -222,3 +222,39 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
     assert second is not None
     assert controller.reserve_next(second.id, readiness=lambda: None) is None
     store.close()
+
+
+def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
+    tmp_path: Path,
+) -> None:
+    from agent_factory import runtime
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(
+        store, Comments(), defaults(), harness_sha="c" * 40, artifact_root=tmp_path / "artifacts"
+    )
+    claim = controller.accept(
+        snapshot("```eval\nrepetitions=1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+    )
+    assert claim is not None
+    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    assert run is not None
+    artifact = Path(run.evidence_path)
+    artifact.mkdir(parents=True)
+    (artifact / "result.json").write_text('{"incomplete":')
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={"product_verdict": "ready-for-human-review", "score": 60},
+    )
+    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
+        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
+    )
+    saved = store.get_run(run.id)
+    assert saved is not None and saved.status == "failed"
+    assert "invalid result.json" in str(saved.result["reason"])
+    assert "invalid result.json" in str(store.pending_events(claim.id))
+    assert controller.presentation(claim.id).verdict == "infra-error"
+    assert (artifact / "result.json").read_text() == '{"incomplete":'
+    store.close()

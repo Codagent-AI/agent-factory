@@ -24,6 +24,7 @@ def config_text(*, harness_sha: str = "a" * 40) -> str:
     return f'''\
 [github]
 organization = "Example Org"
+bot_login = "example-factory[bot]"
 app_id = "123"
 installation_id = "456"
 

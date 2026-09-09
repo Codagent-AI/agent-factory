@@ -323,6 +323,38 @@ class Controller:
             and snapshot.author_permission in _WRITER_PERMISSIONS
         )
 
+    def report_request_readiness(self, snapshot: RequestSnapshot, reason: str) -> None:
+        """Persist pre-claim failures and deliver corrective feedback without accepting inputs."""
+        key = f"{snapshot.repository}:{snapshot.issue_number}"
+        receipt = self._store.get_setting("request-readiness", key)
+        if receipt and receipt.get("reason") == reason and receipt.get("comment_id"):
+            return
+        self._store.set_setting("request-readiness", key, {"reason": reason})
+        digest = hashlib.sha256(reason.encode()).hexdigest()
+        marker = f"<!-- agent-factory:request-readiness:{digest} -->"
+        existing = next(
+            (
+                comment
+                for comment in self._github.list_comment_records(
+                    snapshot.repository, snapshot.issue_number
+                )
+                if comment.author == self._factory_login and marker in comment.body
+            ),
+            None,
+        )
+        comment_id = (
+            existing.id
+            if existing
+            else self._github.create_comment(
+                snapshot.repository,
+                snapshot.issue_number,
+                f"{marker}\nWaiting for revision readiness: {reason}",
+            )
+        )
+        self._store.set_setting(
+            "request-readiness", key, {"reason": reason, "comment_id": comment_id or "acknowledged"}
+        )
+
     def _invalid_feedback(self, snapshot: RequestSnapshot, explanation: str) -> None:
         key = f"{snapshot.repository}:{snapshot.issue_number}"
         fingerprint = hashlib.sha256(f"{snapshot.body}\0{explanation}".encode()).hexdigest()
@@ -415,12 +447,23 @@ def _repetitions(claim: Claim) -> int:
     return repetitions
 
 
-def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+def quota_deadline(hold: Mapping[str, object]) -> datetime:
+    """Require a usable reset time; invalid saved holds never authorize admission."""
     value = hold.get("until")
     if not isinstance(value, str):
-        return False
+        raise ValueError("quota hold is missing a string reset timestamp")
     try:
-        return datetime.fromisoformat(value) > now
+        deadline = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("quota hold has an invalid reset timestamp") from error
+    if deadline.utcoffset() is None:
+        raise ValueError("quota hold reset timestamp must include a timezone")
+    return deadline
+
+
+def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+    try:
+        return quota_deadline(hold) > now
     except ValueError:
         return True
 

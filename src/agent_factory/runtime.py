@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Mapping
-from contextlib import closing, suppress
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
     advisory_lock,
+    quota_deadline,
 )
 from agent_factory.github import (
     AppCredentials,
@@ -100,9 +102,14 @@ def cycle(state: Path, config_path: Path) -> None:
             and not store.nonterminal_runs()
         )
         quota = store.get_setting("admission", "quota")
+        quota_error: str | None = None
         if quota is not None:
-            until = datetime.fromisoformat(str(quota["until"]))
-            ready = ready and datetime.now(UTC) >= until
+            try:
+                ready = datetime.now(UTC) >= quota_deadline(quota) and ready
+            except ValueError as error:
+                quota_error = f"Admission held: {error}. Repair the saved quota reset timestamp."
+                ready = False
+        store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
         prerequisites: str | None = None
         for card in cards:
             snapshot = _snapshot(client, shared, card)
@@ -125,10 +132,18 @@ def cycle(state: Path, config_path: Path) -> None:
                 store.set_setting("runtime", "readiness", {"reason": prerequisites})
                 break
             store.set_setting("runtime", "readiness", {})
-            claim = controller.accept(
-                snapshot,
-                resolve=lambda request: _resolve(sources, request),
-                fresh=_fresh_requested(store, shared, snapshot),
+            try:
+                claim = controller.accept(
+                    snapshot,
+                    resolve=lambda request: _resolve(sources, request),
+                    fresh=_fresh_requested(store, shared, snapshot),
+                )
+            except ReadinessError as error:
+                controller.report_request_readiness(snapshot, str(error))
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                continue
+            store.set_setting(
+                "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
             )
             if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
                 continue
@@ -166,7 +181,7 @@ def cycle(state: Path, config_path: Path) -> None:
 def _prepare_claim_worktrees(
     claim: Claim, manager: GitWorktreeManager, cleanup: WorktreeCleanup, adapter: AndSceneAdapter
 ) -> PreparedWorktrees:
-    worktrees = manager.prepare(claim.id, _mapping(claim.frozen_spec["revisions"]))
+    worktrees = manager.prepare(claim.id, _mapping(claim.frozen_spec.get("revisions")))
     if not claim.preparation:
         cleanup.record(claim.id, worktrees)
     roles = _mapping(_mapping(claim.frozen_spec.get("settings")).get("roles"))
@@ -212,17 +227,38 @@ def eval_defaults(shared: SharedConfig) -> EvalDefaults:
 
 
 def _resolve(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, str]:
-    result: list[str] = []
-    for source, key in ((sources.runner, "agent_runner_ref"), (sources.skills, "agent_skills_ref")):
-        subprocess.run(
-            ["git", "-C", str(source), "fetch", "--quiet", "--tags", "origin"],
+    return (
+        _resolve_revision(sources.runner, str(request.settings["agent_runner_ref"])),
+        _resolve_revision(sources.skills, str(request.settings["agent_skills_ref"])),
+    )
+
+
+def _resolve_revision(source: Path, revision: str) -> str:
+    try:
+        fetched = subprocess.run(
+            ["git", "-C", str(source), "fetch", "--quiet", "--prune", "--tags", "origin"],
             capture_output=True,
+            text=True,
             check=False,
             timeout=60,
         )
-        revision = str(request.settings[key])
-        result.append(
-            subprocess.check_output(
+        if fetched.returncode != 0:
+            # Git stderr may contain credential-bearing remote URLs. Report context, not secrets.
+            raise ReadinessError(
+                f"Cannot fetch {source} from origin (git exit {fetched.returncode}); "
+                "check remote access."
+            )
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", revision):
+            candidates = (revision,)
+        elif revision.startswith("refs/heads/"):
+            candidates = ("refs/remotes/origin/" + revision.removeprefix("refs/heads/"),)
+        elif revision.startswith(("refs/tags/", "refs/remotes/origin/")):
+            candidates = (revision,)
+        else:
+            branch = revision.removeprefix("origin/")
+            candidates = (f"refs/remotes/origin/{branch}", f"refs/tags/{revision}")
+        for candidate in candidates:
+            resolved = subprocess.run(
                 [
                     "git",
                     "-C",
@@ -230,12 +266,27 @@ def _resolve(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, 
                     "rev-parse",
                     "--verify",
                     "--end-of-options",
-                    revision + "^{commit}",
+                    candidate + "^{commit}",
                 ],
+                capture_output=True,
                 text=True,
-            ).strip()
+                check=False,
+                timeout=60,
+            )
+            if resolved.returncode == 0:
+                return resolved.stdout.strip()
+        raise ReadinessError(
+            f"Cannot resolve revision {revision!r} in {source}; "
+            "check the branch, tag, or commit SHA."
         )
-    return result[0], result[1]
+    except subprocess.TimeoutExpired as error:
+        raise ReadinessError(
+            f"Git revision lookup timed out for {source}; check remote access."
+        ) from error
+    except OSError as error:
+        raise ReadinessError(
+            f"Git revision lookup could not run for {source} (OS error {error.errno})."
+        ) from error
 
 
 def _repair_unclaimed(
@@ -343,8 +394,18 @@ def _consume_results(
                 "interrupted" if run.status == "timed_out" else run.status, None, run.result
             )
             if (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
-                with suppress(ReadinessError):
+                try:
                     result = adapter.read_result(Path(run.evidence_path))
+                except (ReadinessError, OSError, UnicodeError) as error:
+                    reason = f"invalid result.json: {error}"
+                    result = AttemptResult(
+                        "failed", None, {"reason": reason, "previous_result": run.result}
+                    )
+                    store.record_event(
+                        claim.id,
+                        f"{run.unit_key}:attempt-{run.attempt_number}:result-error",
+                        reason,
+                    )
             if result.execution_status != "completed" and result.product_verdict not in {
                 "failed",
                 "fail",
@@ -425,7 +486,20 @@ def _report(
             store.set_setting("field-delivery", f"{claim_id}:{field}", {"value": desired.verdict})
             card.fields[field] = shared.project.verdict.option(desired.verdict)
     revisions = _mapping(claim.frozen_spec.get("revisions", {}))
-    if revisions and not store.get_setting("field-delivery", f"{claim_id}:refs"):
+    invalid_revisions = [
+        key
+        for key in ("runner", "skills", "evals")
+        if not isinstance(revisions.get(key), str) or not revisions.get(key)
+    ]
+    if invalid_revisions:
+        store.record_event(
+            claim_id,
+            "invalid-revisions",
+            "Cannot report frozen revisions: missing or invalid "
+            + ", ".join(invalid_revisions)
+            + ". Repair the saved claim inputs.",
+        )
+    elif not store.get_setting("field-delivery", f"{claim_id}:refs"):
         client.set_text_field(
             shared.project.id,
             card.id,

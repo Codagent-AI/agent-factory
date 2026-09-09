@@ -38,6 +38,9 @@ def _repo(path: Path, files: dict[str, str]) -> str:
         "-m",
         "test fixture",
     )
+    remote = path.parent / (path.name + "-origin.git")
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(path), str(remote)], check=True)
+    _git(path, "remote", "add", "origin", str(remote))
     return _git(path, "rev-parse", "HEAD")
 
 
@@ -430,4 +433,81 @@ def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_pat
     assert "--resume" not in retry.plan["argv"]  # pyright: ignore[reportOperatorIssue]
     _finish(store, Path(retry.evidence_path))
     assert store.recovery_attempts(claim.id, retry.unit_key) == 1
+    store.close()
+
+
+def test_bad_request_ref_reports_feedback_and_admits_next_card(tmp_path: Path) -> None:
+    import copy
+
+    config, board, env, _ = _setup(tmp_path)
+    data = json.loads(board.read_text())
+    next_card = copy.deepcopy(data["items"][0])
+    next_card["id"] = "P2"
+    next_card["content"]["id"] = "I2"
+    next_card["content"]["number"] = 2
+    data["items"].append(next_card)
+    data["items"][0]["content"]["body"] = '```eval\nagent_runner_ref="does-not-exist"\n```'
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        assert not store.claims_for_item("P1")
+        assert "revision" in " ".join(
+            comment["body"] for comment in json.loads(board.read_text())["comments"]
+        )
+        run = store.nonterminal_runs()[0]
+        assert store.get_claim(run.claim_id).project_item_id == "P2"  # pyright: ignore[reportOptionalMemberAccess]
+        _finish(store, Path(run.evidence_path))
+    finally:
+        for run in store.nonterminal_runs():
+            _finish(store, Path(run.evidence_path))
+        store.close()
+
+
+def test_invalid_quota_hold_keeps_reconciliation_and_feedback_running(tmp_path: Path) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = "```eval\nrepetitions=0\n```"
+    board.write_text(json.dumps(data))
+    for value in ({}, {"until": 123}, {"until": "bad"}, {"until": "2026-09-09T13:00:00"}):
+        store.set_setting("admission", "quota", value)
+        _status(board, shared, "running")
+        _cli(config, env, "tick")
+        assert not store.nonterminal_runs()
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "ready"
+        )
+        assert store.get_setting("runtime", "quota-error")
+    comments = json.loads(board.read_text())["comments"]
+    assert any("needs-input" in comment["body"] for comment in comments)
+    store.close()
+
+
+def test_missing_frozen_revision_reports_error_without_aborting_tick(tmp_path: Path) -> None:
+    from agent_factory.store import ClaimDraft
+
+    config, board, env, _ = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    shared = SharedConfig.from_file(tmp_path / "shared.toml")
+    claim = store.create_claim(
+        ClaimDraft(
+            shared.routing.eval_source,
+            1,
+            "I1",
+            "P1",
+            "eval",
+            "x",
+            {"revisions": {"runner": "a" * 40}},
+        )
+    )
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+    _cli(config, env, "pause")
+    _cli(config, env, "tick")
+    _cli(config, env, "tick")
+    comments = json.loads(board.read_text())["comments"]
+    errors = [comment for comment in comments if "frozen revisions" in comment["body"]]
+    assert len(errors) == 1
+    assert "skills" in errors[0]["body"] and "evals" in errors[0]["body"]
+    assert store.get_setting("field-delivery", f"{claim.id}:refs") is None
     store.close()
