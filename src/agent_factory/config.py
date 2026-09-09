@@ -6,6 +6,7 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -112,6 +113,12 @@ class ScheduleConfig:
     poll_seconds: int
     start_hour: int
     stop_hour: int
+
+    def allows_admission(self, now: datetime) -> bool:
+        """Check the configured daytime or overnight window, excluding its stop hour."""
+        if self.start_hour < self.stop_hour:
+            return self.start_hour <= now.hour < self.stop_hour
+        return now.hour >= self.start_hour or now.hour < self.stop_hour
 
 
 @dataclass(frozen=True)
@@ -241,16 +248,8 @@ class SharedConfig:
         harness_sha = _string(eval_config, "harness_sha", "eval")
         if not _SHA.fullmatch(harness_sha):
             raise ConfigurationError("eval.harness_sha must be a full 40-character commit SHA")
-        repetitions = eval_config.get("repetitions")
-        if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
-            raise ConfigurationError("eval.repetitions must be a positive integer")
-        project_number = project.get("number")
-        if (
-            isinstance(project_number, bool)
-            or not isinstance(project_number, int)
-            or project_number < 1
-        ):
-            raise ConfigurationError("project.number must be a positive integer")
+        repetitions = _positive_int(eval_config, "repetitions", "eval")
+        project_number = _positive_int(project, "number", "project")
         return cls(
             organization=_string(github, "organization", "github"),
             bot_login=str(github.get("bot_login", "")),

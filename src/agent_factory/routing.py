@@ -74,7 +74,7 @@ class Router:
             project_item = self._github.add_project_item(self._config.project.id, source.id)
 
         if source.state.lower() == "closed":
-            self._set_if_unset(project_item, self._config.project.status.id, "done")
+            self._set_status_if_changed(project_item, self._config.project.status.id, "done")
             return RouteResult("done", project_item.id)
 
         if self._is_eval(source):
@@ -96,11 +96,10 @@ class Router:
         self, item: ProjectItem, source: SourceItem, values: tuple[tuple[str, str], ...]
     ) -> None:
         receipt = self._receipt(source)
-        desired = {
-            field.id: option
-            for field_name, logical_option in values
-            for field, option in (self._field_and_option(field_name, logical_option),)
-        }
+        desired: dict[str, str] = {}
+        for field_name, logical_option in values:
+            field, option = self._field_and_option(field_name, logical_option)
+            desired[field.id] = option
         receipt_values_raw = receipt.get("values") if receipt is not None else None
         receipt_values = (
             cast(dict[str, object], receipt_values_raw)
@@ -114,19 +113,18 @@ class Router:
             and all(receipt_values.get(field_id) == option for field_id, option in desired.items())
         ):
             return
-        for field_name, logical_option in values:
-            field, option = self._field_and_option(field_name, logical_option)
-            current = item.fields.get(field.id)
-            prior = receipt_values.get(field.id) if receipt_values is not None else None
+        for field_id, option in desired.items():
+            current = item.fields.get(field_id)
+            prior = receipt_values.get(field_id) if receipt_values is not None else None
             # Only the value previously recorded by factory is safe to replace on recovery.
             if current is None or current == prior:
                 self._github.set_single_select_field(
-                    self._config.project.id, item.id, field.id, option
+                    self._config.project.id, item.id, field_id, option
                 )
-                item.fields[field.id] = option
-        self._write_receipt(source, item, values)
+                item.fields[field_id] = option
+        self._write_receipt(source, item, desired)
 
-    def _set_if_unset(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
+    def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)
         if item.fields.get(field_id) != option:
             self._github.set_single_select_field(self._config.project.id, item.id, field_id, option)
@@ -151,13 +149,8 @@ class Router:
         return None
 
     def _write_receipt(
-        self, source: SourceItem, item: ProjectItem, values: tuple[tuple[str, str], ...]
+        self, source: SourceItem, item: ProjectItem, initialized: dict[str, str]
     ) -> None:
-        initialized = {
-            field.id: option
-            for field_name, option_name in values
-            for field, option in (self._field_and_option(field_name, option_name),)
-        }
         payload = {
             "project": self._config.project.id,
             "item": item.id,

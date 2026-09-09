@@ -140,7 +140,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
         lines.extend(_cleanup_lines(claim))
     if config is not None:
         now = datetime.now(config.schedule.timezone)
-        if not _in_window(now, config):
+        if not config.schedule.allows_admission(now):
             lines.append(
                 f"admission window: closed; next permitted start: {_next_start(now, config)}"
             )
@@ -386,11 +386,6 @@ def _events(claim: Claim) -> list[Event]:
             comment_id = event.get("comment_id")
             result.append(Event(key, body, comment_id if isinstance(comment_id, str) else None))
     return result
-
-
-def _in_window(now: datetime, config: LocalConfig) -> bool:
-    start, stop = config.schedule.start_hour, config.schedule.stop_hour
-    return start <= now.hour < stop if start < stop else now.hour >= start or now.hour < stop
 
 
 def _next_start(now: datetime, config: LocalConfig) -> str:

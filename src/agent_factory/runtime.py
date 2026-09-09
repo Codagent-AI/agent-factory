@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.controller import AttemptResult, Controller, RequestSnapshot, advisory_lock
+from agent_factory.controller import (
+    AttemptResult,
+    Controller,
+    ExecutionPlan,
+    RequestSnapshot,
+    advisory_lock,
+)
 from agent_factory.github import (
     AppCredentials,
     GitHubClient,
@@ -21,10 +27,11 @@ from agent_factory.github import (
     SubprocessGhRunner,
 )
 from agent_factory.operations import doctor, model_authentication
-from agent_factory.store import Claim, ClaimStore, Run
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     AndSceneAdapter,
     GitWorktreeManager,
+    PreparedWorktrees,
     ReadinessError,
     RecoveryStateError,
     SourceRepositories,
@@ -55,129 +62,142 @@ def cycle(state: Path, config_path: Path) -> None:
     )
     manager = GitWorktreeManager(local.storage_root, sources)
     adapter = AndSceneAdapter(environment_file=local.credentials.suite_environment)
-    with advisory_lock(state, "cycle"):
-        store = ClaimStore(state)
-        try:
-            controller = Controller(
-                store,
-                client,
-                eval_defaults(shared),
-                harness_sha=shared.eval.harness_sha,
-                suite=shared.eval.suite,
-                factory_login=shared.bot_login,
-                artifact_root=local.storage_root / "artifacts",
+    with advisory_lock(state, "cycle"), closing(ClaimStore(state)) as store:
+        controller = Controller(
+            store,
+            client,
+            eval_defaults(shared),
+            harness_sha=shared.eval.harness_sha,
+            suite=shared.eval.suite,
+            factory_login=shared.bot_login,
+            artifact_root=local.storage_root / "artifacts",
+        )
+        cleanup = WorktreeCleanup(store, manager)
+        client.validate_project(shared.project)
+        cards = client.list_project_items(shared.project.id)
+        _consume_results(
+            store,
+            controller,
+            adapter,
+            fallback_seconds=local.limits.codex_reset_fallback_seconds,
+        )
+        for card in cards:
+            claims = store.claims_for_item(card.id)
+            if not claims:
+                _repair_unclaimed(store, client, shared, card)
+            for claim in claims:
+                if claim.lifecycle == "superseded":
+                    continue
+                if card.source.state.lower() == "closed" and claim.lifecycle != "settled":
+                    controller.cancel(claim.id)
+                _report(store, controller, client, shared, card, claim.id)
+                cleanup.reconcile(claim.id, board_status=_logical_status(shared, card))
+        # Feedback and reconciliation also work while paused or outside the window.
+        now = datetime.now(local.schedule.timezone)
+        ready = (
+            not store.is_paused()
+            and local.schedule.allows_admission(now)
+            and not store.nonterminal_runs()
+        )
+        quota = store.get_setting("admission", "quota")
+        if quota is not None:
+            until = datetime.fromisoformat(str(quota["until"]))
+            ready = ready and datetime.now(UTC) >= until
+        prerequisites: str | None = None
+        for card in cards:
+            snapshot = _snapshot(client, shared, card)
+            if snapshot is None:
+                continue
+            try:
+                parse_request(snapshot.body, eval_defaults(shared))
+            except ValueError:
+                # Existing controller supplies durable corrective comment feedback.
+                controller.accept(snapshot, resolve=lambda _: ("", ""))
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                continue
+            client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            if not ready:
+                continue
+            if prerequisites is None:
+                failures = [d for d in doctor(local) if not d.available]
+                prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
+            if prerequisites:
+                store.set_setting("runtime", "readiness", {"reason": prerequisites})
+                break
+            store.set_setting("runtime", "readiness", {})
+            claim = controller.accept(
+                snapshot,
+                resolve=lambda request: _resolve(sources, request),
+                fresh=_fresh_requested(store, shared, snapshot),
             )
-            cleanup = WorktreeCleanup(store, manager)
-            client.validate_project(shared.project)
-            cards = client.list_project_items(shared.project.id)
-            _consume_results(
-                store,
-                controller,
-                adapter,
-                fallback_seconds=local.limits.codex_reset_fallback_seconds,
-            )
-            for card in cards:
-                claims = store.claims_for_item(card.id)
-                if not claims:
-                    _repair_unclaimed(store, client, shared, card)
-                for claim in claims:
-                    if claim.lifecycle == "superseded":
-                        continue
-                    if card.source.state.lower() == "closed" and claim.lifecycle != "settled":
-                        controller.cancel(claim.id)
-                    _report(store, controller, client, shared, card, claim.id)
-                    cleanup.reconcile(claim.id, board_status=_logical_status(shared, card))
-            # Feedback and reconciliation also work while paused or outside the window.
-            now = datetime.now(local.schedule.timezone)
-            start, stop = local.schedule.start_hour, local.schedule.stop_hour
-            in_window = (
-                start <= now.hour < stop if start < stop else now.hour >= start or now.hour < stop
-            )
-            ready = not store.is_paused() and in_window and not store.nonterminal_runs()
-            quota = store.get_setting("admission", "quota")
-            if quota is not None:
-                until = datetime.fromisoformat(str(quota["until"]))
-                ready = ready and datetime.now(UTC) >= until
-            prerequisites: str | None = None
-            for card in cards:
-                snapshot = _snapshot(client, shared, card)
-                if snapshot is None:
+            if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
+                continue
+            try:
+                worktrees = _prepare_claim_worktrees(claim, manager, cleanup, adapter)
+                run = controller.reserve_next(claim.id, readiness=lambda: None)
+                if run is None:
                     continue
                 try:
-                    parse_request(snapshot.body, eval_defaults(shared))
-                except ValueError:
-                    # Existing controller supplies durable corrective comment feedback.
-                    controller.accept(snapshot, resolve=lambda _: ("", ""))
-                    client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
-                    continue
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
-                if not ready:
-                    continue
-                if prerequisites is None:
-                    failures = [d for d in doctor(local) if not d.available]
-                    prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
-                if prerequisites:
-                    store.set_setting("runtime", "readiness", {"reason": prerequisites})
-                    break
-                store.set_setting("runtime", "readiness", {})
-                claim = controller.accept(
-                    snapshot,
-                    resolve=lambda request: _resolve(sources, request),
-                    fresh=_fresh_requested(store, shared, snapshot),
-                )
-                if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
-                    continue
-                try:
-                    worktrees = manager.prepare(claim.id, _mapping(claim.frozen_spec["revisions"]))
-                    if not claim.preparation:
-                        cleanup.record(claim.id, worktrees)
-                    roles = _mapping(_mapping(claim.frozen_spec.get("settings")).get("roles"))
-                    auth = model_authentication({key: str(value) for key, value in roles.items()})
-                    failures = [check.detail for check in auth if not check.available]
-                    if failures:
-                        raise ReadinessError("; ".join(failures))
-                    reason = adapter.readiness(worktrees)
-                    if reason:
-                        raise ReadinessError(reason)
-                    run = controller.reserve_next(claim.id, readiness=lambda: None)
-                    if run is None:
-                        continue
-                    try:
-                        previous = store.runs_for_claim(claim.id)[:-1]
-                        proven = bool(
-                            previous and previous[-1].result.get("reason") == "suite launch failed"
-                        )
-                        plan = adapter.plan(
-                            claim.frozen_spec,
-                            worktrees,
-                            Path(run.evidence_path),
-                            recovery=run.reason != "initial",
-                            pre_checkpoint_proven=proven,
-                        )
-                        launch_supervisor(
-                            state,
-                            run.id,
-                            plan,
-                            SupervisionLimits(
-                                local.limits.inactivity_seconds,
-                                local.limits.execution_seconds,
-                                local.limits.total_seconds,
-                            ),
-                            config_path=config_path,
-                        )
-                    except (OSError, ReadinessError, RecoveryStateError) as error:
-                        controller.record_result(
-                            run.id, AttemptResult("failed", None, {"reason": str(error)})
-                        )
-                    _report(store, controller, client, shared, card, claim.id)
-                    break
-                except (WorktreeError, ReadinessError) as error:
-                    store.set_hold(claim.id, "readiness", {"reason": str(error)})
-                    store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
-                    store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
-                    _report(store, controller, client, shared, card, claim.id)
-        finally:
-            store.close()
+                    plan = _plan_attempt(store, adapter, claim, run, worktrees)
+                    launch_supervisor(
+                        state,
+                        run.id,
+                        plan,
+                        SupervisionLimits(
+                            local.limits.inactivity_seconds,
+                            local.limits.execution_seconds,
+                            local.limits.total_seconds,
+                        ),
+                        config_path=config_path,
+                    )
+                except (OSError, ReadinessError, RecoveryStateError) as error:
+                    controller.record_result(
+                        run.id, AttemptResult("failed", None, {"reason": str(error)})
+                    )
+                _report(store, controller, client, shared, card, claim.id)
+                break
+            except (WorktreeError, ReadinessError) as error:
+                store.set_hold(claim.id, "readiness", {"reason": str(error)})
+                store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
+                store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
+                _report(store, controller, client, shared, card, claim.id)
+
+
+def _prepare_claim_worktrees(
+    claim: Claim, manager: GitWorktreeManager, cleanup: WorktreeCleanup, adapter: AndSceneAdapter
+) -> PreparedWorktrees:
+    worktrees = manager.prepare(claim.id, _mapping(claim.frozen_spec["revisions"]))
+    if not claim.preparation:
+        cleanup.record(claim.id, worktrees)
+    roles = _mapping(_mapping(claim.frozen_spec.get("settings")).get("roles"))
+    auth = model_authentication({key: str(value) for key, value in roles.items()})
+    failures = [check.detail for check in auth if not check.available]
+    if failures:
+        raise ReadinessError("; ".join(failures))
+    reason = adapter.readiness(worktrees)
+    if reason:
+        raise ReadinessError(reason)
+    return worktrees
+
+
+def _plan_attempt(
+    store: ClaimStore,
+    adapter: AndSceneAdapter,
+    claim: Claim,
+    run: Run,
+    worktrees: PreparedWorktrees,
+) -> ExecutionPlan:
+    previous = store.runs_for_claim(claim.id)[:-1]
+    stopped_before_checkpoint = bool(
+        previous and previous[-1].result.get("reason") == "suite launch failed"
+    )
+    return adapter.plan(
+        claim.frozen_spec,
+        worktrees,
+        Path(run.evidence_path),
+        recovery=run.reason != "initial",
+        pre_checkpoint_proven=stopped_before_checkpoint,
+    )
 
 
 def eval_defaults(shared: SharedConfig) -> EvalDefaults:
@@ -315,7 +335,7 @@ def _consume_results(
         if claim.lifecycle in {"cancelled", "superseded"}:
             continue
         for run in store.runs_for_claim(claim.id):
-            if run.status in {"reserved", "running", "observing"} or store.get_setting(
+            if run.status in NONTERMINAL_RUN_STATUSES or store.get_setting(
                 "consumed-results", run.id
             ):
                 continue
@@ -377,9 +397,7 @@ def _report(
         "factory"
     ):
         return
-    active = any(
-        r.status in {"reserved", "running", "observing"} for r in store.runs_for_claim(claim_id)
-    )
+    active = any(r.status in NONTERMINAL_RUN_STATUSES for r in store.runs_for_claim(claim_id))
     current = _logical_status(shared, card)
     desired = controller.presentation(claim_id)
     status = desired.status if active or claim.lifecycle in {"settled", "cancelled"} else "Ready"

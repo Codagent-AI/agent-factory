@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory.controller import ExecutionPlan
-from agent_factory.store import ClaimStore, Run
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, ClaimStore, Run
 
 _POLL_SECONDS = 0.05
 _PROGRESS_HEARTBEAT_SECONDS = 5.0
@@ -62,23 +62,7 @@ def launch_supervisor(
         effective_limits = limits or SupervisionLimits()
         store.configure_run(run_id, plan=_plan_document(plan), limits=asdict(effective_limits))
         run = _required_run(store, run_id)
-        log_dir = state_path.parent / "logs" / "runs" / run_id
-        log_dir.mkdir(parents=True, exist_ok=True)
-        arguments = [sys.executable, "-m", "agent_factory.supervisor", "--state", str(state_path)]
-        arguments.extend(("--run-id", run_id, "--nonce", run.launch_nonce))
-        if config_path is not None:
-            arguments.extend(("--config", str(config_path)))
-        # Popen owns only the parent's file descriptor; the child has a real file
-        # descriptor and its own session, so controller exit cannot close suite I/O.
-        with (log_dir / "supervisor.log").open("ab", buffering=0) as output:
-            return subprocess.Popen(
-                arguments,
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
+        return _spawn_watcher(state_path, run, config_path)
     finally:
         store.close()
 
@@ -100,36 +84,34 @@ def resume_supervisor(
             return None
         if not store.claim_watcher_launch(run.id):
             return None
-        arguments = [
-            sys.executable,
-            "-m",
-            "agent_factory.supervisor",
-            "--state",
-            str(state_path),
-            "--run-id",
-            run_id,
-            "--nonce",
-            run.launch_nonce,
-        ]
-        if config_path is not None:
-            arguments.extend(("--config", str(config_path)))
         try:
-            log_dir = state_path.parent / "logs" / "runs" / run_id
-            log_dir.mkdir(parents=True, exist_ok=True)
-            with (log_dir / "supervisor.log").open("ab", buffering=0) as output:
-                return subprocess.Popen(
-                    arguments,
-                    stdin=subprocess.DEVNULL,
-                    stdout=output,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                    close_fds=True,
-                )
+            return _spawn_watcher(state_path, run, config_path)
         except OSError as error:
             store.release_watcher_launch(run.id)
             raise SupervisorLaunchError(str(error)) from error
     finally:
         store.close()
+
+
+def _spawn_watcher(state_path: Path, run: Run, config_path: Path | None) -> subprocess.Popen[bytes]:
+    """Detach the watcher with the same identity, logging, and session setup on every launch."""
+    log_dir = state_path.parent / "logs" / "runs" / run.id
+    log_dir.mkdir(parents=True, exist_ok=True)
+    arguments = [sys.executable, "-m", "agent_factory.supervisor", "--state", str(state_path)]
+    arguments.extend(("--run-id", run.id, "--nonce", run.launch_nonce))
+    if config_path is not None:
+        arguments.extend(("--config", str(config_path)))
+    # Popen owns only the parent's file descriptor; the child has a real file
+    # descriptor and its own session, so controller exit cannot close suite I/O.
+    with (log_dir / "supervisor.log").open("ab", buffering=0) as output:
+        return subprocess.Popen(
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
 
 
 def supervise(state_path: Path, run_id: str, nonce: str) -> None:
@@ -140,7 +122,7 @@ def supervise(state_path: Path, run_id: str, nonce: str) -> None:
             run = _required_run(store, run_id)
             if run.launch_nonce != nonce:
                 return
-            if run.status not in {"reserved", "running", "observing"}:
+            if run.status not in NONTERMINAL_RUN_STATUSES:
                 return
             try:
                 plan = _plan_from_document(run.plan)

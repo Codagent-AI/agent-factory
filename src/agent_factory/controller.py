@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.github import GitHubApiError, IssueComment
-from agent_factory.store import Claim, ClaimDraft, ClaimStore, Run
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
 
 _WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
@@ -221,7 +221,7 @@ class Controller:
             stored_result["resumable"] = result.resumable
         persist = (
             self._store.finish_run
-            if run.status in {"reserved", "running", "observing"}
+            if run.status in NONTERMINAL_RUN_STATUSES
             else self._store.normalize_terminal_result
         )
         if result.quota_until is not None:
@@ -281,7 +281,7 @@ class Controller:
     def cancel(self, claim_id: str) -> None:
         claim = self._required_claim(claim_id)
         for run in self._store.runs_for_claim(claim.id):
-            if run.status in {"reserved", "running", "observing"}:
+            if run.status in NONTERMINAL_RUN_STATUSES:
                 self._store.request_cancellation(run.id)
         self._store.set_claim_lifecycle(claim.id, "cancelled", {})
         self._store.record_event(
@@ -349,7 +349,7 @@ class Controller:
             if not unit_runs:
                 return key, "initial"
             latest = unit_runs[-1]
-            if latest.status in {"reserved", "running", "observing"}:
+            if latest.status in NONTERMINAL_RUN_STATUSES:
                 return None, "initial"
             if latest.status == "deferred":
                 return key, "quota"
@@ -384,8 +384,7 @@ class Controller:
 
     def _is_active(self, claim: Claim) -> bool:
         return any(
-            run.status in {"reserved", "running", "observing"}
-            for run in self._store.runs_for_claim(claim.id)
+            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim.id)
         )
 
     def _required_claim(self, claim_id: str) -> Claim:
