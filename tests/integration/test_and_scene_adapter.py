@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -196,8 +198,29 @@ def test_adapter_reads_suite_outcomes_and_renders_only_reviewable_handoffs(tmp_p
         encoding="utf-8",
     )
     failed = adapter.read_result(artifact)
-    assert failed.product_verdict == "fail"
+    assert failed.product_verdict == "failed"
     assert adapter.review_handoff(failed.result, review_script, artifact) is None
+
+
+def test_candidate_environment_unquotes_dotenv_values_and_rejects_malformed_quotes(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.suites.and_scene import ReadinessError, candidate_environment
+
+    environment = tmp_path / "candidate.env"
+    environment.write_text(
+        "CANDIDATE_TOKEN=\"abc 123\"\nSECOND='value with spaces'\n",
+        encoding="utf-8",
+    )
+
+    assert candidate_environment(environment) == {
+        "CANDIDATE_TOKEN": "abc 123",
+        "SECOND": "value with spaces",
+    }
+
+    environment.write_text('CANDIDATE_TOKEN="unterminated\n', encoding="utf-8")
+    with pytest.raises(ReadinessError, match="invalid value"):
+        candidate_environment(environment)
 
 
 def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path) -> None:
@@ -269,12 +292,60 @@ def test_reviewed_done_cleanup_is_durable_and_does_not_touch_active_worktrees(
     assert all(path.exists() for path in reviewed_trees.paths())
     assert cleanup.reconcile(active.id, board_status="Done") is False
     assert all(path.exists() for path in active_trees.paths())
-
     assert cleanup.reconcile(reviewed.id, board_status="Done") is True
     assert not any(path.exists() for path in reviewed_trees.paths())
     saved = store.get_claim(reviewed.id)
     assert saved is not None and saved.cleanup["complete"] is True
     assert all(path.exists() for path in active_trees.paths())
+
+
+def test_cleanup_records_malformed_persisted_worktree_state_for_retry(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import GitWorktreeManager, WorktreeCleanup
+
+    sources, _ = _sources(tmp_path)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "one", {}))
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+    store.set_cleanup(claim.id, {"review_observed": True, "complete": False})
+    cleanup = WorktreeCleanup(store, GitWorktreeManager(tmp_path / "factory", sources))
+
+    assert cleanup.reconcile(claim.id, board_status="Done") is False
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    assert saved.cleanup["complete"] is False
+    last_error = cast(dict[str, object], saved.cleanup["last_error"])
+    cleanup_error = last_error["cleanup"]
+    assert isinstance(cleanup_error, str)
+    assert "recorded worktrees" in cleanup_error
+
+
+def test_store_migrates_existing_claim_rows_without_preparation_columns(tmp_path: Path) -> None:
+    state = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(state)
+    connection.executescript(
+        """
+        CREATE TABLE claim (
+            id TEXT PRIMARY KEY, repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+            issue_id TEXT NOT NULL, project_item_id TEXT NOT NULL, kind TEXT NOT NULL,
+            request_fingerprint TEXT NOT NULL, frozen_spec_json TEXT NOT NULL,
+            lifecycle TEXT NOT NULL, outcome_json TEXT NOT NULL, reporting_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+        INSERT INTO claim VALUES (
+            'claim', 'example/evals', 1, 'I1', 'P1', 'eval', 'fingerprint', '{}',
+            'active', '{}', '{}', 'now', 'now'
+        );
+        PRAGMA user_version = 2;
+        """
+    )
+    connection.close()
+
+    store = ClaimStore(state)
+    migrated = store.get_claim("claim")
+
+    assert migrated is not None
+    assert migrated.preparation == {}
+    assert migrated.cleanup == {}
 
 
 def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) -> None:

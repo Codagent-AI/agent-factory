@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
 
 
@@ -126,10 +126,23 @@ class ClaimStore:
             raise RuntimeError("factory database is newer than this controller")
         if version == SCHEMA_VERSION:
             return
-        if version == 1:
-            # Version one deliberately reserved JSON columns for launch state.  Promote the
-            # schema marker rather than copy rows, preserving every live reservation.
-            self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        if version in {1, 2}:
+            # Older state files did not necessarily materialize the JSON columns
+            # later reserved for preparation and cleanup.  Add them in place so
+            # existing claims remain schedulable after an upgrade.
+            columns = {
+                cast(str, row[1]) for row in self._connection.execute("PRAGMA table_info(claim)")
+            }
+            with self._transaction():
+                if "preparation_json" not in columns:
+                    self._connection.execute(
+                        "ALTER TABLE claim ADD COLUMN preparation_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+                if "cleanup_json" not in columns:
+                    self._connection.execute(
+                        "ALTER TABLE claim ADD COLUMN cleanup_json TEXT NOT NULL DEFAULT '{}'"
+                    )
+                self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             return
         self._connection.executescript(
             f"""

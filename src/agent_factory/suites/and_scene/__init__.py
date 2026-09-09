@@ -191,7 +191,7 @@ class AndSceneAdapter:
         if not self._environment_file.is_file():
             return f"candidate delivery environment file is unavailable: {self._environment_file}"
         try:
-            _candidate_environment(self._environment_file)
+            candidate_environment(self._environment_file)
         except ReadinessError as error:
             return str(error)
         return None
@@ -237,7 +237,7 @@ class AndSceneAdapter:
         return ExecutionPlan(
             tuple(arguments),
             str(worktrees.evals),
-            _candidate_environment(self._environment_file),
+            candidate_environment(self._environment_file),
             (str(self._environment_file),),
             tuple(str(artifact / name) for name in ("run-state.json", "result.json", "logs")),
             {"artifact_path": str(artifact), "suite": "and-scene"},
@@ -259,7 +259,9 @@ class AndSceneAdapter:
         if not isinstance(status, str):
             raise ReadinessError("suite result.json has no evaluation_status")
         product = result.get("product_verdict")
-        product_verdict = product if isinstance(product, str) else None
+        product_verdict = _canonical_product_verdict(product)
+        if product_verdict is not None:
+            result["product_verdict"] = product_verdict
         if "automated_subtotal" in result:
             result["score"] = result["automated_subtotal"]
         # This maps suite execution facts only; scoring policy stays in the suite.
@@ -365,7 +367,13 @@ class WorktreeCleanup:
             return False
         if cleanup.get("complete") is True:
             return True
-        worktrees = _recorded_worktrees(claim_id, cleanup)
+        try:
+            worktrees = _recorded_worktrees(claim_id, cleanup)
+        except WorktreeError as error:
+            cleanup["complete"] = False
+            cleanup["last_error"] = {"cleanup": str(error)}
+            self._store.set_cleanup(claim_id, cleanup)
+            return False
         errors = self._manager.remove(worktrees)
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
@@ -434,7 +442,7 @@ def _profile(value: str, role: str) -> tuple[str, str, str]:
     return pieces[0], pieces[1], pieces[2]
 
 
-def _candidate_environment(path: Path) -> dict[str, str]:
+def candidate_environment(path: Path) -> dict[str, str]:
     environment: dict[str, str] = {}
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -459,10 +467,30 @@ def _candidate_environment(path: Path) -> dict[str, str]:
             raise ReadinessError(
                 "candidate delivery environment must not contain factory App credentials"
             )
-        environment[name] = value
+        environment[name] = _dotenv_value(value, raw)
     if not environment:
         raise ReadinessError("candidate delivery environment has no allowed credentials")
     return environment
+
+
+def _canonical_product_verdict(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return {"fail": "failed", "pass": "passed"}.get(value, value)
+
+
+def _dotenv_value(value: str, raw: str) -> str:
+    if not value:
+        return ""
+    try:
+        values = shlex.split(value, posix=True)
+    except ValueError as error:
+        raise ReadinessError(
+            f"candidate delivery environment has an invalid value: {raw}"
+        ) from error
+    if len(values) != 1:
+        raise ReadinessError(f"candidate delivery environment has an invalid value: {raw}")
+    return values[0]
 
 
 def _recorded_worktrees(claim_id: str, cleanup: Mapping[str, object]) -> PreparedWorktrees:
