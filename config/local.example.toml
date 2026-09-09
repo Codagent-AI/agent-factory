@@ -15,7 +15,8 @@ start_hour = 0
 stop_hour = 15
 
 [limits]
-minimum_free_gib = 30
+# Admission headroom with a cached sandbox image; a fresh image build may need more.
+minimum_free_gib = 8
 max_recovery_attempts = 1
 inactivity_seconds = 1800
 execution_seconds = 21600
