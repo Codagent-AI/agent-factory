@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 class ConfigurationError(ValueError):
@@ -27,6 +28,31 @@ def _string(table: Mapping[str, Any], key: str, section: str) -> str:
     value = table.get(key)
     if not isinstance(value, str) or not value:
         raise ConfigurationError(f"{section}.{key} must be a non-empty string")
+    return value
+
+
+def _path(table: Mapping[str, Any], key: str, section: str) -> Path:
+    return Path(_string(table, key, section)).expanduser().resolve()
+
+
+def _positive_int(table: Mapping[str, Any], key: str, section: str) -> int:
+    value = table.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ConfigurationError(f"{section}.{key} must be a positive integer")
+    return value
+
+
+def _nonnegative_int(table: Mapping[str, Any], key: str, section: str) -> int:
+    value = table.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigurationError(f"{section}.{key} must be a non-negative integer")
+    return value
+
+
+def _hour(table: Mapping[str, Any], key: str) -> int:
+    value = table.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 23:
+        raise ConfigurationError(f"schedule.{key} must be an hour from 0 through 23")
     return value
 
 
@@ -70,6 +96,111 @@ class EvalConfig:
     harness_sha: str
     suite: str
     repetitions: int
+
+
+@dataclass(frozen=True)
+class RepositoryConfig:
+    agent_evals: Path
+    agent_runner: Path
+    agent_skills: Path
+
+
+@dataclass(frozen=True)
+class ScheduleConfig:
+    timezone: ZoneInfo
+    poll_seconds: int
+    start_hour: int
+    stop_hour: int
+
+
+@dataclass(frozen=True)
+class LimitsConfig:
+    minimum_free_gib: int
+    inactivity_seconds: int
+    execution_seconds: int
+    total_seconds: int
+    codex_reset_fallback_seconds: int
+
+
+@dataclass(frozen=True)
+class CredentialsConfig:
+    github_app_key: Path
+    suite_environment: Path
+
+
+@dataclass(frozen=True)
+class LocalConfig:
+    """Machine-specific paths and limits, deliberately separate from deployment TOML."""
+
+    shared_config: Path
+    storage_root: Path
+    repositories: RepositoryConfig
+    schedule: ScheduleConfig
+    limits: LimitsConfig
+    credentials: CredentialsConfig
+
+    @property
+    def state_path(self) -> Path:
+        return self.storage_root / "state.sqlite3"
+
+    @property
+    def log_path(self) -> Path:
+        return self.storage_root / "logs" / "controller.log"
+
+    @classmethod
+    def from_file(cls, path: Path) -> LocalConfig:
+        try:
+            return cls.from_toml(path.read_text(encoding="utf-8"))
+        except OSError as error:
+            raise ConfigurationError(f"cannot read local configuration {path}: {error}") from error
+
+    @classmethod
+    def from_toml(cls, text: str) -> LocalConfig:
+        try:
+            document = cast(Mapping[str, Any], tomllib.loads(text))
+        except tomllib.TOMLDecodeError as error:
+            raise ConfigurationError(f"invalid TOML: {error}") from error
+        repositories = _table(document.get("repositories"), "repositories")
+        schedule = _table(document.get("schedule"), "schedule")
+        limits = _table(document.get("limits"), "limits")
+        credentials = _table(document.get("credentials"), "credentials")
+        timezone_name = _string(schedule, "timezone", "schedule")
+        try:
+            timezone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as error:
+            raise ConfigurationError(f"schedule.timezone is unknown: {timezone_name}") from error
+        poll_seconds = (
+            _positive_int(schedule, "poll_seconds", "schedule")
+            if "poll_seconds" in schedule
+            else _positive_int(schedule, "poll_minutes", "schedule") * 60
+        )
+        start_hour = _hour(schedule, "start_hour")
+        stop_hour = _hour(schedule, "stop_hour")
+        if start_hour == stop_hour:
+            raise ConfigurationError("schedule start_hour and stop_hour must differ")
+        return cls(
+            shared_config=_path(document, "shared_config", "local configuration"),
+            storage_root=_path(document, "storage_root", "local configuration"),
+            repositories=RepositoryConfig(
+                agent_evals=_path(repositories, "agent_evals", "repositories"),
+                agent_runner=_path(repositories, "agent_runner", "repositories"),
+                agent_skills=_path(repositories, "agent_skills", "repositories"),
+            ),
+            schedule=ScheduleConfig(timezone, poll_seconds, start_hour, stop_hour),
+            limits=LimitsConfig(
+                minimum_free_gib=_nonnegative_int(limits, "minimum_free_gib", "limits"),
+                inactivity_seconds=_positive_int(limits, "inactivity_seconds", "limits"),
+                execution_seconds=_positive_int(limits, "execution_seconds", "limits"),
+                total_seconds=_positive_int(limits, "total_seconds", "limits"),
+                codex_reset_fallback_seconds=_positive_int(
+                    limits, "codex_reset_fallback_seconds", "limits"
+                ),
+            ),
+            credentials=CredentialsConfig(
+                github_app_key=_path(credentials, "github_app_key", "credentials"),
+                suite_environment=_path(credentials, "suite_environment", "credentials"),
+            ),
+        )
 
 
 @dataclass(frozen=True)

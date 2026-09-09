@@ -7,6 +7,8 @@ import signal
 import time
 from pathlib import Path
 
+from agent_factory.config import ConfigurationError, LocalConfig
+from agent_factory.operations import doctor, format_doctor, status
 from agent_factory.store import ClaimStore
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
 
@@ -26,41 +28,53 @@ def _tick(state: Path, config_path: Path | None = None) -> None:
         store.close()
 
 
-def _status(state: Path) -> str:
+def _status(state: Path, config: LocalConfig | None = None) -> str:
     store = ClaimStore(state)
     try:
-        paused = store.is_paused()
-        active_runs = store.nonterminal_runs()
+        return status(store, config)
     finally:
         store.close()
-    lines = [f"paused: {str(paused).lower()}"]
-    for run in active_runs:
-        lines.append(f"active: {run.unit_key} ({run.status})")
-    return "\n".join(lines)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="agent-factory")
-    parser.add_argument("--state", type=Path, required=True, help="explicit SQLite state path")
+    parser.add_argument(
+        "--state", type=Path, help="override the SQLite path from local configuration"
+    )
     parser.add_argument("--config", type=Path, help="explicit installed local configuration path")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("tick")
     subcommands.add_parser("status")
+    subcommands.add_parser("doctor")
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds, default=300)
     args = parser.parse_args()
+    local = _load_local(args.config, required=args.state is None)
+    if args.state is None:
+        if local is None:  # pragma: no cover - _load_local exits in this case
+            raise RuntimeError("local configuration is required")
+        state = local.state_path
+    else:
+        state = args.state
+    if args.command == "doctor":
+        if local is None:
+            parser.error("doctor requires --config")
+        diagnostics = doctor(local)
+        print(format_doctor(diagnostics))
+        raise SystemExit(0 if all(item.available for item in diagnostics) else 1)
     if args.command == "tick":
-        _tick(args.state, args.config)
+        _tick(state, args.config)
     elif args.command == "status":
-        print(_status(args.state))
+        print(_status(state, local))
     elif args.command in {"pause", "resume"}:
-        store = ClaimStore(args.state)
+        store = ClaimStore(state)
         try:
             store.set_paused(args.command == "pause")
         finally:
             store.close()
+        print(f"paused: {str(args.command == 'pause').lower()}")
     else:
         keep_running = True
 
@@ -71,8 +85,19 @@ def main() -> None:
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         while keep_running:
-            _tick(args.state, args.config)
-            time.sleep(args.poll_seconds)
+            _tick(state, args.config)
+            time.sleep(local.schedule.poll_seconds if local is not None else args.poll_seconds)
+
+
+def _load_local(path: Path | None, *, required: bool) -> LocalConfig | None:
+    if path is None:
+        if required:
+            raise SystemExit("agent-factory requires --config (or an explicit --state)")
+        return None
+    try:
+        return LocalConfig.from_file(path)
+    except ConfigurationError as error:
+        raise SystemExit(f"invalid local configuration: {error}") from error
 
 
 def _positive_seconds(value: str) -> float:

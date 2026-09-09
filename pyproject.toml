@@ -26,6 +26,7 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_factory"]
+force-include = { "packaging/launchd/com.codagent.agent-factory.plist" = "share/agent-factory/launchd/com.codagent.agent-factory.plist" }
 
 [tool.pyright]
 include = ["src", "tests"]

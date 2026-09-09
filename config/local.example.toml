@@ -9,6 +9,7 @@ agent_skills = "/srv/src/agent-skills"
 
 [schedule]
 timezone = "America/New_York"
+# Five minutes in production. Tests may use poll_seconds instead of poll_minutes.
 poll_minutes = 5
 start_hour = 0
 stop_hour = 15

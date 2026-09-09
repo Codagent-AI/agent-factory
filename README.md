@@ -10,22 +10,27 @@ does not close suite pipes or terminate its process group.
 
 ## Operations
 
-Install the package into the retained Python environment and invoke the command
-with explicit portable paths (a launchd agent can use the same resident form):
+Install the package into a retained Python 3.12/uv environment and invoke the
+command with an explicit portable local configuration (the LaunchAgent uses the
+same resident form):
 
 ```sh
-agent-factory --state /var/lib/agent-factory/state.sqlite3 --config /etc/agent-factory/local.toml resident
-agent-factory --state /var/lib/agent-factory/state.sqlite3 tick
-agent-factory --state /var/lib/agent-factory/state.sqlite3 status
-agent-factory --state /var/lib/agent-factory/state.sqlite3 pause
-agent-factory --state /var/lib/agent-factory/state.sqlite3 resume
+agent-factory --config /absolute/path/to/config.toml resident
+agent-factory --config /absolute/path/to/config.toml doctor
+agent-factory --config /absolute/path/to/config.toml tick
+agent-factory --config /absolute/path/to/config.toml status
+agent-factory --config /absolute/path/to/config.toml pause
+agent-factory --config /absolute/path/to/config.toml resume
 ```
 
-`tick` and the resident poll only reconcile and attach short-lived supervisors;
-they never wait for an evaluation. `pause` affects later admission only, while
-`status` reads saved state and remains available during execution. Keep the
-installed package environment available until all previously launched attempts
-have completed, since each supervisor starts from that installed environment.
+`doctor` starts no work or repairs. `tick` and the resident controller share the
+normal admission path and never wait for an evaluation; `pause` affects later
+admission only, while `status` reads saved state and remains available during
+execution. Keep the installed package environment available until all previously
+launched attempts have completed, since each supervisor starts from that
+installed environment. See [installation](docs/installation.md) and
+[operations](docs/operations.md) for the supported per-user Mac service,
+credentials separation, upgrades, rollback, storage, and review handoff.
 
 ## Durable controller boundary
 

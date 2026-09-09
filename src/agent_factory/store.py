@@ -228,6 +228,11 @@ class ClaimStore:
         ).fetchall()
         return [_claim(row) for row in rows]
 
+    def all_claims(self) -> list[Claim]:
+        """Return saved claims for read-only operational reporting."""
+        rows = self._connection.execute("SELECT * FROM claim ORDER BY created_at").fetchall()
+        return [_claim(row) for row in rows]
+
     def set_claim_lifecycle(
         self, claim_id: str, lifecycle: str, outcome: Mapping[str, object]
     ) -> None:
