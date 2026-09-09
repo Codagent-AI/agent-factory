@@ -4,11 +4,11 @@ The approved definition is an XL change: this scaffold gains an authenticated Gi
 
 Implement in the order below. Routing/configuration supplies the GitHub boundary for durable claims and reporting; the saved execution contracts support real supervision; that runtime supports concrete pinned-suite execution and cleanup; the final service outcome completes doctor, packaging, and the installed CLI journey. Dependencies describe delivery order, not new product approval gates. Each linked file contains its own context, verbatim relevant specification blocks, scope for shared scenarios, automated obligations, and completion criteria.
 
-- [ ] [Deliver configured GitHub intake and routing](tasks/01-configured-github-routing.md)
-- [ ] [Persist and reconcile evaluation claims and GitHub reporting](tasks/02-durable-claims-and-reporting.md)
-- [ ] [Supervise execution independently of the controller](tasks/03-independent-execution-supervision.md)
-- [ ] [Integrate pinned and-scene execution and worktree cleanup](tasks/04-pinned-and-scene-execution.md)
-- [ ] [Deliver Mac service setup and complete operator controls](tasks/05-mac-service-and-operator-controls.md)
+- [x] [Deliver configured GitHub intake and routing](tasks/01-configured-github-routing.md)
+- [x] [Persist and reconcile evaluation claims and GitHub reporting](tasks/02-durable-claims-and-reporting.md)
+- [x] [Supervise execution independently of the controller](tasks/03-independent-execution-supervision.md)
+- [x] [Integrate pinned and-scene execution and worktree cleanup](tasks/04-pinned-and-scene-execution.md)
+- [x] [Deliver Mac service setup and complete operator controls](tasks/05-mac-service-and-operator-controls.md)
 
 ## Automated obligation ownership
 
