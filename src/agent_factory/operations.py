@@ -180,9 +180,17 @@ def _github_access(shared: SharedConfig, key: Path) -> Diagnostic:
 
 def _private_file(name: str, path: Path) -> Diagnostic:
     try:
-        mode = stat.S_IMODE(path.stat().st_mode)
+        metadata = path.stat()
     except OSError:
         return Diagnostic(name, False, f"file is unavailable: {path}", f"Create or restore {path}.")
+    if not stat.S_ISREG(metadata.st_mode):
+        return Diagnostic(
+            name,
+            False,
+            f"path is not a regular file: {path}",
+            f"Provide the expected private credential file at {path}.",
+        )
+    mode = stat.S_IMODE(metadata.st_mode)
     if mode & 0o077:
         return Diagnostic(
             name,
@@ -235,7 +243,16 @@ def _suite_environment(path: Path) -> Diagnostic:
             f"token environment file is unavailable: {path}",
             "Create the separately managed suite environment file; do not put the App key in it.",
         )
-    if not path.read_text(encoding="utf-8").strip():
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        return Diagnostic(
+            "suite candidate credentials",
+            False,
+            f"token environment file is unreadable: {error}",
+            "Fix file permissions, path, or UTF-8 content, then rerun doctor.",
+        )
+    if not content.strip():
         return Diagnostic(
             "suite candidate credentials",
             False,
@@ -253,7 +270,7 @@ def _suite_environment(path: Path) -> Diagnostic:
 def _command_check(name: str, command: tuple[str, ...], action: str) -> Diagnostic:
     try:
         completed = subprocess.run(command, capture_output=True, check=False, timeout=5)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.TimeoutExpired) as error:
         return Diagnostic(name, False, f"check could not run: {error}", action)
     if completed.returncode != 0:
         return Diagnostic(name, False, "check reported unavailable or unauthenticated", action)
@@ -264,7 +281,15 @@ def _free_space(config: LocalConfig) -> Diagnostic:
     probe = config.storage_root
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
-    free_gib = shutil.disk_usage(probe).free / 1024**3
+    try:
+        free_gib = shutil.disk_usage(probe).free / 1024**3
+    except OSError as error:
+        return Diagnostic(
+            "free storage",
+            False,
+            f"cannot inspect storage at {probe}: {error}",
+            "Restore access to the configured storage root, then rerun doctor.",
+        )
     enough = free_gib >= config.limits.minimum_free_gib
     return Diagnostic(
         "free storage",

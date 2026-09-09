@@ -3,7 +3,10 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
+from agent_factory import operations
+from agent_factory.cli import _poll_seconds  # pyright: ignore[reportPrivateUsage]
 from agent_factory.config import LocalConfig
 from agent_factory.store import ClaimDraft, ClaimStore
 
@@ -101,3 +104,41 @@ def test_launch_agent_template_renders_explicit_paths_and_is_valid_plist(tmp_pat
     assert "/opt/agent-factory/.venv/bin/agent-factory" in rendered
     assert "--config" in rendered
     assert "RunAtLoad" in rendered and "KeepAlive" in rendered
+
+
+def test_doctor_helpers_report_local_io_and_spawn_failures(tmp_path: Path) -> None:
+    environment = tmp_path / "suite.env"
+    environment.write_text("CANDIDATE_TOKEN=value\n", encoding="utf-8")
+    with patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+        suite = operations._suite_environment(environment)  # pyright: ignore[reportPrivateUsage]
+    assert not suite.available
+    assert "unreadable" in suite.detail
+
+    not_a_file = tmp_path / "credentials"
+    not_a_file.mkdir()
+    private = operations._private_file("key", not_a_file)  # pyright: ignore[reportPrivateUsage]
+    assert not private.available
+    assert "regular file" in private.detail
+
+    with patch("agent_factory.operations.subprocess.run", side_effect=PermissionError("denied")):
+        command = operations._command_check(  # pyright: ignore[reportPrivateUsage]
+            "Docker", ("docker", "info"), "Start Docker."
+        )
+    assert not command.available
+    assert "could not run" in command.detail
+
+
+def test_doctor_reports_disk_probe_failure_without_aborting(tmp_path: Path) -> None:
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
+    with patch("agent_factory.operations.shutil.disk_usage", side_effect=OSError("stale mount")):
+        storage = operations._free_space(config)  # pyright: ignore[reportPrivateUsage]
+
+    assert not storage.available
+    assert "cannot inspect" in storage.detail
+
+
+def test_explicit_resident_poll_override_wins_over_local_schedule(tmp_path: Path) -> None:
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
+
+    assert _poll_seconds(1.5, config) == 1.5  # pyright: ignore[reportPrivateUsage]
+    assert _poll_seconds(None, config) == 300  # pyright: ignore[reportPrivateUsage]

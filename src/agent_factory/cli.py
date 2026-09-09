@@ -49,7 +49,7 @@ def main() -> None:
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
     resident = subcommands.add_parser("resident")
-    resident.add_argument("--poll-seconds", type=_positive_seconds, default=300)
+    resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
     local = _load_local(args.config, required=args.state is None)
     if args.state is None:
@@ -86,7 +86,7 @@ def main() -> None:
         signal.signal(signal.SIGINT, stop)
         while keep_running:
             _tick(state, args.config)
-            time.sleep(local.schedule.poll_seconds if local is not None else args.poll_seconds)
+            time.sleep(_poll_seconds(args.poll_seconds, local))
 
 
 def _load_local(path: Path | None, *, required: bool) -> LocalConfig | None:
@@ -98,6 +98,14 @@ def _load_local(path: Path | None, *, required: bool) -> LocalConfig | None:
         return LocalConfig.from_file(path)
     except ConfigurationError as error:
         raise SystemExit(f"invalid local configuration: {error}") from error
+
+
+def _poll_seconds(override: float | None, config: LocalConfig | None) -> float:
+    if override is not None:
+        return override
+    if config is not None:
+        return config.schedule.poll_seconds
+    return 300
 
 
 def _positive_seconds(value: str) -> float:
