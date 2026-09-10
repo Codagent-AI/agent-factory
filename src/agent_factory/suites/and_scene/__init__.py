@@ -249,9 +249,19 @@ class AndSceneAdapter:
         return ExecutionPlan(
             tuple(arguments),
             str(worktrees.evals),
-            candidate_environment(self._environment_file),
+            {},  # Runner loads --env-file at launch; never persist its secret values.
             (str(self._environment_file),),
-            tuple(str(artifact / name) for name in ("run-state.json", "result.json", "logs")),
+            # Appends do not update the logs directory's mtime. Watch the suite's
+            # known activity files directly, including sandbox startup output.
+            tuple(
+                str(artifact / name)
+                for name in (
+                    "run-state.json",
+                    "result.json",
+                    "factory-suite.log",
+                    "logs/agent-runner.log",
+                )
+            ),
             {"artifact_path": str(artifact), "suite": "and-scene"},
             resume,
         )

@@ -135,7 +135,11 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
     assert "--calibration-record" not in plan.argv
     assert "--skip-validator" in plan.argv
     assert str(artifact) in plan.argv
-    assert plan.allowed_environment == {"CANDIDATE_TOKEN": "token"}
+    # The sandbox reads --env-file at launch; credential values must never enter
+    # the serialized execution plan or supervisor environment.
+    assert plan.allowed_environment == {}
+    assert plan.credential_files == (str(environment),)
+    assert plan.argv[plan.argv.index("--env-file") + 1] == str(environment)
     assert all(";" not in value or value == str(artifact) for value in plan.argv)
 
     artifact.mkdir()

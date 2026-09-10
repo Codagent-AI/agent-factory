@@ -5,17 +5,73 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from contextlib import closing
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from agent_factory.controller import ExecutionPlan
 from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, SourceRepositories
 from agent_factory.supervisor import (
     SupervisionLimits,
     container_matches_recorded_ownership,
     launch_supervisor,
 )
+
+
+def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "artifacts"
+    logs = artifact / "logs"
+    logs.mkdir(parents=True)
+    log = logs / "agent-runner.log"
+    log.write_text("started\n", encoding="utf-8")
+    directory_version = logs.stat().st_mtime_ns
+    program = tmp_path / "progressing_suite.py"
+    program.write_text(
+        "import json, pathlib, sys, time\n"
+        "artifact = pathlib.Path(sys.argv[1])\n"
+        "log = artifact / 'logs/agent-runner.log'\n"
+        "for _ in range(20):\n"
+        "    with log.open('a') as stream: stream.write('progress\\n')\n"
+        "    time.sleep(.1)\n"
+        "(artifact / 'result.json').write_text(json.dumps({'evaluation_status': 'completed'}))\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "state.sqlite3"
+    with closing(ClaimStore(state)) as store:
+        run = store.reserve_run(
+            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+        )
+        adapter = AndSceneAdapter(environment_file=tmp_path / "candidate.env")
+
+        # Repository/model readiness is unrelated to this real process test.
+        def ready(_worktrees: PreparedWorktrees) -> None:
+            return None
+
+        monkeypatch.setattr(adapter, "readiness", ready)
+        repositories = SourceRepositories(tmp_path, tmp_path, tmp_path)
+        worktrees = PreparedWorktrees("claim", tmp_path, tmp_path, tmp_path, repositories)
+        frozen = {
+            "suite": "and-scene",
+            "settings": {
+                "roles": dict.fromkeys(("lead", "implementor", "reviewer"), "codex:test:high")
+            },
+        }
+        plan = adapter.plan(frozen, worktrees, artifact, recovery=False)
+        plan = replace(
+            plan,
+            argv=(sys.executable, str(program), str(artifact)),
+            working_directory=str(tmp_path),
+        )
+        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.7, 10, 10))
+        watcher.wait(timeout=8)
+        finished = store.get_run(run.id)
+        assert finished is not None and finished.status == "completed"
+        assert logs.stat().st_mtime_ns == directory_version
 
 
 def _claim(store: ClaimStore) -> str:
