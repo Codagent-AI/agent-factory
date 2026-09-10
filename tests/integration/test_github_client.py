@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 import pytest
 from graphql import parse
 
-from agent_factory.github import GitHubClient
+from agent_factory.github import (
+    GitHubClient,
+    _single_select_fields,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 @dataclass
@@ -92,7 +95,7 @@ def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data
                                 "issueType": {"name": "Eval"},
                             },
                             "fieldValues": {
-                                "nodes": [{"field": {"id": "status"}, "optionId": "ready"}]
+                                "nodes": [{}, {"field": {"id": "status"}, "optionId": "ready"}]
                             },
                         },
                     ],
@@ -123,3 +126,39 @@ def test_project_item_query_is_valid_graphql(lookup: bool) -> None:
     query = gh.calls[0].body["query"]
     assert isinstance(query, str)
     parse(query)
+
+
+def test_select_field_parser_ignores_unselected_graphql_union_members() -> None:
+    fields = _single_select_fields(
+        {"fieldValues": {"nodes": [{}, {"field": {"id": "status"}, "optionId": "ready"}]}}
+    )
+
+    assert fields == {"status": "ready"}
+
+
+def test_routing_lookup_reads_existing_card_with_other_field_types() -> None:
+    response = {
+        "data": {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "ITEM",
+                            "content": {"id": "ISSUE"},
+                            "fieldValues": {
+                                "nodes": [{}, {"field": {"id": "status"}, "optionId": "ready"}]
+                            },
+                        }
+                    ],
+                    "pageInfo": {"hasNextPage": False},
+                }
+            }
+        }
+    }
+    gh = RecordingGh([json.dumps(response)])
+
+    item = GitHubClient(gh, lambda: "installation-token").find_project_item("PROJECT", "ISSUE")
+
+    assert item is not None
+    assert item.id == "ITEM"
+    assert item.fields == {"status": "ready"}

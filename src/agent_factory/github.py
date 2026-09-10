@@ -441,6 +441,9 @@ def _single_select_fields(item: Mapping[str, object]) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for value in _list(field_values.get("nodes")):
         selection = _object(value)
+        # Other union members (for example title/text fields) have no selected fields.
+        if not selection:
+            continue
         option_id = selection.get("optionId")
         field = _object(selection.get("field"))
         field_id = field.get("id")
