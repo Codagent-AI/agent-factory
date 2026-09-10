@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -391,3 +392,33 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
     run = controller.reserve_next(claim.id, readiness=lambda: None)
     assert run is not None
     assert Path(run.evidence_path) == (tmp_path / "artifacts" / f"{claim.id}-rep-1").resolve()
+
+
+@pytest.mark.parametrize(
+    "reset", ["nonsense", "2026-09-10T12:00:00", "2026-09-10T11:58:00Z", "2026-09-10T19:00:00Z"]
+)
+def test_unusable_claude_wait_does_not_suspend_timers(tmp_path: Path, reset: str) -> None:
+    from agent_factory.suites.and_scene import bounded_quota_deadline
+
+    (tmp_path / "factory-suite.log").write_text(
+        f"Claude lead quota reached; waiting until {reset} before resuming Agent Runner\n"
+    )
+    assert (
+        bounded_quota_deadline(tmp_path, now=datetime(2026, 9, 10, 12, tzinfo=UTC).timestamp())
+        is None
+    )
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink"])
+def test_quota_log_must_be_a_readable_regular_file(tmp_path: Path, kind: str) -> None:
+    from agent_factory.suites.and_scene import ReadinessError, bounded_quota_deadline
+
+    log = tmp_path / "factory-suite.log"
+    if kind == "directory":
+        log.mkdir()
+    else:
+        target = tmp_path / "other"
+        target.write_text("not suite output")
+        log.symlink_to(target)
+    with pytest.raises(ReadinessError, match="quota log"):
+        bounded_quota_deadline(tmp_path, now=0)

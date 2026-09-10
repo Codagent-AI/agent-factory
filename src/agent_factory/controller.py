@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import re
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -215,6 +216,8 @@ class Controller:
         """Persist a suite-normalized result before changing aggregate presentation."""
         run = self._required_run(run_id)
         stored_result = dict(result.result)
+        stored_result["execution_status"] = result.execution_status
+        stored_result.setdefault("artifact_path", run.evidence_path)
         if result.product_verdict is not None:
             stored_result["product_verdict"] = result.product_verdict
         if result.resumable is not None:
@@ -248,14 +251,16 @@ class Controller:
                     run.claim_id,
                     f"{run.unit_key}:attempt-{run.attempt_number}:exhausted",
                     f"{run.unit_key} exhausted its technical recovery attempt; "
-                    "later repetitions are unstarted.",
+                    "later repetitions are unstarted.\n\n"
+                    + _completion_message(run.unit_key, stored_result),
                 )
             else:
                 self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "infra-error"})
                 self._store.record_event(
                     run.claim_id,
                     f"{run.unit_key}:attempt-{run.attempt_number}:retry",
-                    f"{run.unit_key} failed technically and will use its one recovery attempt.",
+                    f"{run.unit_key} failed technically and will use its one recovery attempt.\n\n"
+                    + _completion_message(run.unit_key, stored_result),
                 )
             return
         self._store.record_event(
@@ -504,11 +509,61 @@ def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | No
     return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
 
 
+def _public_diagnostic(value: str) -> str:
+    """Keep useful failure context without publishing common credential representations."""
+    value = re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[redacted]@", value)
+    value = re.sub(r"\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[redacted]", value)
+    value = re.sub(
+        r"(?i)\b(?:Proxy-)?Authorization\s*:\s*[^\r\n]*",
+        "Authorization: [redacted]",
+        value,
+    )
+    value = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", value)
+    return re.sub(
+        r"(?i)(\b[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*[\"']?\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1[redacted]",
+        value,
+    )
+
+
 def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
-    verdict = result.get("product_verdict", "unavailable")
-    score = result.get("score", "unavailable")
-    cost = result.get("cost", "unavailable")
-    return f"{unit_key} settled: verdict={verdict}; score={score}; cost={cost}."
+    def text(value: object) -> str:
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            return "unavailable"
+        return _public_diagnostic(str(value)).replace("\n", " ")[:500] or "unavailable"
+
+    lines = [
+        f"{unit_key} settled.",
+        f"Execution: {text(result.get('execution_status'))}",
+        f"Product verdict: {text(result.get('product_verdict'))}",
+    ]
+    raw = result.get("report_summary")
+    summary = (
+        cast(Mapping[str, object], raw)
+        if isinstance(raw, Mapping)
+        else {
+            "Automated score": result.get("score"),
+            "Cost": result.get("cost"),
+            "Artifacts": result.get("artifact_path"),
+        }
+    )
+    lines.extend(f"{key}: {text(value)}" for key, value in summary.items())
+    failure = result.get("failure")
+    if isinstance(failure, Mapping):
+        details = cast(Mapping[str, object], failure)
+        lines.append(
+            "Failure: "
+            + "; ".join(
+                f"{key}={text(details[key])}"
+                for key in ("owner", "code", "phase", "reason", "message")
+                if key in details
+            )
+        )
+    for key in ("failed_phase", "reason", "error", "timeout"):
+        if result.get(key) is not None:
+            lines.append(f"{key}: {text(result[key])}")
+    return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
 
 
 @contextmanager

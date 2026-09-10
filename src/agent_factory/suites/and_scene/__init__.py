@@ -8,8 +8,10 @@ only in immutable claims, reserved runs, and normalized attempt results.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
+import stat
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -288,6 +290,7 @@ class AndSceneAdapter:
             result["score"] = result["automated_subtotal"]
         # This maps suite execution facts only; scoring policy stays in the suite.
         execution = "completed" if status in {"complete", "pending-human-review"} else "failed"
+        result["report_summary"] = _report_summary(result, artifact_dir)
         resumable = result.get("resumable")
         return AttemptResult(
             execution,
@@ -548,3 +551,88 @@ def _recorded_worktrees(claim_id: str, cleanup: Mapping[str, object]) -> Prepare
         resolved["evals"][1],
         SourceRepositories(resolved["runner"][0], resolved["skills"][0], resolved["evals"][0]),
     )
+
+
+def bounded_quota_deadline(artifact: Path, *, now: float) -> float | None:
+    """Recognize the pinned suite's explicit wait message, including its reset grace."""
+    path = artifact / "factory-suite.log"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise ReadinessError("suite quota log is not a regular file")
+            os.lseek(descriptor, max(0, info.st_size - 65536), os.SEEK_SET)
+            tail = os.read(descriptor, 65536).decode("utf-8", errors="replace")
+        finally:
+            os.close(descriptor)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise ReadinessError(f"suite quota log cannot be read: {error.strerror}") from error
+    matches = re.findall(
+        r"^Claude (?:lead|implementor|tester|null) quota reached; waiting until "
+        r"(\S+) before resuming Agent Runner$",
+        tail,
+        re.MULTILINE,
+    )
+    if not matches:
+        return None
+    try:
+        reset = datetime.fromisoformat(matches[-1])
+    except ValueError:
+        return None
+    if reset.utcoffset() is None:
+        return None
+    # claude-quota.mjs accepts at most six hours and sleeps another minute.
+    deadline = reset.timestamp() + 60
+    return deadline if 0 < deadline - now <= 6 * 3600 + 60 else None
+
+
+def _object(value: object) -> Mapping[str, object]:
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
+def _amount(value: object, suffix: str = "") -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "unavailable"
+    return f"{value:.2f}{suffix}"
+
+
+def _report_summary(result: Mapping[str, object], artifact: Path) -> dict[str, object]:
+    subtotal = result.get("automated_subtotal")
+    if isinstance(subtotal, Mapping):
+        subtotal = cast(Mapping[str, object], subtotal).get("points")
+    cost = _object(result.get("cost"))
+    total = _object(cost.get("total"))
+    usage = _object(cost.get("usage"))
+    tokens = _object(usage.get("token_totals"))
+    delivery = _object(result.get("delivery"))
+    timing = _object(result.get("timing"))
+    duration = timing.get("total_active_machine_ms")
+    duration_seconds = duration / 1000 if isinstance(duration, (int, float)) else None
+    token_summary = (
+        ", ".join(
+            f"{tokens[key]} {key}"
+            for key in ("input", "output", "total")
+            if isinstance(tokens.get(key), (int, float))
+        )
+        or "unavailable"
+    )
+    if usage.get("complete") is False and token_summary != "unavailable":
+        token_summary += " (partial)"
+    cost_summary = _amount(total.get("estimated_api_cost_usd"), " USD estimated")
+    if total.get("complete") is False:
+        cost_summary = "unavailable; known subtotal " + _amount(
+            total.get("known_cost_subtotal_usd"), " USD (partial)"
+        )
+    return {
+        "Automated score": _amount(subtotal, "/70"),
+        "Duration (active machine)": _amount(duration_seconds, " s"),
+        "Cost": cost_summary,
+        "Implementation tokens": token_summary,
+        "Artifacts": str(artifact.resolve()),
+        "Report": str((artifact / "report.html").resolve()),
+        "Candidate branch": delivery.get("branch"),
+        "Candidate PR": _object(delivery.get("pull_request")).get("url"),
+    }

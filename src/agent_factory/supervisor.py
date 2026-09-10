@@ -22,6 +22,7 @@ from typing import cast
 
 from agent_factory.controller import ExecutionPlan
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, ClaimStore, Run
+from agent_factory.suites.and_scene import ReadinessError, bounded_quota_deadline
 
 _POLL_SECONDS = 0.05
 _PROGRESS_HEARTBEAT_SECONDS = 5.0
@@ -217,10 +218,15 @@ def _observe(
     monotonic_anchor = time.monotonic()
     started = _number(progress.get("started_at"), wall_anchor)
     last_progress = _number(progress.get("last_progress_at"), started)
+    paused_seconds = _number(progress.get("quota_wait_seconds"), 0)
+    quota_until = _number(progress.get("quota_until"), 0)
     if "elapsed_seconds" in progress:
         gap = max(0.0, wall_anchor - _number(progress.get("persisted_at"), wall_anchor))
         started = wall_anchor - _number(progress.get("elapsed_seconds"), 0) - gap
         last_progress = wall_anchor - _number(progress.get("idle_seconds"), 0) - gap
+        wait_gap = _wait_overlap(wall_anchor - gap, wall_anchor, quota_until)
+        paused_seconds += wait_gap
+        last_progress += wait_gap
     observed_sources = _saved_source_versions(progress.get("sources")) or _source_versions(
         plan.progress_sources
     )
@@ -235,6 +241,8 @@ def _observe(
         store.update_progress(run_id, progress)
         last_persisted = _number(progress["persisted_at"], 0)
     last_container_probe = float("-inf")
+    previous_now = wall_anchor
+    quota_observed = False
     while True:
         run = _required_run(store, run_id)
         # The wall clock is used only to anchor persisted timestamps on attachment.
@@ -242,7 +250,9 @@ def _observe(
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
-        if plan.ownership_hints.get("suite") == "and-scene" and now - last_container_probe >= 5:
+        if plan.ownership_hints.get("suite") == "and-scene" and (
+            now - last_container_probe >= 5 or process_status == "missing"
+        ):
             try:
                 recorded = progress.get("container")
                 if not isinstance(recorded, Mapping):
@@ -274,7 +284,26 @@ def _observe(
         if process_status == "unknown":
             store.report_uncertainty(run_id, "owned process identity cannot be probed")
             return
+        wait_elapsed = _wait_overlap(previous_now, now, quota_until)
+        paused_seconds += wait_elapsed
+        last_progress += wait_elapsed
+        previous_now = now
+        previous_quota = quota_until
         changed, observed_sources = _progress_changed(plan.progress_sources, observed_sources)
+        if plan.ownership_hints.get("suite") == "and-scene" and (changed or not quota_observed):
+            try:
+                quota_until = (
+                    bounded_quota_deadline(Path(_artifact_root(plan, run.evidence_path)), now=now)
+                    or 0
+                )
+            except ReadinessError as error:
+                store.report_uncertainty(run_id, str(error))
+                return
+            quota_observed = True
+        if quota_until <= now:
+            quota_until = 0
+        progress["quota_until"] = quota_until
+        progress["quota_wait_seconds"] = paused_seconds
         if changed:
             last_progress = now
         progress.update(
@@ -285,7 +314,12 @@ def _observe(
             progress["result_error"] = result_read.error
         else:
             progress.pop("result_error", None)
-        if changed or diagnostic_changed or now - last_persisted >= _PROGRESS_HEARTBEAT_SECONDS:
+        if (
+            changed
+            or diagnostic_changed
+            or quota_until != previous_quota
+            or now - last_persisted >= _PROGRESS_HEARTBEAT_SECONDS
+        ):
             progress["persisted_at"] = time.time()
             progress["elapsed_seconds"] = now - started
             progress["idle_seconds"] = now - last_progress
@@ -320,7 +354,7 @@ def _observe(
             else:
                 store.report_uncertainty(run_id, "cancellation ownership could not be verified")
             return
-        timeout = _timeout(now, started, last_progress, limits)
+        timeout = _timeout(now, started, last_progress, limits, paused_seconds=paused_seconds)
         if timeout is not None:
             if _terminate_execution(identity, progress.get("container")):
                 store.finish_run(run_id, execution_status="timed_out", result={"timeout": timeout})
@@ -347,21 +381,28 @@ def inspect_container(container_id: str) -> dict[str, object] | None:
         if listing.returncode != 0 or container_id in listing.stdout.splitlines():
             raise ProcessProbeError("container state cannot be verified")
         return None
+    entries = _inspection_entries(result.stdout)
+    if len(entries) != 1:
+        raise ProcessProbeError("invalid Docker inspection")
+    return entries[0]
+
+
+def _inspection_entries(output: str) -> list[dict[str, object]]:
     try:
-        values: object = json.loads(result.stdout)
+        values: object = json.loads(output)
     except json.JSONDecodeError as error:
         raise ProcessProbeError("invalid Docker inspection") from error
     if not isinstance(values, list):
         raise ProcessProbeError("invalid Docker inspection")
     entries = cast(list[object], values)
-    if len(entries) != 1 or not isinstance(entries[0], dict):
+    if not all(isinstance(entry, dict) for entry in entries):
         raise ProcessProbeError("invalid Docker inspection")
-    return cast(dict[str, object], entries[0])
+    return [cast(dict[str, object], entry) for entry in entries]
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:
     result = subprocess.run(
-        ["docker", "ps", "--no-trunc", "-q", "--filter", f"volume={artifact}"],
+        ["docker", "ps", "--no-trunc", "-q", "--filter", "volume=/artifacts"],
         capture_output=True,
         text=True,
         check=False,
@@ -369,11 +410,23 @@ def discover_container(artifact: str) -> dict[str, object] | None:
     )
     if result.returncode != 0:
         raise ProcessProbeError("Docker ownership discovery unavailable")
+    identifiers = result.stdout.splitlines()
+    if not identifiers:
+        return None
+    inspection = subprocess.run(
+        ["docker", "inspect", *identifiers],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    if inspection.returncode != 0:
+        raise ProcessProbeError("Docker ownership inspection unavailable")
     matches: list[dict[str, object]] = []
-    for container_id in result.stdout.splitlines():
-        observed = inspect_container(container_id)
-        if observed is None:
-            continue
+    for observed in _inspection_entries(inspection.stdout):
+        container_id = observed.get("Id")
+        if container_id not in identifiers:
+            raise ProcessProbeError("unexpected Docker inspection identity")
         record = {"id": container_id, "image": observed.get("Image"), "artifact_path": artifact}
         if container_matches_recorded_ownership(record, observed):
             matches.append(record)
@@ -438,12 +491,21 @@ def _mount_matches(mount: Mapping[str, object], artifact_path: str) -> bool:
     return mount.get("Destination") == "/artifacts" and mount.get("Source") == artifact_path
 
 
+def _wait_overlap(previous: float, now: float, deadline: float) -> float:
+    return max(0.0, min(now, deadline) - previous)
+
+
 def _timeout(
-    now: float, started: float, last_progress: float, limits: SupervisionLimits
+    now: float,
+    started: float,
+    last_progress: float,
+    limits: SupervisionLimits,
+    *,
+    paused_seconds: float = 0,
 ) -> str | None:
     if now - started >= limits.total_seconds:
         return "total"
-    if now - started >= limits.execution_seconds:
+    if now - started - paused_seconds >= limits.execution_seconds:
         return "execution"
     if now - last_progress >= limits.inactivity_seconds:
         return "inactivity"

@@ -18,6 +18,7 @@ from agent_factory.supervisor import (
     SupervisionLimits,
     container_matches_recorded_ownership,
     launch_supervisor,
+    resume_supervisor,
 )
 
 
@@ -230,3 +231,59 @@ def test_container_termination_requires_recorded_id_image_and_exact_artifact_mou
     assert not container_matches_recorded_ownership(
         recorded, {**inspect, "Mounts": [{"Source": "/tmp/other", "Destination": "/artifacts"}]}
     )
+
+
+@pytest.mark.parametrize(
+    "restart,total_seconds,expected",
+    [
+        (False, 4, "completed"),
+        (True, 4, "completed"),
+        (False, 0.8, "timed_out"),
+    ],
+)
+def test_bounded_claude_wait_does_not_consume_execution_or_idle_budget(
+    tmp_path: Path,
+    restart: bool,
+    total_seconds: float,
+    expected: str,
+) -> None:
+    artifact = tmp_path / "artifacts"
+    artifact.mkdir()
+    program = tmp_path / "waiting_suite.py"
+    program.write_text(
+        "import datetime, json, pathlib, sys, time\n"
+        "reset = (datetime.datetime.now(datetime.UTC) "
+        "+ datetime.timedelta(seconds=2)).isoformat()\n"
+        "print(f'Claude implementor quota reached; waiting until {reset} '"
+        "'before resuming Agent Runner', flush=True)\n"
+        "time.sleep(1.5)\n"
+        "(pathlib.Path(sys.argv[1]) / 'result.json').write_text("
+        "json.dumps({'evaluation_status': 'complete'}))\n"
+    )
+    state = tmp_path / "state.sqlite3"
+    with closing(ClaimStore(state)) as store:
+        run = store.reserve_run(
+            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+        )
+        plan = ExecutionPlan(
+            (sys.executable, str(program), str(artifact)),
+            str(tmp_path),
+            {},
+            (),
+            (str(artifact / "factory-suite.log"),),
+            {"artifact_path": str(artifact), "suite": "and-scene"},
+            False,
+        )
+        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.5, 0.7, total_seconds))
+        if restart:
+            time.sleep(0.5)
+            watcher.kill()
+            watcher.wait(timeout=5)
+            replacement = resume_supervisor(state, run.id)
+            assert replacement is not None
+            watcher = replacement
+        watcher.wait(timeout=8)
+        finished = store.get_run(run.id)
+        assert finished is not None and finished.status == expected
+        if expected == "timed_out":
+            assert finished.result["timeout"] == "total"

@@ -13,7 +13,11 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.suites.and_scene import GitWorktreeManager, SourceRepositories
-from agent_factory.supervisor import container_matches_recorded_ownership, stop_owned_container
+from agent_factory.supervisor import (
+    container_matches_recorded_ownership,
+    discover_container,
+    stop_owned_container,
+)
 
 
 def _run(args: list[str], *, env: dict[str, str] | None = None) -> str:
@@ -121,11 +125,10 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         )
         observed = json.loads(_run(["docker", "inspect", name]))[0]
         container = observed["Id"]
-        recorded = {
-            "id": container,
-            "image": observed["Image"],
-            "artifact_path": str(artifacts.resolve()),
-        }
+        recorded = discover_container(str(artifacts.resolve()))
+        assert recorded is not None
+        assert recorded["id"] == container
+        assert recorded["image"] == observed["Image"]
         assert container_matches_recorded_ownership(recorded, observed)
         _run(["docker", "exec", name, "sh", "-c", proof])
         for path in source_dirs:
@@ -162,6 +165,7 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         assert container_matches_recorded_ownership(
             recorded, json.loads(_run(["docker", "inspect", name]))[0]
         )
+        _check_background_container_supervision(artifacts, tmp_path)
         assert stop_owned_container(recorded)
         assert json.loads(_run(["docker", "inspect", decoy]))[0]["State"]["Running"]
     finally:
@@ -170,3 +174,43 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         for owned_tag in (tag, other_tag):
             subprocess.run(["docker", "image", "rm", owned_tag], capture_output=True, check=False)
         assert not manager.remove(worktrees)
+
+
+def _check_background_container_supervision(artifact: Path, tmp_path: Path) -> None:
+    """A detached suite container owns the run after its launcher has exited."""
+    import time
+    from contextlib import closing
+
+    from agent_factory.controller import ExecutionPlan
+    from agent_factory.store import ClaimDraft, ClaimStore
+    from agent_factory.supervisor import SupervisionLimits, launch_supervisor
+
+    state = tmp_path / "supervision.sqlite3"
+    with closing(ClaimStore(state)) as store:
+        claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
+        run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+        plan = ExecutionPlan(
+            (sys.executable, "-c", "import time; time.sleep(1)"),
+            str(tmp_path),
+            {},
+            (),
+            (),
+            {"suite": "and-scene", "artifact_path": str(artifact)},
+            False,
+        )
+        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(15, 20, 20))
+        try:
+            (artifact / "result.json").write_text('{"evaluation_status":"complete"}')
+            time.sleep(2)
+            observed = store.get_run(run.id)
+            assert observed is not None and observed.status == "running"
+            assert observed.progress.get("container") is not None
+            # The wrapper is gone, but cancellation must stop its owned container.
+            store.request_cancellation(run.id)
+            watcher.wait(timeout=15)
+            finished = store.get_run(run.id)
+            assert finished is not None and finished.status == "cancelled"
+        finally:
+            if watcher.poll() is None:
+                store.request_cancellation(run.id)
+                watcher.wait(timeout=25)

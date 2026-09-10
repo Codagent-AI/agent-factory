@@ -139,3 +139,130 @@ def test_invalid_persisted_plan_is_reported_without_crashing_watcher(tmp_path: P
     saved = store.get_run(run.id)
     assert saved is not None and saved.status == "observing"
     assert saved.result["reason"] == "invalid persisted plan"
+
+
+def test_late_container_is_discovered_when_wrapper_exits(
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from agent_factory import supervisor
+
+    artifact = tmp_path / "artifacts"
+    artifact.mkdir()
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(artifact))
+    store.mark_running(run.id, {"pid": 123, "start": "x"})
+    plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"suite": "and-scene"}, False)
+    identity_states = iter(["alive", "missing", "missing"])
+
+    def identity_status(_identity: object) -> str:
+        return next(identity_states)
+
+    monkeypatch.setattr(supervisor, "_identity_status", identity_status)
+    discovered: dict[str, object] = {
+        "id": "owned",
+        "image": "sha256:image",
+        "artifact_path": str(artifact),
+    }
+    discoveries = iter([None, discovered])
+
+    def discover(_artifact: str) -> dict[str, object] | None:
+        result = next(discoveries)
+        if result is not None:
+            store.request_cancellation(run.id)
+        return result
+
+    monkeypatch.setattr(supervisor, "discover_container", discover)
+
+    def inspection(_container: str) -> dict[str, object]:
+        return {
+            "Id": "owned",
+            "Image": "sha256:image",
+            "State": {"Running": True},
+            "Mounts": [{"Source": str(artifact), "Destination": "/artifacts"}],
+        }
+
+    monkeypatch.setattr(supervisor, "inspect_container", inspection)
+    stopped: list[object] = []
+
+    def terminate(_identity: object, container: object) -> bool:
+        stopped.append(container)
+        return True
+
+    monkeypatch.setattr(supervisor, "_terminate_execution", terminate)
+    supervisor._observe(  # pyright: ignore[reportPrivateUsage]
+        store,
+        run.id,
+        plan,
+        SupervisionLimits(10, 10, 10),
+        {"pid": 123, "start": "x"},
+    )
+    finished = store.get_run(run.id)
+    assert finished is not None and finished.status == "cancelled"
+    assert stopped == [discovered]
+    store.close()
+
+
+def test_container_discovery_batches_inspection_and_filters_source(tmp_path: Path) -> None:
+    import json
+    from unittest.mock import patch
+
+    from agent_factory.supervisor import discover_container
+
+    observed = [
+        {
+            "Id": name,
+            "Image": "sha256:image",
+            "Mounts": [
+                {"Destination": "/artifacts", "Source": str(source)},
+            ],
+        }
+        for name, source in [("decoy", tmp_path / "other"), ("owned", tmp_path)]
+    ]
+    with patch(
+        "agent_factory.supervisor.subprocess.run",
+        side_effect=[
+            subprocess.CompletedProcess([], 0, "decoy\nowned\n", ""),
+            subprocess.CompletedProcess([], 0, json.dumps(observed), ""),
+        ],
+    ) as commands:
+        found = discover_container(str(tmp_path))
+    assert found is not None and found["id"] == "owned"
+    assert commands.call_args_list[1].args[0] == ["docker", "inspect", "decoy", "owned"]
+
+
+def test_unchanged_quota_log_is_not_reparsed_each_poll(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from agent_factory import supervisor
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path))
+    store.mark_running(run.id, {"pid": 123, "start": "x"})
+    plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"suite": "and-scene"}, False)
+    states = iter(["alive", "alive", "alive", "missing"])
+
+    def identity(_identity: object) -> str:
+        return next(states)
+
+    def discover(_artifact: str) -> None:
+        return None
+
+    reads: list[float] = []
+
+    def quota(_artifact: Path, *, now: float) -> None:
+        reads.append(now)
+        return None
+
+    monkeypatch.setattr(supervisor, "_identity_status", identity)
+    monkeypatch.setattr(supervisor, "discover_container", discover)
+    monkeypatch.setattr(supervisor, "bounded_quota_deadline", quota)
+    supervisor._observe(  # pyright: ignore[reportPrivateUsage]
+        store,
+        run.id,
+        plan,
+        SupervisionLimits(10, 10, 10),
+        {},
+    )
+    assert len(reads) == 1
+    store.close()

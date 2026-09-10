@@ -258,3 +258,103 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
     assert controller.presentation(claim.id).verdict == "infra-error"
     assert (artifact / "result.json").read_text() == '{"incomplete":'
     store.close()
+
+
+def test_real_suite_result_is_reported_concisely_with_delivery_and_usage(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    artifact = tmp_path / "artifacts"
+    artifact.mkdir()
+    (artifact / "result.json").write_bytes(
+        Path("tests/fixtures/and-scene-result-v7.json").read_bytes()
+    )
+    comments = Comments()
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    assert run is not None
+    result = AndSceneAdapter(environment_file=tmp_path / "env").read_result(artifact)
+    controller.record_result(run.id, result)
+    controller.deliver_reports(claim.id)
+    body = next(body for body in comments.posted if ":complete -->" in body)
+    assert "Execution: completed" in body
+    assert "55.48/70" in body
+    assert "11254.61 s" in body
+    assert str(artifact / "report.html") in body
+    assert "https://github.com/Codagent-AI/and-scene/pull/16" in body
+    assert "eval/and-scene/astra-lead-20260909T142250Z" in body
+    assert "50844812 input" in body and "216517 output" in body
+    assert "Cost: unavailable" in body
+    assert len(body) < 2500
+    store.close()
+
+
+def test_technical_retry_and_exhaustion_report_failure_details(tmp_path: Path) -> None:
+    comments = Comments()
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    for _ in range(2):
+        run = controller.reserve_next(claim.id, readiness=lambda: None)
+        assert run is not None
+        controller.record_result(
+            run.id,
+            AttemptResult(
+                "failed",
+                None,
+                {
+                    "failure": {
+                        "owner": "evaluation-harness",
+                        "reason": "browser executable missing",
+                    },
+                },
+            ),
+        )
+    controller.deliver_reports(claim.id)
+    for event in ("retry", "exhausted"):
+        body = next(body for body in comments.posted if f":{event} -->" in body)
+        assert "browser executable missing" in body
+        assert "evaluation-harness" in body
+        assert "Execution: failed" in body
+    store.close()
+
+
+def test_report_redacts_credentials_in_failure_diagnostics(tmp_path: Path) -> None:
+    comments = Comments()
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    assert run is not None
+    controller.record_result(
+        run.id,
+        AttemptResult(
+            "failed",
+            None,
+            {
+                "reason": (
+                    "authentication failed: TOKEN=example-private-value "
+                    "Authorization: Bearer example-bearer"
+                ),
+                "error": "https://user:example-password@github.com/repo ghp_examplecredential "
+                "Authorization: Basic example-basic",
+            },
+        ),
+    )
+    controller.deliver_reports(claim.id)
+    body = "\n".join(comments.posted)
+    for secret in (
+        "example-private-value",
+        "example-bearer",
+        "example-password",
+        "ghp_examplecredential",
+        "example-basic",
+    ):
+        assert secret not in body
+    assert "authentication failed" in body
+    assert "[redacted]" in body
+    store.close()
