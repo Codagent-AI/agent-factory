@@ -173,6 +173,10 @@ def main() -> None:
     payload = json.loads(arguments.event.read_text(encoding="utf-8"))
     repository = _event_repository(payload)
     number = payload.get("number")
+    if number is None:
+        issue = payload.get("issue")
+        if isinstance(issue, dict):
+            number = cast(dict[str, object], issue).get("number")
     if isinstance(number, bool) or not isinstance(number, int) or number < 1:
         raise ValueError("GitHub event does not identify an issue or pull request number")
     token = os.environ.get("GH_TOKEN")

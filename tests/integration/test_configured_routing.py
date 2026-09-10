@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
+from agent_factory import github as github_module
+from agent_factory import routing
 from agent_factory.config import ConfigurationError, SharedConfig
 from agent_factory.routing import ProjectItem, RouteEvent, Router, SourceItem
 
@@ -188,3 +194,47 @@ def test_shared_config_exposes_configured_reporting_field_mappings() -> None:
 
     assert config.project.refs.id == "refs-field"
     assert config.project.verdict.option("infra-error") == "infra-option"
+
+
+@pytest.mark.parametrize("event_type", ["issues", "pull_request"])
+def test_actions_entry_point_routes_real_event_shapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, event_type: str
+) -> None:
+    class EventGitHub(MemoryGitHub):
+        def get_source_item(self, repository: str, number: int) -> SourceItem:
+            assert repository == "example/evals"
+            assert number == 42
+            return item()
+
+    client = EventGitHub(permissions={("example/evals", "writer"): "write"})
+
+    def client_factory(runner: object, token: Callable[[], str]) -> EventGitHub:
+        assert token() == "test-installation-token"
+        return client
+
+    payload: dict[str, object] = {
+        "action": "opened",
+        "repository": {"full_name": "example/evals"},
+    }
+    if event_type == "issues":
+        payload["issue"] = {"number": 42}
+    else:
+        payload["number"] = 42
+        payload["pull_request"] = {"number": 42}
+    event_path = tmp_path / "event.json"
+    event_path.write_text(json.dumps(payload))
+    config_path = tmp_path / "factory.toml"
+    config_path.write_text(config_text())
+    monkeypatch.setattr(
+        sys, "argv", ["routing", "--config", str(config_path), "--event", str(event_path)]
+    )
+    monkeypatch.setenv("GH_TOKEN", "test-installation-token")
+    monkeypatch.setattr(github_module, "GitHubClient", client_factory)
+
+    routing.main()
+
+    assert client.items["ISSUE-1"].fields == {
+        "owner-field": "factory-option",
+        "status-field": "ready-option",
+    }
+    assert client.added == 1
