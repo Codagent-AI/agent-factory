@@ -50,7 +50,7 @@ eval_type = "Eval"
 [eval]
 # Immutable deployed harness: includes the 40/70 outcome contract, calibration-gate
 # removal (2fc8443), and read-only linked-worktree Git metadata mounts (01b5a0e).
-harness_sha = "488550420230d0fccf8135c8dfa6abc5937942c0"
+harness_sha = "eb6b19eae8deb265fd9400427802ff3d1d9d8e1c"
 suite = "and-scene"
 repetitions = 3
 
