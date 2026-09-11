@@ -16,7 +16,7 @@ The change SHALL provide a regular Markdown issue template in `Codagent-AI/agent
 
 Routing rules and their implementation SHALL be maintained in `agent-factory` and invoked through a reusable GitHub Actions workflow. Source repositories SHALL use small caller workflows. Rules SHALL configure source repositories, request markers and work kinds, destination Projects, and initial Project fields. The initial eval rule SHALL route `agent-evals` evaluation requests to the shared Codagent Project. Adding a source repository or routing another work kind SHALL reuse this routing behavior through configuration; iteration 1 SHALL execute only eval work.
 
-Routing SHALL add an issue to its destination Project if absent and initialize fields once. Repeated delivery SHALL NOT reset work in progress or overwrite subsequent human field changes. Routing SHALL recognize explicit request markers without requiring a valid eval block or inferring assignment from arbitrary issue prose.
+Routing SHALL add an issue to its destination Project if absent and initialize fields once. For an authorized explicitly marked eval request, routing SHALL set the native issue Type to the configured eval type before initializing its factory fields. Repeated delivery SHALL NOT reset work in progress or overwrite subsequent human field changes. Routing SHALL recognize explicit request markers without requiring a valid eval block or inferring assignment from arbitrary issue prose.
 
 #### Scenario: Route while local execution is unavailable
 
@@ -35,6 +35,12 @@ Routing SHALL add an issue to its destination Project if absent and initialize f
 - **WHEN** an explicitly marked eval request from an author with the required repository access contains invalid execution settings
 - **THEN** routing still places it in Ready with Owner factory
 - **AND** the factory validates the settings before admitting execution
+
+#### Scenario: Route an eval request without a native type
+
+- **WHEN** an authorized explicitly marked eval request has no native issue Type
+- **THEN** routing assigns the configured native eval type and initializes `Owner=factory` and `Status=Ready`
+- **AND** an unauthorized request does not cause the type mutation
 
 ### Requirement: Restrict automatic execution to repository writers
 

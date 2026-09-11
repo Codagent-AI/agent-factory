@@ -42,7 +42,7 @@ The factory SHALL prepare factory-owned clean Git worktrees for the accepted Run
 
 ### Requirement: Invoke the suite with accepted execution settings
 
-For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. It SHALL pass the accepted `skip_validator` setting to the suite. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The existing suite SHALL launch one container per repetition attempt, with the controller and supervisor on the host. A recovery attempt SHALL reuse the repetition's artifacts through a new container; controller restart SHALL preserve verified surviving execution. Integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments, and expose any missing compatibility as an actionable readiness problem before model execution.
+For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. The initial integration SHALL support the selected suite's Codex, Claude, and Cursor role adapters. It SHALL pass the accepted `skip_validator` setting to the suite. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The existing suite SHALL launch one container per repetition attempt, with the controller and supervisor on the host. A recovery attempt SHALL reuse the repetition's artifacts through a new container; controller restart SHALL preserve verified surviving execution. Integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments, and expose any missing compatibility as an actionable readiness problem before model execution.
 
 Selected-suite readiness SHALL be verified before execution. Calibration SHALL remain an optional suite-maintainer diagnostic; the factory SHALL NOT require a calibration receipt or pass removed calibration-record arguments. Unavailable prerequisites SHALL follow the readiness-hold behavior in `factory-claim-lifecycle`.
 
@@ -51,6 +51,12 @@ Selected-suite readiness SHALL be verified before execution. Calibration SHALL r
 - **WHEN** the claim is eligible and its prerequisites are available
 - **THEN** the suite receives the saved role profiles, component worktree paths, artifact directory, environment paths, and validator setting
 - **AND** the invocation uses the retained harness version
+
+#### Scenario: Launch with Cursor role profiles
+
+- **WHEN** an accepted request selects Cursor for one or more role profiles and the host Cursor CLI is available
+- **THEN** the factory passes those profiles unchanged to the selected suite
+- **AND** the suite remains responsible for validating the mounted Cursor authentication at launch
 
 #### Scenario: Fail selected-suite readiness
 
