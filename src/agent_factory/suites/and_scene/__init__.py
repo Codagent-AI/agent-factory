@@ -330,22 +330,13 @@ class AndSceneAdapter:
     def failure_quota_until(
         self, artifact: Path, result: Mapping[str, object], *, fallback_seconds: int = 18000
     ) -> datetime | None:
-        """Inspect durable failure diagnostics without treating arbitrary errors as limits."""
-        diagnostics = [json.dumps(dict(result))]
-        paths = [artifact / "run-state.json", artifact / "factory-suite.log"]
-        log_root = artifact / "logs"
-        if log_root.is_dir():
-            paths.extend(path for path in log_root.rglob("*.log") if path.is_file())
-        for path in paths:
-            if path.is_file():
-                with path.open("rb") as handle:
-                    handle.seek(max(0, path.stat().st_size - 65536))
-                    diagnostics.append(handle.read().decode("utf-8", errors="replace"))
-        for diagnostic in diagnostics:
-            deadline = self.quota_until(diagnostic, fallback_seconds=fallback_seconds)
-            if deadline is not None:
-                return deadline
-        return None
+        """Recognize quota only from the suite's current terminal result.
+
+        Logs are retained across recovery attempts, so they cannot safely identify
+        the cause of the current attempt.
+        """
+        del artifact
+        return self.quota_until(json.dumps(dict(result)), fallback_seconds=fallback_seconds)
 
     def quota_until(
         self, diagnostic: str, *, now: datetime | None = None, fallback_seconds: int = 18000

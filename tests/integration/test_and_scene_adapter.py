@@ -428,3 +428,23 @@ def test_quota_log_must_be_a_readable_regular_file(tmp_path: Path, kind: str) ->
         log.symlink_to(target)
     with pytest.raises(ReadinessError, match="quota log"):
         bounded_quota_deadline(tmp_path, now=0)
+
+
+def test_failure_quota_uses_current_structured_result_not_retained_attempt_logs(
+    tmp_path: Path,
+) -> None:
+    """A prior attempt's quota diagnostic cannot defer a later harness failure."""
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "agent-runner.log").write_text(
+        "Codex usage limit reached; reset at 2026-09-12T10:00:00Z\n"
+    )
+    result = {
+        "evaluation_status": "evaluation-harness-failed",
+        "failure": {"code": "judge-output", "reason": "invalid response schema"},
+    }
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, result
+    ) is None
