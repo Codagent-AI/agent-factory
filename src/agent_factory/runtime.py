@@ -369,9 +369,7 @@ def _snapshot(
 
 
 def _fresh_requested(store: ClaimStore, shared: SharedConfig, snapshot: RequestSnapshot) -> bool:
-    fields = (
-        {} if snapshot.verdict is None else {shared.project.verdict.id: snapshot.verdict}
-    )
+    fields = {} if snapshot.verdict is None else {shared.project.verdict.id: snapshot.verdict}
     return _fresh_requested_for_item(store, shared, snapshot.project_item_id, fields)
 
 
