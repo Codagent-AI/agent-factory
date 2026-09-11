@@ -2,9 +2,9 @@
 
 Agent Factory evaluates only the `and-scene` suite in iteration 1. Its deployed
 harness is the full immutable SHA in `config/codagent.toml`, currently
-`01b5a0ef5ee600a96a11737f134df05fa30cd887`. That revision includes the
-automated-outcome contract, the calibration-receipt gate removal from `2fc8443`,
-and the companion wrapper's read-only linked-worktree metadata mounts. Do not
+`488550420230d0fccf8135c8dfa6abc5937942c0`. That revision includes the
+automated-outcome contract, calibration-gate removal, linked-worktree metadata
+mounts, Cursor session persistence, and the `tester` role interface. Do not
 replace this pin with a branch name or a local checkout head. The configured
 role names are `lead`, `implementor`, and `tester`; their defaults are complete
 `cli:model:effort` selections in the same configuration file.
