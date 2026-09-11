@@ -360,6 +360,15 @@ class GitHubClient:
             {"project": project_id, "item": item_id, "field": field_id, "option": option_id},
         )
 
+    def clear_field(self, project_id: str, item_id: str, field_id: str) -> None:
+        """Remove a Project field value when it no longer describes the active claim."""
+        self._graphql(
+            "mutation Clear($project: ID!, $item: ID!, $field: ID!) { "
+            "clearProjectV2ItemFieldValue(input: {projectId: $project, itemId: $item, "
+            "fieldId: $field}) { projectV2Item { id } } }",
+            {"project": project_id, "item": item_id, "field": field_id},
+        )
+
     def set_text_field(self, project: str, item: str, field: str, value: str) -> None:
         self._graphql(
             "mutation Text($project: ID!, $item: ID!, $field: ID!, $text: String!) { "

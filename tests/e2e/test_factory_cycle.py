@@ -406,6 +406,16 @@ def test_cli_clearing_delivered_deferral_verdict_creates_fresh_claim(tmp_path: P
     fresh = store.nonterminal_runs()[0]
     assert fresh.claim_id != first.claim_id and fresh.reason == "initial"
     assert store.get_claim(first.claim_id).lifecycle == "superseded"  # pyright: ignore[reportOptionalMemberAccess]
+    data = json.loads(board.read_text())
+    data["items"][0]["fieldValues"]["nodes"].append(
+        {
+            "field": {"id": shared.project.verdict.id},
+            "optionId": shared.project.verdict.option("infra-error"),
+        }
+    )
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.verdict.id) is None
     _finish(store, Path(fresh.evidence_path))
     store.close()
 

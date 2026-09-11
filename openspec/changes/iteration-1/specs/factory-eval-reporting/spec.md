@@ -93,6 +93,8 @@ When all requested repetitions complete their automated evaluation or settle wit
 
 If a technical failure exhausts its recovery retry, the lifecycle's stop behavior SHALL take precedence: move to Review with `infra-error`, preserving all completed results and explaining which repetitions remain unstarted. Any already-established product failures SHALL remain visible in the results comment. While unfinished work is automatically deferred, the card SHALL use Ready with the applicable `quota-deferred` or `infra-error` verdict so the existing claim can continue under the intake rules.
 
+While a current claim has verified active execution, the card SHALL not retain a Verdict delivered for a superseded or earlier claim. The factory SHALL clear that stale Verdict while reconciling the active claim so the board does not present a concluded technical outcome as the status of running work.
+
 #### Scenario: Complete without a product failure
 
 - **WHEN** all repetitions finish ready for human review without a suite-established product failure
