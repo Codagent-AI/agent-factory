@@ -445,6 +445,7 @@ def test_failure_quota_uses_current_structured_result_not_retained_attempt_logs(
         "failure": {"code": "judge-output", "reason": "invalid response schema"},
     }
 
-    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
-        tmp_path, result
-    ) is None
+    assert (
+        AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(tmp_path, result)
+        is None
+    )
