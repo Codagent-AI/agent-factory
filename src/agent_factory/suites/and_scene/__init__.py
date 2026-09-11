@@ -259,6 +259,8 @@ class AndSceneAdapter:
             (str(self._environment_file),),
             # Appends do not update the logs directory's mtime. Watch the suite's
             # known activity files directly, including sandbox startup output.
+            # Cursor writes session activity to these WAL files while a role is
+            # working. A bounded glob avoids recursively scanning all artifacts.
             tuple(
                 str(artifact / name)
                 for name in (
@@ -267,8 +269,15 @@ class AndSceneAdapter:
                     "factory-suite.log",
                     "logs/agent-runner.log",
                 )
+            )
+            + (
+                f"glob:{artifact}/.runtime/agent-session-state/cursor/chats/*/*/store.db*",
+                f"glob:{artifact}/.runtime/agent-session-state/claude/projects/*/*.jsonl",
             ),
-            {"artifact_path": str(artifact), "suite": "and-scene"},
+            {
+                "artifact_path": str(artifact),
+                "suite": "and-scene",
+            },
             resume,
         )
 

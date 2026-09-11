@@ -8,6 +8,7 @@ for replacement observation is in SQLite rather than a controller pipe.
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import signal
@@ -558,7 +559,7 @@ def _limits_from_document(document: Mapping[str, object]) -> SupervisionLimits:
 
 
 def _source_versions(sources: tuple[str, ...]) -> dict[str, float]:
-    return {source: _mtime(source) for source in sources}
+    return {source: _source_mtime(source) for source in sources}
 
 
 def _saved_source_versions(value: object) -> dict[str, float] | None:
@@ -582,6 +583,13 @@ def _progress_changed(
 ) -> tuple[bool, dict[str, float]]:
     current = _source_versions(sources)
     return current != prior, current
+
+
+def _source_mtime(source: str) -> float:
+    if source.startswith("glob:"):
+        matches = (_mtime(path) for path in glob.iglob(source.removeprefix("glob:")))
+        return max(matches, default=-1.0)
+    return _mtime(source)
 
 
 def _mtime(source: str) -> float:

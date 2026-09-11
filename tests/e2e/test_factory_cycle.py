@@ -533,3 +533,41 @@ def test_missing_frozen_revision_reports_error_without_aborting_tick(tmp_path: P
     assert "skills" in errors[0]["body"] and "evals" in errors[0]["body"]
     assert store.get_setting("field-delivery", f"{claim.id}:refs") is None
     store.close()
+
+
+def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) -> None:
+    from agent_factory.store import ClaimDraft
+
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft(
+            shared.routing.eval_source,
+            1,
+            "I1",
+            "P1",
+            "eval",
+            "x",
+            {"revisions": {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}},
+        )
+    )
+    _cli(config, env, "pause")
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "infra-error"})
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.verdict.id) == shared.project.verdict.option(
+        "infra-error"
+    )
+
+    store.reserve_run(
+        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "artifacts")
+    )
+    store.set_claim_lifecycle(claim.id, "active", {})
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.verdict.id) is None
+
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "infra-error"})
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.verdict.id) == shared.project.verdict.option(
+        "infra-error"
+    )
+    store.close()

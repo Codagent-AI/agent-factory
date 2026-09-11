@@ -144,6 +144,10 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
     assert plan.credential_files == (str(environment),)
     assert plan.argv[plan.argv.index("--env-file") + 1] == str(environment)
     assert all(";" not in value or value == str(artifact) for value in plan.argv)
+    assert (
+        f"glob:{artifact}/.runtime/agent-session-state/cursor/chats/*/*/store.db*"
+        in plan.progress_sources
+    )
 
     artifact.mkdir()
     (artifact / "run-state.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")

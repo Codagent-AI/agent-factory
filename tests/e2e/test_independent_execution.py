@@ -75,6 +75,45 @@ def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
         assert logs.stat().st_mtime_ns == directory_version
 
 
+def test_nested_agent_session_updates_prevent_false_inactivity_timeout(tmp_path: Path) -> None:
+    artifact = tmp_path / "artifacts"
+    session_root = artifact / ".runtime" / "agent-session-state"
+    session_file = session_root / "cursor" / "chats" / "project" / "chat" / "store.db-wal"
+    session_file.parent.mkdir(parents=True)
+    session_file.write_text("started\n", encoding="utf-8")
+    program = tmp_path / "session_progressing_suite.py"
+    program.write_text(
+        "import json, pathlib, sys, time\n"
+        "session_file = pathlib.Path(sys.argv[1])\n"
+        "result = pathlib.Path(sys.argv[2])\n"
+        "for _ in range(20):\n"
+        "    with session_file.open('a') as stream: stream.write('progress\\n')\n"
+        "    time.sleep(.1)\n"
+        "result.write_text(json.dumps({'evaluation_status': 'completed'}))\n",
+        encoding="utf-8",
+    )
+    state = tmp_path / "state.sqlite3"
+    with closing(ClaimStore(state)) as store:
+        run = store.reserve_run(
+            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+        )
+        plan = ExecutionPlan(
+            (sys.executable, str(program), str(session_file), str(artifact / "result.json")),
+            str(tmp_path),
+            {},
+            (),
+            (f"glob:{session_root}/cursor/chats/*/*/store.db*",),
+            {"artifact_path": str(artifact)},
+            False,
+        )
+
+        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(1.3, 10, 10))
+        watcher.wait(timeout=8)
+
+        finished = store.get_run(run.id)
+        assert finished is not None and finished.status == "completed"
+
+
 def _claim(store: ClaimStore) -> str:
     return store.create_claim(
         ClaimDraft("example/evals", 1, "I1", "P1", "eval", "request", {"settings": {}})

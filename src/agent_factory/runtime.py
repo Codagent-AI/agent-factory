@@ -487,6 +487,7 @@ def _report(
     elif active and card.fields.get(shared.project.verdict.id) is not None:
         client.clear_field(shared.project.id, card.id, shared.project.verdict.id)
         card.fields.pop(shared.project.verdict.id, None)
+        store.set_setting("field-delivery", f"{claim_id}:{shared.project.verdict.id}", {})
     revisions = _mapping(claim.frozen_spec.get("revisions", {}))
     invalid_revisions = [
         key
