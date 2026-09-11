@@ -571,3 +571,44 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
         "infra-error"
     )
     store.close()
+
+
+def test_ready_card_with_cleared_verdict_starts_a_fresh_settled_claim(tmp_path: Path) -> None:
+    from agent_factory.store import ClaimDraft
+
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    original = store.create_claim(
+        ClaimDraft(
+            shared.routing.eval_source,
+            1,
+            "I1",
+            "P1",
+            "eval",
+            "x",
+            {"revisions": {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}},
+        )
+    )
+    store.set_claim_lifecycle(original.id, "settled", {"verdict": "infra-error"})
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.status.id) == shared.project.status.option("review")
+
+    data: dict[str, Any] = json.loads(board.read_text())
+    fields = data["items"][0]["fieldValues"]["nodes"]
+    for field in fields:
+        if field["field"]["id"] == shared.project.status.id:
+            field["optionId"] = shared.project.status.option("ready")
+    data["items"][0]["fieldValues"]["nodes"] = [
+        field for field in fields if field["field"]["id"] != shared.project.verdict.id
+    ]
+    board.write_text(json.dumps(data))
+
+    _cli(config, env, "tick")
+    runs = store.nonterminal_runs()
+    try:
+        assert len(runs) == 1
+        assert runs[0].claim_id != original.id
+    finally:
+        for run in runs:
+            _finish(store, Path(run.evidence_path))
+        store.close()

@@ -86,12 +86,16 @@ def cycle(state: Path, config_path: Path) -> None:
             claims = store.claims_for_item(card.id)
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
+            fresh_request = _logical_status(shared, card) == "Ready" and _fresh_requested_for_item(
+                store, shared, card.id, card.fields
+            )
             for claim in claims:
                 if claim.lifecycle == "superseded":
                     continue
                 if card.source.state.lower() == "closed" and claim.lifecycle != "settled":
                     controller.cancel(claim.id)
-                _report(store, controller, client, shared, card, claim.id)
+                if not (fresh_request and claim.lifecycle == "settled"):
+                    _report(store, controller, client, shared, card, claim.id)
                 cleanup.reconcile(claim.id, board_status=_logical_status(shared, card))
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
@@ -365,9 +369,21 @@ def _snapshot(
 
 
 def _fresh_requested(store: ClaimStore, shared: SharedConfig, snapshot: RequestSnapshot) -> bool:
-    if snapshot.verdict is not None:
+    fields = (
+        {} if snapshot.verdict is None else {shared.project.verdict.id: snapshot.verdict}
+    )
+    return _fresh_requested_for_item(store, shared, snapshot.project_item_id, fields)
+
+
+def _fresh_requested_for_item(
+    store: ClaimStore,
+    shared: SharedConfig,
+    project_item_id: str,
+    fields: Mapping[str, object],
+) -> bool:
+    if fields.get(shared.project.verdict.id) is not None:
         return False
-    claims = store.claims_for_item(snapshot.project_item_id)
+    claims = store.claims_for_item(project_item_id)
     return bool(
         claims
         and store.get_setting("field-delivery", f"{claims[-1].id}:{shared.project.verdict.id}")
