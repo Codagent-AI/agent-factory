@@ -25,7 +25,6 @@ cli:
     github-copilot:
       allow_tool_use: false
       thinking_budget: low
-      model: codex
     opencode:
       allow_tool_use: false
       thinking_budget: low
@@ -48,7 +47,7 @@ entry_points:
           num_reviews: 6
           cli_preference:
             - github-copilot
-          model: claude-sonnet-4.6
+          model: gpt-5.3-codex
       - security-and-errors:
           builtin: security-and-errors
           num_reviews: 6

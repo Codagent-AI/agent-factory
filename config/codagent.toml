@@ -1,0 +1,62 @@
+# Versioned shared deployment configuration. No paths or credentials belong here.
+[github]
+organization = "Codagent-AI"
+bot_login = "codagent-factory[bot]"
+app_id = "4880516"
+installation_id = "160216883"
+
+[project]
+id = "PVT_kwDOEARcIs4Bi5pP"
+number = 1
+
+[fields.status]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg"
+[fields.status.options]
+backlog = "d5afe107"
+ready = "2262e12d"
+running = "c39bcdf2"
+review = "20c36f71"
+done = "47d53512"
+
+[fields.owner]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE"
+[fields.owner.options]
+factory = "ee3b16d6"
+human = "b6f46d6b"
+
+[fields.refs]
+id = "PVTF_lADOEARcIs4Bi5pPzhhwAbA"
+
+[fields.verdict]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhhwAbE"
+[fields.verdict.options]
+pending-human-review = "1279dcf1"
+failed = "9c4eddb9"
+quota-deferred = "e446e882"
+infra-error = "e852ed91"
+
+[routing]
+eval_source = "Codagent-AI/agent-evals"
+general_sources = [
+  "Codagent-AI/agent-evals",
+  "Codagent-AI/agent-runner",
+  "Codagent-AI/agent-skills",
+  "Codagent-AI/agent-validator",
+  "Codagent-AI/agent-plugin",
+]
+eval_label = "eval-request"
+eval_type = "Eval"
+
+[eval]
+# Immutable deployed harness: includes the 40/70 outcome contract, calibration-gate
+# removal (2fc8443), and read-only linked-worktree Git metadata mounts (01b5a0e).
+# Includes persisted agent sessions and source-audit missing-evidence scoring (e3346e3).
+harness_sha = "e3346e368ccb0ce3f4d11bcd983ecda7816de9f3"
+suite = "and-scene"
+repetitions = 3
+
+[eval.defaults]
+lead = "cursor:cursor-grok-4.6-high:high"
+implementor = "cursor:cursor-grok-4.6-high:high"
+tester = "cursor:composer-2.5:high"
+skip_validator = false

@@ -1,0 +1,222 @@
+{
+  "id": "PVT_kwDOEARcIs4Bi5pP",
+  "number": 1,
+  "title": "Codagent",
+  "url": "https://github.com/orgs/Codagent-AI/projects/1",
+  "public": false,
+  "items": {
+    "totalCount": 0
+  },
+  "views": {
+    "nodes": [
+      {
+        "id": "PVTV_lADOEARcIs4Bi5pPzgLl78o",
+        "number": 2,
+        "name": "All work",
+        "layout": "BOARD_LAYOUT",
+        "filter": "",
+        "groupByFields": {
+          "nodes": []
+        },
+        "verticalGroupByFields": {
+          "nodes": [
+            {
+              "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg",
+              "name": "Status"
+            }
+          ]
+        },
+        "sortByFields": {
+          "totalCount": 0
+        }
+      },
+      {
+        "id": "PVTV_lADOEARcIs4Bi5pPzgLl78s",
+        "number": 3,
+        "name": "Eval queue",
+        "layout": "BOARD_LAYOUT",
+        "filter": "type:Eval owner:factory status:Ready",
+        "groupByFields": {
+          "nodes": []
+        },
+        "verticalGroupByFields": {
+          "nodes": [
+            {
+              "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg",
+              "name": "Status"
+            }
+          ]
+        },
+        "sortByFields": {
+          "totalCount": 0
+        }
+      },
+      {
+        "id": "PVTV_lADOEARcIs4Bi5pPzgLl78w",
+        "number": 4,
+        "name": "Active factory work",
+        "layout": "BOARD_LAYOUT",
+        "filter": "owner:factory status:Ready,Running,Review",
+        "groupByFields": {
+          "nodes": []
+        },
+        "verticalGroupByFields": {
+          "nodes": [
+            {
+              "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg",
+              "name": "Status"
+            }
+          ]
+        },
+        "sortByFields": {
+          "totalCount": 0
+        }
+      }
+    ]
+  },
+  "fields": {
+    "nodes": [
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPY",
+        "name": "Title",
+        "dataType": "TITLE"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPc",
+        "name": "Assignees",
+        "dataType": "ASSIGNEES"
+      },
+      {
+        "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAPg",
+        "name": "Status",
+        "dataType": "SINGLE_SELECT",
+        "options": [
+          {
+            "id": "d5afe107",
+            "name": "Backlog",
+            "color": "GRAY"
+          },
+          {
+            "id": "2262e12d",
+            "name": "Ready",
+            "color": "BLUE"
+          },
+          {
+            "id": "c39bcdf2",
+            "name": "Running",
+            "color": "YELLOW"
+          },
+          {
+            "id": "20c36f71",
+            "name": "Review",
+            "color": "PURPLE"
+          },
+          {
+            "id": "47d53512",
+            "name": "Done",
+            "color": "GREEN"
+          }
+        ]
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPk",
+        "name": "Labels",
+        "dataType": "LABELS"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPo",
+        "name": "Linked pull requests",
+        "dataType": "LINKED_PULL_REQUESTS"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPs",
+        "name": "Milestone",
+        "dataType": "MILESTONE"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAPw",
+        "name": "Repository",
+        "dataType": "REPOSITORY"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAP4",
+        "name": "Reviewers",
+        "dataType": "REVIEWERS"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAP8",
+        "name": "Parent issue",
+        "dataType": "PARENT_ISSUE"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAQA",
+        "name": "Sub-issues progress",
+        "dataType": "SUB_ISSUES_PROGRESS"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAQE",
+        "name": "Created",
+        "dataType": "CREATED"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAQI",
+        "name": "Updated",
+        "dataType": "UPDATED"
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAQM",
+        "name": "Closed",
+        "dataType": "CLOSED"
+      },
+      {
+        "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAaE",
+        "name": "Owner",
+        "dataType": "SINGLE_SELECT",
+        "options": [
+          {
+            "id": "ee3b16d6",
+            "name": "factory",
+            "color": "BLUE"
+          },
+          {
+            "id": "b6f46d6b",
+            "name": "human",
+            "color": "GRAY"
+          }
+        ]
+      },
+      {
+        "id": "PVTF_lADOEARcIs4Bi5pPzhhwAbA",
+        "name": "Refs",
+        "dataType": "TEXT"
+      },
+      {
+        "id": "PVTSSF_lADOEARcIs4Bi5pPzhhwAbE",
+        "name": "Verdict",
+        "dataType": "SINGLE_SELECT",
+        "options": [
+          {
+            "id": "1279dcf1",
+            "name": "pending-human-review",
+            "color": "YELLOW"
+          },
+          {
+            "id": "9c4eddb9",
+            "name": "failed",
+            "color": "RED"
+          },
+          {
+            "id": "e446e882",
+            "name": "quota-deferred",
+            "color": "PURPLE"
+          },
+          {
+            "id": "e852ed91",
+            "name": "infra-error",
+            "color": "ORANGE"
+          }
+        ]
+      }
+    ]
+  }
+}

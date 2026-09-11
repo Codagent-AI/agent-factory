@@ -1,0 +1,44 @@
+name: Route configured work
+
+on:
+  workflow_call:
+    inputs:
+      factory-revision:
+        description: Immutable agent-factory revision containing this routing configuration.
+        required: true
+        type: string
+    secrets:
+      factory-app-private-key:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a short-lived factory installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.FACTORY_APP_ID }}
+          private-key: ${{ secrets.factory-app-private-key }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check out the pinned factory implementation
+        uses: actions/checkout@v4
+        with:
+          repository: Codagent-AI/agent-factory
+          ref: ${{ inputs.factory-revision }}
+          path: .factory
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Route current issue or pull request state
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: >-
+          uv run --project .factory python -m agent_factory.routing
+          --config .factory/config/codagent.toml
+          --event "$GITHUB_EVENT_PATH"

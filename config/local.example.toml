@@ -1,0 +1,28 @@
+# Machine-local configuration. Copy outside the repository and set portable local paths.
+shared_config = "/opt/agent-factory/config/codagent.toml"
+storage_root = "~/.agent-factory"
+
+[repositories]
+agent_evals = "/srv/src/agent-evals"
+agent_runner = "/srv/src/agent-runner"
+agent_skills = "/srv/src/agent-skills"
+
+[schedule]
+timezone = "America/New_York"
+# Five minutes in production. Tests may use poll_seconds instead of poll_minutes.
+poll_minutes = 5
+start_hour = 0
+stop_hour = 15
+
+[limits]
+# Admission headroom with a cached sandbox image; a fresh image build may need more.
+minimum_free_gib = 8
+max_recovery_attempts = 1
+inactivity_seconds = 1800
+execution_seconds = 21600
+total_seconds = 43200
+codex_reset_fallback_seconds = 18000
+
+[credentials]
+github_app_key = "/etc/agent-factory/github-app.pem"
+suite_environment = "/etc/agent-factory/suite.env"

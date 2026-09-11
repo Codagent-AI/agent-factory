@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.codagent.agent-factory</string>
+  <key>ProgramArguments</key><array><string>__EXECUTABLE__</string><string>--config</string><string>__CONFIG__</string><string>resident</string></array>
+  <key>WorkingDirectory</key><string>__ROOT__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>__LOG__</string>
+  <key>StandardErrorPath</key><string>__LOG__</string>
+  <key>EnvironmentVariables</key><dict><key>AGENT_FACTORY_ROOT</key><string>__ROOT__</string><key>AGENT_FACTORY_GITHUB_APP_KEY</key><string>__CREDENTIAL__</string></dict>
+</dict></plist>

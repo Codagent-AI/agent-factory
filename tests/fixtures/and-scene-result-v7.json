@@ -1,0 +1,318 @@
+{
+  "schema_version": 7,
+  "evaluation_status": "complete",
+  "product_verdict": "pass",
+  "automated_subtotal": {
+    "points": 55.483333333333334,
+    "possible": 70,
+    "observed_possible": 70,
+    "complete": true
+  },
+  "failure": null,
+  "failed_phase": null,
+  "resumable": null,
+  "timing": {
+    "implementation": {
+      "state": "available",
+      "active_ms": 6525572
+    },
+    "phases": [
+      {
+        "phase": "preflight",
+        "active_ms": 0.443875,
+        "interval_count": 1
+      },
+      {
+        "phase": "evidence-provenance",
+        "active_ms": 153.383833,
+        "interval_count": 1
+      },
+      {
+        "phase": "source-freeze",
+        "active_ms": 259.161459,
+        "interval_count": 1
+      },
+      {
+        "phase": "verification",
+        "active_ms": 35914.284308,
+        "interval_count": 1
+      },
+      {
+        "phase": "candidate-server",
+        "active_ms": 75.039083,
+        "interval_count": 1
+      },
+      {
+        "phase": "browser-evaluation",
+        "active_ms": 139243.463481,
+        "interval_count": 1
+      },
+      {
+        "phase": "product-judging",
+        "active_ms": 4549779.43241,
+        "interval_count": 1
+      },
+      {
+        "phase": "ambiguity-diagnostics",
+        "active_ms": 3198.472543,
+        "interval_count": 1
+      },
+      {
+        "phase": "metrics-pricing",
+        "active_ms": 6.333833,
+        "interval_count": 1
+      },
+      {
+        "phase": "pending-result",
+        "active_ms": 397.758459,
+        "interval_count": 1
+      },
+      {
+        "phase": "cleanup",
+        "active_ms": 8.090666,
+        "interval_count": 1
+      }
+    ],
+    "automated_phase_active_ms": 4729035.863949999,
+    "total_active_machine_ms": 11254607.86395,
+    "sessions": [
+      "astra-lead-20260909T142250Z-rescore-20260909T211038Z#1"
+    ],
+    "unobserved_phases": [
+      "cleanup-result"
+    ],
+    "excludes_human_review": true,
+    "complete": true
+  },
+  "cost": {
+    "total": {
+      "state": "unavailable",
+      "estimated_api_cost_usd": null,
+      "known_cost_subtotal_usd": 0,
+      "complete": false,
+      "unresolved_attempts": [
+        "implement-tasks%3A0%2Fimplement-single-task%2Fsub%3Aimplement-task/generate-code#1",
+        "implement-tasks%3A0%2Fimplement-single-task%2Fsub%3Aimplement-task%2Frun-validator%2Fsub%3Arun-validator%2Fvalidator-retry%3A0/fix-violations#1",
+        "implement-tasks%3A0%2Fimplement-single-task%2Fsub%3Aimplement-task/session-report#1",
+        "implement-tasks%3A1%2Fimplement-single-task%2Fsub%3Aimplement-task/generate-code#1",
+        "implement-tasks%3A1%2Fimplement-single-task%2Fsub%3Aimplement-task%2Frun-validator%2Fsub%3Arun-validator%2Fvalidator-retry%3A0/fix-violations#1",
+        "implement-tasks%3A1%2Fimplement-single-task%2Fsub%3Aimplement-task/session-report#1",
+        "implement-tasks%3A2%2Fimplement-single-task%2Fsub%3Aimplement-task/generate-code#1",
+        "implement-tasks%3A2%2Fimplement-single-task%2Fsub%3Aimplement-task%2Frun-validator%2Fsub%3Arun-validator%2Fvalidator-retry%3A0/fix-violations#1",
+        "implement-tasks%3A2%2Fimplement-single-task%2Fsub%3Aimplement-task/session-report#1",
+        "complete-task-index#1",
+        "review-assumptions#1",
+        "simplify#1",
+        "open-draft-pr#1",
+        "prepare-acceptance/00a1694b-e7cb-4400-89ce-0a88cadd073c#1",
+        "prepare-acceptance/d1d1c8b6-ab36-488d-8732-187dcb5f6baf#1",
+        "prepare-acceptance/7c9516a6-8d06-4a5b-9697-4f0052569c7c#1",
+        "prepare-acceptance#1",
+        "8d6c4359-bb0d-47e7-b17a-f4bb004ae859",
+        "1fbb3f21-0ad3-4df6-ad55-9211be8f0f07",
+        "31c26030-b484-4ebc-b434-9d1e69cf8719",
+        "f06f4df7-6e9f-4bf5-bbd6-4011e03dfd95",
+        "ed3bedea-0c6b-4b3f-8dfa-fb56d3cc83cc",
+        "c577b4b8-adfd-4634-b9b6-80b4423798ac",
+        "4bf30f84-9307-4cb2-a3a4-71b296afd032",
+        "34793d9a-7ab6-43a7-ab8b-eecf56adbf38",
+        "3cdfef14-eeba-439c-9347-e101ee247ab3",
+        "2fa29d64-ddb1-4de9-824d-527fc6bd7942",
+        "45d024d8-d65c-47bb-9c26-a46c6721e91e",
+        "deb603b9-8b6b-493a-bc92-fe8e1a0dfc18",
+        "1dae0dea-eca9-42fc-9e31-33db5d8d3d71",
+        "504f9128-f685-40cf-b8b7-f0ffc8b40781"
+      ],
+      "reason": "one or more agent attempts have no defensible cost"
+    },
+    "usage": {
+      "state": "available",
+      "complete": true,
+      "attempt_count": 31,
+      "attempts_missing_usage": 0,
+      "attempts_missing_token_totals": 0,
+      "tokens": {
+        "input": 50844812,
+        "cached_input": 49075072,
+        "output": 216517,
+        "reasoning": 64435
+      },
+      "token_totals": {
+        "input": 50844812,
+        "output": 216517,
+        "total": 51061329
+      }
+    },
+    "eval_owned": {
+      "state": "partial",
+      "complete": false,
+      "attempt_count": 49,
+      "attempts_missing_usage": 1,
+      "priced": false,
+      "included_in_implementation_total": false,
+      "tokens": {
+        "input": 3240782,
+        "cached_input": 1857920,
+        "cache_write": 0,
+        "output": 69423,
+        "reasoning": 3619
+      },
+      "token_totals": {
+        "input": 3240782,
+        "output": 69423,
+        "total": 3310205
+      },
+      "token_categories": [
+        "cache_write",
+        "cached_input",
+        "input",
+        "output",
+        "reasoning"
+      ],
+      "by_phase": [
+        {
+          "phase": "demo-integration",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 10,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 612203,
+            "cached_input": 368384,
+            "cache_write": 0,
+            "output": 9720,
+            "reasoning": 379
+          },
+          "token_totals": {
+            "input": 612203,
+            "output": 9720,
+            "total": 621923
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "scene-kit",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 10,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 765803,
+            "cached_input": 421504,
+            "cache_write": 0,
+            "output": 21073,
+            "reasoning": 652
+          },
+          "token_totals": {
+            "input": 765803,
+            "output": 21073,
+            "total": 786876
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "presentation-skill",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 12,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 779477,
+            "cached_input": 454400,
+            "cache_write": 0,
+            "output": 20499,
+            "reasoning": 943
+          },
+          "token_totals": {
+            "input": 779477,
+            "output": 20499,
+            "total": 799976
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "verification-tooling",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 14,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 955244,
+            "cached_input": 613632,
+            "cache_write": 0,
+            "output": 16829,
+            "reasoning": 1383
+          },
+          "token_totals": {
+            "input": 955244,
+            "output": 16829,
+            "total": 972073
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "testing-evidence",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 1,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 69152,
+            "cached_input": 0,
+            "cache_write": 0,
+            "output": 738,
+            "reasoning": 173
+          },
+          "token_totals": {
+            "input": 69152,
+            "output": 738,
+            "total": 69890
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "assumption-handling",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 1,
+          "attempts_missing_usage": 0,
+          "tokens": {
+            "input": 58903,
+            "cached_input": 0,
+            "cache_write": 0,
+            "output": 564,
+            "reasoning": 89
+          },
+          "token_totals": {
+            "input": 58903,
+            "output": 564,
+            "total": 59467
+          },
+          "usage_complete": true
+        },
+        {
+          "phase": "ambiguity-diagnostics",
+          "provider": "openai",
+          "model": "codex-default",
+          "attempt_count": 1,
+          "attempts_missing_usage": 1,
+          "tokens": null,
+          "token_totals": null,
+          "usage_complete": false
+        }
+      ]
+    }
+  },
+  "delivery": {
+    "branch": "eval/and-scene/astra-lead-20260909T142250Z",
+    "pull_request": {
+      "number": 16,
+      "url": "https://github.com/Codagent-AI/and-scene/pull/16",
+      "state": "OPEN",
+      "draft": true,
+      "base": "main",
+      "head_branch": "eval/and-scene/astra-lead-20260909T142250Z",
+      "head_sha": "6273deffee378982f5d79e5570c9afa162b434fa"
+    }
+  }
+}

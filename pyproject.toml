@@ -14,8 +14,12 @@ authors = [
 ]
 dependencies = []
 
+[project.scripts]
+agent-factory = "agent_factory.cli:main"
+
 [dependency-groups]
 dev = [
+  "graphql-core>=3.2,<3.3",
   "pyright>=1.1.405",
   "pytest>=8.4.2",
   "ruff>=0.12.12",
@@ -23,15 +27,22 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/agent_factory"]
+force-include = { "packaging/launchd/com.codagent.agent-factory.plist" = "share/agent-factory/launchd/com.codagent.agent-factory.plist" }
 
 [tool.pyright]
 include = ["src", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 testpaths = ["tests"]
+markers = [
+  "darwin: requires macOS process-session semantics",
+  "docker: requires a Docker-enabled host and test-owned containers",
+]
 
 [tool.ruff]
 line-length = 100

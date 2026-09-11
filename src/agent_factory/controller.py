@@ -1,0 +1,579 @@
+"""Policy-only claim controller.
+
+The controller is intentionally ignorant of suite command details.  A caller
+supplies pinned revisions and executes reserved runs; this module persists the
+admission decision, normalized observations, and report delivery state.
+"""
+
+from __future__ import annotations
+
+import fcntl
+import hashlib
+import re
+from collections.abc import Callable, Generator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Protocol, cast
+
+from agent_factory.github import GitHubApiError, IssueComment
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
+from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
+
+_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+
+
+@dataclass(frozen=True)
+class RequestSnapshot:
+    repository: str
+    issue_number: int
+    issue_id: str
+    project_item_id: str
+    author: str
+    author_permission: str | None
+    issue_type: str | None
+    labels: frozenset[str]
+    status: str
+    owner: str | None
+    verdict: str | None
+    body: str
+    closed: bool
+
+
+@dataclass(frozen=True)
+class WorkUnit:
+    key: str
+    evidence_path: str
+
+
+@dataclass(frozen=True)
+class ExecutionPlan:
+    argv: tuple[str, ...]
+    working_directory: str
+    allowed_environment: Mapping[str, str]
+    credential_files: tuple[str, ...]
+    progress_sources: tuple[str, ...]
+    ownership_hints: Mapping[str, str]
+    resume: bool
+
+
+@dataclass(frozen=True)
+class Observation:
+    running: bool
+    progress_changed: bool
+    quota_until: datetime | None = None
+    diagnostic: str | None = None
+
+
+@dataclass(frozen=True)
+class AttemptResult:
+    execution_status: str
+    product_verdict: str | None
+    result: Mapping[str, object]
+    quota_until: datetime | None = None
+    resumable: bool | None = None
+
+
+@dataclass(frozen=True)
+class ClaimPresentation:
+    status: str
+    verdict: str | None
+    events: tuple[str, ...]
+
+
+class ReportingClient(Protocol):
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
+
+    def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
+
+
+class Controller:
+    """Serializes admission while allowing supervisors to own running attempts."""
+
+    def __init__(
+        self,
+        store: ClaimStore,
+        github: ReportingClient,
+        defaults: EvalDefaults,
+        *,
+        harness_sha: str,
+        suite: str = "and-scene",
+        factory_login: str = "codagent-factory[bot]",
+        artifact_root: Path | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._store = store
+        self._github = github
+        self._defaults = defaults
+        self._harness_sha = harness_sha
+        self._suite = suite
+        self._factory_login = factory_login
+        self._artifact_root = (
+            artifact_root or (Path.home() / ".agent-factory" / "artifacts")
+        ).resolve()
+        self._now = now or (lambda: datetime.now(UTC))
+
+    def pause(self) -> None:
+        self._store.set_paused(True)
+
+    def resume(self) -> None:
+        self._store.set_paused(False)
+
+    def paused(self) -> bool:
+        return self._store.is_paused()
+
+    def accept(
+        self,
+        snapshot: RequestSnapshot,
+        *,
+        resolve: Callable[[ParsedRequest], tuple[str, str]],
+        fresh: bool = False,
+    ) -> Claim | None:
+        """Validate and freeze a new request, never creating a claim for bad input."""
+        if not self._eligible(snapshot):
+            return None
+        try:
+            request = parse_request(snapshot.body, self._defaults)
+        except ValueError as error:
+            self._invalid_feedback(snapshot, str(error))
+            return None
+        old_claims = self._store.claims_for_item(snapshot.project_item_id)
+        current = next(
+            (
+                claim
+                for claim in reversed(old_claims)
+                if claim.lifecycle not in {"superseded", "cancelled"}
+            ),
+            None,
+        )
+        if current is not None and self._is_active(current):
+            return current
+        if current is not None and current.request_fingerprint == request.fingerprint and not fresh:
+            return current
+        runner_sha, skills_sha = resolve(request)
+        frozen = request.freeze(
+            runner_sha=runner_sha,
+            skills_sha=skills_sha,
+            harness_sha=self._harness_sha,
+            suite=self._suite,
+        )
+        draft = ClaimDraft(
+            snapshot.repository,
+            snapshot.issue_number,
+            snapshot.issue_id,
+            snapshot.project_item_id,
+            "eval",
+            request.fingerprint,
+            frozen.payload,
+        )
+        claim = (
+            self._store.create_claim(draft)
+            if current is None
+            else self._store.supersede_and_create(current.id, draft)
+        )
+        self._store.set_claim_lifecycle(claim.id, "active", {})
+        self._store.record_event(claim.id, "accepted", "Evaluation inputs accepted and frozen.")
+        return cast(Claim, self._store.get_claim(claim.id))
+
+    def reserve_next(self, claim_id: str, *, readiness: Callable[[], str | None]) -> Run | None:
+        """Reserve exactly one ready work unit after all launch-time controls pass."""
+        with advisory_lock(self._store.path, "admission"):
+            claim = self._required_claim(claim_id)
+            if claim.lifecycle in {"settled", "cancelled", "superseded"} or self.paused():
+                return None
+            issue = readiness()
+            if issue is not None:
+                self._store.set_hold(claim.id, "readiness", {"reason": issue})
+                self._store.record_event(claim.id, f"readiness:{issue}", f"Waiting: {issue}")
+                return None
+            global_quota = self._store.get_setting("admission", "quota")
+            if global_quota is not None and _hold_active(global_quota, self._now()):
+                return None
+            quota = self._store.get_hold(claim.id, "quota")
+            if quota is not None and _hold_active(quota, self._now()):
+                return None
+            repetitions = _repetitions(claim)
+            next_unit, reason = self._next_unit(claim, repetitions)
+            if next_unit is None:
+                self._settle_if_complete(claim)
+                return None
+            run = self._store.reserve_run(
+                claim.id,
+                next_unit,
+                reason=reason,
+                evidence_path=str(self._artifact_root / f"{claim.id}-{next_unit}"),
+            )
+            self._store.set_claim_lifecycle(claim.id, "active", {})
+            self._store.record_event(
+                claim.id,
+                f"{next_unit}:attempt-{run.attempt_number}:start",
+                f"Starting {next_unit}, attempt {run.attempt_number + 1}.",
+            )
+            return run
+
+    def record_result(self, run_id: str, result: AttemptResult) -> None:
+        """Persist a suite-normalized result before changing aggregate presentation."""
+        run = self._required_run(run_id)
+        stored_result = dict(result.result)
+        stored_result["execution_status"] = result.execution_status
+        stored_result.setdefault("artifact_path", run.evidence_path)
+        if result.product_verdict is not None:
+            stored_result["product_verdict"] = result.product_verdict
+        if result.resumable is not None:
+            stored_result["resumable"] = result.resumable
+        persist = (
+            self._store.finish_run
+            if run.status in NONTERMINAL_RUN_STATUSES
+            else self._store.normalize_terminal_result
+        )
+        if result.quota_until is not None:
+            stored_result["quota_until"] = result.quota_until.isoformat()
+            persist(run.id, execution_status="deferred", result=stored_result)
+            self._store.set_hold(run.claim_id, "quota", {"until": result.quota_until.isoformat()})
+            self._store.set_setting("admission", "quota", {"until": result.quota_until.isoformat()})
+            self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "quota-deferred"})
+            self._store.record_event(
+                run.claim_id,
+                f"{run.unit_key}:attempt-{run.attempt_number}:quota",
+                f"{run.unit_key} is waiting for usage reset at {result.quota_until.isoformat()}.",
+            )
+            return
+        persist(run.id, execution_status=result.execution_status, result=stored_result)
+        if _technical_failure(result):
+            if run.reason == "recovery":
+                self._store.set_claim_lifecycle(
+                    run.claim_id,
+                    "settled",
+                    {"verdict": "infra-error", "failed_unit": run.unit_key},
+                )
+                self._store.record_event(
+                    run.claim_id,
+                    f"{run.unit_key}:attempt-{run.attempt_number}:exhausted",
+                    f"{run.unit_key} exhausted its technical recovery attempt; "
+                    "later repetitions are unstarted.\n\n"
+                    + _completion_message(run.unit_key, stored_result),
+                )
+            else:
+                self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "infra-error"})
+                self._store.record_event(
+                    run.claim_id,
+                    f"{run.unit_key}:attempt-{run.attempt_number}:retry",
+                    f"{run.unit_key} failed technically and will use its one recovery attempt.\n\n"
+                    + _completion_message(run.unit_key, stored_result),
+                )
+            return
+        self._store.record_event(
+            run.claim_id,
+            f"{run.unit_key}:attempt-{run.attempt_number}:complete",
+            _completion_message(run.unit_key, stored_result),
+        )
+        self._settle_if_complete(self._required_claim(run.claim_id))
+
+    def presentation(self, claim_id: str) -> ClaimPresentation:
+        claim = self._required_claim(claim_id)
+        if claim.lifecycle == "cancelled":
+            return ClaimPresentation("Done", None, ("cancelled",))
+        verdict = claim.outcome.get("verdict")
+        if claim.lifecycle == "settled":
+            return ClaimPresentation("Review", verdict if isinstance(verdict, str) else None, ())
+        if claim.lifecycle == "waiting":
+            return ClaimPresentation(
+                "Ready", verdict if isinstance(verdict, str) else "infra-error", ()
+            )
+        return ClaimPresentation("Running", None, ())
+
+    def cancel(self, claim_id: str) -> None:
+        claim = self._required_claim(claim_id)
+        for run in self._store.runs_for_claim(claim.id):
+            if run.status in NONTERMINAL_RUN_STATUSES:
+                self._store.request_cancellation(run.id)
+        self._store.set_claim_lifecycle(claim.id, "cancelled", {})
+        self._store.record_event(
+            claim.id, "cancelled", "Issue closed; execution cancelled and evidence retained."
+        )
+
+    def deliver_reports(self, claim_id: str) -> None:
+        claim = self._required_claim(claim_id)
+        comments = self._github.list_comment_records(claim.repository, claim.issue_number)
+        for event in self._store.pending_events(claim.id):
+            marker = _marker(claim.id, event.key)
+            existing = next(
+                (
+                    comment
+                    for comment in comments
+                    if comment.author == self._factory_login and marker in comment.body
+                ),
+                None,
+            )
+            if existing is not None:
+                self._store.acknowledge_event(claim.id, event.key, existing.id)
+                continue
+            try:
+                comment_id = self._github.create_comment(
+                    claim.repository, claim.issue_number, f"{marker}\n{event.body}"
+                )
+            except GitHubApiError as error:
+                # The next cycle searches all pages before considering a retry.
+                self._store.record_delivery_failure(claim.id, event.key, error)
+                continue
+            self._store.acknowledge_event(claim.id, event.key, comment_id or "acknowledged")
+
+    def _eligible(self, snapshot: RequestSnapshot) -> bool:
+        return (
+            not snapshot.closed
+            and snapshot.owner == "factory"
+            and snapshot.status == "Ready"
+            and snapshot.issue_type == "Eval"
+            and snapshot.author_permission in _WRITER_PERMISSIONS
+        )
+
+    def report_request_readiness(self, snapshot: RequestSnapshot, reason: str) -> None:
+        """Persist pre-claim failures and deliver corrective feedback without accepting inputs."""
+        key = f"{snapshot.repository}:{snapshot.issue_number}"
+        receipt = self._store.get_setting("request-readiness", key)
+        if receipt and receipt.get("reason") == reason and receipt.get("comment_id"):
+            return
+        self._store.set_setting("request-readiness", key, {"reason": reason})
+        digest = hashlib.sha256(reason.encode()).hexdigest()
+        marker = f"<!-- agent-factory:request-readiness:{digest} -->"
+        existing = next(
+            (
+                comment
+                for comment in self._github.list_comment_records(
+                    snapshot.repository, snapshot.issue_number
+                )
+                if comment.author == self._factory_login and marker in comment.body
+            ),
+            None,
+        )
+        comment_id = (
+            existing.id
+            if existing
+            else self._github.create_comment(
+                snapshot.repository,
+                snapshot.issue_number,
+                f"{marker}\nWaiting for revision readiness: {reason}",
+            )
+        )
+        self._store.set_setting(
+            "request-readiness", key, {"reason": reason, "comment_id": comment_id or "acknowledged"}
+        )
+
+    def _invalid_feedback(self, snapshot: RequestSnapshot, explanation: str) -> None:
+        key = f"{snapshot.repository}:{snapshot.issue_number}"
+        fingerprint = hashlib.sha256(f"{snapshot.body}\0{explanation}".encode()).hexdigest()
+        receipt = self._store.get_setting("invalid-input", key)
+        if receipt is not None and receipt.get("fingerprint") == fingerprint:
+            return
+        marker = f"<!-- agent-factory:needs-input:{fingerprint} -->"
+        comment_id = self._github.create_comment(
+            snapshot.repository,
+            snapshot.issue_number,
+            f"{marker}\nneeds-input: {explanation}",
+        )
+        self._store.set_setting(
+            "invalid-input",
+            key,
+            {"fingerprint": fingerprint, "comment_id": comment_id or "acknowledged"},
+        )
+
+    def _next_unit(self, claim: Claim, repetitions: int) -> tuple[str | None, str]:
+        runs = self._store.runs_for_claim(claim.id)
+        for number in range(1, repetitions + 1):
+            key = f"rep-{number}"
+            unit_runs = [run for run in runs if run.unit_key == key]
+            if not unit_runs:
+                return key, "initial"
+            latest = unit_runs[-1]
+            if latest.status in NONTERMINAL_RUN_STATUSES:
+                return None, "initial"
+            if latest.status == "deferred":
+                return key, "quota"
+            if _run_needs_recovery(latest) and latest.reason != "recovery":
+                return key, "recovery"
+        return None, "initial"
+
+    def _settle_if_complete(self, claim: Claim) -> None:
+        if claim.lifecycle == "settled":
+            return
+        runs = self._store.runs_for_claim(claim.id)
+        repetitions = _repetitions(claim)
+        settled: list[Run] = []
+        for number in range(1, repetitions + 1):
+            unit_runs = [run for run in runs if run.unit_key == f"rep-{number}"]
+            if not unit_runs:
+                return
+            latest = unit_runs[-1]
+            if latest.status not in {"completed", "failed"}:
+                return
+            if _run_needs_recovery(latest):
+                return
+            settled.append(latest)
+        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in settled)
+        verdict = "failed" if failed else "pending-human-review"
+        self._store.set_claim_lifecycle(claim.id, "settled", {"verdict": verdict})
+        self._store.record_event(
+            claim.id,
+            "handoff",
+            f"All repetitions settled; aggregate verdict is {verdict}.",
+        )
+
+    def _is_active(self, claim: Claim) -> bool:
+        return any(
+            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim.id)
+        )
+
+    def _required_claim(self, claim_id: str) -> Claim:
+        claim = self._store.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        return claim
+
+    def _required_run(self, run_id: str) -> Run:
+        run = self._store.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        return run
+
+
+def _marker(claim_id: str, event_key: str) -> str:
+    return f"<!-- agent-factory:event:{claim_id}:{event_key} -->"
+
+
+def _repetitions(claim: Claim) -> int:
+    settings_raw = claim.frozen_spec.get("settings")
+    if not isinstance(settings_raw, Mapping):
+        raise RuntimeError("claim has no frozen eval settings")
+    settings = cast(Mapping[str, object], settings_raw)
+    repetitions = settings.get("repetitions")
+    if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
+        raise RuntimeError("claim has invalid frozen repetitions")
+    return repetitions
+
+
+def quota_deadline(hold: Mapping[str, object]) -> datetime:
+    """Require a usable reset time; invalid saved holds never authorize admission."""
+    value = hold.get("until")
+    if not isinstance(value, str):
+        raise ValueError("quota hold is missing a string reset timestamp")
+    try:
+        deadline = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError("quota hold has an invalid reset timestamp") from error
+    if deadline.utcoffset() is None:
+        raise ValueError("quota hold reset timestamp must include a timezone")
+    return deadline
+
+
+def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+    try:
+        return quota_deadline(hold) > now
+    except ValueError:
+        return True
+
+
+def _technical_failure(result: AttemptResult) -> bool:
+    if result.execution_status not in {"failed", "interrupted"}:
+        return False
+    resumable = result.resumable
+    if resumable is None:
+        reported = result.result.get("resumable")
+        resumable = reported if isinstance(reported, bool) else None
+    return not _is_nonresumable_workflow(result.result, resumable)
+
+
+def _run_needs_recovery(run: Run) -> bool:
+    if run.status not in {"failed", "interrupted"}:
+        return False
+    resumable = run.result.get("resumable")
+    return not _is_nonresumable_workflow(
+        run.result, resumable if isinstance(resumable, bool) else None
+    )
+
+
+def _product_failed(run: Run) -> bool:
+    return run.result.get("product_verdict") == "failed"
+
+
+def _nonresumable_workflow(run: Run) -> bool:
+    resumable = run.result.get("resumable")
+    return _is_nonresumable_workflow(run.result, resumable if isinstance(resumable, bool) else None)
+
+
+def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | None) -> bool:
+    failure_raw = result.get("failure")
+    if not isinstance(failure_raw, Mapping):
+        return False
+    failure = cast(Mapping[str, object], failure_raw)
+    return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
+
+
+def _public_diagnostic(value: str) -> str:
+    """Keep useful failure context without publishing common credential representations."""
+    value = re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[redacted]@", value)
+    value = re.sub(r"\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[redacted]", value)
+    value = re.sub(
+        r"(?i)\b(?:Proxy-)?Authorization\s*:\s*[^\r\n]*",
+        "Authorization: [redacted]",
+        value,
+    )
+    value = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", value)
+    return re.sub(
+        r"(?i)(\b[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*[\"']?\s*[:=]\s*)"
+        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+        r"\1[redacted]",
+        value,
+    )
+
+
+def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
+    def text(value: object) -> str:
+        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+            return "unavailable"
+        return _public_diagnostic(str(value)).replace("\n", " ")[:500] or "unavailable"
+
+    lines = [
+        f"{unit_key} settled.",
+        f"Execution: {text(result.get('execution_status'))}",
+        f"Product verdict: {text(result.get('product_verdict'))}",
+    ]
+    raw = result.get("report_summary")
+    summary = (
+        cast(Mapping[str, object], raw)
+        if isinstance(raw, Mapping)
+        else {
+            "Automated score": result.get("score"),
+            "Cost": result.get("cost"),
+            "Artifacts": result.get("artifact_path"),
+        }
+    )
+    lines.extend(f"{key}: {text(value)}" for key, value in summary.items())
+    failure = result.get("failure")
+    if isinstance(failure, Mapping):
+        details = cast(Mapping[str, object], failure)
+        lines.append(
+            "Failure: "
+            + "; ".join(
+                f"{key}={text(details[key])}"
+                for key in ("owner", "code", "phase", "reason", "message")
+                if key in details
+            )
+        )
+    for key in ("failed_phase", "reason", "error", "timeout"):
+        if result.get(key) is not None:
+            lines.append(f"{key}: {text(result[key])}")
+    return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
+
+
+@contextmanager
+def advisory_lock(state: Path, name: str) -> Generator[None, None, None]:
+    """Serialize controller entry points across processes sharing this database."""
+    directory = state.resolve().parent / "locks"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{name}.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
