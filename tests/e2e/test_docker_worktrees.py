@@ -131,10 +131,13 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         assert recorded["image"] == observed["Image"]
         assert container_matches_recorded_ownership(recorded, observed)
         _run(["docker", "exec", name, "sh", "-c", proof])
-        for path in source_dirs:
+        for source, pin_name in (
+            ("/agent-runner-source", "runner"),
+            ("/agent-skills-source", "skills"),
+        ):
             assert (
-                _run(["docker", "exec", name, "git", "-C", path, "rev-parse", "HEAD"])
-                in pins.values()
+                _run(["docker", "exec", name, "git", "-C", source, "rev-parse", "HEAD"])
+                == pins[pin_name]
             )
         assert all(
             not mount["RW"] for mount in observed["Mounts"] if mount["Destination"] != "/artifacts"

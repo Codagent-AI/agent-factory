@@ -193,14 +193,23 @@ def _launch_and_observe(
     except ProcessProbeError:
         store.report_uncertainty(run.id, "new execution identity cannot be probed")
         return
-    if identity is None or not store.begin_run(
+    if identity is None:
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            store.report_uncertainty(run.id, "new execution exit cannot be confirmed")
+            return
+        # Reconcile durable results and any surviving suite container through the
+        # same observation path. A reaped child has no live process identity.
+        identity = {}
+    if not store.begin_run(
         run.id,
         launch_nonce=run.launch_nonce,
         supervisor=_supervisor_identity(),
         process=identity,
     ):
         # A stale watcher must not leave an untracked child behind.
-        if identity is not None and _identity_status(identity) == "alive":
+        if _identity_status(identity) == "alive":
             _terminate(identity)
         return
     _observe(store, run.id, plan, limits, identity)

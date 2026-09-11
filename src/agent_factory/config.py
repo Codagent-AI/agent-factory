@@ -175,8 +175,10 @@ class LocalConfig:
         timezone_name = _string(schedule, "timezone", "schedule")
         try:
             timezone = ZoneInfo(timezone_name)
-        except ZoneInfoNotFoundError as error:
-            raise ConfigurationError(f"schedule.timezone is unknown: {timezone_name}") from error
+        except (ZoneInfoNotFoundError, ValueError) as error:
+            raise ConfigurationError(
+                f"schedule.timezone is invalid or unknown: {timezone_name}"
+            ) from error
         poll_seconds = (
             _positive_int(schedule, "poll_seconds", "schedule")
             if "poll_seconds" in schedule
@@ -245,6 +247,11 @@ class SharedConfig:
             if not isinstance(value, str) or not value:
                 raise ConfigurationError("routing.general_sources must be a list of repositories")
             source_repositories.append(value)
+        eval_source = _string(routing, "eval_source", "routing")
+        if eval_source not in source_repositories:
+            raise ConfigurationError(
+                "routing.eval_source must be included in routing.general_sources"
+            )
         harness_sha = _string(eval_config, "harness_sha", "eval")
         if not _SHA.fullmatch(harness_sha):
             raise ConfigurationError("eval.harness_sha must be a full 40-character commit SHA")
@@ -266,7 +273,7 @@ class SharedConfig:
                 verdict=_select_field(fields, "verdict"),
             ),
             routing=RoutingConfig(
-                eval_source=_string(routing, "eval_source", "routing"),
+                eval_source=eval_source,
                 general_sources=frozenset(source_repositories),
                 eval_label=_string(routing, "eval_label", "routing"),
                 eval_type=_string(routing, "eval_type", "routing"),

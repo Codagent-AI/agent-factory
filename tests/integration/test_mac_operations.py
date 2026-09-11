@@ -142,3 +142,36 @@ def test_explicit_resident_poll_override_wins_over_local_schedule(tmp_path: Path
 
     assert _poll_seconds(1.5, config) == 1.5  # pyright: ignore[reportPrivateUsage]
     assert _poll_seconds(None, config) == 300  # pyright: ignore[reportPrivateUsage]
+
+
+def test_local_config_reports_malformed_timezone_as_configuration_error(tmp_path: Path) -> None:
+    import pytest
+
+    from agent_factory.config import ConfigurationError
+
+    text = _local_config(tmp_path, tmp_path / "shared.toml").read_text()
+    for timezone in ("/UTC", "../UTC", "America/../New_York"):
+        with pytest.raises(ConfigurationError, match="schedule.timezone"):
+            LocalConfig.from_toml(text.replace('timezone = "UTC"', f'timezone = "{timezone}"'))
+
+
+def test_doctor_gives_docker_and_authentication_time_to_complete(tmp_path: Path) -> None:
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
+    commands: list[tuple[tuple[str, ...], float]] = []
+
+    def delayed_check(
+        command: tuple[str, ...], *, capture_output: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[bytes]:
+        commands.append((command, timeout))
+        if timeout < 10:
+            raise subprocess.TimeoutExpired(command, timeout)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    with patch("agent_factory.operations.subprocess.run", side_effect=delayed_check):
+        diagnostics = operations.doctor(config)
+        diagnostics.extend(operations.model_authentication({"lead": "codex:test:high"}))
+
+    relevant = [d for d in diagnostics if d.name in {"Docker", "codex model authentication"}]
+    assert len(relevant) >= 2
+    assert all(d.available for d in relevant)
+    assert all(10 <= timeout <= 60 for command, timeout in commands if command[0] != "cursor")

@@ -64,7 +64,12 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
     diagnostics.extend(_repository_checks(config))
     diagnostics.append(_suite_environment(config.credentials.suite_environment))
     diagnostics.append(
-        _command_check("Docker", ("docker", "info"), "Start Docker Desktop, then rerun doctor.")
+        _command_check(
+            "Docker",
+            ("docker", "info"),
+            "Start Docker Desktop, then rerun doctor.",
+            timeout=30,
+        )
     )
     profiles = (
         {
@@ -109,6 +114,7 @@ def model_authentication(profiles: Mapping[str, str]) -> list[Diagnostic]:
                 if command[0] == "cursor"
                 else f"Authenticate {command[0]} on this Mac, then rerun doctor."
             ),
+            timeout=5 if command[0] == "cursor" else 30,
         )
         for command in commands
     ]
@@ -299,9 +305,11 @@ def _suite_environment(path: Path) -> Diagnostic:
     )
 
 
-def _command_check(name: str, command: tuple[str, ...], action: str) -> Diagnostic:
+def _command_check(
+    name: str, command: tuple[str, ...], action: str, *, timeout: float = 5
+) -> Diagnostic:
     try:
-        completed = subprocess.run(command, capture_output=True, check=False, timeout=5)
+        completed = subprocess.run(command, capture_output=True, check=False, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as error:
         return Diagnostic(name, False, f"check could not run: {error}", action)
     if completed.returncode != 0:

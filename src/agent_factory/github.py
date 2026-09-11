@@ -385,8 +385,8 @@ class GitHubClient:
             )
         else:
             # Read before deleting so an absent label is not a failed API request.
-            labels = json.loads(self._request(["api", endpoint, "--method", "GET"], None))
-            if any(_object(label).get("name") == "needs-input" for label in _list(labels)):
+            labels = _json_list(self._request(["api", endpoint, "--method", "GET"], None))
+            if any(_object(label).get("name") == "needs-input" for label in labels):
                 self._request(["api", endpoint + "/needs-input", "--method", "DELETE"], None)
 
     def list_comments(self, repository: str, number: int) -> list[str]:
@@ -405,7 +405,7 @@ class GitHubClient:
                 ],
                 None,
             )
-            values = _list(json.loads(response))
+            values = _json_list(response)
             for value in values:
                 comment = _object(value)
                 body = comment.get("body")
@@ -510,6 +510,13 @@ def _object(raw: object) -> Mapping[str, object]:
 def _json_object(response: str) -> Mapping[str, object]:
     try:
         return _object(json.loads(response))
+    except json.JSONDecodeError as error:
+        raise GitHubApiError("GitHub response is not JSON") from error
+
+
+def _json_list(response: str) -> list[object]:
+    try:
+        return _list(json.loads(response))
     except json.JSONDecodeError as error:
         raise GitHubApiError("GitHub response is not JSON") from error
 

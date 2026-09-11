@@ -266,3 +266,98 @@ def test_unchanged_quota_log_is_not_reparsed_each_poll(
     )
     assert len(reads) == 1
     store.close()
+
+
+def _wait_for_child_exit(pid: int, _plan: ExecutionPlan) -> None:
+    deadline = time.monotonic() + 5
+    while process_start_identity(pid) is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert process_start_identity(pid) is None
+
+
+def test_immediate_exit_reaps_child_and_releases_execution_slot(tmp_path: Path) -> None:
+    import os
+    from unittest.mock import patch
+
+    import pytest
+
+    from agent_factory import supervisor
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(
+        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+    )
+    plan = _plan(tmp_path, "raise SystemExit(2)\n")
+    pids: list[int] = []
+
+    def after_exit(pid: int, _plan: ExecutionPlan) -> None:
+        pids.append(pid)
+        _wait_for_child_exit(pid, _plan)
+
+    with patch.object(supervisor, "_process_identity", side_effect=after_exit):
+        supervisor._launch_and_observe(  # pyright: ignore[reportPrivateUsage]
+            store, run, plan, SupervisionLimits(10, 10, 10)
+        )
+    saved = store.get_run(run.id)
+    assert saved is not None and saved.status == "interrupted"
+    assert not store.nonterminal_runs()
+    with pytest.raises(ChildProcessError):
+        os.waitpid(pids[0], os.WNOHANG)
+    store.close()
+
+
+def test_immediate_exit_preserves_suite_result(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    from agent_factory import supervisor
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(
+        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+    )
+    plan = _plan(
+        tmp_path,
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1], 'result.json').write_text("
+        '\'{"evaluation_status":"completed","product_verdict":"fail"}\')\n',
+    )
+
+    with patch.object(supervisor, "_process_identity", side_effect=_wait_for_child_exit):
+        supervisor._launch_and_observe(  # pyright: ignore[reportPrivateUsage]
+            store, run, plan, SupervisionLimits(10, 10, 10)
+        )
+    saved = store.get_run(run.id)
+    assert saved is not None and saved.status == "completed"
+    assert saved.result["product_verdict"] == "fail"
+    store.close()
+
+
+def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from unittest.mock import patch
+
+    from agent_factory import supervisor
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(
+        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+    )
+    plan = _plan(tmp_path, "raise SystemExit(2)\n")
+    plan = replace(plan, ownership_hints={**plan.ownership_hints, "suite": "and-scene"})
+
+    with (
+        patch.object(supervisor, "_process_identity", side_effect=_wait_for_child_exit),
+        patch.object(
+            supervisor,
+            "discover_container",
+            side_effect=supervisor.ProcessProbeError("Docker ownership discovery unavailable"),
+        ),
+    ):
+        supervisor._launch_and_observe(  # pyright: ignore[reportPrivateUsage]
+            store, run, plan, SupervisionLimits(10, 10, 10)
+        )
+    saved = store.get_run(run.id)
+    assert saved is not None and saved.status == "observing"
+    assert saved.result["reason"] == "Docker ownership discovery unavailable"
+    assert len(store.nonterminal_runs()) == 1
+    store.close()

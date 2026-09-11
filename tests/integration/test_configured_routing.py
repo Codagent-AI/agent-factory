@@ -250,3 +250,12 @@ def test_actions_entry_point_routes_real_event_shapes(
         "status-field": "ready-option",
     }
     assert client.added == 1
+
+
+def test_eval_source_must_be_an_explicit_configured_source() -> None:
+    text = config_text().replace(
+        'general_sources = ["example/evals", "example/work"]',
+        'general_sources = ["example/work"]',
+    )
+    with pytest.raises(ConfigurationError, match="eval_source.*general_sources"):
+        SharedConfig.from_toml(text)

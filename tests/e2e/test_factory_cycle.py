@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
 
@@ -92,8 +94,8 @@ agent_skills = "{tmp_path / "skills"}"
 [schedule]
 timezone = "UTC"
 poll_seconds = 1
-start_hour = {time.gmtime().tm_hour}
-stop_hour = {(time.gmtime().tm_hour + 23) % 24}
+start_hour = 0
+stop_hour = 15
 [limits]
 minimum_free_gib = 0
 inactivity_seconds = 20
@@ -191,11 +193,23 @@ p.write_text(json.dumps(s));print(json.dumps(result))
     return config, board, environment, shared
 
 
-def _cli(config: Path, environment: dict[str, str], command: str) -> None:
+def _cli(
+    config: Path,
+    environment: dict[str, str],
+    command: str,
+    *,
+    before_cli: str = "",
+    expected_error: str | None = None,
+) -> None:
     # Stub the HTTP authentication boundary just as gh stubs the Project API.
     # The real Bearer exchange is covered with a local HTTP server separately.
+    # Fix only the admission hour; quota/recovery clocks retain their real timestamps.
     entrypoint = """
 import io, runpy, urllib.request
+from agent_factory import runtime
+from agent_factory.config import ScheduleConfig
+allows_admission = ScheduleConfig.allows_admission
+ScheduleConfig.allows_admission = lambda self, now: allows_admission(self, now.replace(hour=12))
 def token_response(request, *, timeout):
     assert request.full_url.startswith('https://api.github.com/app/installations/')
     assert request.full_url.endswith('/access_tokens')
@@ -203,8 +217,8 @@ def token_response(request, *, timeout):
     assert request.get_header('Authorization').startswith('Bearer ')
     return io.BytesIO(b'{"token":"test","expires_at":"2099-01-01T00:00:00Z"}')
 urllib.request.urlopen = token_response
-runpy.run_module('agent_factory.cli', run_name='__main__')
 """
+    entrypoint += before_cli + "\nrunpy.run_module('agent_factory.cli', run_name='__main__')\n"
     done = subprocess.run(
         [sys.executable, "-c", entrypoint, "--config", str(config), command],
         env=environment,
@@ -212,7 +226,12 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
         text=True,
         timeout=15,
     )
-    assert done.returncode == 0, done.stderr
+    if expected_error is None:
+        assert done.returncode == 0, done.stderr
+    else:
+        assert done.returncode != 0
+        assert "Traceback (most recent call last)" in done.stderr
+        assert expected_error in done.stderr
 
 
 def _field_value(board: Path, field_id: str) -> str | None:
@@ -611,4 +630,43 @@ def test_ready_card_with_cleared_verdict_starts_a_fresh_settled_claim(tmp_path: 
     finally:
         for run in runs:
             _finish(store, Path(run.evidence_path))
+        store.close()
+
+
+@pytest.mark.parametrize("failure", ["WorktreeError", "RuntimeError"])
+def test_planning_failure_finalizes_reserved_attempt(tmp_path: Path, failure: str) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    before_cli = f"""
+from agent_factory.suites.and_scene import WorktreeError
+def fail_plan(*args, **kwargs):
+    raise {failure}('planning failed before launch')
+runtime._plan_attempt = fail_plan
+"""
+    _cli(
+        config,
+        env,
+        "tick",
+        before_cli=before_cli,
+        expected_error="RuntimeError: planning failed before launch"
+        if failure == "RuntimeError"
+        else None,
+    )
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        claim = store.all_claims()[0]
+        attempts = store.runs_for_claim(claim.id)
+        assert len(attempts) == 1
+        assert attempts[0].status == "failed"
+        assert attempts[0].result["reason"] == "planning failed before launch"
+        assert attempts[0].result["error_type"] == failure
+        assert not store.nonterminal_runs()
+        if failure == "WorktreeError":
+            assert store.get_hold(claim.id, "readiness") == {
+                "reason": "planning failed before launch"
+            }
+            assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+                "ready"
+            )
+            assert "planning failed before launch" in board.read_text()
+    finally:
         store.close()

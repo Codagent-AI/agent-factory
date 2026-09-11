@@ -168,10 +168,19 @@ def cycle(state: Path, config_path: Path) -> None:
                         ),
                         config_path=config_path,
                     )
-                except (OSError, ReadinessError, RecoveryStateError) as error:
+                except Exception as error:
+                    # Planning and launch failures must release the reserved execution slot.
                     controller.record_result(
-                        run.id, AttemptResult("failed", None, {"reason": str(error)})
+                        run.id,
+                        AttemptResult(
+                            "failed",
+                            None,
+                            {"reason": str(error), "error_type": type(error).__name__},
+                        ),
                     )
+                    # Preserve worktree readiness handling and unexpected error tracebacks.
+                    if not isinstance(error, (OSError, ReadinessError, RecoveryStateError)):
+                        raise
                 _report(store, controller, client, shared, card, claim.id)
                 break
             except (WorktreeError, ReadinessError) as error:

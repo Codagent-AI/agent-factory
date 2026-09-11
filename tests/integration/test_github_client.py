@@ -180,3 +180,18 @@ def test_routing_lookup_reads_existing_card_with_other_field_types() -> None:
     assert item is not None
     assert item.id == "ITEM"
     assert item.fields == {"status": "ready"}
+
+
+@pytest.mark.parametrize("response", ["", "not JSON", "{}"])
+@pytest.mark.parametrize("endpoint", ["labels", "comments"])
+def test_list_endpoints_report_invalid_responses_as_api_errors(
+    response: str, endpoint: str
+) -> None:
+    from agent_factory.github import GitHubApiError
+
+    client = GitHubClient(RecordingGh([response]), lambda: "installation-token")
+    with pytest.raises(GitHubApiError):
+        if endpoint == "labels":
+            client.set_attention_label("example/evals", 42, False)
+        else:
+            client.list_comment_records("example/evals", 42)
