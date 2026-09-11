@@ -11,14 +11,14 @@ from dataclasses import dataclass
 from typing import cast
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
-_ROLES = frozenset({"lead", "implementor", "reviewer"})
+_ROLES = frozenset({"lead", "implementor", "tester"})
 _KEYS = frozenset(
     {
         "agent_runner_ref",
         "agent_skills_ref",
         "lead",
         "implementor",
-        "reviewer",
+        "tester",
         "skip_validator",
         "repetitions",
     }

@@ -5,7 +5,9 @@ harness is the full immutable SHA in `config/codagent.toml`, currently
 `01b5a0ef5ee600a96a11737f134df05fa30cd887`. That revision includes the
 automated-outcome contract, the calibration-receipt gate removal from `2fc8443`,
 and the companion wrapper's read-only linked-worktree metadata mounts. Do not
-replace this pin with a branch name or a local checkout head.
+replace this pin with a branch name or a local checkout head. The configured
+role names are `lead`, `implementor`, and `tester`; their defaults are complete
+`cli:model:effort` selections in the same configuration file.
 
 The machine-local configuration identifies the three source repositories, a
 factory storage root, and a separate suite environment file. The storage root

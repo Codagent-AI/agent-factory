@@ -26,6 +26,10 @@ def _comments() -> dict[str, list[str]]:
     return {}
 
 
+def _issue_types() -> dict[str, str]:
+    return {}
+
+
 def config_text(*, harness_sha: str = "a" * 40) -> str:
     return f'''\
 [github]
@@ -79,10 +83,14 @@ class MemoryGitHub:
     items: dict[str, ProjectItem] = field(default_factory=_items)
     permissions: dict[tuple[str, str], str | None] = field(default_factory=_permissions)
     comments: dict[str, list[str]] = field(default_factory=_comments)
+    issue_types: dict[str, str] = field(default_factory=_issue_types)
     added: int = 0
 
     def get_permission(self, repository: str, login: str) -> str | None:
         return self.permissions.get((repository, login))
+
+    def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
+        self.issue_types[f"{repository}#{number}"] = issue_type
 
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None:
         return self.items.get(content_id)
@@ -104,14 +112,16 @@ class MemoryGitHub:
         self.comments.setdefault(f"{repository}#{number}", []).append(body)
 
 
-def item(*, labels: set[str] | None = None, state: str = "open") -> SourceItem:
+def item(
+    *, labels: set[str] | None = None, state: str = "open", issue_type: str | None = "Eval"
+) -> SourceItem:
     return SourceItem(
         id="ISSUE-1",
         repository="example/evals",
         number=42,
         author="writer",
         labels=frozenset(labels or {"run-eval"}),
-        issue_type="Eval",
+        issue_type=issue_type,
         state=state,
     )
 
@@ -120,11 +130,12 @@ def test_authorized_eval_precedes_general_intake_and_initializes_owner_before_re
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
 
-    result = Router(config, github).route(RouteEvent(item()))
+    result = Router(config, github).route(RouteEvent(item(issue_type=None)))
 
     project_item = github.items["ISSUE-1"]
     assert result.destination == "ready"
     assert project_item.fields == {"owner-field": "factory-option", "status-field": "ready-option"}
+    assert github.issue_types == {"example/evals#42": "Eval"}
     assert github.added == 1
 
 
@@ -149,6 +160,7 @@ def test_unknown_permission_routes_marked_eval_to_backlog_without_owner() -> Non
 
     assert result.destination == "backlog"
     assert github.items["ISSUE-1"].fields == {"status-field": "backlog-option"}
+    assert github.issue_types == {}
 
 
 def test_later_authorization_updates_factory_initialization_without_overwriting_human_edits() -> (

@@ -120,7 +120,7 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
             "roles": {
                 "lead": "codex:lead-model:high",
                 "implementor": "claude:implementation-model:medium",
-                "reviewer": "codex:review-model:low",
+                "tester": "codex:tester-model:low",
             },
             "skip_validator": True,
             "repetitions": 2,
@@ -135,6 +135,8 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
     assert plan.argv[0] == str(worktrees.evals / "evals/agent-runner/and-scene/run.sh")
     assert "--calibration-record" not in plan.argv
     assert "--skip-validator" in plan.argv
+    assert "--tester-cli" in plan.argv
+    assert "--reviewer-cli" not in plan.argv
     assert str(artifact) in plan.argv
     # The sandbox reads --env-file at launch; credential values must never enter
     # the serialized execution plan or supervisor environment.
@@ -236,7 +238,7 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
             return "1"
 
     defaults = EvalDefaults(
-        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "reviewer": "a:b:c"}, False, 1
+        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
     )
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults, harness_sha="e" * 40
@@ -361,7 +363,7 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
             return "1"
 
     defaults = EvalDefaults(
-        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "reviewer": "a:b:c"}, False, 1
+        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
     )
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"),

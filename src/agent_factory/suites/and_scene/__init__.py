@@ -181,14 +181,18 @@ class AndSceneAdapter:
 
     @staticmethod
     def authentication_commands(roles: Mapping[str, str]) -> list[tuple[str, ...]]:
-        """The suite always judges with Codex and may execute Claude role profiles."""
+        """Return host checks for selected role CLIs and the Codex judge."""
         clis = {value.split(":", 1)[0] for value in roles.values() if value}
-        unsupported = clis - {"codex", "claude"}
+        unsupported = clis - {"codex", "claude", "cursor"}
         if unsupported:
             raise ReadinessError("unsupported suite model CLI: " + ", ".join(sorted(unsupported)))
         commands = [("codex", "login", "status")]
         if "claude" in clis:
             commands.append(("claude", "auth", "status"))
+        if "cursor" in clis:
+            # Cursor's CLI has no noninteractive authentication-status command.
+            # Its mounted credential is verified by the selected suite at launch.
+            commands.append(("cursor", "agent", "--help"))
         return commands
 
     def readiness(self, worktrees: PreparedWorktrees) -> str | None:
@@ -239,7 +243,7 @@ class AndSceneAdapter:
             "--env-file",
             str(self._environment_file),
         ]
-        for role in ("lead", "implementor", "reviewer"):
+        for role in ("lead", "implementor", "tester"):
             cli, model, effort = _profile(roles[role], role)
             arguments.extend(
                 (f"--{role}-cli", cli, f"--{role}-model", model, f"--{role}-effort", effort)
@@ -474,7 +478,7 @@ def _roles(settings: Mapping[str, object]) -> Mapping[str, str]:
         raise ReadinessError("claim has no frozen role profiles")
     roles = cast(Mapping[str, object], raw)
     result: dict[str, str] = {}
-    for role in ("lead", "implementor", "reviewer"):
+    for role in ("lead", "implementor", "tester"):
         profile = roles.get(role)
         if not isinstance(profile, str):
             raise ReadinessError(f"claim has no frozen {role} profile")

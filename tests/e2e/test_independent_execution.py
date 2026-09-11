@@ -59,7 +59,7 @@ def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
         frozen = {
             "suite": "and-scene",
             "settings": {
-                "roles": dict.fromkeys(("lead", "implementor", "reviewer"), "codex:test:high")
+                "roles": dict.fromkeys(("lead", "implementor", "tester"), "codex:test:high")
             },
         }
         plan = adapter.plan(frozen, worktrees, artifact, recovery=False)

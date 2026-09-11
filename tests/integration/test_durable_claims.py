@@ -16,7 +16,7 @@ def defaults() -> EvalDefaults:
         roles={
             "lead": "codex:gpt-5.6-sol:high",
             "implementor": "codex:gpt-5.6-sol:high",
-            "reviewer": "codex:gpt-5.6-sol:high",
+            "tester": "codex:gpt-5.6-sol:high",
         },
         skip_validator=False,
         repetitions=3,
@@ -61,13 +61,13 @@ def test_shipped_eval_template_is_a_valid_production_request() -> None:
     assert request.settings["repetitions"] == 3
 
 
-@pytest.mark.parametrize("role", ["lead", "implementor", "reviewer"])
+@pytest.mark.parametrize("role", ["lead", "implementor", "tester"])
 def test_eval_request_rejects_legacy_profile_aliases(role: str) -> None:
     with pytest.raises(ValueError, match=f"unsupported eval setting: {role}_profile"):
         parse_request(f"```eval\n{role}_profile = 'codex:gpt-5.6-sol:high'\n```", defaults())
 
 
-@pytest.mark.parametrize("role", ["lead", "implementor", "reviewer"])
+@pytest.mark.parametrize("role", ["lead", "implementor", "tester"])
 def test_eval_request_applies_canonical_role_override(role: str) -> None:
     profile = "codex:gpt-6-astra:high"
     request = parse_request(f"```eval\n{role} = '{profile}'\n```", defaults())

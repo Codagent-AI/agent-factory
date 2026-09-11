@@ -69,7 +69,7 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
     profiles = (
         {
             role: str(shared.eval.defaults.get(role, ""))
-            for role in ("lead", "implementor", "reviewer")
+            for role in ("lead", "implementor", "tester")
         }
         if shared is not None
         else {}
@@ -98,9 +98,17 @@ def model_authentication(profiles: Mapping[str, str]) -> list[Diagnostic]:
         return [Diagnostic("model authentication", False, str(error), "Correct the role profiles.")]
     return [
         _command_check(
-            f"{command[0]} model authentication",
+            (
+                "cursor CLI availability"
+                if command[0] == "cursor"
+                else f"{command[0]} model authentication"
+            ),
             command,
-            f"Authenticate {command[0]} on this Mac, then rerun doctor.",
+            (
+                "Install Cursor and authenticate it on this Mac, then rerun doctor."
+                if command[0] == "cursor"
+                else f"Authenticate {command[0]} on this Mac, then rerun doctor."
+            ),
         )
         for command in commands
     ]

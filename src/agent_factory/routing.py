@@ -47,6 +47,8 @@ class RouteResult:
 class GitHubRoutingClient(Protocol):
     def get_permission(self, repository: str, login: str) -> str | None: ...
 
+    def set_issue_type(self, repository: str, number: int, issue_type: str) -> None: ...
+
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None: ...
 
     def add_project_item(self, project_id: str, content_id: str) -> ProjectItem: ...
@@ -80,6 +82,7 @@ class Router:
         if self._is_eval(source):
             permission = self._github.get_permission(source.repository, source.author)
             if permission in {"write", "maintain", "admin"}:
+                self._set_eval_type_if_needed(source)
                 self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
                 return RouteResult("ready", project_item.id)
 
@@ -91,6 +94,12 @@ class Router:
             source.repository == self._config.routing.eval_source
             and self._config.routing.eval_label in source.labels
         )
+
+    def _set_eval_type_if_needed(self, source: SourceItem) -> None:
+        if source.issue_type != self._config.routing.eval_type:
+            self._github.set_issue_type(
+                source.repository, source.number, self._config.routing.eval_type
+            )
 
     def _initialize(
         self, item: ProjectItem, source: SourceItem, values: tuple[tuple[str, str], ...]

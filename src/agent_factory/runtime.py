@@ -219,7 +219,7 @@ def eval_defaults(shared: SharedConfig) -> EvalDefaults:
     return EvalDefaults(
         str(values.get("agent_runner_ref", "main")),
         str(values.get("agent_skills_ref", "main")),
-        {role: str(values.get(role, "")) for role in ("lead", "implementor", "reviewer")},
+        {role: str(values.get(role, "")) for role in ("lead", "implementor", "tester")},
         bool(values.get("skip_validator", False)),
         shared.eval.repetitions,
     )

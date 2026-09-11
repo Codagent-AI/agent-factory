@@ -121,7 +121,7 @@ suite_environment = "{tmp_path / "suite.env"}"
     fields.append({"id": shared.project.refs.id, "dataType": "TEXT"})
     body = (
         "```eval\nrepetitions=1\n"
-        + "".join(f'{role}="codex:test:high"\n' for role in ("lead", "implementor", "reviewer"))
+        + "".join(f'{role}="codex:test:high"\n' for role in ("lead", "implementor", "tester"))
         + "```"
     )
     item = {
@@ -182,6 +182,7 @@ p.write_text(json.dumps(s));print(json.dumps(result))
         "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
         "docker": "#!/bin/sh\nexit 0",
         "codex": "#!/bin/sh\nexit 0",
+        "cursor": "#!/bin/sh\nexit 0",
     }.items():
         script = bin_dir / name
         script.write_text(content)

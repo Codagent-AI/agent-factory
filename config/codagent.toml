@@ -50,9 +50,12 @@ eval_type = "Eval"
 [eval]
 # Immutable deployed harness: includes the 40/70 outcome contract, calibration-gate
 # removal (2fc8443), and read-only linked-worktree Git metadata mounts (01b5a0e).
-harness_sha = "01b5a0ef5ee600a96a11737f134df05fa30cd887"
+harness_sha = "488550420230d0fccf8135c8dfa6abc5937942c0"
 suite = "and-scene"
 repetitions = 3
 
 [eval.defaults]
+lead = "cursor:cursor-grok-4.6-high:high"
+implementor = "cursor:cursor-grok-4.6-high:high"
+tester = "cursor:composer-2.5:high"
 skip_validator = false

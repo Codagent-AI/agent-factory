@@ -84,7 +84,7 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         "--artifact-dir",
         str(artifacts),
     ]
-    for role in ("lead", "implementor", "reviewer"):
+    for role in ("lead", "implementor", "tester"):
         arguments += [
             f"--{role}-cli",
             "codex",

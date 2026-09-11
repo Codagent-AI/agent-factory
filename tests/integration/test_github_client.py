@@ -70,6 +70,24 @@ def test_client_interprets_missing_collaborator_permission_as_untrusted() -> Non
     ]
 
 
+def test_client_assigns_native_issue_type_with_the_repository_api() -> None:
+    gh = RecordingGh([json.dumps({"type": {"name": "Eval"}})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.set_issue_type("example/evals", 42, "Eval")
+
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/evals/issues/42",
+        "--method",
+        "PATCH",
+        "--input",
+        "-",
+    ]
+    assert gh.calls[0].body == {"type": "Eval"}
+    assert gh.calls[0].environment == {"GH_TOKEN": "installation-token"}
+
+
 def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data() -> None:
     response: dict[str, object] = {
         "data": {

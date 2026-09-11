@@ -219,6 +219,12 @@ class GitHubClient:
         permission = payload.get("permission")
         return permission if isinstance(permission, str) else None
 
+    def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
+        self._request(
+            ["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "--input", "-"],
+            {"type": issue_type},
+        )
+
     def get_source_item(self, repository: str, number: int) -> SourceItem:
         payload = _json_object(
             self._request(["api", f"repos/{repository}/issues/{number}", "--method", "GET"], None)

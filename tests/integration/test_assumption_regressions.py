@@ -162,17 +162,17 @@ controller.reserve_next(c.id,readiness=lambda: Path(sys.argv[2]).touch())
     assert child.returncode == 0 and marker.exists()
 
 
-def test_suite_authentication_covers_claude_roles_and_codex_judge() -> None:
+def test_suite_readiness_covers_cursor_roles_and_codex_judge() -> None:
     from agent_factory.suites.and_scene import AndSceneAdapter
 
     commands = AndSceneAdapter.authentication_commands(  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
         {
-            "lead": "claude:sonnet:high",
+            "lead": "cursor:cursor-grok-4.6-high:high",
             "implementor": "codex:model:high",
-            "reviewer": "claude:sonnet:high",
+            "tester": "cursor:composer-2.5:high",
         }
     )
-    assert commands == [("codex", "login", "status"), ("claude", "auth", "status")]
+    assert commands == [("codex", "login", "status"), ("cursor", "agent", "--help")]
 
 
 def test_native_issue_type_reads_current_rest_type_object() -> None:

@@ -13,7 +13,7 @@ def defaults() -> EvalDefaults:
     return EvalDefaults(
         agent_runner_ref="main",
         agent_skills_ref="main",
-        roles={"lead": "codex:m:high", "implementor": "codex:m:high", "reviewer": "codex:m:high"},
+        roles={"lead": "codex:m:high", "implementor": "codex:m:high", "tester": "codex:m:high"},
         skip_validator=False,
         repetitions=2,
     )
