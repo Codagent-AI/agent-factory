@@ -138,14 +138,14 @@ import sys
 from pathlib import Path
 from agent_factory.controller import Controller
 from agent_factory.store import ClaimStore, ClaimDraft
-from agent_factory.work_kinds.eval import EvalDefaults
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 class Comments:
  def list_comment_records(self,*args): return []
  def create_comment(self,*args): return '1'
 s=ClaimStore(Path(sys.argv[1]))
 c=s.create_claim(ClaimDraft('org/repo',1,'I','P','eval','x',{'settings':{'repetitions':1}}))
 d=EvalDefaults('main','main',{},False,1)
-controller=Controller(s,Comments(),d,harness_sha='a'*40)
+controller=Controller(s,Comments(),{'eval':EvalHandler(d,harness_sha='a'*40)})
 controller.reserve_next(c.id,readiness=lambda: Path(sys.argv[2]).touch())
 """
     marker = tmp_path / "entered"

@@ -13,7 +13,7 @@ from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import SourceRepositories
-from agent_factory.work_kinds.eval import EvalDefaults
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -245,7 +245,9 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
     )
     controller = Controller(
-        ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults, harness_sha="e" * 40
+        ClaimStore(tmp_path / "state.sqlite3"),
+        Comments(),
+        {"eval": EvalHandler(defaults, harness_sha="e" * 40)},
     )
     snapshot = RequestSnapshot(
         "example/evals",
@@ -372,8 +374,7 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"),
         Comments(),
-        defaults,
-        harness_sha="e" * 40,
+        {"eval": EvalHandler(defaults, harness_sha="e" * 40)},
         artifact_root=tmp_path / "artifacts",
     )
     claim = controller.accept(
