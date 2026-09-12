@@ -87,13 +87,23 @@ class Router:
                 self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
                 return RouteResult("ready", project_item.id)
         elif self._is_bug(source):
+            receipt = self._receipt(source)
+            hold_bypassed = bool(receipt and receipt.get("hold_bypassed"))
             if self._config.routing.hold_label in source.labels:
-                self._initialize(project_item, source, (("owner", "human"), ("status", "backlog")))
+                self._initialize(
+                    project_item,
+                    source,
+                    (("owner", "human"), ("status", "backlog")),
+                    hold_bypassed=True,
+                )
                 return RouteResult("backlog", project_item.id)
-            permission = self._github.get_permission(source.repository, source.author)
-            if permission in {"write", "maintain", "admin"}:
-                self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
-                return RouteResult("ready", project_item.id)
+            if not hold_bypassed:
+                permission = self._github.get_permission(source.repository, source.author)
+                if permission in {"write", "maintain", "admin"}:
+                    self._initialize(
+                        project_item, source, (("owner", "factory"), ("status", "ready"))
+                    )
+                    return RouteResult("ready", project_item.id)
 
         self._initialize(project_item, source, (("status", "backlog"),))
         return RouteResult("backlog", project_item.id)
@@ -118,7 +128,12 @@ class Router:
             )
 
     def _initialize(
-        self, item: ProjectItem, source: SourceItem, values: tuple[tuple[str, str], ...]
+        self,
+        item: ProjectItem,
+        source: SourceItem,
+        values: tuple[tuple[str, str], ...],
+        *,
+        hold_bypassed: bool = False,
     ) -> None:
         receipt = self._receipt(source)
         desired: dict[str, str] = {}
@@ -147,7 +162,7 @@ class Router:
                     self._config.project.id, item.id, field_id, option
                 )
                 item.fields[field_id] = option
-        self._write_receipt(source, item, desired)
+        self._write_receipt(source, item, desired, hold_bypassed=hold_bypassed)
 
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)
@@ -174,14 +189,21 @@ class Router:
         return None
 
     def _write_receipt(
-        self, source: SourceItem, item: ProjectItem, initialized: dict[str, str]
+        self,
+        source: SourceItem,
+        item: ProjectItem,
+        initialized: dict[str, str],
+        *,
+        hold_bypassed: bool = False,
     ) -> None:
-        payload = {
+        payload: dict[str, object] = {
             "project": self._config.project.id,
             "item": item.id,
             "values": initialized,
             "complete": True,
         }
+        if hold_bypassed:
+            payload["hold_bypassed"] = True
         self._github.create_comment(
             source.repository,
             source.number,

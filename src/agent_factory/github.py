@@ -239,10 +239,10 @@ class GitHubClient:
         return _required_string(payload, "login")
 
     def organization_role(self, organization: str, login: str) -> str | None:
+        org = urllib.parse.quote(organization, safe="")
+        user = urllib.parse.quote(login, safe="")
         try:
-            payload = _json_object(
-                self._request(["api", f"orgs/{organization}/memberships/{login}"], None)
-            )
+            payload = _json_object(self._request(["api", f"orgs/{org}/memberships/{user}"], None))
         except GitHubApiError:
             return None
         role = payload.get("role")

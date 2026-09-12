@@ -350,6 +350,21 @@ def test_hold_label_routes_bug_to_backlog_with_human_owner() -> None:
     }
 
 
+def test_hold_bypass_is_sticky_after_the_label_is_removed() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(labels={"factory-hold"})))
+
+    result = router.route(RouteEvent(bug_item(labels=set())))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "human-option",
+        "status-field": "backlog-option",
+    }
+
+
 def test_pull_request_typed_bug_is_not_routed_as_a_bug() -> None:
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/work", "writer"): "write"})

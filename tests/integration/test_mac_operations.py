@@ -375,6 +375,87 @@ def test_doctor_identity_checks_report_authentication_and_org_role(tmp_path: Pat
     assert reach.available is True
 
 
+def test_doctor_identity_checks_still_run_when_credential_file_has_extra_lines(
+    tmp_path: Path,
+) -> None:
+    credential = tmp_path / "fix.env"
+    credential.write_text("# a comment\nGH_TOKEN=fix-token\nOTHER=value\n", encoding="utf-8")
+    credential.chmod(0o600)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\nfix_environment = "{credential}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    class StubRunner:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            assert environment == {"GH_TOKEN": "fix-token"}
+            if arguments == ["api", "user"]:
+                return '{"login": "fix-machine-user"}'
+            if arguments[1].startswith("orgs/"):
+                return '{"role": "member"}'
+            return '{"full_name": "example/work"}'
+
+    with patch("agent_factory.operations.SubprocessGhRunner", StubRunner):
+        diagnostics = operations.doctor(config)
+
+    identity = next(d for d in diagnostics if d.name == "fix credential identity")
+    assert identity.available is True
+    assert "fix-machine-user" in identity.detail
+
+
+def test_doctor_identity_checks_report_when_no_token_line_is_found(tmp_path: Path) -> None:
+    credential = tmp_path / "fix.env"
+    credential.write_text("OTHER=value\n", encoding="utf-8")
+    credential.chmod(0o600)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\nfix_environment = "{credential}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    diagnostics = operations.doctor(config)
+
+    identity = next(d for d in diagnostics if d.name == "fix credential identity")
+    assert identity.available is False
+    assert "no GH_TOKEN" in identity.detail
+
+
+def test_doctor_identity_checks_survive_a_local_gh_invocation_failure(tmp_path: Path) -> None:
+    credential = tmp_path / "fix.env"
+    credential.write_text("GH_TOKEN=fix-token\n", encoding="utf-8")
+    credential.chmod(0o600)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\nfix_environment = "{credential}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    class StubRunner:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            if arguments == ["api", "user"]:
+                return '{"login": "fix-machine-user"}'
+            raise OSError("gh not found")
+
+    with patch("agent_factory.operations.SubprocessGhRunner", StubRunner):
+        diagnostics = operations.doctor(config)
+
+    role = next(d for d in diagnostics if d.name == "fix credential organization role")
+    assert role.available is False
+    reach = next(d for d in diagnostics if d.name == "fix credential reach example/work")
+    assert reach.available is False
+
+
 def test_doctor_identity_check_fails_when_credential_is_the_app_identity(tmp_path: Path) -> None:
     credential = tmp_path / "fix.env"
     credential.write_text("GH_TOKEN=fix-token\n", encoding="utf-8")

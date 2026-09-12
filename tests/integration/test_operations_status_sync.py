@@ -84,6 +84,26 @@ def test_status_shows_blocked_fix_claim_with_decline_reason(tmp_path: Path) -> N
     assert "reproduction missing" in text
 
 
+def test_status_shows_the_most_recent_decline_reason_after_multiple_declines(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 5, "I5", "P5", "fix", "fp", {}))
+    first_run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(first_run.id, execution_status="completed", result={"outcome": "needs-input"})
+    store.record_event(claim.id, f"{first_run.id}:needs-input", "Needs input.\n\n- first decline")
+    store.set_claim_lifecycle(claim.id, "active", {})
+    second_run = store.reserve_run(claim.id, "fix", reason="unblock", evidence_path="/tmp/ev2")
+    store.finish_run(second_run.id, execution_status="completed", result={"outcome": "needs-input"})
+    store.record_event(claim.id, f"{second_run.id}:needs-input", "Needs input.\n\n- second decline")
+    store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()})
+
+    text = status(store)
+
+    assert "second decline" in text
+    assert "first decline" not in text
+
+
 def _local_with_shared(tmp_path: Path, eval_provider: str, fix_provider: str) -> LocalConfig:
     shared_path = tmp_path / "shared.toml"
     shared_path.write_text(

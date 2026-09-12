@@ -159,7 +159,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
             lines.extend(_progress_lines(run))
         else:
             lines.append(f"claim: {claim.repository}#{claim.issue_number} ({claim.lifecycle})")
-        lines.extend(_blocked_lines(claim))
+        lines.extend(_blocked_lines(store, claim))
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
         lines.extend(_cleanup_lines(claim))
@@ -330,9 +330,19 @@ def _fix_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnosti
             memory.action,
         )
     )
-    token = _read_fix_token(local.credentials.fix_environment)
+    credential_path = local.credentials.fix_environment
+    token = _read_fix_token(credential_path)
     if token is not None:
         diagnostics.extend(_fix_identity_diagnostics(shared, token))
+    elif credential_path is not None and credential_path.is_file():
+        diagnostics.append(
+            Diagnostic(
+                "fix credential identity",
+                False,
+                f"no GH_TOKEN assignment found in {credential_path}; identity checks were skipped",
+                "Add a GH_TOKEN=<value> line to the fix credential file.",
+            )
+        )
     return diagnostics
 
 
@@ -401,16 +411,21 @@ def _working_clone_diagnostics(local: LocalConfig) -> list[Diagnostic]:
 
 
 def _read_fix_token(path: Path | None) -> str | None:
+    """Extract GH_TOKEN even from a malformed file; shape correctness is check_readiness's job."""
     if path is None or not path.is_file():
         return None
     try:
-        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError):
         return None
-    if len(lines) != 1:
-        return None
-    match = _FIX_TOKEN_LINE.match(lines[0].strip())
-    return match.group(1) if match else None
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = _FIX_TOKEN_LINE.match(stripped)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _fix_identity_diagnostics(shared: SharedConfig, token: str) -> list[Diagnostic]:
@@ -443,19 +458,42 @@ def _fix_identity_diagnostics(shared: SharedConfig, token: str) -> list[Diagnost
             else "",
         )
     )
-    role = client.organization_role(shared.organization, login)
-    is_admin = role == "admin"
-    diagnostics.append(
-        Diagnostic(
-            "fix credential organization role",
-            True,
-            f"fix credential organization role: {role or 'unknown'}"
-            + (" — warning: this identity is an organization admin" if is_admin else ""),
-            "Prefer a non-admin machine user for the fix credential." if is_admin else "",
+    try:
+        role = client.organization_role(shared.organization, login)
+    except OSError as error:
+        role = None
+        diagnostics.append(
+            Diagnostic(
+                "fix credential organization role",
+                False,
+                f"organization role check could not run: {error}",
+                "Retry once the local `gh` invocation succeeds.",
+            )
         )
-    )
+    else:
+        is_admin = role == "admin"
+        diagnostics.append(
+            Diagnostic(
+                "fix credential organization role",
+                True,
+                f"fix credential organization role: {role or 'unknown'}"
+                + (" — warning: this identity is an organization admin" if is_admin else ""),
+                "Prefer a non-admin machine user for the fix credential." if is_admin else "",
+            )
+        )
     for target in shared.fix.targets:
-        reachable = client.can_read_repository(target.repository)
+        try:
+            reachable = client.can_read_repository(target.repository)
+        except OSError as error:
+            diagnostics.append(
+                Diagnostic(
+                    f"fix credential reach {target.repository}",
+                    False,
+                    f"reachability check could not run: {error}",
+                    "Retry once the local `gh` invocation succeeds.",
+                )
+            )
+            continue
         diagnostics.append(
             Diagnostic(
                 f"fix credential reach {target.repository}",
@@ -627,15 +665,19 @@ def _slot_lines(store: ClaimStore) -> list[str]:
     return lines
 
 
-def _blocked_lines(claim: Claim) -> list[str]:
+def _blocked_lines(store: ClaimStore, claim: Claim) -> list[str]:
+    """Report the decline tied to the claim's latest run, since stored events are key-sorted."""
     if claim.lifecycle != "blocked":
         return []
     reason = "needs input"
-    for event in _events(claim):
-        if event.key.endswith(":needs-input"):
-            body = event.body.removeprefix("Needs input.\n\n").strip()
-            reason = body or reason
-            break
+    fix_runs = [run for run in store.runs_for_claim(claim.id) if run.unit_key == "fix"]
+    if fix_runs:
+        latest_key = f"{fix_runs[-1].id}:needs-input"
+        for event in _events(claim):
+            if event.key == latest_key:
+                body = event.body.removeprefix("Needs input.\n\n").strip()
+                reason = body or reason
+                break
     return [f"blocked: {claim.repository}#{claim.issue_number} — {reason}"]
 
 

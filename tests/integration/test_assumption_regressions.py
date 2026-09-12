@@ -237,6 +237,24 @@ def test_organization_role_reports_admin_membership() -> None:
     assert client.organization_role("Example Org", "fix-bot") == "admin"
 
 
+def test_organization_role_url_encodes_organization_and_login() -> None:
+    class Recording:
+        def __init__(self) -> None:
+            self.arguments: list[str] = []
+
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            self.arguments = arguments
+            return json.dumps({"role": "member"})
+
+    runner = Recording()
+    client = GitHubClient(runner, lambda: "test-token")
+    client.organization_role("Example Org", "user name")
+
+    assert runner.arguments == ["api", "orgs/Example%20Org/memberships/user%20name"]
+
+
 def test_can_read_repository_false_on_lookup_failure() -> None:
     class Failing:
         def run(
