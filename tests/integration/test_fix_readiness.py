@@ -254,7 +254,8 @@ def test_handler_readiness_uses_attached_installation_token(tmp_path: Path) -> N
     assert credential.available is False
 
 
-def test_handler_readiness_survives_a_failing_token_provider(tmp_path: Path) -> None:
+def test_handler_readiness_fails_closed_when_the_token_provider_fails(tmp_path: Path) -> None:
+    from agent_factory.github import GitHubApiError
     from agent_factory.work_kinds.fix.handler import FixHandler
 
     checkout = _runner_checkout(tmp_path, with_contract=True)
@@ -265,8 +266,9 @@ def test_handler_readiness_survives_a_failing_token_provider(tmp_path: Path) -> 
     handler = FixHandler(_shared(), local)
 
     def _broken() -> str:
-        raise RuntimeError("cannot mint")
+        raise GitHubApiError("cannot mint")
 
     handler.attach_installation_token(_broken)
     credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
-    assert credential.available is True
+    assert credential.available is False
+    assert "cannot mint" in credential.detail

@@ -14,7 +14,13 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
-from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.github import (
+    WRITER_PERMISSIONS,
+    GitHubApiError,
+    GitHubClient,
+    IssueComment,
+    ProjectQueueItem,
+)
 from agent_factory.operations import Diagnostic
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import ReadinessError
@@ -152,15 +158,26 @@ class FixHandler:
 
     def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
         token: str | None = None
+        minting_failure: Diagnostic | None = None
         if self._installation_token is not None:
             try:
                 token = self._installation_token()
-            except Exception:
-                # Minting failures are reported by the shared GitHub diagnostics; the
-                # credential check below still runs its file-shape rules without the
-                # equality comparison rather than crashing readiness.
-                token = None
-        return check_readiness(local, shared, installation_token=token)
+            except (GitHubApiError, OSError) as error:
+                # Fail closed: without the App token the fix credential cannot be proven
+                # distinct from it, so readiness must report that, not skip the check.
+                minting_failure = Diagnostic(
+                    "fix credential",
+                    False,
+                    f"cannot mint the App installation token to validate the fix credential: "
+                    f"{error}",
+                    "Repair the GitHub App key or installation, then rerun doctor.",
+                )
+        diagnostics = check_readiness(local, shared, installation_token=token)
+        if minting_failure is not None:
+            diagnostics = [
+                minting_failure if d.name == "fix credential" else d for d in diagnostics
+            ]
+        return diagnostics
 
     def prepare(self, claim: Claim) -> Preparation:
         return Preparation()
