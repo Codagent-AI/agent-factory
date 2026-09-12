@@ -162,7 +162,11 @@ class Router:
                     self._config.project.id, item.id, field_id, option
                 )
                 item.fields[field_id] = option
-        self._write_receipt(source, item, desired, hold_bypassed=hold_bypassed)
+        # Once observed, the hold bypass is sticky: a later receipt write (for example the
+        # generic backlog fallback after the label is removed) must not drop the flag, or a
+        # subsequent event could auto-admit the bug the hold was meant to keep out.
+        effective_hold_bypassed = hold_bypassed or bool(receipt and receipt.get("hold_bypassed"))
+        self._write_receipt(source, item, desired, hold_bypassed=effective_hold_bypassed)
 
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)

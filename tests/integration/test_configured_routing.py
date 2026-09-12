@@ -365,6 +365,57 @@ def test_hold_bypass_is_sticky_after_the_label_is_removed() -> None:
     }
 
 
+def test_hold_bypass_remains_sticky_across_a_second_post_hold_event() -> None:
+    """The backlog-fallback receipt write after a hold must not drop the sticky flag."""
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(labels={"factory-hold"})))
+    router.route(RouteEvent(bug_item(labels=set())))
+
+    result = router.route(RouteEvent(bug_item(labels=set())))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "human-option",
+        "status-field": "backlog-option",
+    }
+
+
+def test_hold_bypass_survives_a_receipt_write_that_actually_changes_fields() -> None:
+    """A generic-fallback receipt write (forced by a stale receipt) must preserve the flag.
+
+    Reproduces the reported gap directly: seed a hold_bypassed receipt whose recorded
+    status does not match the generic fallback's desired backlog value, so `_initialize`
+    cannot early-return and must actually call `_write_receipt`. Before the fix, that
+    write dropped `hold_bypassed`, letting the very next event auto-admit the bug.
+    """
+    from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
+
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    stale_receipt = {
+        "project": "PVT_example",
+        "item": "item-ISSUE-BUG-1",
+        "values": {"status-field": "ready-option"},
+        "complete": True,
+        "hold_bypassed": True,
+    }
+    github.items["ISSUE-BUG-1"] = ProjectItem(
+        "item-ISSUE-BUG-1",
+        "ISSUE-BUG-1",
+        {"owner-field": "human-option", "status-field": "ready-option"},
+    )
+    github.comments["example/work#99"] = [f"{_RECEIPT_PREFIX}{json.dumps(stale_receipt)} -->"]
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(labels=set())))
+
+    result = router.route(RouteEvent(bug_item(labels=set())))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields["owner-field"] == "human-option"
+
+
 def test_pull_request_typed_bug_is_not_routed_as_a_bug() -> None:
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
