@@ -9,7 +9,8 @@ from typing import cast
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.github import GitHubApiError, IssueComment, ProjectQueueItem
 from agent_factory.routing import SourceItem
-from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.store import Claim, ClaimDraft, ClaimStore
+from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.fix.blocked import eligible_comments, process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 
@@ -142,8 +143,15 @@ def _blocked_claim(store: ClaimStore) -> str:
     return claim.id
 
 
+class _PreparedHandler(FixHandler):
+    """Reconciliation and clones are covered elsewhere; here preparation is a no-op."""
+
+    def prepare(self, claim: Claim) -> Preparation:
+        return Preparation()
+
+
 def _handler(store: ClaimStore, *, with_targets: bool = False) -> FixHandler:
-    handler = FixHandler(_shared(with_targets=with_targets), _local())
+    handler = _PreparedHandler(_shared(with_targets=with_targets), _local())
     handler.attach_store(store)
     return handler
 
@@ -172,7 +180,7 @@ def test_writer_comment_after_decline_removes_label_and_reserves_unblock(tmp_pat
         now=__import__("datetime").datetime(2026, 1, 3, tzinfo=__import__("datetime").UTC),
     )
 
-    assert admitted is True
+    assert admitted is not None
     assert client.labels == [False]
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
@@ -210,7 +218,7 @@ def test_bot_comment_alone_changes_nothing(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
     assert client.labels == []
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
@@ -243,7 +251,7 @@ def test_non_writer_comment_changes_nothing(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
     assert reloaded.lifecycle == "blocked"
@@ -274,7 +282,7 @@ def test_comment_before_decline_is_not_eligible(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
 
 
 def test_drag_to_ready_without_comment_unblocks(tmp_path: Path) -> None:
@@ -299,7 +307,7 @@ def test_drag_to_ready_without_comment_unblocks(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is True
+    assert admitted is not None
     assert client.labels == [False]
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
@@ -330,7 +338,7 @@ def test_slot_busy_leaves_claim_blocked(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
     assert client.labels == []
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
@@ -353,8 +361,6 @@ def test_gesture_returns_fresh_for_settled_card_in_ready() -> None:
         reporting={},
         cleanup={},
     )
-    from agent_factory.store import Claim
-
     settled = Claim(lifecycle="settled", **claim_kwargs)  # type: ignore[arg-type]
     assert handler.gesture(settled, _card("Ready"), []) == "fresh"
     assert handler.gesture(settled, _card("Running"), []) is None
@@ -362,8 +368,6 @@ def test_gesture_returns_fresh_for_settled_card_in_ready() -> None:
 
 def test_gesture_returns_unblock_for_blocked_card_in_ready() -> None:
     handler = FixHandler(_shared(), _local())
-    from agent_factory.store import Claim
-
     claim_kwargs = dict(
         id="c1",
         repository="example/work",
@@ -410,7 +414,7 @@ def test_comment_after_decline_is_eligible_across_iso8601_offset_notations(tmp_p
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is True
+    assert admitted is not None
 
 
 def test_unparsable_decline_timestamp_fails_closed_for_all_comments() -> None:
@@ -451,7 +455,7 @@ def test_blocked_claim_with_unparsable_declined_at_is_never_unblocked_by_comment
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
 
 
 def test_comment_with_missing_timestamp_is_not_eligible(tmp_path: Path) -> None:
@@ -477,7 +481,7 @@ def test_comment_with_missing_timestamp_is_not_eligible(tmp_path: Path) -> None:
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is False
+    assert admitted is None
 
 
 def test_permission_lookup_failure_for_one_author_does_not_abort_the_scan(tmp_path: Path) -> None:
@@ -513,7 +517,7 @@ def test_permission_lookup_failure_for_one_author_does_not_abort_the_scan(tmp_pa
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
     )
 
-    assert admitted is True
+    assert admitted is not None
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None
     issue = cast(dict[str, object], reloaded.preparation["issue"])
@@ -536,7 +540,7 @@ def _blocked_claim_with_roles(store: ClaimStore, roles: dict[str, str]) -> str:
     return claim.id
 
 
-def _process(store: ClaimStore, client: FakeGitHub, claim_id: str, tmp_path: Path) -> bool:
+def _process(store: ClaimStore, client: FakeGitHub, claim_id: str, tmp_path: Path) -> object:
     import datetime as dt
 
     handler = _handler(store)
@@ -563,7 +567,7 @@ def test_provider_quota_hold_blocks_unblock_for_that_provider(tmp_path: Path) ->
     comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
     client = FakeGitHub(comments, {"writer": "write"})
 
-    assert _process(store, client, claim_id, tmp_path) is False
+    assert _process(store, client, claim_id, tmp_path) is None
     assert store.nonterminal_runs(kind="fix") == []
     reloaded = store.get_claim(claim_id)
     assert reloaded is not None and reloaded.lifecycle == "blocked"
@@ -576,5 +580,5 @@ def test_provider_quota_hold_for_another_provider_does_not_block_unblock(tmp_pat
     comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
     client = FakeGitHub(comments, {"writer": "write"})
 
-    assert _process(store, client, claim_id, tmp_path) is True
+    assert _process(store, client, claim_id, tmp_path) is not None
     assert len(store.nonterminal_runs(kind="fix")) == 1

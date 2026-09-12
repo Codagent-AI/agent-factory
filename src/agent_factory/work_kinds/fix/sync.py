@@ -61,10 +61,13 @@ def sync_claim(
 
 
 def _find_pr(store: ClaimStore, claim: Claim) -> tuple[int, str] | None:
-    for run in reversed(store.runs_for_claim(claim.id)):
-        if run.unit_key != "fix":
-            continue
-        pr = run.result.get("pr")
+    candidates: list[object] = [claim.outcome.get("pr")]
+    candidates.extend(
+        run.result.get("pr")
+        for run in reversed(store.runs_for_claim(claim.id))
+        if run.unit_key == "fix"
+    )
+    for pr in candidates:
         if isinstance(pr, Mapping):
             pr_mapping = cast(Mapping[str, object], pr)
             number = pr_mapping.get("number")

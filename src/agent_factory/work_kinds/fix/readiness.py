@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import stat
 
 from agent_factory.config import LocalConfig, SharedConfig
@@ -20,21 +21,46 @@ def check_readiness(
     if not shared.fix.targets:
         return []
     return [
-        _launch_diagnostic(),
+        _launch_diagnostic(local, shared),
         _credential_diagnostic(local, installation_token),
         _contract_diagnostic(local, shared),
     ]
 
 
-def _launch_diagnostic() -> Diagnostic:
-    # Mirrors, clones, and the sandbox-run.sh launch plan are not implemented yet.
-    # Fail closed here so fix claims are never accepted only to fail at launch.
-    return Diagnostic(
-        "fix sandbox launch",
-        False,
-        "the fix sandbox launcher is not implemented yet",
-        "Implement mirrors/clones and FixHandler.plan() before enabling fix targets.",
+def _launch_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic:
+    """The Runner branch head must ship a sandbox launcher that can contain the credential."""
+    name = "fix sandbox launch"
+    action = (
+        "Update the configured Runner branch to a commit whose scripts/sandbox-run.sh supports "
+        "--no-default-secrets, --env-file, --docker-run-arg, and --image."
     )
+    from agent_factory import runtime
+
+    try:
+        sha = runtime._resolve_revision(  # pyright: ignore[reportPrivateUsage]
+            local.repositories.agent_runner, shared.fix.branches.runner, fetch=False
+        )
+        text = runtime._git_show(  # pyright: ignore[reportPrivateUsage]
+            local.repositories.agent_runner, sha, "scripts/sandbox-run.sh"
+        )
+    except ReadinessError as error:
+        return Diagnostic(name, False, str(error), action)
+    missing = [
+        flag
+        for flag in ("--no-default-secrets", "--env-file", "--docker-run-arg", "--image")
+        if flag not in text
+    ]
+    if missing:
+        return Diagnostic(
+            name,
+            False,
+            f"scripts/sandbox-run.sh at {shared.fix.branches.runner}@{sha[:7]} lacks "
+            + ", ".join(missing),
+            action,
+        )
+    if shutil.which("docker") is None:
+        return Diagnostic(name, False, "docker is not on PATH", "Install or start Docker.")
+    return Diagnostic(name, True, f"sandbox launcher at {sha[:7]} supports contained launches", "")
 
 
 def _credential_diagnostic(local: LocalConfig, installation_token: str | None) -> Diagnostic:

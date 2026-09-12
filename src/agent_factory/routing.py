@@ -25,6 +25,7 @@ class SourceItem:
     state: str
     body: str = ""
     pull_request: bool = False
+    title: str = ""
 
 
 @dataclass

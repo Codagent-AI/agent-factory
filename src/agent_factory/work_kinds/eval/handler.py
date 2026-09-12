@@ -418,12 +418,19 @@ def plan_attempt(
     stopped_before_checkpoint = bool(
         previous and previous[-1].result.get("reason") == "suite launch failed"
     )
-    return adapter.plan(
+    plan = adapter.plan(
         claim.frozen_spec,
         worktrees,
         Path(run.evidence_path),
         recovery=run.reason != "initial",
         pre_checkpoint_proven=stopped_before_checkpoint,
+    )
+    # Build under a per-run tag so a concurrent fix build cannot retag this image.
+    tag = f"agent-runner-factory:{run.id}"
+    return replace(
+        plan,
+        allowed_environment={**plan.allowed_environment, "IMAGE": tag},
+        ownership_hints={**plan.ownership_hints, "image_tag": tag},
     )
 
 

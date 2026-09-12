@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import subprocess
 from pathlib import Path
+from unittest import mock
 
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.work_kinds.fix.readiness import check_readiness
@@ -218,7 +219,7 @@ def test_missing_workflow_contract_fails_closed(tmp_path: Path) -> None:
     assert contract.available is False
 
 
-def test_launch_is_unavailable_until_the_sandbox_launcher_is_implemented(tmp_path: Path) -> None:
+def test_launch_requires_a_sandbox_script_that_contains_the_credential(tmp_path: Path) -> None:
     checkout = _runner_checkout(tmp_path, with_contract=True)
     env = tmp_path / "fix.env"
     env.write_text("GH_TOKEN=abc123\n")
@@ -227,6 +228,32 @@ def test_launch_is_unavailable_until_the_sandbox_launcher_is_implemented(tmp_pat
     diagnostics = check_readiness(local, _shared())
     launch = next(d for d in diagnostics if d.name == "fix sandbox launch")
     assert launch.available is False
+    assert "sandbox-run.sh" in launch.detail
+
+    script = checkout / "scripts" / "sandbox-run.sh"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(
+        "#!/bin/sh\n# --image --artifact-dir --no-default-secrets --env-file --docker-run-arg\n"
+    )
+    git(checkout, "add", ".")
+    git(
+        checkout,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "launcher",
+    )
+    git(checkout, "update-ref", "refs/remotes/origin/main", "HEAD")
+    with mock.patch(
+        "agent_factory.work_kinds.fix.readiness.shutil.which", return_value="/bin/docker"
+    ):
+        diagnostics = check_readiness(local, _shared())
+    launch = next(d for d in diagnostics if d.name == "fix sandbox launch")
+    assert launch.available is True, launch.detail
 
 
 def test_present_workflow_contract_passes(tmp_path: Path) -> None:

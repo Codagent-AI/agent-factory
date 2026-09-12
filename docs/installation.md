@@ -34,10 +34,14 @@ secrets there.
 
 ### Fix-kind prerequisites
 
-The `fix` work kind clones each configured target repository, Agent Runner,
-and Agent Skills from local bare mirrors kept under the storage root
-(`<storage_root>/mirrors/<owner>__<repo>.git`), rather than the shared checkouts
-used for evals. It also needs an operator-maintained working clone of each
+The `fix` work kind keeps a bare mirror of each configured target repository
+under the storage root (`<storage_root>/mirrors/<owner>__<repo>.git`), created
+with `git clone --mirror` on first admission and fetched with the App
+installation token before every claim. Each attempt then runs in fresh clones
+of the target (from the mirror) and of Agent Runner and Agent Skills (from the
+configured shared checkouts) at the claim's recorded commits, under
+`<storage_root>/clones/<claim>/<attempt>/{repo,runner,skills}`; clones are
+never reused between attempts and are removed once the card reaches Done. It also needs an operator-maintained working clone of each
 target repository outside the storage root — the merge sync fast-forwards that
 clone after a fix PR merges, and the factory never creates it. Configure both
 locations under `[repositories.working_clones]` in the local TOML, keyed by

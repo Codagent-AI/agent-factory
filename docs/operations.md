@@ -84,9 +84,17 @@ the fast-forward itself failed — until the operator resolves it (commit or
 stash local changes, restore the clone, or fetch and fast-forward it by hand)
 and Factory's next pass retries.
 
-**Evidence.** Each fix attempt's Runner logs, sandbox artifacts, and structured
-`fix-outcome.json` live under the storage root alongside eval evidence,
-retained until manual cleanup.
+**Evidence.** Each fix attempt gets its own artifact directory,
+`<storage_root>/artifacts/<claim>-fix/attempt-<n>/`, mounted at `/artifacts`
+inside the sandbox. It holds the issue input the factory wrote
+(`input/issue.json`: title, body, attempt number, prior factory PR, and the
+eligible writer comments), the sandbox log (`factory-suite.log`), the Runner
+session (`agent-runner/projects/.../runs/<id>/` with `state.json`, `audit.log`,
+and step output), and the structured `fix-outcome.json`. Attempts never share
+a directory, so a recovery retry cannot read a stale outcome. Evidence is
+retained until manual cleanup. The single-line copy of the fix credential the
+sandbox loads lives outside the artifacts, under `<storage_root>/private/<run>/`,
+owner-readable only.
 
 ## Service management and storage
 

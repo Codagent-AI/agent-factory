@@ -10,7 +10,7 @@ from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig,
 from agent_factory.controller import Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimStore, Run
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.fix.handler import FixHandler, attempt_evidence
 
 CONTRACT = "factory-fix/1"
 
@@ -162,8 +162,8 @@ def _required_run(store: ClaimStore, run_id: str) -> Run:
     return run
 
 
-def _write_outcome(evidence_path: str, payload: dict[str, object]) -> None:
-    path = Path(evidence_path)
+def _write_outcome(run: Run, payload: dict[str, object]) -> None:
+    path = attempt_evidence(run)
     path.mkdir(parents=True, exist_ok=True)
     (path / "fix-outcome.json").write_text(json.dumps(payload))
 
@@ -173,7 +173,7 @@ def test_pull_request_outcome_settles_with_pending_human_review(tmp_path: Path) 
     run = store.get_run(run_id)
     assert run is not None
     _write_outcome(
-        run.evidence_path,
+        run,
         {
             "contract": CONTRACT,
             "outcome": "pull-request",
@@ -199,7 +199,7 @@ def test_needs_input_outcome_stays_running_with_label(tmp_path: Path) -> None:
     run = store.get_run(run_id)
     assert run is not None
     _write_outcome(
-        run.evidence_path,
+        run,
         {"contract": CONTRACT, "outcome": "needs-input", "reasons": ["missing repro steps"]},
     )
     handler = FixHandler(_shared(), _local(tmp_path))
@@ -223,7 +223,7 @@ def test_failed_outcome_settles_with_pr_link_retained(tmp_path: Path) -> None:
     run = store.get_run(run_id)
     assert run is not None
     _write_outcome(
-        run.evidence_path,
+        run,
         {
             "contract": CONTRACT,
             "outcome": "failed",
@@ -257,8 +257,8 @@ def test_missing_malformed_or_wrong_contract_is_a_technical_failure_then_infra_e
     run = store.get_run(run_id)
     assert run is not None
     if payload is not None:
-        Path(run.evidence_path).mkdir(parents=True, exist_ok=True)
-        (Path(run.evidence_path) / "fix-outcome.json").write_text(payload)
+        attempt_evidence(run).mkdir(parents=True, exist_ok=True)
+        (attempt_evidence(run) / "fix-outcome.json").write_text(payload)
     store.finish_run(run_id, execution_status="failed", result={})
     handler = FixHandler(_shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
@@ -272,8 +272,8 @@ def test_missing_malformed_or_wrong_contract_is_a_technical_failure_then_infra_e
     assert run2 is not None
     assert run2.reason == "recovery"
     if payload is not None:
-        Path(run2.evidence_path).mkdir(parents=True, exist_ok=True)
-        (Path(run2.evidence_path) / "fix-outcome.json").write_text(payload)
+        attempt_evidence(run2).mkdir(parents=True, exist_ok=True)
+        (attempt_evidence(run2) / "fix-outcome.json").write_text(payload)
     store.finish_run(run2.id, execution_status="failed", result={})
     result2 = handler.read_result(_required_run(store, run2.id))
     controller.record_result(run2.id, result2)
@@ -289,7 +289,7 @@ def test_valid_pull_request_file_with_nonzero_exit_still_settles_as_pr(tmp_path:
     run = store.get_run(run_id)
     assert run is not None
     _write_outcome(
-        run.evidence_path,
+        run,
         {
             "contract": CONTRACT,
             "outcome": "pull-request",
@@ -313,7 +313,7 @@ def test_events_are_not_duplicated_on_repeated_consumption(tmp_path: Path) -> No
     run = store.get_run(run_id)
     assert run is not None
     _write_outcome(
-        run.evidence_path,
+        run,
         {"contract": CONTRACT, "outcome": "pull-request", "pr": {"url": "u", "number": 1}},
     )
     handler = FixHandler(_shared(), _local(tmp_path))

@@ -70,13 +70,19 @@ def test_already_removed_clone_does_not_fail_retry(tmp_path: Path) -> None:
 def test_missing_docker_binary_records_error_instead_of_crashing(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
-    store.set_preparation(claim.id, {"image": "agent-runner-factory:run-1"})
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "a"))
+    store.configure_run(
+        run.id,
+        plan={"ownership_hints": {"image_tag": "agent-runner-factory:run-1"}},
+        limits={},
+    )
+    store.finish_run(run.id, execution_status="completed", result={"outcome": "pull-request"})
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
     cleanup = FixCleanup(store)
     cleanup.reconcile(claim.id, board_status="Review")
 
     with mock.patch(
-        "agent_factory.work_kinds.fix.cleanup.subprocess.run",
+        "agent_factory.work_kinds.images.subprocess.run",
         side_effect=OSError("docker not found"),
     ):
         result = cleanup.reconcile(claim.id, board_status="Done")

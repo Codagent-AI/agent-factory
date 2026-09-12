@@ -352,6 +352,7 @@ class GitHubClient:
             state=_required_string(payload, "state"),
             body=_optional_string(payload, "body"),
             pull_request="pull_request" in payload,
+            title=_optional_string(payload, "title"),
         )
 
     def list_project_items(self, project_id: str) -> list[ProjectQueueItem]:

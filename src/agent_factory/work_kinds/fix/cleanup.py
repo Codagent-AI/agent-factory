@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import shutil
-import subprocess
 from collections.abc import Mapping
 from typing import cast
 
 from agent_factory.store import ClaimStore
+from agent_factory.work_kinds.images import remove_images, run_image_tags
 
 
 class FixCleanup:
@@ -42,19 +42,7 @@ class FixCleanup:
                     pass
                 except OSError as error:
                     errors[f"clone:{name}"] = str(error)
-        image = claim.preparation.get("image")
-        if isinstance(image, str):
-            try:
-                result = subprocess.run(
-                    ["docker", "rmi", image], capture_output=True, text=True, check=False
-                )
-            except OSError as error:
-                errors["image"] = f"cannot run docker: {error}"
-            else:
-                if result.returncode != 0 and "No such image" not in result.stderr:
-                    errors["image"] = (
-                        result.stderr.strip() or f"docker rmi exited {result.returncode}"
-                    )
+        errors.update(remove_images(run_image_tags(self._store, claim_id)))
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
         self._store.set_cleanup(claim_id, cleanup)

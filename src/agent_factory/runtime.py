@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory import work_kinds
-from agent_factory.config import LocalConfig, SharedConfig
+from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
     Controller,
@@ -35,7 +35,7 @@ from agent_factory.suites.and_scene import (
     WorktreeError,
 )
 from agent_factory.supervisor import launch_supervisor
-from agent_factory.work_kinds.base import Feedback, WorkKindHandler, card_status
+from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler, card_status
 from agent_factory.work_kinds.eval import ParsedRequest
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
@@ -56,6 +56,7 @@ def cycle(state: Path, config_path: Path) -> None:
     fix_handler = registered.get("fix")
     if isinstance(fix_handler, FixHandler):
         fix_handler.attach_installation_token(token_provider)
+        fix_handler.attach_github(client)
     with advisory_lock(state, "cycle"), closing(ClaimStore(state)) as store:
         controller = Controller(
             store,
@@ -70,6 +71,9 @@ def cycle(state: Path, config_path: Path) -> None:
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
+        memory = check_memory_headroom(local.limits.memory_reservation_gib)
+        memory_setting = {} if memory.available else {"reason": memory.detail}
+        store.set_setting("runtime", "memory", memory_setting)
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
@@ -81,8 +85,12 @@ def cycle(state: Path, config_path: Path) -> None:
                 if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
                     claim = store.get_claim(claim.id) or claim
-                if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
-                    process_blocked_claim(
+                if (
+                    claim.lifecycle == "blocked"
+                    and isinstance(handler, FixHandler)
+                    and memory.available
+                ):
+                    admitted = process_blocked_claim(
                         store,
                         client,
                         handler,
@@ -95,6 +103,26 @@ def cycle(state: Path, config_path: Path) -> None:
                         now=now,
                     )
                     claim = store.get_claim(claim.id) or claim
+                    if admitted is not None:
+                        run, preparation = admitted
+                        try:
+                            _launch(
+                                state,
+                                config_path,
+                                controller,
+                                handler,
+                                local,
+                                claim,
+                                run,
+                                preparation,
+                            )
+                        except (WorktreeError, ReadinessError) as error:
+                            store.set_hold(claim.id, "readiness", {"reason": str(error)})
+                            store.set_claim_lifecycle(
+                                claim.id, "waiting", {"verdict": "infra-error"}
+                            )
+                            store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
+                        claim = store.get_claim(claim.id) or claim
                 if claim.kind == "fix" and claim.lifecycle == "settled":
                     sync_claim(
                         store,
@@ -118,9 +146,6 @@ def cycle(state: Path, config_path: Path) -> None:
         kind_readiness: dict[str, str] = {}
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
-        memory = check_memory_headroom(local.limits.memory_reservation_gib)
-        memory_setting = {} if memory.available else {"reason": memory.detail}
-        store.set_setting("runtime", "memory", memory_setting)
         for card in cards:
             snapshot = None
             handler: WorkKindHandler | None = None
@@ -187,29 +212,11 @@ def cycle(state: Path, config_path: Path) -> None:
                 preparation = handler.prepare(claim)
                 run = controller.reserve_next(claim.id, readiness=lambda: None)
                 if run is None:
+                    # Preparation may have settled the claim (an earlier attempt's PR was
+                    # found); present that immediately rather than on the next poll.
+                    _report(store, controller, client, shared, card, claim.id, handler)
                     continue
-                try:
-                    plan = handler.plan(claim, run, preparation)
-                    launch_supervisor(
-                        state,
-                        run.id,
-                        plan,
-                        handler.limits(local),
-                        config_path=config_path,
-                    )
-                except Exception as error:
-                    # Planning and launch failures must release the reserved execution slot.
-                    controller.record_result(
-                        run.id,
-                        AttemptResult(
-                            "failed",
-                            None,
-                            {"reason": str(error), "error_type": type(error).__name__},
-                        ),
-                    )
-                    # Preserve worktree readiness handling and unexpected error tracebacks.
-                    if not isinstance(error, (OSError, ReadinessError, RecoveryStateError)):
-                        raise
+                _launch(state, config_path, controller, handler, local, claim, run, preparation)
                 _report(store, controller, client, shared, card, claim.id, handler)
                 break
             except (WorktreeError, ReadinessError) as error:
@@ -217,6 +224,35 @@ def cycle(state: Path, config_path: Path) -> None:
                 store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
                 store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
                 _report(store, controller, client, shared, card, claim.id, handler)
+
+
+def _launch(
+    state: Path,
+    config_path: Path,
+    controller: Controller,
+    handler: WorkKindHandler,
+    local: LocalConfig,
+    claim: Claim,
+    run: Run,
+    preparation: Preparation,
+) -> None:
+    """Plan and detach one reserved attempt, releasing the slot if either step fails."""
+    try:
+        plan = handler.plan(claim, run, preparation)
+        launch_supervisor(state, run.id, plan, handler.limits(local), config_path=config_path)
+    except Exception as error:
+        # Planning and launch failures must release the reserved execution slot.
+        controller.record_result(
+            run.id,
+            AttemptResult(
+                "failed",
+                None,
+                {"reason": str(error), "error_type": type(error).__name__},
+            ),
+        )
+        # Preserve worktree readiness handling and unexpected error tracebacks.
+        if not isinstance(error, (OSError, ReadinessError, RecoveryStateError)):
+            raise
 
 
 def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
@@ -229,14 +265,11 @@ def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
     return None
 
 
-def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, str]:
-    if handler.kind != "eval":
-        # Fix admission is held at the readiness gate until mirror-based target
-        # resolution and the sandbox launcher exist; this path should be unreachable.
-        raise ReadinessError(
-            f"{handler.kind} handler has no wired revision resolver; fix admission should "
-            "have been held at readiness before reaching this point"
-        )
+def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, ...]:
+    if isinstance(handler, FixHandler):
+        if not isinstance(request, FixTarget):
+            raise ReadinessError("fix handler cannot resolve a non-target request")
+        return handler.resolve(request)
     sources = getattr(handler, "sources", None)
     if not isinstance(sources, SourceRepositories) or not isinstance(request, ParsedRequest):
         raise ReadinessError("eval handler cannot resolve pinned revisions")

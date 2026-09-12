@@ -15,7 +15,9 @@ from agent_factory.github import (
     IssueComment,
     ProjectQueueItem,
 )
-from agent_factory.store import Claim, ClaimStore, NonterminalRunError
+from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
+from agent_factory.suites.and_scene import ReadinessError, WorktreeError
+from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.fix.handler import FixHandler
 
 
@@ -67,10 +69,10 @@ def process_blocked_claim(
     bot_login: str,
     artifact_root: Path,
     now: datetime,
-) -> bool:
-    """Re-admit one blocked fix claim if eligible; return True once a run is reserved."""
+) -> tuple[Run, Preparation] | None:
+    """Re-admit one blocked fix claim if eligible; return the reserved run and its clones."""
     if claim.lifecycle != "blocked":
-        return False
+        return None
     # Cheap SQLite gates first; the paginated comment listing only runs when an
     # unblock could actually be admitted this cycle.
     if (
@@ -78,17 +80,17 @@ def process_blocked_claim(
         or store.nonterminal_runs(kind="fix")
         or not handler.window(local).allows_admission(now)
     ):
-        return False
+        return None
     quota = store.get_hold(claim.id, "quota")
     if quota is not None and hold_active(quota, now):
-        return False
+        return None
     # Normal admission scopes provider quota holds to the providers a claim uses;
     # an unblock attempt must honor the same holds instead of bypassing them.
     provider_holds = store.get_settings_by_prefix("admission", "quota:")
     for provider in handler.providers(claim):
         hold = provider_holds.get(f"quota:{provider}")
         if hold is not None and hold_active(hold, now):
-            return False
+            return None
     since = claim.outcome.get("declined_at")
     since_value = since if isinstance(since, str) else None
     permission_cache: dict[str, str | None] = {}
@@ -108,7 +110,7 @@ def process_blocked_claim(
         comments, since=since_value, bot_login=bot_login, permission=_permission
     )
     if handler.gesture(claim, card, eligible) != "unblock":
-        return False
+        return None
     store.set_preparation(
         claim.id,
         {
@@ -120,18 +122,30 @@ def process_blocked_claim(
             },
         },
     )
+    # Reconcile side effects and cut fresh clones before any attempt is reserved, exactly
+    # as first admission does; a launch problem leaves the claim blocked for the next poll.
     try:
-        store.reserve_run(
+        preparation = handler.prepare(claim)
+    except (ReadinessError, WorktreeError) as error:
+        store.record_event(claim.id, f"unblock-readiness:{error}", f"Cannot re-admit yet: {error}")
+        return None
+    refreshed = store.get_claim(claim.id)
+    if refreshed is None or refreshed.lifecycle != "blocked":
+        # Reconciliation found an earlier attempt's pull request and settled the claim.
+        client.set_attention_label(claim.repository, claim.issue_number, False)
+        return None
+    try:
+        run = store.reserve_run(
             claim.id,
             "fix",
             reason="unblock",
             evidence_path=str(artifact_root / f"{claim.id}-fix-unblock"),
         )
     except NonterminalRunError:
-        return False
+        return None
     store.set_claim_lifecycle(claim.id, "active", {})
     client.set_attention_label(claim.repository, claim.issue_number, False)
     store.record_event(
         claim.id, "unblock", "Re-admitted after eligible input; starting a new attempt."
     )
-    return True
+    return run, preparation
