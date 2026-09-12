@@ -272,3 +272,22 @@ def test_handler_readiness_fails_closed_when_the_token_provider_fails(tmp_path: 
     credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
     assert credential.available is False
     assert "cannot mint" in credential.detail
+
+
+def test_handler_readiness_fails_closed_on_unexpected_provider_errors(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.fix.handler import FixHandler
+
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("GH_TOKEN=abc123\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    handler = FixHandler(_shared(), local)
+
+    def _broken() -> str:
+        raise RuntimeError("transport wrapper exploded")
+
+    handler.attach_installation_token(_broken)
+    credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
+    assert credential.available is False
+    assert "transport wrapper exploded" in credential.detail

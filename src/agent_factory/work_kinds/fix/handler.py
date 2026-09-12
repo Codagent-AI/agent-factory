@@ -14,13 +14,7 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
-from agent_factory.github import (
-    WRITER_PERMISSIONS,
-    GitHubApiError,
-    GitHubClient,
-    IssueComment,
-    ProjectQueueItem,
-)
+from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import ReadinessError
@@ -162,9 +156,10 @@ class FixHandler:
         if self._installation_token is not None:
             try:
                 token = self._installation_token()
-            except (GitHubApiError, OSError) as error:
+            except Exception as error:  # noqa: BLE001 - any minting failure fails closed
                 # Fail closed: without the App token the fix credential cannot be proven
-                # distinct from it, so readiness must report that, not skip the check.
+                # distinct from it, so readiness reports the failure as a diagnostic
+                # instead of skipping the check or crashing the readiness pass.
                 minting_failure = Diagnostic(
                     "fix credential",
                     False,
