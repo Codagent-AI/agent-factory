@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import re
 import shutil
 import stat
 import subprocess
@@ -35,8 +36,13 @@ class Diagnostic:
     action: str
 
 
-def doctor(config: LocalConfig) -> list[Diagnostic]:
-    """Inspect prerequisites only; this function never starts work or repairs state."""
+def doctor(config: LocalConfig, *, include_fix: bool = True) -> list[Diagnostic]:
+    """Inspect prerequisites only; this function never starts work or repairs state.
+
+    ``include_fix`` is disabled by the runtime's shared-prerequisite gate: fix-kind
+    readiness is diagnosed and admitted per kind through ``handler.readiness()``, and
+    must never block eval admission just because a fix mirror or clone isn't ready yet.
+    """
     diagnostics: list[Diagnostic] = []
     shared: SharedConfig | None = None
     try:
@@ -74,6 +80,8 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
     )
     diagnostics.extend(model_authentication(profiles))
     diagnostics.append(_free_space(config))
+    if shared is not None and include_fix:
+        diagnostics.extend(_fix_diagnostics(config, shared))
     if shared is not None and config.credentials.github_app_key.is_file():
         diagnostics.append(_github_access(shared, config.credentials.github_app_key))
     else:
@@ -119,7 +127,11 @@ def format_doctor(diagnostics: Iterable[Diagnostic]) -> str:
         "doctor is diagnostic only: starts no evaluations and repairs no credentials or "
         "configuration."
     ]
+    fix_heading_printed = False
     for item in values:
+        if item.name.startswith("fix ") and not fix_heading_printed:
+            lines.append("-- fix --")
+            fix_heading_printed = True
         state = "OK" if item.available else "FAIL"
         lines.extend((f"{item.name}: {state} — {item.detail}", f"  action: {item.action}"))
     return "\n".join(lines)
@@ -128,6 +140,7 @@ def format_doctor(diagnostics: Iterable[Diagnostic]) -> str:
 def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
+    lines.extend(_slot_lines(store))
     claims = store.all_claims()
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
@@ -138,6 +151,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
     for key, saved in sorted(store.get_settings_by_prefix("runtime", "readiness:").items()):
         if saved.get("reason"):
             lines.append(f"{key}: {saved['reason']}")
+    lines.extend(_quota_hold_lines(store, config))
     for claim in claims:
         run = active_by_claim.get(claim.id)
         if run is not None:
@@ -145,6 +159,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
             lines.extend(_progress_lines(run))
         else:
             lines.append(f"claim: {claim.repository}#{claim.issue_number} ({claim.lifecycle})")
+        lines.extend(_blocked_lines(claim))
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
         lines.extend(_cleanup_lines(claim))
@@ -292,6 +307,168 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
     return result
 
 
+_FIX_TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
+
+
+def _fix_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    """Fix-kind readiness, kept visibly distinct from shared and eval diagnostics."""
+    if not shared.fix.targets:
+        return []
+    from agent_factory.work_kinds.fix.readiness import check_readiness
+
+    diagnostics = [
+        Diagnostic(f"fix {d.name}", d.available, d.detail, d.action)
+        for d in check_readiness(local, shared)
+    ]
+    diagnostics.extend(_mirror_diagnostics(local, shared))
+    diagnostics.extend(_working_clone_diagnostics(local))
+    diagnostics.append(
+        Diagnostic(
+            "fix docker memory",
+            (memory := check_memory_headroom(local.limits.memory_reservation_gib)).available,
+            memory.detail,
+            memory.action,
+        )
+    )
+    token = _read_fix_token(local.credentials.fix_environment)
+    if token is not None:
+        diagnostics.extend(_fix_identity_diagnostics(shared, token))
+    return diagnostics
+
+
+def _mirror_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    for target in shared.fix.targets:
+        name = f"fix mirror {target.repository}"
+        mirror_path = local.storage_root / "mirrors" / f"{target.repository.replace('/', '__')}.git"
+        action = (
+            f"Let fix admission create and fetch the mirror at {mirror_path}, or run "
+            f"`git clone --mirror` manually."
+        )
+        if not mirror_path.is_dir():
+            diagnostics.append(
+                Diagnostic(name, False, f"mirror is not yet created: {mirror_path}", action)
+            )
+            continue
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(mirror_path),
+                    "ls-remote",
+                    "--exit-code",
+                    "origin",
+                    "HEAD",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            diagnostics.append(
+                Diagnostic(name, False, f"mirror fetch check failed: {error}", action)
+            )
+            continue
+        if completed.returncode != 0:
+            diagnostics.append(
+                Diagnostic(name, False, f"mirror at {mirror_path} cannot reach origin", action)
+            )
+            continue
+        diagnostics.append(Diagnostic(name, True, f"mirror is fetchable: {mirror_path}", ""))
+    return diagnostics
+
+
+def _working_clone_diagnostics(local: LocalConfig) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    for key, path in local.repositories.working_clones.items():
+        name = f"fix working clone {key}"
+        available = path.is_dir() and (path / ".git").exists()
+        detail = (
+            f"working clone is available: {path}"
+            if available
+            else f"working clone is unavailable or not a Git repository: {path}"
+        )
+        diagnostics.append(
+            Diagnostic(
+                name,
+                available,
+                detail,
+                "" if available else f"Clone {key} to {path} for the merge sync.",
+            )
+        )
+    return diagnostics
+
+
+def _read_fix_token(path: Path | None) -> str | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except (OSError, UnicodeError):
+        return None
+    if len(lines) != 1:
+        return None
+    match = _FIX_TOKEN_LINE.match(lines[0].strip())
+    return match.group(1) if match else None
+
+
+def _fix_identity_diagnostics(shared: SharedConfig, token: str) -> list[Diagnostic]:
+    action = "Restore a valid, non-App fix credential token."
+    runner = SubprocessGhRunner()
+    client = GitHubClient(runner, lambda: token)
+    try:
+        login = client.whoami()
+    except (GitHubApiError, OSError) as error:
+        return [
+            Diagnostic(
+                "fix credential identity",
+                False,
+                f"fix credential does not authenticate: {error}",
+                action,
+            )
+        ]
+    diagnostics = [
+        Diagnostic("fix credential identity", True, f"fix credential authenticates as {login}", "")
+    ]
+    is_app_identity = login == shared.bot_login
+    diagnostics.append(
+        Diagnostic(
+            "fix credential is not the App identity",
+            not is_app_identity,
+            f"fix credential identity is {login}"
+            + (" (equals the App identity)" if is_app_identity else ""),
+            "Use a distinct credential for fix PRs, separate from the App identity."
+            if is_app_identity
+            else "",
+        )
+    )
+    role = client.organization_role(shared.organization, login)
+    is_admin = role == "admin"
+    diagnostics.append(
+        Diagnostic(
+            "fix credential organization role",
+            True,
+            f"fix credential organization role: {role or 'unknown'}"
+            + (" — warning: this identity is an organization admin" if is_admin else ""),
+            "Prefer a non-admin machine user for the fix credential." if is_admin else "",
+        )
+    )
+    for target in shared.fix.targets:
+        reachable = client.can_read_repository(target.repository)
+        diagnostics.append(
+            Diagnostic(
+                f"fix credential reach {target.repository}",
+                reachable,
+                f"fix credential can read {target.repository}"
+                if reachable
+                else f"fix credential cannot read {target.repository}",
+                "" if reachable else f"Grant the fix credential access to {target.repository}.",
+            )
+        )
+    return diagnostics
+
+
 def _suite_environment(path: Path) -> Diagnostic:
     if not path.is_file():
         return Diagnostic(
@@ -433,6 +610,69 @@ def _free_space(config: LocalConfig) -> Diagnostic:
 
 def _current_line(claim: Claim, run: Run) -> str:
     return f"current: {claim.repository}#{claim.issue_number} {run.unit_key} ({run.status})"
+
+
+def _slot_lines(store: ClaimStore) -> list[str]:
+    lines: list[str] = []
+    for kind in ("eval", "fix"):
+        runs = store.nonterminal_runs(kind=kind)
+        run = runs[0] if runs else None
+        claim = store.get_claim(run.claim_id) if run is not None else None
+        if run is None or claim is None:
+            lines.append(f"{kind} slot: free")
+            continue
+        lines.append(
+            f"{kind} slot: {claim.repository}#{claim.issue_number} {run.unit_key} ({run.status})"
+        )
+    return lines
+
+
+def _blocked_lines(claim: Claim) -> list[str]:
+    if claim.lifecycle != "blocked":
+        return []
+    reason = "needs input"
+    for event in _events(claim):
+        if event.key.endswith(":needs-input"):
+            body = event.body.removeprefix("Needs input.\n\n").strip()
+            reason = body or reason
+            break
+    return [f"blocked: {claim.repository}#{claim.issue_number} — {reason}"]
+
+
+def _quota_hold_lines(store: ClaimStore, config: LocalConfig | None) -> list[str]:
+    holds = store.get_settings_by_prefix("admission", "quota:")
+    if not holds:
+        return []
+    kind_providers = _kind_providers(config)
+    lines: list[str] = []
+    for key, hold in sorted(holds.items()):
+        provider = key.split(":", 1)[1]
+        until = hold.get("until")
+        until_text = until if isinstance(until, str) else "operator action required"
+        affected = sorted(
+            kind for kind, providers in kind_providers.items() if provider in providers
+        )
+        blocks = ", ".join(affected) if affected else "none"
+        lines.append(f"quota hold: {provider} until {until_text}; blocks: {blocks}")
+    return lines
+
+
+def _kind_providers(config: LocalConfig | None) -> dict[str, set[str]]:
+    if config is None:
+        return {}
+    try:
+        shared = SharedConfig.from_file(config.shared_config)
+    except (ConfigurationError, OSError):
+        return {}
+
+    def providers_of(defaults: Mapping[str, object]) -> set[str]:
+        return {
+            value.split(":", 1)[0]
+            for value in defaults.values()
+            if isinstance(value, str) and value
+        }
+
+    return {"eval": providers_of(shared.eval.defaults), "fix": providers_of(shared.fix.defaults)}
 
 
 def _progress_lines(run: Run) -> list[str]:

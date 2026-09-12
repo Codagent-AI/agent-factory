@@ -5,11 +5,54 @@ The Codagent example uses the existing Codagent Factory App, Project #1, native 
 Create labels idempotently in each configured source repository before enabling callers:
 
 ```sh
-gh label create eval-request --repo Codagent-AI/agent-evals --color 0E8A16 --force
-gh label create needs-input --repo Codagent-AI/agent-evals --color B60205 --force
+for repo in Codagent-AI/agent-evals Codagent-AI/agent-runner Codagent-AI/agent-skills \
+            Codagent-AI/agent-validator Codagent-AI/agent-plugin; do
+  gh label create eval-request --repo "$repo" --color 0E8A16 --force
+  gh label create needs-input --repo "$repo" --color B60205 --force
+  gh label create factory-hold --repo "$repo" --color BFD4F2 --force
+done
 ```
 
-`eval-request` is applied by the regular Markdown template. `needs-input` is reserved for later controller feedback. The red `needs-input` label and request label are deliberately separate from Project fields.
+`eval-request` is applied by the regular Markdown template. `needs-input` is reserved for later controller feedback. `factory-hold` is the bug rule's bypass marker: a Bug-typed issue carrying it routes to `Owner=human` / Backlog instead of factory admission. All three labels are deliberately separate from Project fields.
+
+## Bug routing and the tracking-only template
+
+Any open issue whose native Type is `Bug` in a configured source repository routes to `Owner=factory` / Ready when its author has write, maintain, or admin access, unless `factory-hold` is already applied when the creation event is delivered — the label must be present at delivery time, since routing does not retroactively rescan existing issues. Add `.github/ISSUE_TEMPLATE/bug-tracking-only.md` (copied from this repository) to each configured source repository so a writer can file a tracking-only bug in one step; it pre-sets the Bug type and the `factory-hold` label. A bug filed without that template and without the label is picked up by the factory like any other authorized Bug-typed issue.
+
+```sh
+for repo in Codagent-AI/agent-runner Codagent-AI/agent-skills \
+            Codagent-AI/agent-validator Codagent-AI/agent-plugin Codagent-AI/agent-evals; do
+  gh api "repos/$repo/contents/.github/ISSUE_TEMPLATE/bug-tracking-only.md" \
+    --method PUT \
+    --field message="Add Bug (tracking only) issue template" \
+    --field content="$(base64 < .github/ISSUE_TEMPLATE/bug-tracking-only.md)"
+done
+```
+
+## Fix credential and branch protection
+
+The fix work kind opens pull requests with a separate fine-grained personal access token, distinct from both the App installation token and the suite candidate token. Create it (preferably on a non-admin machine user) with **Contents**, **Pull requests**, and **Issues** access on the five target repositories only — no Workflows, Administration, or Projects access — and store it locally per [installation](installation.md#fix-kind-prerequisites). `doctor` verifies its shape, identity, and reach; it warns rather than fails if the identity turns out to hold organization-admin rights, since that is a hardening recommendation, not a hard requirement.
+
+Protect `main` on each target repository with a ruleset requiring a pull request before merge, with no bypass for the fix credential's owner — the credential must never be able to push directly:
+
+```sh
+for repo in Codagent-AI/agent-runner Codagent-AI/agent-skills \
+            Codagent-AI/agent-validator Codagent-AI/agent-plugin Codagent-AI/agent-evals; do
+  gh api "repos/$repo/rulesets" --method POST --input - <<'JSON'
+{
+  "name": "protect-main-require-pr",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/heads/main"], "exclude": []}},
+  "rules": [{"type": "pull_request"}]
+}
+JSON
+done
+```
+
+## Bumping the caller revision
+
+After publishing a change to the shared routing workflow (including the bug rule, `bug_type`, and `hold_label`), replace `FACTORY_REVISION` in each of the five caller workflows with the new published commit SHA and deploy it on each caller's default branch, exactly as for any other shared-workflow change (see below).
 
 Publish `agent-factory` first. Then replace each caller workflow's `FACTORY_REVISION` with that published, immutable full commit SHA and deploy it on the caller's default branch. Only then issue and pull-request events invoke the trusted reusable workflow and its matching configuration. Update the installed local factory and caller pins together; neither automatically follows `main`.
 

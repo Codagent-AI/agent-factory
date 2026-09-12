@@ -234,6 +234,27 @@ class GitHubClient:
         if refs is None or refs.get("dataType") != "TEXT":
             raise GitHubApiError(f"configured text field is missing or changed: {project.refs.id}")
 
+    def whoami(self) -> str:
+        payload = _json_object(self._request(["api", "user"], None))
+        return _required_string(payload, "login")
+
+    def organization_role(self, organization: str, login: str) -> str | None:
+        try:
+            payload = _json_object(
+                self._request(["api", f"orgs/{organization}/memberships/{login}"], None)
+            )
+        except GitHubApiError:
+            return None
+        role = payload.get("role")
+        return role if isinstance(role, str) else None
+
+    def can_read_repository(self, repository: str) -> bool:
+        try:
+            self._request(["api", f"repos/{repository}"], None)
+            return True
+        except GitHubApiError:
+            return False
+
     def get_permission(self, repository: str, login: str) -> str | None:
         try:
             response = self._request(
@@ -327,6 +348,7 @@ class GitHubClient:
             issue_type=type_name if isinstance(type_name, str) else None,
             state=_required_string(payload, "state"),
             body=_optional_string(payload, "body"),
+            pull_request="pull_request" in payload,
         )
 
     def list_project_items(self, project_id: str) -> list[ProjectQueueItem]:

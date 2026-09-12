@@ -1,10 +1,11 @@
 # Install Agent Factory on macOS
 
 Agent Factory is a per-user Mac service. It supports one local SQLite-backed
-worker, GitHub Projects, the `eval` work kind, and the `and-scene` suite. A
-different organization may replace identities, mappings, paths, and credentials
-in configuration, but configuration alone does not add another work kind or
-suite.
+worker, GitHub Projects, the `eval` and `fix` work kinds, and the `and-scene`
+suite. Each work kind admits and runs independently, in its own slot, subject
+to its own window and readiness. A different organization may replace
+identities, mappings, paths, and credentials in configuration, but
+configuration alone does not add another work kind or suite.
 
 ## Prerequisites
 
@@ -31,6 +32,37 @@ with the Project and repository permissions documented in
 [GitHub setup](github-setup.md), and configure the corresponding Actions
 secrets there.
 
+### Fix-kind prerequisites
+
+The `fix` work kind clones each configured target repository, Agent Runner,
+and Agent Skills from local bare mirrors kept under the storage root
+(`<storage_root>/mirrors/<owner>__<repo>.git`), rather than the shared checkouts
+used for evals. It also needs an operator-maintained working clone of each
+target repository outside the storage root — the merge sync fast-forwards that
+clone after a fix PR merges, and the factory never creates it. Configure both
+locations under `[repositories.working_clones]` in the local TOML, keyed by
+`owner/repo`.
+
+Create a private fix credential file containing exactly one line,
+`GH_TOKEN=<token>`, owner-readable only, distinct from the App installation
+token and from the suite candidate token. Point `credentials.fix_environment`
+at it in the local TOML. This credential opens fix pull requests; it must have
+Contents, Pull requests, and Issues access to the target repositories only —
+no workflow, administration, or Project access — and is preferably a
+non-admin machine user, since `doctor` warns (without failing) when it detects
+organization-admin access.
+
+The fix workflow runs in the same Docker sandbox as evals, so plan capacity for
+both to run concurrently: free disk for two sets of clones and per-run images,
+plus enough Docker memory allowance for one eval and one fix attempt at once
+(`limits.memory_reservation_gib` in the local TOML gates admission on this;
+raise it if you increase Docker's memory allocation). The companion fix
+workflow lives in Agent Runner at `workflows/core/factory-fix-v1.0.yaml` on the
+configured Runner branch and declares its contract version
+(`# factory-contract: factory-fix/1`) on its first line; `doctor` checks that
+line so an incompatible Runner revision is caught before a fix is admitted, not
+after.
+
 ## Configuration
 
 Copy `config/local.example.toml` to a private location, such as
@@ -39,9 +71,14 @@ Copy `config/local.example.toml` to a private location, such as
 - `shared_config`: the versioned Factory checkout's `config/codagent.toml` (or
   your organization's equivalent).
 - `storage_root`: normally `~/.agent-factory`; it contains `state.sqlite3`,
-  `logs/`, factory-owned worktrees, and artifacts.
+  `logs/`, factory-owned worktrees and clones, mirrors, and artifacts.
 - the three source checkouts, the App key file, and the separately managed suite
   environment file.
+- `[repositories.working_clones]`, one entry per fix target keyed by
+  `owner/repo`, pointing at the operator's own clone used by the merge sync.
+- `credentials.fix_environment`, and `[fix]` settings for limits and the fix
+  admission window (see the versioned `[fix]` table in the shared TOML for
+  targets, branches, and role defaults).
 
 The shared TOML is versioned deployment data: organization/repositories,
 Project destination and logical field mappings, routing, defaults, and the
@@ -100,8 +137,13 @@ deploy labels, templates, and callers through the normal repository process.
 Then update the local installed Factory and its shared TOML to that same intended
 revision, run `doctor`, and resume only after the selected suite is ready.
 
-For rollback, pause admission and restore compatible Factory and workflow pins.
-Retain SQLite, credentials, evidence, frozen worktrees, and active supervisor
-environments. Do not run an older executable against a newer schema. A migration
-requiring exclusive access waits for active writers; there is no automatic
-configuration fetch, harness update, destructive rollback, or evidence pruning.
+For rollback, pause admission, reinstall the previous released Factory tag, and
+restore the shared TOML's previous pin (`eval.harness_sha` on versions that
+predate `eval.harness_ref`). Retain SQLite, credentials, evidence, frozen
+worktrees, and active supervisor environments. Do not run an older executable
+against a newer schema. If the schema migration itself must be undone, copy the
+pre-migration `state.sqlite3.v3.bak` backup back over `state.sqlite3` while
+paused; any claim created after the upgrade is lost by that copy, so prefer it
+only when the upgrade itself is the problem. A migration requiring exclusive
+access waits for active writers; there is no automatic configuration fetch,
+harness update, destructive rollback, or evidence pruning.

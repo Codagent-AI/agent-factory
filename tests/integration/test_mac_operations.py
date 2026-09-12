@@ -265,6 +265,157 @@ def test_local_config_reports_malformed_timezone_as_configuration_error(tmp_path
             LocalConfig.from_toml(text.replace('timezone = "UTC"', f'timezone = "{timezone}"'))
 
 
+def _fix_shared_config_text(*, credential: Path | None = None) -> str:
+    return _shared_config_text(
+        eval_table='[eval]\nharness_ref = "main"\nsuite = "and-scene"\nrepetitions = 3\n'
+    ) + (
+        '\n[fix]\ncontract = "factory-fix/1"\n'
+        '[fix.branches]\nrunner = "main"\n'
+        '[[fix.targets]]\nrepository = "example/work"\n'
+    )
+
+
+def test_doctor_reports_fix_diagnostics_in_a_separate_section(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    config = LocalConfig.from_file(_local_config(tmp_path, shared_path))
+
+    diagnostics = operations.doctor(config)
+
+    fix_names = [d.name for d in diagnostics if d.name.startswith("fix ")]
+    assert fix_names
+    text = operations.format_doctor(diagnostics)
+    assert "-- fix --" in text
+    assert text.index("-- fix --") > text.index("shared configuration")
+
+
+def test_doctor_reports_missing_working_clone(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\n[repositories.working_clones]\n"example/work" = "{tmp_path / "missing-clone"}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    diagnostics = operations.doctor(config)
+
+    clone = next(d for d in diagnostics if d.name == "fix working clone example/work")
+    assert clone.available is False
+    assert "missing-clone" in clone.detail
+
+
+def test_doctor_reports_available_working_clone(tmp_path: Path) -> None:
+    clone_path = tmp_path / "clone"
+    clone_path.mkdir()
+    subprocess.run(["git", "init", "-q", str(clone_path)], check=True)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\n[repositories.working_clones]\n"example/work" = "{clone_path}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    diagnostics = operations.doctor(config)
+
+    clone = next(d for d in diagnostics if d.name == "fix working clone example/work")
+    assert clone.available is True
+
+
+def test_doctor_reports_mirror_not_yet_created(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    config = LocalConfig.from_file(_local_config(tmp_path, shared_path))
+
+    diagnostics = operations.doctor(config)
+
+    mirror = next(d for d in diagnostics if d.name == "fix mirror example/work")
+    assert mirror.available is False
+    assert "not yet created" in mirror.detail
+
+
+def test_doctor_identity_checks_report_authentication_and_org_role(tmp_path: Path) -> None:
+    credential = tmp_path / "fix.env"
+    credential.write_text("GH_TOKEN=fix-token\n", encoding="utf-8")
+    credential.chmod(0o600)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\nfix_environment = "{credential}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    class StubRunner:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            assert environment == {"GH_TOKEN": "fix-token"}
+            if arguments == ["api", "user"]:
+                return '{"login": "fix-machine-user"}'
+            if arguments[1].startswith("orgs/"):
+                return '{"role": "admin"}'
+            if arguments[1] == "repos/example/work":
+                return '{"full_name": "example/work"}'
+            raise AssertionError(f"unexpected gh invocation: {arguments}")
+
+    with patch("agent_factory.operations.SubprocessGhRunner", StubRunner):
+        diagnostics = operations.doctor(config)
+
+    identity = next(d for d in diagnostics if d.name == "fix credential identity")
+    assert identity.available is True
+    assert "fix-machine-user" in identity.detail
+    not_app = next(d for d in diagnostics if d.name == "fix credential is not the App identity")
+    assert not_app.available is True
+    admin = next(d for d in diagnostics if d.name == "fix credential organization role")
+    assert admin.available is True
+    assert "admin" in admin.detail
+    reach = next(d for d in diagnostics if d.name == "fix credential reach example/work")
+    assert reach.available is True
+
+
+def test_doctor_identity_check_fails_when_credential_is_the_app_identity(tmp_path: Path) -> None:
+    credential = tmp_path / "fix.env"
+    credential.write_text("GH_TOKEN=fix-token\n", encoding="utf-8")
+    credential.chmod(0o600)
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text += f'\nfix_environment = "{credential}"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    class StubRunner:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            if arguments == ["api", "user"]:
+                return '{"login": "example-factory[bot]"}'
+            if arguments[1].startswith("orgs/"):
+                return '{"role": "member"}'
+            return '{"full_name": "example/work"}'
+
+    with patch("agent_factory.operations.SubprocessGhRunner", StubRunner):
+        diagnostics = operations.doctor(config)
+
+    not_app = next(d for d in diagnostics if d.name == "fix credential is not the App identity")
+    assert not_app.available is False
+
+
+def test_doctor_excludes_fix_diagnostics_from_the_shared_prerequisite_gate(
+    tmp_path: Path,
+) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    config = LocalConfig.from_file(_local_config(tmp_path, shared_path))
+
+    diagnostics = operations.doctor(config, include_fix=False)
+
+    assert not any(d.name.startswith("fix ") for d in diagnostics)
+
+
 def test_doctor_gives_docker_and_authentication_time_to_complete(tmp_path: Path) -> None:
     config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
     commands: list[tuple[tuple[str, ...], float]] = []

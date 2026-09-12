@@ -46,6 +46,8 @@ general_sources = [
 ]
 eval_label = "eval-request"
 eval_type = "Eval"
+bug_type = "Bug"
+hold_label = "factory-hold"
 
 [eval]
 harness_ref = "main"

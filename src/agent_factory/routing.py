@@ -24,6 +24,7 @@ class SourceItem:
     issue_type: str | None
     state: str
     body: str = ""
+    pull_request: bool = False
 
 
 @dataclass
@@ -85,6 +86,14 @@ class Router:
                 self._set_eval_type_if_needed(source)
                 self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
                 return RouteResult("ready", project_item.id)
+        elif self._is_bug(source):
+            if self._config.routing.hold_label in source.labels:
+                self._initialize(project_item, source, (("owner", "human"), ("status", "backlog")))
+                return RouteResult("backlog", project_item.id)
+            permission = self._github.get_permission(source.repository, source.author)
+            if permission in {"write", "maintain", "admin"}:
+                self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
+                return RouteResult("ready", project_item.id)
 
         self._initialize(project_item, source, (("status", "backlog"),))
         return RouteResult("backlog", project_item.id)
@@ -93,6 +102,13 @@ class Router:
         return (
             source.repository == self._config.routing.eval_source
             and self._config.routing.eval_label in source.labels
+        )
+
+    def _is_bug(self, source: SourceItem) -> bool:
+        return (
+            not source.pull_request
+            and source.repository in self._config.routing.general_sources
+            and source.issue_type == self._config.routing.bug_type
         )
 
     def _set_eval_type_if_needed(self, source: SourceItem) -> None:

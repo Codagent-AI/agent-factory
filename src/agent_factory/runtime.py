@@ -161,7 +161,7 @@ def cycle(state: Path, config_path: Path) -> None:
             if not memory.available:
                 continue
             if prerequisites is None:
-                failures = [d for d in doctor(local) if not d.available]
+                failures = [d for d in doctor(local, include_fix=False) if not d.available]
                 prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
             if prerequisites:
                 store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": prerequisites})

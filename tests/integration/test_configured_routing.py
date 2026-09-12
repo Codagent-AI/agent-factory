@@ -53,6 +53,7 @@ done = "done-option"
 id = "owner-field"
 [fields.owner.options]
 factory = "factory-option"
+human = "human-option"
 
 [fields.refs]
 id = "refs-field"
@@ -70,6 +71,8 @@ eval_source = "example/evals"
 general_sources = ["example/evals", "example/work"]
 eval_label = "run-eval"
 eval_type = "Eval"
+bug_type = "Bug"
+hold_label = "factory-hold"
 
 [eval]
 harness_ref = "{harness_ref}"
@@ -124,6 +127,27 @@ def item(
         labels=frozenset(labels or {"run-eval"}),
         issue_type=issue_type,
         state=state,
+    )
+
+
+def bug_item(
+    *,
+    id: str = "ISSUE-BUG-1",
+    repository: str = "example/work",
+    number: int = 99,
+    author: str = "writer",
+    labels: set[str] | None = None,
+    pull_request: bool = False,
+) -> SourceItem:
+    return SourceItem(
+        id=id,
+        repository=repository,
+        number=number,
+        author=author,
+        labels=frozenset(labels or set()),
+        issue_type="Bug",
+        state="open",
+        pull_request=pull_request,
     )
 
 
@@ -277,3 +301,101 @@ def test_eval_source_must_be_an_explicit_configured_source() -> None:
     )
     with pytest.raises(ConfigurationError, match="eval_source.*general_sources"):
         SharedConfig.from_toml(text)
+
+
+def test_writer_bug_routes_to_ready_with_factory_owner_and_writes_receipt() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+
+    result = Router(config, github).route(RouteEvent(bug_item()))
+
+    assert result.destination == "ready"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "factory-option",
+        "status-field": "ready-option",
+    }
+    assert github.comments["example/work#99"]
+
+
+def test_non_writer_bug_enters_backlog_without_ownership() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "outsider"): "read"})
+
+    result = Router(config, github).route(RouteEvent(bug_item(author="outsider")))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+
+
+def test_failed_permission_lookup_routes_bug_to_backlog_without_ownership() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub()
+
+    result = Router(config, github).route(RouteEvent(bug_item()))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+
+
+def test_hold_label_routes_bug_to_backlog_with_human_owner() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+
+    result = Router(config, github).route(RouteEvent(bug_item(labels={"factory-hold"})))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "human-option",
+        "status-field": "backlog-option",
+    }
+
+
+def test_pull_request_typed_bug_is_not_routed_as_a_bug() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+
+    result = Router(config, github).route(RouteEvent(bug_item(pull_request=True)))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+    assert github.issue_types == {}
+
+
+def test_eval_labelled_bug_in_eval_source_applies_eval_rule_not_bug_rule() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
+
+    source = SourceItem(
+        id="ISSUE-BOTH",
+        repository="example/evals",
+        number=7,
+        author="writer",
+        labels=frozenset({"run-eval"}),
+        issue_type="Bug",
+        state="open",
+    )
+
+    result = Router(config, github).route(RouteEvent(source))
+
+    assert result.destination == "ready"
+    assert github.items["ISSUE-BOTH"].fields == {
+        "owner-field": "factory-option",
+        "status-field": "ready-option",
+    }
+    assert github.issue_types == {"example/evals#7": "Eval"}
+
+
+def test_human_hold_on_a_routed_bug_survives_re_delivery() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item()))
+    github.items["ISSUE-BUG-1"].fields["owner-field"] = "human-option"
+    github.items["ISSUE-BUG-1"].fields["status-field"] = "backlog-option"
+
+    router.route(RouteEvent(bug_item()))
+
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "human-option",
+        "status-field": "backlog-option",
+    }

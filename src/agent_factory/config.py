@@ -90,6 +90,8 @@ class RoutingConfig:
     general_sources: frozenset[str]
     eval_label: str
     eval_type: str
+    bug_type: str = "Bug"
+    hold_label: str = "factory-hold"
 
 
 @dataclass(frozen=True)
@@ -351,6 +353,14 @@ class SharedConfig:
                 general_sources=frozenset(source_repositories),
                 eval_label=_string(routing, "eval_label", "routing"),
                 eval_type=_string(routing, "eval_type", "routing"),
+                bug_type=(
+                    _string(routing, "bug_type", "routing") if "bug_type" in routing else "Bug"
+                ),
+                hold_label=(
+                    _string(routing, "hold_label", "routing")
+                    if "hold_label" in routing
+                    else "factory-hold"
+                ),
             ),
             eval=EvalConfig(
                 harness_ref=harness_ref,

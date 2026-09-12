@@ -1,6 +1,13 @@
 # Agent Factory
 
-Agent Factory will run Codagent's unattended evaluation and improvement workflows. The first iteration is a nightly evaluation tracer bullet: it will claim evaluation requests from the Codagent GitHub Project, run the existing `and-scene` suite, persist operational state in SQLite, and report results back to the project.
+Agent Factory runs Codagent's unattended evaluation and improvement workflows.
+It supports two work kinds side by side, each with its own execution slot: the
+nightly `eval` tracer bullet, which claims evaluation requests from the
+Codagent GitHub Project and runs the existing `and-scene` suite; and `fix`,
+which claims Bug-typed issues routed from the configured source repositories
+and runs the companion Agent Runner fix workflow to produce a pull request, a
+`needs-input` decline, or a failure. Both persist operational state in SQLite
+and report results back to the project.
 
 The durable controller/store boundary includes an independent supervisor and
 public command-line entry points. The controller/service is intentionally not
