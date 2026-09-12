@@ -57,3 +57,30 @@ lead = "cursor:cursor-grok-4.6-high:high"
 implementor = "cursor:cursor-grok-4.6-high:high"
 tester = "cursor:composer-2.5:high"
 skip_validator = false
+
+[fix]
+contract = "factory-fix/1"
+
+[fix.branches]
+runner = "main"
+skills = "main"
+
+[[fix.targets]]
+repository = "Codagent-AI/agent-runner"
+
+[[fix.targets]]
+repository = "Codagent-AI/agent-skills"
+
+[[fix.targets]]
+repository = "Codagent-AI/agent-validator"
+
+[[fix.targets]]
+repository = "Codagent-AI/agent-plugin"
+
+[[fix.targets]]
+repository = "Codagent-AI/agent-evals"
+
+[fix.defaults]
+lead = "cursor:cursor-grok-4.6-high:high"
+implementor = "cursor:cursor-grok-4.6-high:high"
+tester = "cursor:composer-2.5:high"

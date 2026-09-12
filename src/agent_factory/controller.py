@@ -128,7 +128,7 @@ class Controller:
         self,
         snapshot: RequestSnapshot,
         *,
-        resolve: Callable[[object], tuple[str, str]],
+        resolve: Callable[[object], object],
         fresh: bool = False,
     ) -> Claim | None:
         """Validate and freeze a new request, never creating a claim for bad input."""

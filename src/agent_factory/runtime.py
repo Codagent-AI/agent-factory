@@ -27,7 +27,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.operations import doctor
+from agent_factory.operations import check_memory_headroom, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     AndSceneAdapter,
@@ -98,6 +98,10 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
         prerequisites: str | None = None
+        kind_readiness: dict[str, str] = {}
+        memory = check_memory_headroom(local.limits.memory_reservation_gib)
+        memory_setting = {} if memory.available else {"reason": memory.detail}
+        store.set_setting("runtime", "memory", memory_setting)
         for card in cards:
             snapshot = None
             handler: WorkKindHandler | None = None
@@ -125,12 +129,23 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             if not ready:
                 continue
+            if not memory.available:
+                continue
             if prerequisites is None:
                 failures = [d for d in doctor(local) if not d.available]
                 prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
             if prerequisites:
                 store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": prerequisites})
                 break
+            if handler.kind not in kind_readiness:
+                kind_failures = [d for d in handler.readiness(local, shared) if not d.available]
+                kind_readiness[handler.kind] = "; ".join(
+                    f"{d.name}: {d.detail}" for d in kind_failures
+                )
+            kind_reason = kind_readiness[handler.kind]
+            if kind_reason:
+                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": kind_reason})
+                continue
             store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
@@ -297,6 +312,23 @@ def _resolve_revision(source: Path, revision: str, *, fetch: bool = True) -> str
         ) from error
 
 
+def _git_show(source: Path, sha: str, path: str) -> str:  # pyright: ignore[reportUnusedFunction]
+    """Read one file's text at a commit, or raise ReadinessError if it is absent."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source), "show", f"{sha}:{path}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        raise ReadinessError(f"Cannot read {path} at {sha[:7]} in {source}: {error}") from error
+    if result.returncode != 0:
+        raise ReadinessError(f"{path} does not exist at {sha[:7]} in {source}.")
+    return result.stdout
+
+
 def _repair_unclaimed(
     store: ClaimStore, client: GitHubClient, shared: SharedConfig, card: ProjectQueueItem
 ) -> None:
@@ -351,7 +383,11 @@ def _consume_results(
             result = AttemptResult(
                 "interrupted" if run.status == "timed_out" else run.status, None, run.result
             )
-            if (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
+            if claim.kind != "eval":
+                if handler is None:
+                    continue
+                result = handler.read_result(run)
+            elif (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
                 try:
                     result = adapter.read_result(Path(run.evidence_path))
                 except (ReadinessError, OSError, UnicodeError) as error:
@@ -364,10 +400,9 @@ def _consume_results(
                         f"{run.unit_key}:attempt-{run.attempt_number}:result-error",
                         reason,
                     )
-            if result.execution_status != "completed" and result.product_verdict not in {
-                "failed",
-                "fail",
-            }:
+            if claim.kind == "eval" and result.execution_status != "completed" and (
+                result.product_verdict not in {"failed", "fail"}
+            ):
                 deadline = adapter.failure_quota_until(
                     Path(run.evidence_path), result.result, fallback_seconds=fallback_seconds
                 )

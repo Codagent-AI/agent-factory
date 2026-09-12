@@ -183,7 +183,13 @@ p.write_text(json.dumps(s));print(json.dumps(result))
     for name, content in {
         "gh": gh,
         "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
-        "docker": "#!/bin/sh\nexit 0",
+        "docker": (
+            "#!/bin/sh\n"
+            'if [ "$1" = "info" ]; then echo 17179869184\n'
+            'elif [ "$1" = "stats" ]; then printf ""\n'
+            "fi\n"
+            "exit 0\n"
+        ),
         "codex": "#!/bin/sh\nexit 0",
         "cursor": "#!/bin/sh\nexit 0",
     }.items():

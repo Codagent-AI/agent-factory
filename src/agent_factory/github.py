@@ -9,6 +9,7 @@ import socket
 import ssl
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -22,6 +23,23 @@ from agent_factory.routing import ProjectItem, SourceItem
 
 class GitHubApiError(RuntimeError):
     """A GitHub response did not have the expected contract."""
+
+
+class GitHubNotFoundError(GitHubApiError):
+    """The requested resource does not exist (HTTP 404), distinct from a lookup failure."""
+
+
+@dataclass(frozen=True)
+class BranchInfo:
+    name: str
+    sha: str
+
+
+@dataclass(frozen=True)
+class PullRequestInfo:
+    url: str
+    number: int
+    head_sha: str
 
 
 @dataclass(frozen=True)
@@ -66,6 +84,8 @@ class SubprocessGhRunner:
             env=child_environment,
         )
         if completed.returncode != 0:
+            if "HTTP 404" in completed.stderr:
+                raise GitHubNotFoundError("gh api request failed: not found")
             raise GitHubApiError("gh api request failed")
         return completed.stdout
 
@@ -218,6 +238,38 @@ class GitHubClient:
         payload = _json_object(response)
         permission = payload.get("permission")
         return permission if isinstance(permission, str) else None
+
+    def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
+        """Return branch info, or None if it does not exist. Raises on any other lookup failure."""
+        try:
+            response = self._request(
+                ["api", f"repos/{repository}/branches/{branch}", "--method", "GET"], None
+            )
+        except GitHubNotFoundError:
+            return None
+        payload = _json_object(response)
+        commit = _object(payload.get("commit"))
+        return BranchInfo(
+            name=_required_string(payload, "name"), sha=_required_string(commit, "sha")
+        )
+
+    def list_open_pull_requests_for_head(
+        self, repository: str, branch: str
+    ) -> list[PullRequestInfo]:
+        """List open pull requests whose head branch matches, raising on lookup failure."""
+        owner = repository.split("/", 1)[0]
+        query = urllib.parse.urlencode({"head": f"{owner}:{branch}", "state": "open"})
+        response = self._request(
+            ["api", f"repos/{repository}/pulls?{query}", "--method", "GET"], None
+        )
+        return [
+            PullRequestInfo(
+                url=_required_string(entry, "html_url"),
+                number=_required_int(entry, "number"),
+                head_sha=_required_string(_object(entry.get("head")), "sha"),
+            )
+            for entry in (_object(item) for item in _json_list(response))
+        ]
 
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self._request(

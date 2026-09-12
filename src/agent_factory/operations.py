@@ -335,6 +335,76 @@ def _command_check(
     return Diagnostic(name, True, "check succeeded", "No action required.")
 
 
+_MEMORY_UNITS: Mapping[str, float] = {
+    "b": 1,
+    "kb": 1000,
+    "mb": 1000**2,
+    "gb": 1000**3,
+    "tb": 1000**4,
+    "kib": 1024,
+    "mib": 1024**2,
+    "gib": 1024**3,
+    "tib": 1024**4,
+}
+
+
+def _parse_memory_amount(text: str) -> float:
+    text = text.strip()
+    for suffix in sorted(_MEMORY_UNITS, key=len, reverse=True):
+        if text.lower().endswith(suffix):
+            number = text[: -len(suffix)].strip()
+            return float(number) * _MEMORY_UNITS[suffix]
+    return float(text)
+
+
+def check_memory_headroom(reservation_gib: int, *, docker: str = "docker") -> Diagnostic:
+    """Compare Docker's memory allowance minus running containers' usage against a reservation."""
+    try:
+        total = subprocess.run(
+            [docker, "info", "--format", "{{.MemTotal}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if total.returncode != 0:
+            raise OSError(total.stderr.strip() or "docker info failed")
+        total_bytes = int(total.stdout.strip())
+        stats = subprocess.run(
+            [docker, "stats", "--no-stream", "--format", "{{.MemUsage}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if stats.returncode != 0:
+            raise OSError(stats.stderr.strip() or "docker stats failed")
+        used_bytes = sum(
+            _parse_memory_amount(line.split("/", 1)[0])
+            for line in stats.stdout.splitlines()
+            if line.strip()
+        )
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        return Diagnostic(
+            "memory",
+            False,
+            f"memory probe failed: {error}",
+            "Restore Docker access, then rerun admission.",
+        )
+    reservation_bytes = reservation_gib * 1024**3
+    headroom_bytes = total_bytes - used_bytes
+    available = headroom_bytes >= reservation_bytes
+    return Diagnostic(
+        "memory",
+        available,
+        f"{headroom_bytes / 1024**3:.2f} GiB headroom; configured reservation is "
+        f"{reservation_gib} GiB",
+        "Wait for memory to free up before admitting another attempt."
+        if not available
+        else "No action required.",
+    )
+
+
 def _free_space(config: LocalConfig) -> Diagnostic:
     probe = config.storage_root
     while not probe.exists() and probe != probe.parent:
