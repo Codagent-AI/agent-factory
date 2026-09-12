@@ -52,13 +52,14 @@ def cycle(state: Path, config_path: Path) -> None:
     if not shared.bot_login:
         raise ValueError("shared github.bot_login is required for report reconciliation")
     runner = SubprocessGhRunner()
-    client = GitHubClient(
-        runner,
-        InstallationTokenProvider(
-            AppCredentials(shared.app_id, shared.installation_id, local.credentials.github_app_key),
-        ),
+    token_provider = InstallationTokenProvider(
+        AppCredentials(shared.app_id, shared.installation_id, local.credentials.github_app_key),
     )
+    client = GitHubClient(runner, token_provider)
     registered = work_kinds.handlers(shared, local)
+    fix_handler = registered.get("fix")
+    if isinstance(fix_handler, FixHandler):
+        fix_handler.attach_installation_token(token_provider)
     with advisory_lock(state, "cycle"), closing(ClaimStore(state)) as store:
         controller = Controller(
             store,

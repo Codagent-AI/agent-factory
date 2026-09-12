@@ -96,6 +96,13 @@ def process_blocked_claim(
     quota = store.get_hold(claim.id, "quota")
     if quota is not None and _quota_active(quota, now):
         return False
+    # Normal admission scopes provider quota holds to the providers a claim uses;
+    # an unblock attempt must honor the same holds instead of bypassing them.
+    provider_holds = store.get_settings_by_prefix("admission", "quota:")
+    for provider in handler.providers(claim):
+        hold = provider_holds.get(f"quota:{provider}")
+        if hold is not None and _quota_active(hold, now):
+            return False
     store.set_preparation(
         claim.id,
         {

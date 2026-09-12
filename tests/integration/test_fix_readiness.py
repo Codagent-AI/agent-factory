@@ -238,3 +238,35 @@ def test_present_workflow_contract_passes(tmp_path: Path) -> None:
     diagnostics = check_readiness(local, _shared())
     contract = next(d for d in diagnostics if d.name == "fix workflow contract")
     assert contract.available is True
+
+
+def test_handler_readiness_uses_attached_installation_token(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.fix.handler import FixHandler
+
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("GH_TOKEN=shared-token\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    handler = FixHandler(_shared(), local)
+    handler.attach_installation_token(lambda: "shared-token")
+    credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
+    assert credential.available is False
+
+
+def test_handler_readiness_survives_a_failing_token_provider(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.fix.handler import FixHandler
+
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("GH_TOKEN=abc123\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    handler = FixHandler(_shared(), local)
+
+    def _broken() -> str:
+        raise RuntimeError("cannot mint")
+
+    handler.attach_installation_token(_broken)
+    credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
+    assert credential.available is True

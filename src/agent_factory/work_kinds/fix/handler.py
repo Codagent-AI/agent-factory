@@ -54,6 +54,7 @@ class FixHandler:
         self._resolver = resolver
         self._store: ClaimStore | None = None
         self._cleanup: FixCleanup | None = None
+        self._installation_token: Callable[[], str] | None = None
 
     @classmethod
     def from_config(cls, shared: SharedConfig, local: LocalConfig) -> FixHandler:
@@ -62,6 +63,10 @@ class FixHandler:
     def attach_store(self, store: ClaimStore) -> None:
         self._store = store
         self._cleanup = FixCleanup(store)
+
+    def attach_installation_token(self, provider: Callable[[], str]) -> None:
+        """Let readiness reject a fix credential that is really the App installation token."""
+        self._installation_token = provider
 
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
@@ -144,7 +149,16 @@ class FixHandler:
         )
 
     def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
-        return check_readiness(local, shared)
+        token: str | None = None
+        if self._installation_token is not None:
+            try:
+                token = self._installation_token()
+            except Exception:
+                # Minting failures are reported by the shared GitHub diagnostics; the
+                # credential check below still runs its file-shape rules without the
+                # equality comparison rather than crashing readiness.
+                token = None
+        return check_readiness(local, shared, installation_token=token)
 
     def prepare(self, claim: Claim) -> Preparation:
         return Preparation()

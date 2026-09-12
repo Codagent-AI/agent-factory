@@ -518,3 +518,63 @@ def test_permission_lookup_failure_for_one_author_does_not_abort_the_scan(tmp_pa
     assert reloaded is not None
     issue = cast(dict[str, object], reloaded.preparation["issue"])
     assert issue["comments"] == [{"author": "writer", "body": "please retry"}]
+
+
+def _blocked_claim_with_roles(store: ClaimStore, roles: dict[str, str]) -> str:
+    claim = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            213,
+            "I213",
+            "P213",
+            "fix",
+            "fp",
+            {"contract": "factory-fix/1", "roles": roles},
+        )
+    )
+    store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": "2026-01-01T00:00:00+00:00"})
+    return claim.id
+
+
+def _process(store: ClaimStore, client: FakeGitHub, claim_id: str, tmp_path: Path) -> bool:
+    import datetime as dt
+
+    handler = _handler(store)
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    return process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+    )
+
+
+def test_provider_quota_hold_blocks_unblock_for_that_provider(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim_with_roles(store, {"lead": "codex:gpt:high"})
+    store.set_setting("admission", "quota:codex", {"until": "2026-01-04T00:00:00+00:00"})
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
+    client = FakeGitHub(comments, {"writer": "write"})
+
+    assert _process(store, client, claim_id, tmp_path) is False
+    assert store.nonterminal_runs(kind="fix") == []
+    reloaded = store.get_claim(claim_id)
+    assert reloaded is not None and reloaded.lifecycle == "blocked"
+
+
+def test_provider_quota_hold_for_another_provider_does_not_block_unblock(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim_with_roles(store, {"lead": "cursor:model:high"})
+    store.set_setting("admission", "quota:codex", {"until": "2026-01-04T00:00:00+00:00"})
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
+    client = FakeGitHub(comments, {"writer": "write"})
+
+    assert _process(store, client, claim_id, tmp_path) is True
+    assert len(store.nonterminal_runs(kind="fix")) == 1
