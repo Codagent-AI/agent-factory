@@ -18,7 +18,7 @@ from typing import Protocol, cast
 
 from agent_factory.github import GitHubApiError, IssueComment
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
-from agent_factory.work_kinds.base import Feedback, WorkKindHandler
+from agent_factory.work_kinds.base import Classification, Feedback, WorkKindHandler
 
 
 @dataclass(frozen=True)
@@ -221,19 +221,23 @@ class Controller:
         classification = handler.classify(run, result)
         if classification.kind == "quota" or result.quota_until is not None:
             deadline = result.quota_until
-            if deadline is None:
+            if deadline is not None:
+                stored_result["quota_until"] = deadline.isoformat()
+                persist(run.id, execution_status="deferred", result=stored_result)
+                self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
+                self._store.set_setting("admission", "quota", {"until": deadline.isoformat()})
+                self._store.set_claim_lifecycle(
+                    run.claim_id, "waiting", {"verdict": "quota-deferred"}
+                )
+                self._store.record_event(
+                    run.claim_id,
+                    f"{run.unit_key}:attempt-{run.attempt_number}:quota",
+                    f"{run.unit_key} is waiting for usage reset at {deadline.isoformat()}.",
+                )
                 return
-            stored_result["quota_until"] = deadline.isoformat()
-            persist(run.id, execution_status="deferred", result=stored_result)
-            self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
-            self._store.set_setting("admission", "quota", {"until": deadline.isoformat()})
-            self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "quota-deferred"})
-            self._store.record_event(
-                run.claim_id,
-                f"{run.unit_key}:attempt-{run.attempt_number}:quota",
-                f"{run.unit_key} is waiting for usage reset at {deadline.isoformat()}.",
-            )
-            return
+            # A handler classified this as quota without a reset deadline, which is
+            # invalid output; fail closed as a technical error instead of losing the run.
+            classification = Classification("technical")
         persist(run.id, execution_status=result.execution_status, result=stored_result)
         message = _attempt_message(handler, run, stored_result, classification.kind)
         if classification.kind == "technical":

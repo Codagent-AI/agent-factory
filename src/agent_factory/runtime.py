@@ -67,7 +67,7 @@ def cycle(state: Path, config_path: Path) -> None:
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
         eval_handler = _eval_handler(registered)
-        adapter = eval_handler.adapter
+        adapter = eval_handler.adapter if eval_handler is not None else None
         if adapter is None:
             adapter = AndSceneAdapter(environment_file=local.credentials.suite_environment)
         _consume_results(
@@ -192,11 +192,9 @@ def cycle(state: Path, config_path: Path) -> None:
                 _report(store, controller, client, shared, card, claim.id, handler)
 
 
-def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler:
+def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler | None:
     handler = registered.get("eval")
-    if not isinstance(handler, EvalHandler):
-        raise RuntimeError("eval work-kind handler is not registered")
-    return handler
+    return handler if isinstance(handler, EvalHandler) else None
 
 
 def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, str]:
