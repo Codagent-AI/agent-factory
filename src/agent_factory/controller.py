@@ -177,9 +177,11 @@ class Controller:
                 self._store.set_hold(claim.id, "readiness", {"reason": issue})
                 self._store.record_event(claim.id, f"readiness:{issue}", f"Waiting: {issue}")
                 return None
-            global_quota = self._store.get_setting("admission", "quota")
-            if global_quota is not None and _hold_active(global_quota, self._now()):
-                return None
+            provider_holds = self._store.get_settings_by_prefix("admission", "quota:")
+            for provider in handler.providers(claim):
+                hold = provider_holds.get(f"quota:{provider}")
+                if hold is not None and _hold_active(hold, self._now()):
+                    return None
             quota = self._store.get_hold(claim.id, "quota")
             if quota is not None and _hold_active(quota, self._now()):
                 return None
@@ -225,7 +227,10 @@ class Controller:
                 stored_result["quota_until"] = deadline.isoformat()
                 persist(run.id, execution_status="deferred", result=stored_result)
                 self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
-                self._store.set_setting("admission", "quota", {"until": deadline.isoformat()})
+                provider = _quota_provider(stored_result)
+                self._store.set_setting(
+                    "admission", f"quota:{provider}", {"until": deadline.isoformat()}
+                )
                 self._store.set_claim_lifecycle(
                     run.claim_id, "waiting", {"verdict": "quota-deferred"}
                 )
@@ -413,6 +418,15 @@ def quota_deadline(hold: Mapping[str, object]) -> datetime:
     if deadline.utcoffset() is None:
         raise ValueError("quota hold reset timestamp must include a timezone")
     return deadline
+
+
+_KNOWN_PROVIDERS = ("codex", "cursor", "claude")
+
+
+def _quota_provider(stored_result: Mapping[str, object]) -> str:
+    """Identify the provider a quota diagnostic names; default to codex, the only detector today."""
+    text = str(stored_result).lower()
+    return next((name for name in _KNOWN_PROVIDERS if name in text), "codex")
 
 
 def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:

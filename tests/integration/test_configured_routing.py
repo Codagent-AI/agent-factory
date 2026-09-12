@@ -30,7 +30,7 @@ def _issue_types() -> dict[str, str]:
     return {}
 
 
-def config_text(*, harness_sha: str = "a" * 40) -> str:
+def config_text(*, harness_ref: str = "main", extra_eval: str = "") -> str:
     return f'''\
 [github]
 organization = "Example Org"
@@ -72,9 +72,10 @@ eval_label = "run-eval"
 eval_type = "Eval"
 
 [eval]
-harness_sha = "{harness_sha}"
+harness_ref = "{harness_ref}"
 suite = "and-scene"
 repetitions = 3
+{extra_eval}
 '''
 
 
@@ -196,9 +197,21 @@ def test_closure_moves_existing_project_card_to_done_without_reinitializing() ->
     }
 
 
-def test_shared_config_rejects_mutable_harness_revision() -> None:
-    with pytest.raises(ConfigurationError, match="full 40-character commit SHA"):
-        SharedConfig.from_toml(config_text(harness_sha="main"))
+def test_shared_config_rejects_a_harness_commit_sha() -> None:
+    with pytest.raises(ConfigurationError, match="harness_ref"):
+        SharedConfig.from_toml(config_text(harness_ref="a" * 40))
+
+
+def test_shared_config_rejects_a_leftover_harness_sha_key() -> None:
+    with pytest.raises(ConfigurationError, match="harness_ref"):
+        SharedConfig.from_toml(config_text(extra_eval='harness_sha = "' + "a" * 40 + '"'))
+
+
+def test_shared_config_defaults_harness_ref_to_main() -> None:
+    text = config_text().replace('harness_ref = "main"\n', "")
+    config = SharedConfig.from_toml(text)
+
+    assert config.eval.harness_ref == "main"
 
 
 def test_shared_config_exposes_configured_reporting_field_mappings() -> None:

@@ -42,22 +42,15 @@ def doctor(config: LocalConfig) -> list[Diagnostic]:
     try:
         shared = SharedConfig.from_file(config.shared_config)
         _project_mappings(shared)
-        diagnostics.append(
-            Diagnostic(
-                "shared configuration",
-                True,
-                f"loaded pinned harness {shared.eval.harness_sha}",
-                "No action required.",
-            )
-        )
+        diagnostics.append(_harness_branch_diagnostic(shared, config))
     except (ConfigurationError, OSError) as error:
         diagnostics.append(
             Diagnostic(
                 "shared configuration",
                 False,
                 str(error),
-                "Install a valid, explicitly versioned shared TOML; do not use a branch "
-                "or HEAD pin.",
+                "Install a valid shared TOML; configure eval.harness_ref as a branch "
+                "name, not a commit SHA.",
             )
         )
     diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
@@ -139,10 +132,12 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
         lines.append("current: none")
-    for diagnostic in ("readiness", "quota-error"):
-        saved = store.get_setting("runtime", diagnostic)
-        if saved and saved.get("reason"):
-            lines.append(f"{diagnostic}: {saved['reason']}")
+    quota_error = store.get_setting("runtime", "quota-error")
+    if quota_error and quota_error.get("reason"):
+        lines.append(f"quota-error: {quota_error['reason']}")
+    for key, saved in sorted(store.get_settings_by_prefix("runtime", "readiness:").items()):
+        if saved.get("reason"):
+            lines.append(f"{key}: {saved['reason']}")
     for claim in claims:
         run = active_by_claim.get(claim.id)
         if run is not None:
@@ -179,6 +174,29 @@ def render_launch_agent(
     for token, value in values.items():
         rendered = rendered.replace(token, html.escape(value, quote=True))
     return rendered
+
+
+def _harness_branch_diagnostic(shared: SharedConfig, config: LocalConfig) -> Diagnostic:
+    """Resolve the configured harness branch locally; doctor never fetches or mutates state."""
+    from agent_factory import runtime
+
+    try:
+        sha = runtime._resolve_revision(  # pyright: ignore[reportPrivateUsage]
+            config.repositories.agent_evals, shared.eval.harness_ref, fetch=False
+        )
+    except ReadinessError as error:
+        return Diagnostic(
+            "shared configuration",
+            False,
+            f"harness branch {shared.eval.harness_ref} could not be resolved locally: {error}",
+            "Fetch the configured agent_evals repository, then rerun doctor.",
+        )
+    return Diagnostic(
+        "shared configuration",
+        True,
+        f"harness branch {shared.eval.harness_ref} → {sha}",
+        "No action required.",
+    )
 
 
 def _project_mappings(config: SharedConfig) -> None:

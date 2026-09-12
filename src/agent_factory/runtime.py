@@ -93,19 +93,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     handler.cleanup(claim, board_status=_logical_status(shared, card))
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
-        ready = (
-            not store.is_paused()
-            and local.schedule.allows_admission(now)
-            and not store.nonterminal_runs()
-        )
-        quota = store.get_setting("admission", "quota")
-        quota_error: str | None = None
-        if quota is not None:
-            try:
-                ready = datetime.now(UTC) >= quota_deadline(quota) and ready
-            except ValueError as error:
-                quota_error = f"Admission held: {error}. Repair the saved quota reset timestamp."
-                ready = False
+        paused = store.is_paused()
+        quota_holds = store.get_settings_by_prefix("admission", "quota:")
+        quota_holding, quota_error = _quota_hold_status(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
         prerequisites: str | None = None
         for card in cards:
@@ -125,15 +115,22 @@ def cycle(state: Path, config_path: Path) -> None:
                 client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 continue
             client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            # Admission is per kind: this kind's slot, window, and holds gate independently.
+            ready = (
+                not paused
+                and not quota_holding
+                and handler.window(local).allows_admission(now)
+                and not store.nonterminal_runs(kind=handler.kind)
+            )
             if not ready:
                 continue
             if prerequisites is None:
                 failures = [d for d in doctor(local) if not d.available]
                 prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
             if prerequisites:
-                store.set_setting("runtime", "readiness", {"reason": prerequisites})
+                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": prerequisites})
                 break
-            store.set_setting("runtime", "readiness", {})
+            store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
@@ -192,6 +189,22 @@ def cycle(state: Path, config_path: Path) -> None:
                 _report(store, controller, client, shared, card, claim.id, handler)
 
 
+def _quota_hold_status(holds: Mapping[str, Mapping[str, object]]) -> tuple[bool, str | None]:
+    """Conservatively pre-filter admission on any provider hold before a claim is known."""
+    holding = False
+    error: str | None = None
+    for hold in holds.values():
+        try:
+            deadline = quota_deadline(hold)
+        except ValueError as exc:
+            error = f"Admission held: {exc}. Repair the saved quota reset timestamp."
+            holding = True
+            continue
+        if datetime.now(UTC) < deadline:
+            holding = True
+    return holding, error
+
+
 def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler | None:
     handler = registered.get("eval")
     return handler if isinstance(handler, EvalHandler) else None
@@ -231,21 +244,23 @@ def _resolve(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, 
     )
 
 
-def _resolve_revision(source: Path, revision: str) -> str:
+def _resolve_revision(source: Path, revision: str, *, fetch: bool = True) -> str:
     try:
-        fetched = subprocess.run(
-            ["git", "-C", str(source), "fetch", "--quiet", "--prune", "--tags", "origin"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        if fetched.returncode != 0:
-            # Git stderr may contain credential-bearing remote URLs. Report context, not secrets.
-            raise ReadinessError(
-                f"Cannot fetch {source} from origin (git exit {fetched.returncode}); "
-                "check remote access."
+        if fetch:
+            fetched = subprocess.run(
+                ["git", "-C", str(source), "fetch", "--quiet", "--prune", "--tags", "origin"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
             )
+            if fetched.returncode != 0:
+                # Git stderr may contain credential-bearing remote URLs; report context, not
+                # secrets.
+                raise ReadinessError(
+                    f"Cannot fetch {source} from origin (git exit {fetched.returncode}); "
+                    "check remote access."
+                )
         if re.fullmatch(r"[0-9a-fA-F]{7,40}", revision):
             candidates = (revision,)
         elif revision.startswith("refs/heads/"):

@@ -18,6 +18,13 @@ action; it neither starts an evaluation nor repairs credentials or configuration
 Run it again after a repair—ordinary readiness rechecks clear an available
 prerequisite without consuming an execution retry.
 
+`doctor` reports the configured `agent-evals` harness branch and the commit it
+currently resolves to as `harness branch <ref> → <sha>`, resolved locally
+without fetching. This is not proof that revision carries the suite behavior
+Factory depends on (see [suite integration](suite-integration.md)); each claim
+resolves and records its own harness commit at admission, independent of what
+`doctor` last reported.
+
 `status` is also read-only. It reports saved pause state, current issue/unit and
 attempt, progress, readiness/quota holds, admission window, unfinished
 reporting, and cleanup errors. It prints a next permitted start only for a known

@@ -44,18 +44,24 @@ Copy `config/local.example.toml` to a private location, such as
   environment file.
 
 The shared TOML is versioned deployment data: organization/repositories,
-Project destination and logical field mappings, routing, defaults, and the full
-harness SHA. It must not contain local paths or secrets. The harness value is a
-full commit SHA, never `HEAD` or a branch. The local TOML carries paths,
+Project destination and logical field mappings, routing, defaults, and the
+`agent-evals` harness branch. It must not contain local paths or secrets. The
+harness value is a branch name (`eval.harness_ref`, default `main`), never a
+commit SHA; Factory resolves it to a commit at each claim's admission and
+records that commit on the claim, so the recorded commit — not the branch
+name — is the comparability key across nights. The local TOML carries paths,
 schedule, limits, and credentials. No command fetches either configuration at
-runtime.
+runtime; only claim admission fetches the source repositories.
 
 For the supported Codagent deployment, reuse the recorded App, Project #1,
 native Eval type, board, and mappings in `config/codagent.toml`; do not
-reprovision them. Before accepting work, confirm the selected full harness pin
-has the separately delivered score-failure contract and calibration-gate
-removal. Factory verifies the selected suite's local readiness; it does not
-implement scoring policy or silently substitute a checkout's current revision.
+reprovision them. `doctor` reports the commit the configured harness branch
+currently resolves to, but it does not fetch and it does not prove that
+revision carries the suite behavior Factory depends on (see
+[suite integration](suite-integration.md)); confirm that separately before
+unpausing admission. Factory verifies the selected suite's local readiness; it
+does not implement scoring policy or silently substitute a checkout's current
+revision.
 
 ## Install the LaunchAgent
 

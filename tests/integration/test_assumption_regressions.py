@@ -145,7 +145,7 @@ class Comments:
 s=ClaimStore(Path(sys.argv[1]))
 c=s.create_claim(ClaimDraft('org/repo',1,'I','P','eval','x',{'settings':{'repetitions':1}}))
 d=EvalDefaults('main','main',{},False,1)
-controller=Controller(s,Comments(),{'eval':EvalHandler(d,harness_sha='a'*40)})
+controller=Controller(s,Comments(),{'eval':EvalHandler(d,harness_ref='a'*40)})
 controller.reserve_next(c.id,readiness=lambda: Path(sys.argv[2]).touch())
 """
     marker = tmp_path / "entered"

@@ -94,7 +94,7 @@ class RoutingConfig:
 
 @dataclass(frozen=True)
 class EvalConfig:
-    harness_sha: str
+    harness_ref: str
     suite: str
     repetitions: int
     defaults: Mapping[str, object] = field(default_factory=lambda: dict[str, object]())
@@ -252,9 +252,18 @@ class SharedConfig:
             raise ConfigurationError(
                 "routing.eval_source must be included in routing.general_sources"
             )
-        harness_sha = _string(eval_config, "harness_sha", "eval")
-        if not _SHA.fullmatch(harness_sha):
-            raise ConfigurationError("eval.harness_sha must be a full 40-character commit SHA")
+        if "harness_sha" in eval_config:
+            raise ConfigurationError(
+                "eval.harness_sha is obsolete; configure eval.harness_ref "
+                "(a branch name) instead"
+            )
+        harness_ref = eval_config.get("harness_ref", "main")
+        if not isinstance(harness_ref, str) or not harness_ref:
+            raise ConfigurationError("eval.harness_ref must be a non-empty string")
+        if _SHA.fullmatch(harness_ref):
+            raise ConfigurationError(
+                "eval.harness_ref must be a branch name, not a commit SHA"
+            )
         repetitions = _positive_int(eval_config, "repetitions", "eval")
         project_number = _positive_int(project, "number", "project")
         return cls(
@@ -279,7 +288,7 @@ class SharedConfig:
                 eval_type=_string(routing, "eval_type", "routing"),
             ),
             eval=EvalConfig(
-                harness_sha=harness_sha,
+                harness_ref=harness_ref,
                 suite=_string(eval_config, "suite", "eval"),
                 repetitions=repetitions,
                 defaults=dict(_table(eval_config.get("defaults", {}), "eval.defaults")),

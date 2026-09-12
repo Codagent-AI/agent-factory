@@ -7,6 +7,7 @@ one short transaction, which keeps controller and supervisor ownership separate.
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
 import uuid
@@ -17,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
 
 
@@ -65,6 +66,7 @@ class Run:
     attempt_number: int
     reason: str
     status: str
+    kind: str
     evidence_path: str
     result: dict[str, object]
     launch_nonce: str
@@ -142,7 +144,32 @@ class ClaimStore:
                     self._connection.execute(
                         "ALTER TABLE claim ADD COLUMN cleanup_json TEXT NOT NULL DEFAULT '{}'"
                     )
-                self._connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                self._connection.execute("PRAGMA user_version = 3")
+            self._migrate()
+            return
+        if version == 3:
+            backup = self.path.with_name(self.path.name + ".v3.bak")
+            if not backup.exists():
+                self._connection.execute("PRAGMA wal_checkpoint(FULL)")
+                shutil.copy2(self.path, backup)
+            self._connection.executescript(
+                """
+                    BEGIN IMMEDIATE;
+                    ALTER TABLE run ADD COLUMN kind TEXT NOT NULL DEFAULT 'eval';
+                    UPDATE run SET kind = (
+                        SELECT kind FROM claim WHERE claim.id = run.claim_id
+                    );
+                    DROP INDEX one_nonterminal_run;
+                    CREATE UNIQUE INDEX one_nonterminal_run_per_kind
+                        ON run(kind) WHERE status IN ('reserved', 'running', 'observing');
+                    INSERT OR REPLACE INTO settings(namespace, key, value_json, updated_at)
+                        SELECT namespace, 'quota:codex', value_json, updated_at FROM settings
+                        WHERE namespace = 'admission' AND key = 'quota';
+                    DELETE FROM settings WHERE namespace = 'admission' AND key = 'quota';
+                    PRAGMA user_version = 4;
+                    COMMIT;
+                    """
+            )
             return
         self._connection.executescript(
             f"""
@@ -171,6 +198,7 @@ class ClaimStore:
                     attempt_number INTEGER NOT NULL,
                     reason TEXT NOT NULL,
                     status TEXT NOT NULL,
+                    kind TEXT NOT NULL,
                     launch_nonce TEXT NOT NULL,
                     supervisor_json TEXT NOT NULL,
                     plan_json TEXT NOT NULL,
@@ -183,9 +211,8 @@ class ClaimStore:
                     finished_at TEXT,
                     UNIQUE(claim_id, unit_key, attempt_number)
                 );
-                CREATE UNIQUE INDEX one_nonterminal_run
-                    ON run((CASE WHEN status IN ('reserved', 'running', 'observing') THEN 1 END))
-                    WHERE status IN ('reserved', 'running', 'observing');
+                CREATE UNIQUE INDEX one_nonterminal_run_per_kind
+                    ON run(kind) WHERE status IN ('reserved', 'running', 'observing');
                 CREATE TABLE settings (
                     namespace TEXT NOT NULL,
                     key TEXT NOT NULL,
@@ -304,6 +331,12 @@ class ClaimStore:
     def reserve_run(self, claim_id: str, unit_key: str, *, reason: str, evidence_path: str) -> Run:
         run_id = str(uuid.uuid4())
         with self._transaction():
+            claim_row = self._connection.execute(
+                "SELECT kind FROM claim WHERE id = ?", (claim_id,)
+            ).fetchone()
+            if claim_row is None:
+                raise KeyError(claim_id)
+            kind = cast(str, claim_row["kind"])
             try:
                 row = self._connection.execute(
                     "SELECT COALESCE(MAX(attempt_number), -1) + 1 FROM run "
@@ -313,15 +346,16 @@ class ClaimStore:
                 attempt_number = cast(int, row[0])
                 self._connection.execute(
                     """INSERT INTO run (id, claim_id, unit_key, attempt_number, reason, status,
-                    launch_nonce, supervisor_json, plan_json, evidence_path, progress_json,
+                    kind, launch_nonce, supervisor_json, plan_json, evidence_path, progress_json,
                     cancellation_requested, result_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, 'reserved', ?, '{}', '{}', ?, '{}', 0, '{}', ?)""",
+                    VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, '{}', '{}', ?, '{}', 0, '{}', ?)""",
                     (
                         run_id,
                         claim_id,
                         unit_key,
                         attempt_number,
                         reason,
+                        kind,
                         uuid.uuid4().hex,
                         evidence_path,
                         _now(),
@@ -340,11 +374,18 @@ class ClaimStore:
         row = self._connection.execute("SELECT * FROM run WHERE id = ?", (run_id,)).fetchone()
         return _run(row) if row is not None else None
 
-    def nonterminal_runs(self) -> list[Run]:
-        rows = self._connection.execute(
-            "SELECT * FROM run WHERE status IN ('reserved', 'running', 'observing') "
-            "ORDER BY created_at"
-        ).fetchall()
+    def nonterminal_runs(self, kind: str | None = None) -> list[Run]:
+        if kind is None:
+            rows = self._connection.execute(
+                "SELECT * FROM run WHERE status IN ('reserved', 'running', 'observing') "
+                "ORDER BY created_at"
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                "SELECT * FROM run WHERE status IN ('reserved', 'running', 'observing') "
+                "AND kind = ? ORDER BY created_at",
+                (kind,),
+            ).fetchall()
         return [_run(row) for row in rows]
 
     def runs_for_claim(self, claim_id: str) -> list[Run]:
@@ -532,6 +573,13 @@ class ClaimStore:
         ).fetchone()
         return _load(cast(str, row[0])) if row is not None else None
 
+    def get_settings_by_prefix(self, namespace: str, prefix: str) -> dict[str, dict[str, object]]:
+        rows = self._connection.execute(
+            "SELECT key, value_json FROM settings WHERE namespace = ? AND key LIKE ? ESCAPE '\\'",
+            (namespace, prefix.replace("%", "\\%").replace("_", "\\_") + "%"),
+        ).fetchall()
+        return {cast(str, row["key"]): _load(cast(str, row["value_json"])) for row in rows}
+
     def set_paused(self, paused: bool) -> None:
         self.set_setting("control", "pause", {"paused": paused})
 
@@ -669,6 +717,7 @@ def _run(row: sqlite3.Row) -> Run:
         attempt_number=cast(int, row["attempt_number"]),
         reason=cast(str, row["reason"]),
         status=cast(str, row["status"]),
+        kind=cast(str, row["kind"]),
         evidence_path=cast(str, row["evidence_path"]),
         result=_load(cast(str, row["result_json"])),
         launch_nonce=cast(str, row["launch_nonce"]),

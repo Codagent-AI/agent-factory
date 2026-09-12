@@ -84,6 +84,104 @@ def test_cli_doctor_is_read_only_and_status_explains_persisted_pause_and_holds(
     assert ClaimStore(config.state_path).get_run(run.id) is not None
 
 
+def _shared_config_text(*, eval_table: str) -> str:
+    return f'''\
+[github]
+organization = "Example Org"
+bot_login = "example-factory[bot]"
+app_id = "123"
+installation_id = "456"
+
+[project]
+id = "PVT_example"
+number = 7
+
+[fields.status]
+id = "status-field"
+[fields.status.options]
+backlog = "backlog-option"
+ready = "ready-option"
+running = "running-option"
+review = "review-option"
+done = "done-option"
+
+[fields.owner]
+id = "owner-field"
+[fields.owner.options]
+factory = "factory-option"
+human = "human-option"
+
+[fields.refs]
+id = "refs-field"
+
+[fields.verdict]
+id = "verdict-field"
+[fields.verdict.options]
+pending-human-review = "pending-option"
+failed = "failed-option"
+quota-deferred = "quota-option"
+infra-error = "infra-option"
+
+[routing]
+eval_source = "example/evals"
+general_sources = ["example/evals", "example/work"]
+eval_label = "run-eval"
+eval_type = "Eval"
+
+{eval_table}
+'''
+
+
+def test_doctor_reports_resolved_harness_branch_without_fetching(tmp_path: Path) -> None:
+    evals = tmp_path / "evals"
+    evals.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(evals)], check=True)
+    subprocess.run(
+        ["git", "-C", str(evals), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+         "commit", "-q", "--allow-empty", "-m", "one"],
+        check=True,
+    )
+    origin = tmp_path / "evals-origin.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(evals), str(origin)], check=True)
+    subprocess.run(["git", "-C", str(evals), "remote", "add", "origin", str(origin)], check=True)
+    subprocess.run(["git", "-C", str(evals), "fetch", "-q", "origin"], check=True)
+    sha = subprocess.run(
+        ["git", "-C", str(evals), "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(
+        _shared_config_text(
+            eval_table='[eval]\nharness_ref = "main"\nsuite = "and-scene"\nrepetitions = 3\n'
+        )
+    )
+    local_config = _local_config(tmp_path, shared_path)
+    text = local_config.read_text().replace(str(tmp_path / "missing-evals"), str(evals))
+    local_config.write_text(text)
+    config = LocalConfig.from_file(local_config)
+
+    diagnostics = operations.doctor(config)
+    harness = next(d for d in diagnostics if d.name == "shared configuration")
+    assert harness.available is True
+    assert harness.detail == f"harness branch main → {sha}"
+
+
+def test_doctor_reports_obsolete_harness_sha_configuration(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(
+        _shared_config_text(
+            eval_table='[eval]\nharness_sha = "' + "a" * 40 + '"\nsuite = "and-scene"\n'
+            "repetitions = 3\n"
+        )
+    )
+    config = LocalConfig.from_file(_local_config(tmp_path, shared_path))
+
+    diagnostics = operations.doctor(config)
+    harness = next(d for d in diagnostics if d.name == "shared configuration")
+    assert harness.available is False
+    assert "harness_ref" in harness.detail
+
+
 def test_launch_agent_template_renders_explicit_paths_and_is_valid_plist(tmp_path: Path) -> None:
     from agent_factory.operations import render_launch_agent
 

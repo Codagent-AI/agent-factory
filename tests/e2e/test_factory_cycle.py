@@ -43,6 +43,9 @@ def _repo(path: Path, files: dict[str, str]) -> str:
     remote = path.parent / (path.name + "-origin.git")
     subprocess.run(["git", "clone", "--quiet", "--bare", str(path), str(remote)], check=True)
     _git(path, "remote", "add", "origin", str(remote))
+    # A real clone tracks its remote branch immediately; match that so doctor's
+    # no-fetch harness resolution sees the same state a genuinely cloned checkout would.
+    _git(path, "fetch", "--quiet", "origin")
     return _git(path, "rev-parse", "HEAD")
 
 
@@ -60,7 +63,7 @@ result=({{'evaluation_status':'pending-human-review',
 if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
 (out/'result.json').write_text(json.dumps(result))
 """
-    sha = _repo(
+    _repo(
         tmp_path / "evals",
         {
             prefix + "run.sh": suite,
@@ -80,8 +83,6 @@ if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
     )
     _repo(tmp_path / "skills", {"README.md": "fixture"})
     text = Path("config/codagent.toml").read_text()
-    old = SharedConfig.from_toml(text)
-    text = text.replace(old.eval.harness_sha, sha)
     (tmp_path / "shared.toml").write_text(text)
     shared = SharedConfig.from_toml(text)
     config = tmp_path / "local.toml"
@@ -376,7 +377,7 @@ def test_cli_quota_result_holds_admission_without_consuming_recovery(tmp_path: P
     _finish(store, artifact)
     _cli(config, env, "tick")
     assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
-    assert store.get_setting("admission", "quota")
+    assert store.get_setting("admission", "quota:codex")
     assert store.recovery_attempts(run.claim_id, run.unit_key) == 0
     _cli(config, env, "tick")
     assert len(store.runs_for_claim(run.claim_id)) == 1
@@ -384,7 +385,7 @@ def test_cli_quota_result_holds_admission_without_consuming_recovery(tmp_path: P
         "quota-deferred"
     )
     # Advance the isolated hold fixture instead of waiting five hours in a test.
-    store.set_setting("admission", "quota", {"until": "2020-01-01T00:00:00+00:00"})
+    store.set_setting("admission", "quota:codex", {"until": "2020-01-01T00:00:00+00:00"})
     store.set_hold(run.claim_id, "quota", {"until": "2020-01-01T00:00:00+00:00"})
     (artifact / "finish").unlink()
     _cli(config, env, "tick")
@@ -440,7 +441,7 @@ def test_cli_clearing_delivered_deferral_verdict_creates_fresh_claim(tmp_path: P
 
 
 def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_path: Path) -> None:
-    config, _, env, shared = _setup(tmp_path)
+    config, _, env, _ = _setup(tmp_path)
     interpreter = tmp_path / "suite-python"
     wrapper = tmp_path / "evals/evals/agent-runner/and-scene/run.sh"
     wrapper.write_text(wrapper.read_text().replace(f"#!{sys.executable}", f"#!{interpreter}"))
@@ -455,9 +456,7 @@ def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_pat
         "-m",
         "controlled missing interpreter",
     )
-    new_sha = _git(tmp_path / "evals", "rev-parse", "HEAD")
-    shared_path = tmp_path / "shared.toml"
-    shared_path.write_text(shared_path.read_text().replace(shared.eval.harness_sha, new_sha))
+    _git(tmp_path / "evals", "push", "origin", "main")
     _cli(config, env, "tick")
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
     claim = store.all_claims()[0]
@@ -512,7 +511,7 @@ def test_invalid_quota_hold_keeps_reconciliation_and_feedback_running(tmp_path: 
     data["items"][0]["content"]["body"] = "```eval\nrepetitions=0\n```"
     board.write_text(json.dumps(data))
     for value in ({}, {"until": 123}, {"until": "bad"}, {"until": "2026-09-09T13:00:00"}):
-        store.set_setting("admission", "quota", value)
+        store.set_setting("admission", "quota:codex", value)
         _status(board, shared, "running")
         _cli(config, env, "tick")
         assert not store.nonterminal_runs()

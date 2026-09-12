@@ -48,7 +48,7 @@ class EvalHandler:
         self,
         defaults: EvalDefaults,
         *,
-        harness_sha: str,
+        harness_ref: str = "main",
         suite: str = "and-scene",
         shared: SharedConfig | None = None,
         local: LocalConfig | None = None,
@@ -58,7 +58,7 @@ class EvalHandler:
         fallback_seconds: int = 18000,
     ) -> None:
         self._defaults = defaults
-        self._harness_sha = harness_sha
+        self._harness_ref = harness_ref
         self._suite = suite
         self._shared = shared
         self._local = local
@@ -86,7 +86,7 @@ class EvalHandler:
         )
         return cls(
             defaults,
-            harness_sha=shared.eval.harness_sha,
+            harness_ref=shared.eval.harness_ref,
             suite=shared.eval.suite,
             shared=shared,
             local=local,
@@ -169,10 +169,11 @@ class EvalHandler:
             return Feedback(str(error))
         resolver = cast(Callable[[ParsedRequest], tuple[str, str]], resolve)
         runner_sha, skills_sha = resolver(request)
+        harness_sha = self._resolve_harness_ref()
         frozen = request.freeze(
             runner_sha=runner_sha,
             skills_sha=skills_sha,
-            harness_sha=self._harness_sha,
+            harness_sha=harness_sha,
             suite=self._suite,
         )
         return ClaimDraft(
@@ -183,6 +184,16 @@ class EvalHandler:
             self.kind,
             request.fingerprint,
             frozen.payload,
+        )
+
+    def _resolve_harness_ref(self) -> str:
+        """Resolve the configured harness branch to a commit; direct pass-through if unwired."""
+        if self.sources is None:
+            return self._harness_ref
+        from agent_factory import runtime
+
+        return runtime._resolve_revision(  # pyright: ignore[reportPrivateUsage]
+            self.sources.evals, self._harness_ref
         )
 
     def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
