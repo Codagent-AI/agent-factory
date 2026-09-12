@@ -288,3 +288,49 @@ def test_list_open_pull_requests_for_head_raises_on_lookup_failure() -> None:
 
     with pytest.raises(GitHubApiError):
         client.list_open_pull_requests_for_head("example/repository", "factory/fix-212-1a2b3c4d")
+
+
+def test_get_pull_request_reads_state_and_merged_at() -> None:
+    gh = RecordingGh([json.dumps({"state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    state = client.get_pull_request("example/repository", 214)
+
+    assert state.state == "MERGED"
+    assert state.merged_at == "2026-01-01T00:00:00Z"
+    assert gh.calls[0].arguments == [
+        "pr",
+        "view",
+        "214",
+        "--repo",
+        "example/repository",
+        "--json",
+        "state,mergedAt",
+    ]
+
+
+def test_get_pull_request_reports_missing_merged_at_as_none() -> None:
+    gh = RecordingGh([json.dumps({"state": "OPEN", "mergedAt": None})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    state = client.get_pull_request("example/repository", 214)
+
+    assert state.state == "OPEN"
+    assert state.merged_at is None
+
+
+def test_close_issue_patches_state_closed() -> None:
+    gh = RecordingGh([json.dumps({"number": 42, "state": "closed"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.close_issue("example/repository", 42)
+
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/issues/42",
+        "--method",
+        "PATCH",
+        "--input",
+        "-",
+    ]
+    assert gh.calls[0].body == {"state": "closed"}

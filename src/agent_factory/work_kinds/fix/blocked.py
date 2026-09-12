@@ -1,0 +1,110 @@
+"""Re-admission scan for blocked fix claims: an eligible comment or a drag to Ready."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Sequence
+from datetime import datetime
+from pathlib import Path
+
+from agent_factory.config import LocalConfig, SharedConfig
+from agent_factory.controller import quota_deadline
+from agent_factory.github import GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.store import Claim, ClaimStore, NonterminalRunError
+from agent_factory.work_kinds.fix.handler import FixHandler
+
+_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+
+
+def eligible_comments(
+    comments: Sequence[IssueComment],
+    *,
+    since: str | None,
+    bot_login: str,
+    permission: Callable[[str], str | None],
+) -> list[IssueComment]:
+    """Keep writer comments newer than the decline; drop the bot's own and everyone else's."""
+    result: list[IssueComment] = []
+    for comment in comments:
+        if comment.author == bot_login:
+            continue
+        if since is not None and comment.created_at and comment.created_at <= since:
+            continue
+        if permission(comment.author) not in _WRITER_PERMISSIONS:
+            continue
+        result.append(comment)
+    return result
+
+
+def process_blocked_claim(
+    store: ClaimStore,
+    client: GitHubClient,
+    handler: FixHandler,
+    shared: SharedConfig,
+    local: LocalConfig,
+    card: ProjectQueueItem,
+    claim: Claim,
+    *,
+    bot_login: str,
+    artifact_root: Path,
+    now: datetime,
+) -> bool:
+    """Re-admit one blocked fix claim if eligible; return True once a run is reserved."""
+    if claim.lifecycle != "blocked":
+        return False
+    since = claim.outcome.get("declined_at")
+    since_value = since if isinstance(since, str) else None
+    permission_cache: dict[str, str | None] = {}
+
+    def _permission(login: str) -> str | None:
+        if login not in permission_cache:
+            permission_cache[login] = client.get_permission(claim.repository, login)
+        return permission_cache[login]
+
+    comments = client.list_comment_records(claim.repository, claim.issue_number)
+    eligible = eligible_comments(
+        comments, since=since_value, bot_login=bot_login, permission=_permission
+    )
+    if handler.gesture(claim, card, eligible) != "unblock":
+        return False
+    if (
+        store.is_paused()
+        or store.nonterminal_runs(kind="fix")
+        or not handler.window(local).allows_admission(now)
+    ):
+        return False
+    quota = store.get_hold(claim.id, "quota")
+    if quota is not None and _quota_active(quota, now):
+        return False
+    store.set_preparation(
+        claim.id,
+        {
+            **claim.preparation,
+            "issue": {
+                "repository": claim.repository,
+                "number": claim.issue_number,
+                "comments": [{"author": c.author, "body": c.body} for c in eligible],
+            },
+        },
+    )
+    try:
+        store.reserve_run(
+            claim.id,
+            "fix",
+            reason="unblock",
+            evidence_path=str(artifact_root / f"{claim.id}-fix-unblock"),
+        )
+    except NonterminalRunError:
+        return False
+    store.set_claim_lifecycle(claim.id, "active", {})
+    client.set_attention_label(claim.repository, claim.issue_number, False)
+    store.record_event(
+        claim.id, "unblock", "Re-admitted after eligible input; starting a new attempt."
+    )
+    return True
+
+
+def _quota_active(hold: dict[str, object], now: datetime) -> bool:
+    try:
+        return quota_deadline(hold) > now
+    except ValueError:
+        return True

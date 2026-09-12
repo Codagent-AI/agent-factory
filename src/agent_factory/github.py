@@ -57,6 +57,13 @@ class IssueComment:
     id: str
     body: str
     author: str
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestState:
+    state: str
+    merged_at: str | None
 
 
 class GhRunner(Protocol):
@@ -272,6 +279,23 @@ class GitHubClient:
             for entry in (_object(item) for item in _json_list(response))
         ]
 
+    def get_pull_request(self, repository: str, number: int) -> PullRequestState:
+        response = self._request(
+            ["pr", "view", str(number), "--repo", repository, "--json", "state,mergedAt"], None
+        )
+        payload = _json_object(response)
+        merged_at = payload.get("mergedAt")
+        return PullRequestState(
+            state=_required_string(payload, "state"),
+            merged_at=merged_at if isinstance(merged_at, str) else None,
+        )
+
+    def close_issue(self, repository: str, number: int) -> None:
+        self._request(
+            ["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "--input", "-"],
+            {"state": "closed"},
+        )
+
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self._request(
             ["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "--input", "-"],
@@ -465,12 +489,20 @@ class GitHubClient:
                 user = _object(comment.get("user"))
                 identifier = comment.get("id")
                 login = user.get("login")
+                created_at = comment.get("created_at")
                 if (
                     isinstance(body, str)
                     and isinstance(identifier, (int, str))
                     and isinstance(login, str)
                 ):
-                    comments.append(IssueComment(str(identifier), body, login))
+                    comments.append(
+                        IssueComment(
+                            str(identifier),
+                            body,
+                            login,
+                            created_at if isinstance(created_at, str) else "",
+                        )
+                    )
             if len(values) < 100:
                 return comments
             page += 1

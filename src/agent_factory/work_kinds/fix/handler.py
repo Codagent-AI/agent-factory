@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -26,6 +27,7 @@ from agent_factory.work_kinds.base import (
     Preparation,
     ReportEvent,
 )
+from agent_factory.work_kinds.fix.cleanup import FixCleanup
 from agent_factory.work_kinds.fix.outcome import read_outcome
 from agent_factory.work_kinds.fix.readiness import check_readiness
 
@@ -51,6 +53,7 @@ class FixHandler:
         self._contract = shared.fix.contract
         self._resolver = resolver
         self._store: ClaimStore | None = None
+        self._cleanup: FixCleanup | None = None
 
     @classmethod
     def from_config(cls, shared: SharedConfig, local: LocalConfig) -> FixHandler:
@@ -58,6 +61,7 @@ class FixHandler:
 
     def attach_store(self, store: ClaimStore) -> None:
         self._store = store
+        self._cleanup = FixCleanup(store)
 
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
@@ -195,7 +199,9 @@ class FixHandler:
         if outcome == "needs-input":
             if self._store is not None:
                 reasons = _reasons_text(latest.result)
-                self._store.set_claim_lifecycle(claim.id, "blocked", {})
+                self._store.set_claim_lifecycle(
+                    claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()}
+                )
                 self._store.record_event(
                     claim.id, f"{latest.id}:needs-input", f"Needs input.\n\n{reasons}"
                 )
@@ -233,6 +239,12 @@ class FixHandler:
     def gesture(
         self, claim: Claim, card: ProjectQueueItem, comments: Sequence[IssueComment]
     ) -> Gesture | None:
+        if claim.lifecycle == "settled":
+            return "fresh" if _card_status(self._shared, card) == "Ready" else None
+        if claim.lifecycle == "blocked":
+            if comments or _card_status(self._shared, card) == "Ready":
+                return "unblock"
+            return None
         return None
 
     def limits(self, local: LocalConfig) -> SupervisionLimits:
@@ -256,7 +268,8 @@ class FixHandler:
         return providers
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
-        pass
+        if self._cleanup is not None:
+            self._cleanup.reconcile(claim.id, board_status=board_status)
 
 
 def _card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:

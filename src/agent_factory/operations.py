@@ -148,6 +148,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
         lines.extend(_cleanup_lines(claim))
+        lines.extend(_sync_lines(claim))
     if config is not None:
         now = datetime.now(config.schedule.timezone)
         if not config.schedule.allows_admission(now):
@@ -469,6 +470,20 @@ def _reporting_lines(claim: Claim) -> list[str]:
         failure_values = cast(Mapping[str, object], failures)
         pending.extend(key for key in failure_values if key not in pending)
     return [f"unfinished reporting: {', '.join(pending)}"] if pending else []
+
+
+def _sync_lines(claim: Claim) -> list[str]:
+    if claim.kind != "fix" or claim.lifecycle != "settled":
+        return []
+    sync = claim.reporting.get("sync")
+    sync_map: Mapping[str, object] = (
+        cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
+    )
+    if not sync_map or sync_map.get("completed"):
+        return []
+    reason = sync_map.get("blocked_reason")
+    detail = reason if isinstance(reason, str) else "awaiting merge"
+    return [f"pending sync: {detail}"]
 
 
 def _cleanup_lines(claim: Claim) -> list[str]:

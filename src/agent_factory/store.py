@@ -623,6 +623,15 @@ class ClaimStore:
         reporting["events"] = events
         self._set_reporting(claim_id, reporting)
 
+    def set_claim_sync(self, claim_id: str, sync: Mapping[str, object]) -> None:
+        """Persist post-merge working-clone sync progress so a restart never repeats it."""
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            raise KeyError(claim_id)
+        reporting = dict(claim.reporting)
+        reporting["sync"] = dict(sync)
+        self._set_reporting(claim_id, reporting)
+
     def record_delivery_failure(self, claim_id: str, key: str, error: Exception) -> None:
         claim = self.get_claim(claim_id)
         if claim is None:

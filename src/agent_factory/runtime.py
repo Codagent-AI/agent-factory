@@ -41,6 +41,9 @@ from agent_factory.supervisor import launch_supervisor
 from agent_factory.work_kinds.base import Feedback, WorkKindHandler
 from agent_factory.work_kinds.eval import ParsedRequest
 from agent_factory.work_kinds.eval.handler import EvalHandler
+from agent_factory.work_kinds.fix.blocked import process_blocked_claim
+from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.fix.sync import sync_claim
 
 
 def cycle(state: Path, config_path: Path) -> None:
@@ -76,6 +79,9 @@ def cycle(state: Path, config_path: Path) -> None:
             adapter,
             fallback_seconds=local.limits.codex_reset_fallback_seconds,
         )
+        # Feedback and reconciliation also work while paused or outside the window.
+        now = datetime.now(local.schedule.timezone)
+        artifact_root = local.storage_root / "artifacts"
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
@@ -84,15 +90,37 @@ def cycle(state: Path, config_path: Path) -> None:
                 if claim.lifecycle == "superseded":
                     continue
                 handler = controller.handler(claim.kind)
-                if card.source.state.lower() == "closed" and claim.lifecycle != "settled":
+                if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
+                if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
+                    process_blocked_claim(
+                        store,
+                        client,
+                        handler,
+                        shared,
+                        local,
+                        card,
+                        claim,
+                        bot_login=shared.bot_login,
+                        artifact_root=artifact_root,
+                        now=now,
+                    )
+                    claim = store.get_claim(claim.id) or claim
+                if claim.kind == "fix" and claim.lifecycle == "settled":
+                    sync_claim(
+                        store,
+                        client,
+                        local,
+                        claim,
+                        bot_login=shared.bot_login,
+                        card_done=_logical_status(shared, card) == "Done",
+                    )
+                    claim = store.get_claim(claim.id) or claim
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
                 if not (gesture == "fresh" and claim.lifecycle == "settled"):
                     _report(store, controller, client, shared, card, claim.id, handler)
                 if handler is not None:
                     handler.cleanup(claim, board_status=_logical_status(shared, card))
-        # Feedback and reconciliation also work while paused or outside the window.
-        now = datetime.now(local.schedule.timezone)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
@@ -363,6 +391,11 @@ def _repair_unclaimed(
         store.set_setting("status-repair", card.id, {"complete": True})
 
 
+def _should_cancel(claim: Claim) -> bool:
+    """Closure cancels only unfinished execution; a settled claim keeps its recorded outcome."""
+    return claim.lifecycle != "settled"
+
+
 def _logical_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
     value = card.fields.get(shared.project.status.id)
     return next(
@@ -468,7 +501,11 @@ def _report(
                 shared.project.id, card.id, shared.project.status.id, option
             )
             card.fields[shared.project.status.id] = option
-            if active and status == "Running" and current in {"Ready", "Review", "Done"}:
+            if (
+                (active or claim.lifecycle == "blocked")
+                and status == "Running"
+                and current in {"Ready", "Review", "Done"}
+            ):
                 store.record_event(
                     claim_id,
                     f"status-repair:{current}:{len(store.runs_for_claim(claim_id))}",
