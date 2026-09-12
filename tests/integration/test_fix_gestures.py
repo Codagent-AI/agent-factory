@@ -10,7 +10,7 @@ from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig,
 from agent_factory.github import GitHubApiError, IssueComment, ProjectQueueItem
 from agent_factory.routing import SourceItem
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.work_kinds.fix.blocked import process_blocked_claim
+from agent_factory.work_kinds.fix.blocked import eligible_comments, process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 
 _SHARED_BASE = """\
@@ -411,6 +411,47 @@ def test_comment_after_decline_is_eligible_across_iso8601_offset_notations(tmp_p
     )
 
     assert admitted is True
+
+
+def test_unparsable_decline_timestamp_fails_closed_for_all_comments() -> None:
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
+
+    result = eligible_comments(
+        comments, since="not-a-timestamp", bot_login="bot", permission=lambda _: "write"
+    )
+
+    assert result == []
+
+
+def test_blocked_claim_with_unparsable_declined_at_is_never_unblocked_by_comment(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {"contract": "factory-fix/1"})
+    )
+    store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": "not-a-timestamp"})
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
+    client = FakeGitHub(comments, {"writer": "write"})
+    handler = _handler(store)
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None
+    import datetime as dt
+
+    admitted = process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        reloaded,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+    )
+
+    assert admitted is False
 
 
 def test_comment_with_missing_timestamp_is_not_eligible(tmp_path: Path) -> None:

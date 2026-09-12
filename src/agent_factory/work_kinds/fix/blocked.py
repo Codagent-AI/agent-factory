@@ -31,6 +31,10 @@ def eligible_comments(
 ) -> list[IssueComment]:
     """Keep writer comments newer than the decline; drop the bot's own and everyone else's."""
     since_time = _parse_timestamp(since) if since is not None else None
+    if since is not None and since_time is None:
+        # An unparsable decline timestamp must not silently disable the recency gate;
+        # fail closed rather than risk treating every comment as eligible.
+        return []
     result: list[IssueComment] = []
     for comment in comments:
         if comment.author == bot_login:
