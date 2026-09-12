@@ -14,7 +14,7 @@ from agent_factory.work_kinds.fix.handler import FixHandler
 
 CONTRACT = "factory-fix/1"
 
-_SHARED_BASE = '''\
+_SHARED_BASE = """\
 [github]
 organization = "Example Org"
 bot_login = "example-factory[bot]"
@@ -58,9 +58,9 @@ eval_type = "Eval"
 harness_ref = "main"
 suite = "and-scene"
 repetitions = 3
-'''
+"""
 
-_LOCAL_BASE = '''\
+_LOCAL_BASE = """\
 shared_config = "/opt/agent-factory/config/codagent.toml"
 storage_root = "~/.agent-factory"
 
@@ -85,7 +85,7 @@ codex_reset_fallback_seconds = 18000
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"
 suite_environment = "/etc/agent-factory/suite.env"
-'''
+"""
 
 
 def _shared() -> SharedConfig:

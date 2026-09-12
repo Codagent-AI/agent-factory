@@ -221,6 +221,13 @@ def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler | No
 
 
 def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, str]:
+    if handler.kind != "eval":
+        # Fix admission is held at the readiness gate until mirror-based target
+        # resolution and the sandbox launcher exist; this path should be unreachable.
+        raise ReadinessError(
+            f"{handler.kind} handler has no wired revision resolver; fix admission should "
+            "have been held at readiness before reaching this point"
+        )
     sources = getattr(handler, "sources", None)
     if not isinstance(sources, SourceRepositories) or not isinstance(request, ParsedRequest):
         raise ReadinessError("eval handler cannot resolve pinned revisions")
@@ -385,6 +392,15 @@ def _consume_results(
             )
             if claim.kind != "eval":
                 if handler is None:
+                    if not store.get_setting("missing-handler", run.id):
+                        store.record_event(
+                            claim.id,
+                            f"{run.unit_key}:attempt-{run.attempt_number}:missing-handler",
+                            f"Cannot consume result: no work-kind handler is registered for "
+                            f"kind {claim.kind!r}. Claim held for operator repair.",
+                        )
+                        store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
+                        store.set_setting("missing-handler", run.id, {"reported": True})
                     continue
                 result = handler.read_result(run)
             elif (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
@@ -400,8 +416,10 @@ def _consume_results(
                         f"{run.unit_key}:attempt-{run.attempt_number}:result-error",
                         reason,
                     )
-            if claim.kind == "eval" and result.execution_status != "completed" and (
-                result.product_verdict not in {"failed", "fail"}
+            if (
+                claim.kind == "eval"
+                and result.execution_status != "completed"
+                and (result.product_verdict not in {"failed", "fail"})
             ):
                 deadline = adapter.failure_quota_until(
                     Path(run.evidence_path), result.result, fallback_seconds=fallback_seconds

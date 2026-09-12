@@ -4,7 +4,7 @@ import pytest
 
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
 
-_SHARED_BASE = '''\
+_SHARED_BASE = """\
 [github]
 organization = "Example Org"
 bot_login = "example-factory[bot]"
@@ -48,9 +48,9 @@ eval_type = "Eval"
 harness_ref = "main"
 suite = "and-scene"
 repetitions = 3
-'''
+"""
 
-_LOCAL_BASE = '''\
+_LOCAL_BASE = """\
 shared_config = "/opt/agent-factory/config/codagent.toml"
 storage_root = "~/.agent-factory"
 
@@ -75,7 +75,7 @@ codex_reset_fallback_seconds = 18000
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"
 suite_environment = "/etc/agent-factory/suite.env"
-'''
+"""
 
 
 def test_shared_config_defaults_fix_when_section_absent() -> None:
@@ -89,7 +89,7 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
 def test_shared_config_parses_fix_targets_and_defaults() -> None:
     text = (
         _SHARED_BASE
-        + '''
+        + """
 [fix]
 branches = { runner = "main", skills = "main" }
 contract = "factory-fix/1"
@@ -105,7 +105,7 @@ branch = "release"
 lead = "cursor:cursor-grok-4.6-high:high"
 implementor = "cursor:cursor-grok-4.6-high:high"
 tester = "cursor:composer-2.5:high"
-'''
+"""
     )
     shared = SharedConfig.from_toml(text)
     assert [target.repository for target in shared.fix.targets] == [
@@ -118,8 +118,28 @@ tester = "cursor:composer-2.5:high"
 
 
 def test_shared_config_rejects_fix_target_without_repository() -> None:
-    text = _SHARED_BASE + "\n[[fix.targets]]\nbranch = \"main\"\n"
+    text = _SHARED_BASE + '\n[[fix.targets]]\nbranch = "main"\n'
     with pytest.raises(ConfigurationError, match="fix.targets"):
+        SharedConfig.from_toml(text)
+
+
+def test_shared_config_rejects_non_string_fix_target_branch() -> None:
+    text = _SHARED_BASE + '\n[[fix.targets]]\nrepository = "Codagent-AI/agent-runner"\nbranch = 0\n'
+    with pytest.raises(ConfigurationError, match="fix.targets"):
+        SharedConfig.from_toml(text)
+
+
+def test_shared_config_rejects_empty_fix_target_branch() -> None:
+    text = (
+        _SHARED_BASE + '\n[[fix.targets]]\nrepository = "Codagent-AI/agent-runner"\nbranch = ""\n'
+    )
+    with pytest.raises(ConfigurationError, match="fix.targets"):
+        SharedConfig.from_toml(text)
+
+
+def test_shared_config_rejects_non_string_fix_branches() -> None:
+    text = _SHARED_BASE + "\n[fix.branches]\nrunner = 123\n"
+    with pytest.raises(ConfigurationError, match="fix.branches"):
         SharedConfig.from_toml(text)
 
 
@@ -135,14 +155,16 @@ def test_local_config_defaults_fix_when_section_absent() -> None:
 
 
 def test_local_config_parses_fix_section() -> None:
-    text = _LOCAL_BASE.replace(
-        "[limits]\nminimum_free_gib = 8",
-        "[limits]\nminimum_free_gib = 8\nmemory_reservation_gib = 5",
-    ).replace(
-        'suite_environment = "/etc/agent-factory/suite.env"',
-        'suite_environment = "/etc/agent-factory/suite.env"\n'
-        'fix_environment = "/etc/agent-factory/fix.env"',
-    ) + '''
+    text = (
+        _LOCAL_BASE.replace(
+            "[limits]\nminimum_free_gib = 8",
+            "[limits]\nminimum_free_gib = 8\nmemory_reservation_gib = 5",
+        ).replace(
+            'suite_environment = "/etc/agent-factory/suite.env"',
+            'suite_environment = "/etc/agent-factory/suite.env"\n'
+            'fix_environment = "/etc/agent-factory/fix.env"',
+        )
+        + """
 [fix.limits]
 inactivity_seconds = 60
 execution_seconds = 120
@@ -154,7 +176,8 @@ poll_seconds = 60
 
 [repositories.working_clones]
 "Codagent-AI/agent-runner" = "/srv/working/agent-runner"
-'''
+"""
+    )
     local = LocalConfig.from_toml(text)
     assert local.fix.limits.inactivity_seconds == 60
     assert local.fix.limits.execution_seconds == 120

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import GitHubApiError, IssueComment
-from agent_factory.store import ClaimStore
+from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 
 
@@ -324,6 +324,43 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
     assert "invalid result.json" in str(store.pending_events(claim.id))
     assert controller.presentation(claim.id).verdict == "infra-error"
     assert (artifact / "result.json").read_text() == '{"incomplete":'
+    store.close()
+
+
+def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
+    tmp_path: Path,
+) -> None:
+    from agent_factory import runtime
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    # No handler is registered for "ghost", simulating config drift or a rollout mismatch.
+    controller = Controller(store, Comments(), {}, artifact_root=tmp_path / "artifacts")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 1, "I1", "P1", "ghost", "fp", {"version": 1})
+    )
+    store.set_claim_lifecycle(claim.id, "active", {})
+    run = store.reserve_run(
+        claim.id, "unit", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+    store.finish_run(run.id, execution_status="completed", result={})
+
+    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
+        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
+    )
+
+    saved_claim = store.get_claim(claim.id)
+    assert saved_claim is not None
+    assert saved_claim.lifecycle == "waiting"
+    assert saved_claim.outcome.get("verdict") == "infra-error"
+    events = [event.body for event in store.pending_events(claim.id)]
+    assert any("no work-kind handler is registered" in body for body in events)
+
+    # Re-running consumption does not spam duplicate events for the same run.
+    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
+        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
+    )
+    assert len(store.pending_events(claim.id)) == 1
     store.close()
 
 

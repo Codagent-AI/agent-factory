@@ -16,12 +16,25 @@ _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
 def check_readiness(
     local: LocalConfig, shared: SharedConfig, *, installation_token: str | None = None
 ) -> list[Diagnostic]:
-    """Diagnostics gating fix admission: the credential file and the workflow contract."""
+    """Diagnostics gating fix admission: launch support, the credential file, and the contract."""
     if not shared.fix.targets:
         return []
-    diagnostics = [_credential_diagnostic(local, installation_token)]
-    diagnostics.append(_contract_diagnostic(local, shared))
-    return diagnostics
+    return [
+        _launch_diagnostic(),
+        _credential_diagnostic(local, installation_token),
+        _contract_diagnostic(local, shared),
+    ]
+
+
+def _launch_diagnostic() -> Diagnostic:
+    # Mirrors, clones, and the sandbox-run.sh launch plan are not implemented yet.
+    # Fail closed here so fix claims are never accepted only to fail at launch.
+    return Diagnostic(
+        "fix sandbox launch",
+        False,
+        "the fix sandbox launcher is not implemented yet",
+        "Implement mirrors/clones and FixHandler.plan() before enabling fix targets.",
+    )
 
 
 def _credential_diagnostic(local: LocalConfig, installation_token: str | None) -> Diagnostic:
@@ -41,13 +54,16 @@ def _credential_diagnostic(local: LocalConfig, installation_token: str | None) -
         return Diagnostic(name, False, f"{path} must not be group- or world-accessible", action)
     try:
         lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    except OSError as error:
+    except (OSError, UnicodeError) as error:
         return Diagnostic(name, False, f"cannot read {path}: {error}", action)
     if len(lines) != 1:
         return Diagnostic(name, False, f"{path} must contain exactly one assignment", action)
     match = _TOKEN_LINE.match(lines[0].strip())
     if match is None:
-        return Diagnostic(name, False, f"{path} must assign GH_TOKEN, found: {lines[0]!r}", action)
+        found_key = lines[0].split("=", 1)[0].strip()
+        return Diagnostic(
+            name, False, f"{path} must assign GH_TOKEN, found variable: {found_key!r}", action
+        )
     token = match.group(1)
     if not token:
         return Diagnostic(name, False, f"{path} GH_TOKEN value is empty", action)

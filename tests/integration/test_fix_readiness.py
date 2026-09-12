@@ -7,7 +7,7 @@ from pathlib import Path
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.work_kinds.fix.readiness import check_readiness
 
-_SHARED_BASE = '''\
+_SHARED_BASE = """\
 [github]
 organization = "Example Org"
 bot_login = "example-factory[bot]"
@@ -51,7 +51,7 @@ eval_type = "Eval"
 harness_ref = "main"
 suite = "and-scene"
 repetitions = 3
-'''
+"""
 
 _CONTRACT = "factory-fix/1"
 _CONTRACT_PATH = "workflows/core/factory-fix-v1.0.yaml"
@@ -159,6 +159,32 @@ def test_credential_with_wrong_variable_name_fails_closed(tmp_path: Path) -> Non
     assert credential.available is False
 
 
+def test_credential_with_wrong_variable_name_does_not_leak_the_value(tmp_path: Path) -> None:
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("TOKEN=ghp_supersecretvalue\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    diagnostics = check_readiness(local, _shared())
+    credential = next(d for d in diagnostics if d.name == "fix credential")
+    assert credential.available is False
+    assert "ghp_supersecretvalue" not in credential.detail
+    assert "TOKEN" in credential.detail
+
+
+def test_credential_with_non_utf8_bytes_reports_diagnostic_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_bytes(b"GH_TOKEN=\xff\xfe\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    diagnostics = check_readiness(local, _shared())
+    credential = next(d for d in diagnostics if d.name == "fix credential")
+    assert credential.available is False
+
+
 def test_well_formed_credential_passes(tmp_path: Path) -> None:
     checkout = _runner_checkout(tmp_path, with_contract=True)
     env = tmp_path / "fix.env"
@@ -190,6 +216,17 @@ def test_missing_workflow_contract_fails_closed(tmp_path: Path) -> None:
     diagnostics = check_readiness(local, _shared())
     contract = next(d for d in diagnostics if d.name == "fix workflow contract")
     assert contract.available is False
+
+
+def test_launch_is_unavailable_until_the_sandbox_launcher_is_implemented(tmp_path: Path) -> None:
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("GH_TOKEN=abc123\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    diagnostics = check_readiness(local, _shared())
+    launch = next(d for d in diagnostics if d.name == "fix sandbox launch")
+    assert launch.available is False
 
 
 def test_present_workflow_contract_passes(tmp_path: Path) -> None:

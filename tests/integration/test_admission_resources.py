@@ -40,9 +40,7 @@ def test_exact_shortfall_blocks_admission(tmp_path: Path) -> None:
     assert result.available is True
 
     # One more MiB of usage drops headroom just under the reservation: blocked.
-    docker = _write_docker_stub(
-        tmp_path, mem_total=16 * _GIB, stats_lines=["13.01GiB / 16GiB"]
-    )
+    docker = _write_docker_stub(tmp_path, mem_total=16 * _GIB, stats_lines=["13.01GiB / 16GiB"])
     result = check_memory_headroom(3, docker=str(docker))
     assert result.available is False
     assert "memory" in result.detail.lower() or "gib" in result.detail.lower()

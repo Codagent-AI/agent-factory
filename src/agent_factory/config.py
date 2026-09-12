@@ -379,16 +379,18 @@ def _fix_shared_config(raw: object) -> FixConfig:
     targets: list[FixTarget] = []
     for entry in cast(list[object], targets_raw):
         target = _table(entry, "fix.targets")
+        branch = _string(target, "branch", "fix.targets") if "branch" in target else "main"
         targets.append(
-            FixTarget(
-                repository=_string(target, "repository", "fix.targets"),
-                branch=str(target.get("branch", "main")) if target.get("branch") else "main",
-            )
+            FixTarget(repository=_string(target, "repository", "fix.targets"), branch=branch)
         )
     branches_raw = _table(fix.get("branches", {}), "fix.branches")
     branches = FixBranches(
-        runner=str(branches_raw.get("runner", "main")),
-        skills=str(branches_raw.get("skills", "main")),
+        runner=(
+            _string(branches_raw, "runner", "fix.branches") if "runner" in branches_raw else "main"
+        ),
+        skills=(
+            _string(branches_raw, "skills", "fix.branches") if "skills" in branches_raw else "main"
+        ),
     )
     defaults_raw = _table(fix.get("defaults", {}), "fix.defaults")
     defaults = {key: str(value) for key, value in defaults_raw.items()}

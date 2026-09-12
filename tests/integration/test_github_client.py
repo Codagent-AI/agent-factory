@@ -226,6 +226,23 @@ def test_get_branch_returns_info_when_branch_exists() -> None:
     ]
 
 
+def test_get_branch_url_encodes_branch_names_containing_slashes() -> None:
+    gh = RecordingGh(
+        [json.dumps({"name": "factory/fix-212-1a2b3c4d", "commit": {"sha": "deadbeef"}})]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    branch = client.get_branch("example/repository", "factory/fix-212-1a2b3c4d")
+
+    assert branch is not None
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/branches/factory%2Ffix-212-1a2b3c4d",
+        "--method",
+        "GET",
+    ]
+
+
 def test_get_branch_returns_none_when_branch_missing() -> None:
     client = GitHubClient(RaisingGh(GitHubNotFoundError("not found")), lambda: "installation-token")
 

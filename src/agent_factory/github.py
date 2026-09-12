@@ -241,9 +241,10 @@ class GitHubClient:
 
     def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
         """Return branch info, or None if it does not exist. Raises on any other lookup failure."""
+        encoded_branch = urllib.parse.quote(branch, safe="")
         try:
             response = self._request(
-                ["api", f"repos/{repository}/branches/{branch}", "--method", "GET"], None
+                ["api", f"repos/{repository}/branches/{encoded_branch}", "--method", "GET"], None
             )
         except GitHubNotFoundError:
             return None
