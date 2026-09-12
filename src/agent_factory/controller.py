@@ -420,24 +420,25 @@ def quota_deadline(hold: Mapping[str, object]) -> datetime:
     return deadline
 
 
-_KNOWN_PROVIDERS = ("codex", "cursor", "claude")
-
-
 def _quota_provider(stored_result: Mapping[str, object], claim_providers: set[str]) -> str:
     """Identify the provider a quota hold applies to.
 
     The claim's own configured providers (structured data from its frozen roles) are the
-    authoritative source: when the claim uses exactly one, that is the answer. Only when a
-    claim mixes providers is the quota diagnostic's text consulted, and only to choose among
-    those already-configured providers, never as a blind guess.
+    authoritative source and the only candidates ever returned when any are configured: when
+    the claim uses exactly one, that is the answer; when it mixes several, the quota
+    diagnostic's text is consulted only to choose among those already-configured providers,
+    never to guess an unrelated provider. A tie among unnamed configured providers breaks
+    deterministically rather than defaulting outside the claim's own set. Only a claim with no
+    configured providers at all falls back to codex, the only provider quota detection
+    recognizes today.
     """
     if len(claim_providers) == 1:
         return next(iter(claim_providers))
-    text = str(stored_result).lower()
-    named = next((name for name in claim_providers if name in text), None)
-    if named is not None:
-        return named
-    return next((name for name in _KNOWN_PROVIDERS if name in text), "codex")
+    if claim_providers:
+        text = str(stored_result).lower()
+        named = next((name for name in claim_providers if name in text), None)
+        return named if named is not None else min(claim_providers)
+    return "codex"
 
 
 def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
