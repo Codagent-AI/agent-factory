@@ -16,7 +16,6 @@ from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
     Controller,
-    ExecutionPlan,
     advisory_lock,
     quota_deadline,
 )
@@ -30,17 +29,14 @@ from agent_factory.github import (
 from agent_factory.operations import check_memory_headroom, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
-    AndSceneAdapter,
-    PreparedWorktrees,
     ReadinessError,
     RecoveryStateError,
     SourceRepositories,
     WorktreeError,
 )
 from agent_factory.supervisor import launch_supervisor
-from agent_factory.work_kinds.base import Feedback, WorkKindHandler
+from agent_factory.work_kinds.base import Feedback, WorkKindHandler, card_status
 from agent_factory.work_kinds.eval import ParsedRequest
-from agent_factory.work_kinds.eval.handler import EvalHandler
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.sync import sync_claim
@@ -70,16 +66,7 @@ def cycle(state: Path, config_path: Path) -> None:
         )
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
-        eval_handler = _eval_handler(registered)
-        adapter = eval_handler.adapter if eval_handler is not None else None
-        if adapter is None:
-            adapter = AndSceneAdapter(environment_file=local.credentials.suite_environment)
-        _consume_results(
-            store,
-            controller,
-            adapter,
-            fallback_seconds=local.limits.codex_reset_fallback_seconds,
-        )
+        _consume_results(store, controller)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
@@ -115,20 +102,22 @@ def cycle(state: Path, config_path: Path) -> None:
                         local,
                         claim,
                         bot_login=shared.bot_login,
-                        card_done=_logical_status(shared, card) == "Done",
+                        card_done=card_status(shared, card) == "Done",
                     )
                     claim = store.get_claim(claim.id) or claim
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
                 if not (gesture == "fresh" and claim.lifecycle == "settled"):
                     _report(store, controller, client, shared, card, claim.id, handler)
                 if handler is not None:
-                    handler.cleanup(claim, board_status=_logical_status(shared, card))
+                    handler.cleanup(claim, board_status=card_status(shared, card))
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
         prerequisites: str | None = None
         kind_readiness: dict[str, str] = {}
+        # The loop breaks after the first reservation, so slot state cannot change mid-loop.
+        slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
         memory = check_memory_headroom(local.limits.memory_reservation_gib)
         memory_setting = {} if memory.available else {"reason": memory.detail}
         store.set_setting("runtime", "memory", memory_setting)
@@ -155,7 +144,7 @@ def cycle(state: Path, config_path: Path) -> None:
             ready = (
                 not paused
                 and handler.window(local).allows_admission(now)
-                and not store.nonterminal_runs(kind=handler.kind)
+                and slot_free.get(handler.kind, False)
             )
             if not ready:
                 continue
@@ -200,12 +189,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 if run is None:
                     continue
                 try:
-                    worktrees = preparation.worktrees
-                    adapter = getattr(handler, "adapter", None)
-                    if worktrees is None or not isinstance(adapter, AndSceneAdapter):
-                        plan = handler.plan(claim, run, preparation)
-                    else:
-                        plan = _plan_attempt(store, adapter, claim, run, worktrees)
+                    plan = handler.plan(claim, run, preparation)
                     launch_supervisor(
                         state,
                         run.id,
@@ -245,11 +229,6 @@ def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
     return None
 
 
-def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler | None:
-    handler = registered.get("eval")
-    return handler if isinstance(handler, EvalHandler) else None
-
-
 def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, str]:
     if handler.kind != "eval":
         # Fix admission is held at the readiness gate until mirror-based target
@@ -262,26 +241,6 @@ def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, str]:
     if not isinstance(sources, SourceRepositories) or not isinstance(request, ParsedRequest):
         raise ReadinessError("eval handler cannot resolve pinned revisions")
     return _resolve(sources, request)
-
-
-def _plan_attempt(
-    store: ClaimStore,
-    adapter: AndSceneAdapter,
-    claim: Claim,
-    run: Run,
-    worktrees: PreparedWorktrees,
-) -> ExecutionPlan:
-    previous = store.runs_for_claim(claim.id)[:-1]
-    stopped_before_checkpoint = bool(
-        previous and previous[-1].result.get("reason") == "suite launch failed"
-    )
-    return adapter.plan(
-        claim.frozen_spec,
-        worktrees,
-        Path(run.evidence_path),
-        recovery=run.reason != "initial",
-        pre_checkpoint_proven=stopped_before_checkpoint,
-    )
 
 
 def _resolve(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, str]:
@@ -371,7 +330,7 @@ def _repair_unclaimed(
 ) -> None:
     if (
         card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
-        or _logical_status(shared, card) != "Running"
+        or card_status(shared, card) != "Running"
         or card.source.state.lower() == "closed"
     ):
         return
@@ -398,21 +357,8 @@ def _should_cancel(claim: Claim) -> bool:
     return claim.lifecycle != "settled"
 
 
-def _logical_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
-    value = card.fields.get(shared.project.status.id)
-    return next(
-        (key.title() for key, option in shared.project.status.options.items() if value == option),
-        "",
-    )
-
-
-def _consume_results(
-    store: ClaimStore,
-    controller: Controller,
-    adapter: AndSceneAdapter,
-    *,
-    fallback_seconds: int = 18000,
-) -> None:
+def _consume_results(store: ClaimStore, controller: Controller) -> None:
+    """Record every finished-but-unconsumed attempt through its kind's handler."""
     for claim in store.all_claims():
         if claim.lifecycle in {"cancelled", "superseded"}:
             continue
@@ -422,45 +368,10 @@ def _consume_results(
                 "consumed-results", run.id
             ):
                 continue
-            result = AttemptResult(
-                "interrupted" if run.status == "timed_out" else run.status, None, run.result
-            )
-            if claim.kind != "eval":
-                if handler is None:
-                    if not store.get_setting("missing-handler", run.id):
-                        store.record_event(
-                            claim.id,
-                            f"{run.unit_key}:attempt-{run.attempt_number}:missing-handler",
-                            f"Cannot consume result: no work-kind handler is registered for "
-                            f"kind {claim.kind!r}. Claim held for operator repair.",
-                        )
-                        store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
-                        store.set_setting("missing-handler", run.id, {"reported": True})
-                    continue
-                result = handler.read_result(run)
-            elif (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
-                try:
-                    result = adapter.read_result(Path(run.evidence_path))
-                except (ReadinessError, OSError, UnicodeError) as error:
-                    reason = f"invalid result.json: {error}"
-                    result = AttemptResult(
-                        "failed", None, {"reason": reason, "previous_result": run.result}
-                    )
-                    store.record_event(
-                        claim.id,
-                        f"{run.unit_key}:attempt-{run.attempt_number}:result-error",
-                        reason,
-                    )
-            if (
-                claim.kind == "eval"
-                and result.execution_status != "completed"
-                and (result.product_verdict not in {"failed", "fail"})
-            ):
-                deadline = adapter.failure_quota_until(
-                    Path(run.evidence_path), result.result, fallback_seconds=fallback_seconds
-                )
-                if deadline is not None:
-                    result = replace(result, quota_until=deadline)
+            if handler is None:
+                _hold_for_missing_handler(store, claim, run)
+                continue
+            result = handler.read_result(run)
             observed = run.progress.get("container")
             if isinstance(observed, Mapping):
                 result = replace(
@@ -471,10 +382,23 @@ def _consume_results(
                     },
                 )
             controller.record_result(run.id, result)
-            if handler is not None:
-                for event in handler.report_events(claim, run, result):
-                    store.record_event(claim.id, event.key, event.body)
+            for event in handler.report_events(claim, run, result):
+                store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
+
+
+def _hold_for_missing_handler(store: ClaimStore, claim: Claim, run: Run) -> None:
+    """Report config drift once per run and park the claim for operator repair."""
+    if store.get_setting("missing-handler", run.id):
+        return
+    store.record_event(
+        claim.id,
+        f"{run.unit_key}:attempt-{run.attempt_number}:missing-handler",
+        f"Cannot consume result: no work-kind handler is registered for "
+        f"kind {claim.kind!r}. Claim held for operator repair.",
+    )
+    store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
+    store.set_setting("missing-handler", run.id, {"reported": True})
 
 
 def _report(
@@ -491,8 +415,9 @@ def _report(
         "factory"
     ):
         return
-    active = any(r.status in NONTERMINAL_RUN_STATUSES for r in store.runs_for_claim(claim_id))
-    current = _logical_status(shared, card)
+    runs = store.runs_for_claim(claim_id)
+    active = any(r.status in NONTERMINAL_RUN_STATUSES for r in runs)
+    current = card_status(shared, card)
     desired = controller.presentation(claim_id)
     status = desired.status
     # A reviewed Done card releases worktrees; never bounce it back to Review.
@@ -510,7 +435,7 @@ def _report(
             ):
                 store.record_event(
                     claim_id,
-                    f"status-repair:{current}:{len(store.runs_for_claim(claim_id))}",
+                    f"status-repair:{current}:{len(runs)}",
                     "Status restored to Running because this evaluation is still active.",
                 )
     if desired.verdict:
@@ -526,19 +451,7 @@ def _report(
         client.clear_field(shared.project.id, card.id, shared.project.verdict.id)
         card.fields.pop(shared.project.verdict.id, None)
         store.set_setting("field-delivery", f"{claim_id}:{shared.project.verdict.id}", {})
-    refs: str | None = None
-    frozen_body: str | None = None
-    if handler is not None:
-        refs_fn = getattr(handler, "refs_text", None)
-        frozen_fn = getattr(handler, "frozen_inputs_event", None)
-        if callable(refs_fn):
-            reported = refs_fn(claim)
-            if isinstance(reported, str):
-                refs = reported
-        if callable(frozen_fn):
-            reported_frozen = frozen_fn(claim)
-            if isinstance(reported_frozen, str):
-                frozen_body = reported_frozen
+    refs = handler.refs_text(claim) if handler is not None else None
     if refs is not None and not store.get_setting("field-delivery", f"{claim_id}:refs"):
         client.set_text_field(
             shared.project.id,
@@ -547,6 +460,7 @@ def _report(
             refs,
         )
         store.set_setting("field-delivery", f"{claim_id}:refs", {"complete": True})
+        frozen_body = handler.frozen_inputs_event(claim) if handler is not None else None
         if frozen_body is not None:
             store.record_event(claim_id, "frozen-inputs", frozen_body)
     for label, needed in desired.labels.items():

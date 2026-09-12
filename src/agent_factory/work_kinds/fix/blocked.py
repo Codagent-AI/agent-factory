@@ -7,12 +7,16 @@ from datetime import datetime
 from pathlib import Path
 
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.controller import quota_deadline
-from agent_factory.github import GitHubApiError, GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.controller import hold_active
+from agent_factory.github import (
+    WRITER_PERMISSIONS,
+    GitHubApiError,
+    GitHubClient,
+    IssueComment,
+    ProjectQueueItem,
+)
 from agent_factory.store import Claim, ClaimStore, NonterminalRunError
 from agent_factory.work_kinds.fix.handler import FixHandler
-
-_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 
 
 def _parse_timestamp(value: str) -> datetime | None:
@@ -45,7 +49,7 @@ def eligible_comments(
             # treat it as ineligible rather than trusting stale or malformed input.
             if comment_time is None or comment_time <= since_time:
                 continue
-        if permission(comment.author) not in _WRITER_PERMISSIONS:
+        if permission(comment.author) not in WRITER_PERMISSIONS:
             continue
         result.append(comment)
     return result
@@ -67,6 +71,24 @@ def process_blocked_claim(
     """Re-admit one blocked fix claim if eligible; return True once a run is reserved."""
     if claim.lifecycle != "blocked":
         return False
+    # Cheap SQLite gates first; the paginated comment listing only runs when an
+    # unblock could actually be admitted this cycle.
+    if (
+        store.is_paused()
+        or store.nonterminal_runs(kind="fix")
+        or not handler.window(local).allows_admission(now)
+    ):
+        return False
+    quota = store.get_hold(claim.id, "quota")
+    if quota is not None and hold_active(quota, now):
+        return False
+    # Normal admission scopes provider quota holds to the providers a claim uses;
+    # an unblock attempt must honor the same holds instead of bypassing them.
+    provider_holds = store.get_settings_by_prefix("admission", "quota:")
+    for provider in handler.providers(claim):
+        hold = provider_holds.get(f"quota:{provider}")
+        if hold is not None and hold_active(hold, now):
+            return False
     since = claim.outcome.get("declined_at")
     since_value = since if isinstance(since, str) else None
     permission_cache: dict[str, str | None] = {}
@@ -87,22 +109,6 @@ def process_blocked_claim(
     )
     if handler.gesture(claim, card, eligible) != "unblock":
         return False
-    if (
-        store.is_paused()
-        or store.nonterminal_runs(kind="fix")
-        or not handler.window(local).allows_admission(now)
-    ):
-        return False
-    quota = store.get_hold(claim.id, "quota")
-    if quota is not None and _quota_active(quota, now):
-        return False
-    # Normal admission scopes provider quota holds to the providers a claim uses;
-    # an unblock attempt must honor the same holds instead of bypassing them.
-    provider_holds = store.get_settings_by_prefix("admission", "quota:")
-    for provider in handler.providers(claim):
-        hold = provider_holds.get(f"quota:{provider}")
-        if hold is not None and _quota_active(hold, now):
-            return False
     store.set_preparation(
         claim.id,
         {
@@ -129,10 +135,3 @@ def process_blocked_claim(
         claim.id, "unblock", "Re-admitted after eligible input; starting a new attempt."
     )
     return True
-
-
-def _quota_active(hold: dict[str, object], now: datetime) -> bool:
-    try:
-        return quota_deadline(hold) > now
-    except ValueError:
-        return True

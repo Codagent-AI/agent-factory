@@ -316,19 +316,13 @@ def _fix_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnosti
         return []
     from agent_factory.work_kinds.fix.readiness import check_readiness
 
-    diagnostics = [
-        Diagnostic(f"fix {d.name}", d.available, d.detail, d.action)
-        for d in check_readiness(local, shared)
-    ]
+    # Readiness diagnostics already carry the "fix " prefix in their names.
+    diagnostics = list(check_readiness(local, shared))
     diagnostics.extend(_mirror_diagnostics(local, shared))
     diagnostics.extend(_working_clone_diagnostics(local))
+    memory = check_memory_headroom(local.limits.memory_reservation_gib)
     diagnostics.append(
-        Diagnostic(
-            "fix docker memory",
-            (memory := check_memory_headroom(local.limits.memory_reservation_gib)).available,
-            memory.detail,
-            memory.action,
-        )
+        Diagnostic("fix docker memory", memory.available, memory.detail, memory.action)
     )
     credential_path = local.credentials.fix_environment
     token = _read_fix_token(credential_path)
@@ -707,12 +701,7 @@ def _kind_providers(config: LocalConfig | None) -> dict[str, set[str]]:
     except (ConfigurationError, OSError):
         return {}
 
-    def providers_of(defaults: Mapping[str, object]) -> set[str]:
-        return {
-            value.split(":", 1)[0]
-            for value in defaults.values()
-            if isinstance(value, str) and value
-        }
+    from agent_factory.work_kinds.base import providers_from_roles as providers_of
 
     return {"eval": providers_of(shared.eval.defaults), "fix": providers_of(shared.fix.defaults)}
 

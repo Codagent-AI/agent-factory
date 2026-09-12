@@ -645,7 +645,8 @@ def test_planning_failure_finalizes_reserved_attempt(tmp_path: Path, failure: st
 from agent_factory.suites.and_scene import WorktreeError
 def fail_plan(*args, **kwargs):
     raise {failure}('planning failed before launch')
-runtime._plan_attempt = fail_plan
+from agent_factory.work_kinds.eval import handler as eval_handler
+eval_handler.plan_attempt = fail_plan
 """
     _cli(
         config,

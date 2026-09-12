@@ -14,7 +14,7 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
-from agent_factory.github import GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import ReadinessError
@@ -26,12 +26,14 @@ from agent_factory.work_kinds.base import (
     Outcome,
     Preparation,
     ReportEvent,
+    card_status,
+    claim_is_idle,
+    mapping,
+    providers_from_roles,
 )
 from agent_factory.work_kinds.fix.cleanup import FixCleanup
 from agent_factory.work_kinds.fix.outcome import read_outcome
 from agent_factory.work_kinds.fix.readiness import check_readiness
-
-_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 
 Resolver = Callable[[FixTarget], tuple[str, str, str]]
 
@@ -75,7 +77,7 @@ class FixHandler:
             and snapshot.status == "Ready"
             and snapshot.issue_type == "Bug"
             and "needs-input" not in snapshot.labels
-            and snapshot.author_permission in _WRITER_PERMISSIONS
+            and snapshot.author_permission in WRITER_PERMISSIONS
         )
 
     def snapshot(
@@ -89,12 +91,12 @@ class FixHandler:
             or source.issue_type != "Bug"
             or "needs-input" in source.labels
             or card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
-            or _card_status(shared, card) != "Ready"
+            or card_status(shared, card) != "Ready"
         ):
             return None
         github = cast(GitHubClient, client)
         permission = github.get_permission(source.repository, source.author)
-        if permission not in _WRITER_PERMISSIONS:
+        if permission not in WRITER_PERMISSIONS:
             return None
         return RequestSnapshot(
             source.repository,
@@ -227,8 +229,7 @@ class FixHandler:
         return None
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
-        if claim.lifecycle == "cancelled":
-            return ClaimPresentation("Done", None, ("cancelled",))
+        # Cancelled claims are presented by the controller before dispatching here.
         if claim.lifecycle == "settled":
             verdict = claim.outcome.get("verdict")
             return ClaimPresentation("Review", verdict if isinstance(verdict, str) else None, ())
@@ -239,13 +240,9 @@ class FixHandler:
             return ClaimPresentation(
                 "Ready", verdict if isinstance(verdict, str) else "infra-error", ()
             )
-        idle = True
-        if self._store is not None:
-            idle = not any(
-                run.status in NONTERMINAL_RUN_STATUSES
-                for run in self._store.runs_for_claim(claim.id)
-            )
-        return ClaimPresentation("Ready" if idle else "Running", None, ())
+        return ClaimPresentation(
+            "Ready" if claim_is_idle(self._store, claim) else "Running", None, ()
+        )
 
     def report_events(self, claim: Claim, run: Run, result: AttemptResult) -> list[ReportEvent]:
         return []
@@ -254,9 +251,9 @@ class FixHandler:
         self, claim: Claim, card: ProjectQueueItem, comments: Sequence[IssueComment]
     ) -> Gesture | None:
         if claim.lifecycle == "settled":
-            return "fresh" if _card_status(self._shared, card) == "Ready" else None
+            return "fresh" if card_status(self._shared, card) == "Ready" else None
         if claim.lifecycle == "blocked":
-            if comments or _card_status(self._shared, card) == "Ready":
+            if comments or card_status(self._shared, card) == "Ready":
                 return "unblock"
             return None
         return None
@@ -274,28 +271,20 @@ class FixHandler:
         return ScheduleConfig.always(local.schedule.timezone, local.schedule.poll_seconds)
 
     def providers(self, claim: Claim) -> set[str]:
-        roles = _mapping(claim.frozen_spec.get("roles"))
-        providers: set[str] = set()
-        for value in roles.values():
-            if isinstance(value, str) and value:
-                providers.add(value.split(":", 1)[0])
-        return providers
+        return providers_from_roles(mapping(claim.frozen_spec.get("roles")))
+
+    def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
+        return f"{run.unit_key} settled."
+
+    def refs_text(self, claim: Claim) -> str | None:
+        return None
+
+    def frozen_inputs_event(self, claim: Claim) -> str | None:
+        return None
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
         if self._cleanup is not None:
             self._cleanup.reconcile(claim.id, board_status=board_status)
-
-
-def _card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
-    value = card.fields.get(shared.project.status.id)
-    return next(
-        (key.title() for key, option in shared.project.status.options.items() if value == option),
-        "",
-    )
-
-
-def _mapping(value: object) -> Mapping[str, object]:
-    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
 
 
 def _needs_recovery(run: Run) -> bool:
@@ -310,14 +299,14 @@ def _reasons_text(result: Mapping[str, object]) -> str:
 
 
 def _pr_message(result: Mapping[str, object]) -> str:
-    pr = _mapping(result.get("pr"))
+    pr = mapping(result.get("pr"))
     url = pr.get("url")
     return f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
 
 
 def _failed_message(result: Mapping[str, object]) -> str:
     reasons = _reasons_text(result)
-    pr = _mapping(result.get("pr"))
+    pr = mapping(result.get("pr"))
     url = pr.get("url")
     lines = ["Fix attempt failed."]
     if reasons:

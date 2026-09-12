@@ -49,16 +49,15 @@ def sync_claim(
     if merged_at is None:
         return
     clone = local.repositories.working_clones.get(claim.repository)
-    reason = _missing_clone(clone) if clone is None else _merge_working_clone(clone)
+    reason = (
+        _merge_working_clone(clone)
+        if clone is not None
+        else "the operator's working clone is not configured"
+    )
     if reason is not None:
         _report_blocked(store, client, claim, reason, bot_login=bot_login, card_done=card_done)
         return
     _report_success(store, client, claim, bot_login=bot_login)
-
-
-def _missing_clone(clone: Path | None) -> str:
-    del clone
-    return "the operator's working clone is not configured"
 
 
 def _find_pr(store: ClaimStore, claim: Claim) -> tuple[int, str] | None:

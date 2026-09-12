@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -15,12 +16,13 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
-from agent_factory.github import GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic, model_authentication
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     AndSceneAdapter,
     GitWorktreeManager,
+    PreparedWorktrees,
     ReadinessError,
     SourceRepositories,
     WorktreeCleanup,
@@ -33,10 +35,12 @@ from agent_factory.work_kinds.base import (
     Outcome,
     Preparation,
     ReportEvent,
+    card_status,
+    claim_is_idle,
+    mapping,
+    providers_from_roles,
 )
 from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
-
-_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 
 
 class EvalHandler:
@@ -107,7 +111,7 @@ class EvalHandler:
             and snapshot.owner == "factory"
             and snapshot.status == "Ready"
             and snapshot.issue_type == "Eval"
-            and snapshot.author_permission in _WRITER_PERMISSIONS
+            and snapshot.author_permission in WRITER_PERMISSIONS
         )
 
     def snapshot(
@@ -120,12 +124,12 @@ class EvalHandler:
             or source.issue_type != shared.routing.eval_type
             or shared.routing.eval_label not in source.labels
             or card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
-            or _card_status(shared, card) != "Ready"
+            or card_status(shared, card) != "Ready"
         ):
             return None
         github = cast(GitHubClient, client)
         permission = github.get_permission(source.repository, source.author)
-        if permission not in _WRITER_PERMISSIONS:
+        if permission not in WRITER_PERMISSIONS:
             return None
         verdict = next(
             (
@@ -202,10 +206,10 @@ class EvalHandler:
     def prepare(self, claim: Claim) -> Preparation:
         if self._manager is None or self.adapter is None:
             raise ReadinessError("eval handler is missing worktree sources")
-        worktrees = self._manager.prepare(claim.id, _mapping(claim.frozen_spec.get("revisions")))
+        worktrees = self._manager.prepare(claim.id, mapping(claim.frozen_spec.get("revisions")))
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
-        roles = _mapping(_mapping(claim.frozen_spec.get("settings")).get("roles"))
+        roles = mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
         auth = model_authentication({key: str(value) for key, value in roles.items()})
         failures = [check.detail for check in auth if not check.available]
         if failures:
@@ -232,22 +236,41 @@ class EvalHandler:
         return None, "initial"
 
     def plan(self, claim: Claim, run: Run, preparation: Preparation) -> ExecutionPlan:
-        from agent_factory import runtime
-
         if self._store is None or self.adapter is None or preparation.worktrees is None:
             raise ReadinessError("eval execution plan is missing worktrees")
-        return runtime._plan_attempt(  # pyright: ignore[reportPrivateUsage]
-            self._store, self.adapter, claim, run, preparation.worktrees
-        )
+        return plan_attempt(self._store, self.adapter, claim, run, preparation.worktrees)
 
     def read_result(self, run: Run) -> AttemptResult:
+        """Read the suite's durable result, recording an unreadable file as a failed attempt."""
         if self.adapter is None:
             raise ReadinessError("eval handler is missing the suite adapter")
         result = AttemptResult(
             "interrupted" if run.status == "timed_out" else run.status, None, run.result
         )
-        if (Path(run.evidence_path) / "result.json").exists() and run.status != "timed_out":
-            result = self.adapter.read_result(Path(run.evidence_path))
+        evidence = Path(run.evidence_path)
+        if (evidence / "result.json").exists() and run.status != "timed_out":
+            try:
+                result = self.adapter.read_result(evidence)
+            except (ReadinessError, OSError, UnicodeError) as error:
+                reason = f"invalid result.json: {error}"
+                result = AttemptResult(
+                    "failed", None, {"reason": reason, "previous_result": run.result}
+                )
+                if self._store is not None:
+                    self._store.record_event(
+                        run.claim_id,
+                        f"{run.unit_key}:attempt-{run.attempt_number}:result-error",
+                        reason,
+                    )
+        if result.execution_status != "completed" and result.product_verdict not in {
+            "failed",
+            "fail",
+        }:
+            deadline = self.adapter.failure_quota_until(
+                evidence, result.result, fallback_seconds=self._fallback_seconds
+            )
+            if deadline is not None:
+                result = replace(result, quota_until=deadline)
         return result
 
     def classify(self, run: Run, result: AttemptResult) -> Classification:
@@ -280,30 +303,23 @@ class EvalHandler:
         )
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
-        if claim.lifecycle == "cancelled":
-            return ClaimPresentation("Done", None, ("cancelled",))
+        # Cancelled claims are presented by the controller before dispatching here.
         verdict = claim.outcome.get("verdict")
         if claim.lifecycle == "settled":
             return ClaimPresentation("Review", verdict if isinstance(verdict, str) else None, ())
-        idle = True
-        if self._store is not None:
-            idle = not any(
-                run.status in NONTERMINAL_RUN_STATUSES
-                for run in self._store.runs_for_claim(claim.id)
-            )
         if claim.lifecycle == "waiting":
             return ClaimPresentation(
                 "Ready", verdict if isinstance(verdict, str) else "infra-error", ()
             )
-        if idle:
-            return ClaimPresentation("Ready", None, ())
-        return ClaimPresentation("Running", None, ())
+        return ClaimPresentation(
+            "Ready" if claim_is_idle(self._store, claim) else "Running", None, ()
+        )
 
     def report_events(self, claim: Claim, run: Run, result: AttemptResult) -> list[ReportEvent]:
         if self.adapter is None:
             return []
-        paths = _mapping(claim.preparation.get("worktrees", {}))
-        evals = _mapping(paths.get("evals", {})).get("path")
+        paths = mapping(claim.preparation.get("worktrees", {}))
+        evals = mapping(paths.get("evals", {})).get("path")
         if not isinstance(evals, str):
             return []
         handoff = self.adapter.review_handoff(
@@ -322,7 +338,7 @@ class EvalHandler:
         if self._shared is None or self._store is None:
             return None
         shared = self._shared
-        if _card_status(shared, card) != "Ready":
+        if card_status(shared, card) != "Ready":
             return None
         if card.fields.get(shared.project.verdict.id) is not None:
             return None
@@ -341,12 +357,9 @@ class EvalHandler:
         return local.schedule
 
     def providers(self, claim: Claim) -> set[str]:
-        roles = _mapping(_mapping(claim.frozen_spec.get("settings")).get("roles"))
-        providers: set[str] = set()
-        for value in roles.values():
-            if isinstance(value, str) and value:
-                providers.add(value.split(":", 1)[0])
-        return providers
+        return providers_from_roles(
+            mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
+        )
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
         if self._worktree_cleanup is not None:
@@ -367,7 +380,7 @@ class EvalHandler:
         return body
 
     def refs_text(self, claim: Claim) -> str | None:
-        revisions = _mapping(claim.frozen_spec.get("revisions", {}))
+        revisions = mapping(claim.frozen_spec.get("revisions", {}))
         invalid = [
             key
             for key in ("runner", "skills", "evals")
@@ -393,16 +406,25 @@ class EvalHandler:
         )
 
 
-def _card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
-    value = card.fields.get(shared.project.status.id)
-    return next(
-        (key.title() for key, option in shared.project.status.options.items() if value == option),
-        "",
+def plan_attempt(
+    store: ClaimStore,
+    adapter: AndSceneAdapter,
+    claim: Claim,
+    run: Run,
+    worktrees: PreparedWorktrees,
+) -> ExecutionPlan:
+    """Build the suite invocation, resuming only when a prior attempt proved a checkpoint."""
+    previous = store.runs_for_claim(claim.id)[:-1]
+    stopped_before_checkpoint = bool(
+        previous and previous[-1].result.get("reason") == "suite launch failed"
     )
-
-
-def _mapping(value: object) -> Mapping[str, object]:
-    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+    return adapter.plan(
+        claim.frozen_spec,
+        worktrees,
+        Path(run.evidence_path),
+        recovery=run.reason != "initial",
+        pre_checkpoint_proven=stopped_before_checkpoint,
+    )
 
 
 def _unit_count(claim: Claim) -> int:

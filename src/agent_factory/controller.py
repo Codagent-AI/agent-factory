@@ -108,9 +108,7 @@ class Controller:
         ).resolve()
         self._now = now or (lambda: datetime.now(UTC))
         for handler in self._handlers.values():
-            attach = getattr(handler, "attach_store", None)
-            if callable(attach):
-                attach(store)
+            handler.attach_store(store)
 
     def handler(self, kind: str) -> WorkKindHandler | None:
         return self._handlers.get(kind)
@@ -180,10 +178,10 @@ class Controller:
             provider_holds = self._store.get_settings_by_prefix("admission", "quota:")
             for provider in handler.providers(claim):
                 hold = provider_holds.get(f"quota:{provider}")
-                if hold is not None and _hold_active(hold, self._now()):
+                if hold is not None and hold_active(hold, self._now()):
                     return None
             quota = self._store.get_hold(claim.id, "quota")
-            if quota is not None and _hold_active(quota, self._now()):
+            if quota is not None and hold_active(quota, self._now()):
                 return None
             next_unit, reason = handler.next_unit(claim, self._store.runs_for_claim(claim.id))
             if next_unit is None:
@@ -221,30 +219,31 @@ class Controller:
             else self._store.normalize_terminal_result
         )
         classification = handler.classify(run, result)
-        if classification.kind == "quota" or result.quota_until is not None:
-            deadline = result.quota_until
-            if deadline is not None:
-                stored_result["quota_until"] = deadline.isoformat()
-                persist(run.id, execution_status="deferred", result=stored_result)
-                self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
-                provider = _quota_provider(stored_result, handler.providers(claim))
-                self._store.set_setting(
-                    "admission", f"quota:{provider}", {"until": deadline.isoformat()}
-                )
-                self._store.set_claim_lifecycle(
-                    run.claim_id, "waiting", {"verdict": "quota-deferred"}
-                )
-                self._store.record_event(
-                    run.claim_id,
-                    f"{run.unit_key}:attempt-{run.attempt_number}:quota",
-                    f"{run.unit_key} is waiting for usage reset at {deadline.isoformat()}.",
-                )
-                return
-            # A handler classified this as quota without a reset deadline, which is
-            # invalid output; fail closed as a technical error instead of losing the run.
+        deadline = result.quota_until
+        if deadline is not None:
+            stored_result["quota_until"] = deadline.isoformat()
+            persist(run.id, execution_status="deferred", result=stored_result)
+            self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
+            provider = _quota_provider(stored_result, handler.providers(claim))
+            self._store.set_setting(
+                "admission", f"quota:{provider}", {"until": deadline.isoformat()}
+            )
+            self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "quota-deferred"})
+            self._store.record_event(
+                run.claim_id,
+                f"{run.unit_key}:attempt-{run.attempt_number}:quota",
+                f"{run.unit_key} is waiting for usage reset at {deadline.isoformat()}.",
+            )
+            return
+        if classification.kind == "quota":
+            # A quota classification without a reset deadline is invalid handler output;
+            # fail closed as a technical error instead of losing the run.
             classification = Classification("technical")
         persist(run.id, execution_status=result.execution_status, result=stored_result)
-        message = _attempt_message(handler, run, stored_result, classification.kind)
+        stage = "complete"
+        if classification.kind == "technical":
+            stage = "exhausted" if run.reason == "recovery" else "retry"
+        message = handler.attempt_message(run, stored_result, stage=stage)
         if classification.kind == "technical":
             if run.reason == "recovery":
                 self._store.set_claim_lifecycle(
@@ -290,8 +289,11 @@ class Controller:
 
     def deliver_reports(self, claim_id: str) -> None:
         claim = self._required_claim(claim_id)
+        pending = self._store.pending_events(claim.id)
+        if not pending:
+            return
         comments = self._github.list_comment_records(claim.repository, claim.issue_number)
-        for event in self._store.pending_events(claim.id):
+        for event in pending:
             marker = _marker(claim.id, event.key)
             existing = next(
                 (
@@ -441,23 +443,12 @@ def _quota_provider(stored_result: Mapping[str, object], claim_providers: set[st
     return "codex"
 
 
-def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+def hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+    """An unparsable hold blocks admission; only a passed deadline releases it."""
     try:
         return quota_deadline(hold) > now
     except ValueError:
         return True
-
-
-def _attempt_message(
-    handler: WorkKindHandler, run: Run, stored_result: Mapping[str, object], kind: str
-) -> str:
-    stage = "complete"
-    if kind == "technical":
-        stage = "exhausted" if run.reason == "recovery" else "retry"
-    describe = getattr(handler, "attempt_message", None)
-    if callable(describe):
-        return cast(str, describe(run, stored_result, stage=stage))
-    return f"{run.unit_key} settled."
 
 
 @contextmanager

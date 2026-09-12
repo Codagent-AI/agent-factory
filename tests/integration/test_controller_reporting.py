@@ -298,7 +298,13 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
     controller = Controller(
         store,
         Comments(),
-        {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
+        {
+            "eval": EvalHandler(
+                defaults(),
+                harness_ref="c" * 40,
+                adapter=AndSceneAdapter(environment_file=tmp_path / "unused"),
+            )
+        },
         artifact_root=tmp_path / "artifacts",
     )
     claim = controller.accept(
@@ -315,9 +321,7 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
         execution_status="completed",
         result={"product_verdict": "ready-for-human-review", "score": 60},
     )
-    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
-        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
-    )
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
     saved = store.get_run(run.id)
     assert saved is not None and saved.status == "failed"
     assert "invalid result.json" in str(saved.result["reason"])
@@ -331,7 +335,6 @@ def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
     tmp_path: Path,
 ) -> None:
     from agent_factory import runtime
-    from agent_factory.suites.and_scene import AndSceneAdapter
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     # No handler is registered for "ghost", simulating config drift or a rollout mismatch.
@@ -345,9 +348,7 @@ def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
     )
     store.finish_run(run.id, execution_status="completed", result={})
 
-    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
-        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
-    )
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
 
     saved_claim = store.get_claim(claim.id)
     assert saved_claim is not None
@@ -357,9 +358,7 @@ def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
     assert any("no work-kind handler is registered" in body for body in events)
 
     # Re-running consumption does not spam duplicate events for the same run.
-    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
-        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
-    )
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
     assert len(store.pending_events(claim.id)) == 1
     store.close()
 

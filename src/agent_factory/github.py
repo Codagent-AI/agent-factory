@@ -20,6 +20,9 @@ from typing import Protocol, cast
 from agent_factory.config import ProjectConfig
 from agent_factory.routing import ProjectItem, SourceItem
 
+WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+"""Effective repository permissions that may hand work to the factory."""
+
 
 class GitHubApiError(RuntimeError):
     """A GitHub response did not have the expected contract."""

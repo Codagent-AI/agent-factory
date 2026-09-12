@@ -36,6 +36,14 @@ def _path(table: Mapping[str, Any], key: str, section: str) -> Path:
     return Path(_string(table, key, section)).expanduser().resolve()
 
 
+def _optional_string(table: Mapping[str, Any], key: str, section: str, default: str) -> str:
+    return _string(table, key, section) if key in table else default
+
+
+def _optional_positive_int(table: Mapping[str, Any], key: str, section: str, default: int) -> int:
+    return _positive_int(table, key, section) if key in table else default
+
+
 def _positive_int(table: Mapping[str, Any], key: str, section: str) -> int:
     value = table.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -247,10 +255,8 @@ class LocalConfig:
                 codex_reset_fallback_seconds=_positive_int(
                     limits, "codex_reset_fallback_seconds", "limits"
                 ),
-                memory_reservation_gib=(
-                    _positive_int(limits, "memory_reservation_gib", "limits")
-                    if "memory_reservation_gib" in limits
-                    else 3
+                memory_reservation_gib=_optional_positive_int(
+                    limits, "memory_reservation_gib", "limits", 3
                 ),
             ),
             credentials=CredentialsConfig(
@@ -353,14 +359,8 @@ class SharedConfig:
                 general_sources=frozenset(source_repositories),
                 eval_label=_string(routing, "eval_label", "routing"),
                 eval_type=_string(routing, "eval_type", "routing"),
-                bug_type=(
-                    _string(routing, "bug_type", "routing") if "bug_type" in routing else "Bug"
-                ),
-                hold_label=(
-                    _string(routing, "hold_label", "routing")
-                    if "hold_label" in routing
-                    else "factory-hold"
-                ),
+                bug_type=_optional_string(routing, "bug_type", "routing", "Bug"),
+                hold_label=_optional_string(routing, "hold_label", "routing", "factory-hold"),
             ),
             eval=EvalConfig(
                 harness_ref=harness_ref,
@@ -389,18 +389,14 @@ def _fix_shared_config(raw: object) -> FixConfig:
     targets: list[FixTarget] = []
     for entry in cast(list[object], targets_raw):
         target = _table(entry, "fix.targets")
-        branch = _string(target, "branch", "fix.targets") if "branch" in target else "main"
+        branch = _optional_string(target, "branch", "fix.targets", "main")
         targets.append(
             FixTarget(repository=_string(target, "repository", "fix.targets"), branch=branch)
         )
     branches_raw = _table(fix.get("branches", {}), "fix.branches")
     branches = FixBranches(
-        runner=(
-            _string(branches_raw, "runner", "fix.branches") if "runner" in branches_raw else "main"
-        ),
-        skills=(
-            _string(branches_raw, "skills", "fix.branches") if "skills" in branches_raw else "main"
-        ),
+        runner=_optional_string(branches_raw, "runner", "fix.branches", "main"),
+        skills=_optional_string(branches_raw, "skills", "fix.branches", "main"),
     )
     defaults_raw = _table(fix.get("defaults", {}), "fix.defaults")
     defaults = {key: str(value) for key, value in defaults_raw.items()}
@@ -418,21 +414,13 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
     fix = _table(raw, "fix")
     limits_raw = _table(fix.get("limits", {}), "fix.limits")
     limits = FixLimitsConfig(
-        inactivity_seconds=(
-            _positive_int(limits_raw, "inactivity_seconds", "fix.limits")
-            if "inactivity_seconds" in limits_raw
-            else 900
+        inactivity_seconds=_optional_positive_int(
+            limits_raw, "inactivity_seconds", "fix.limits", 900
         ),
-        execution_seconds=(
-            _positive_int(limits_raw, "execution_seconds", "fix.limits")
-            if "execution_seconds" in limits_raw
-            else 7200
+        execution_seconds=_optional_positive_int(
+            limits_raw, "execution_seconds", "fix.limits", 7200
         ),
-        total_seconds=(
-            _positive_int(limits_raw, "total_seconds", "fix.limits")
-            if "total_seconds" in limits_raw
-            else 10800
-        ),
+        total_seconds=_optional_positive_int(limits_raw, "total_seconds", "fix.limits", 10800),
     )
     schedule_raw = fix.get("schedule")
     schedule: ScheduleConfig | None = None
@@ -445,11 +433,7 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
             raise ConfigurationError(
                 f"fix.schedule.timezone is invalid or unknown: {timezone_name}"
             ) from error
-        poll_seconds = (
-            _positive_int(schedule_table, "poll_seconds", "fix.schedule")
-            if "poll_seconds" in schedule_table
-            else 300
-        )
+        poll_seconds = _optional_positive_int(schedule_table, "poll_seconds", "fix.schedule", 300)
         if "start_hour" in schedule_table or "stop_hour" in schedule_table:
             start_hour = _hour(schedule_table, "start_hour")
             stop_hour = _hour(schedule_table, "stop_hour")

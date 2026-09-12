@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 if TYPE_CHECKING:
     from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
@@ -113,3 +113,41 @@ class WorkKindHandler(Protocol):
     def providers(self, claim: Claim) -> set[str]: ...
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None: ...
+
+    def attach_store(self, store: ClaimStore) -> None: ...
+
+    def attempt_message(
+        self, run: Run, stored_result: Mapping[str, object], *, stage: str
+    ) -> str: ...
+
+    def refs_text(self, claim: Claim) -> str | None: ...
+
+    def frozen_inputs_event(self, claim: Claim) -> str | None: ...
+
+
+def card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
+    """Logical board status (Ready, Running, ...) of a card from its option id."""
+    value = card.fields.get(shared.project.status.id)
+    return next(
+        (key.title() for key, option in shared.project.status.options.items() if value == option),
+        "",
+    )
+
+
+def mapping(value: object) -> Mapping[str, object]:
+    """Coerce a loosely typed JSON value to a mapping, treating anything else as empty."""
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
+def providers_from_roles(roles: Mapping[str, object]) -> set[str]:
+    """Provider names from ``cli:model:effort`` role profiles."""
+    return {value.split(":", 1)[0] for value in roles.values() if isinstance(value, str) and value}
+
+
+def claim_is_idle(store: ClaimStore | None, claim: Claim) -> bool:
+    """True when no attempt of the claim is reserved, running, or observing."""
+    from agent_factory.store import NONTERMINAL_RUN_STATUSES
+
+    if store is None:
+        return True
+    return not any(run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id))
