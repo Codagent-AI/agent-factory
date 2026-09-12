@@ -44,11 +44,17 @@ class FixCleanup:
                     errors[f"clone:{name}"] = str(error)
         image = claim.preparation.get("image")
         if isinstance(image, str):
-            result = subprocess.run(
-                ["docker", "rmi", image], capture_output=True, text=True, check=False
-            )
-            if result.returncode != 0 and "No such image" not in result.stderr:
-                errors["image"] = result.stderr.strip() or f"docker rmi exited {result.returncode}"
+            try:
+                result = subprocess.run(
+                    ["docker", "rmi", image], capture_output=True, text=True, check=False
+                )
+            except OSError as error:
+                errors["image"] = f"cannot run docker: {error}"
+            else:
+                if result.returncode != 0 and "No such image" not in result.stderr:
+                    errors["image"] = (
+                        result.stderr.strip() or f"docker rmi exited {result.returncode}"
+                    )
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
         self._store.set_cleanup(claim_id, cleanup)

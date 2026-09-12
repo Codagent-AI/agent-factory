@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
-from agent_factory.github import IssueComment, ProjectQueueItem
+from agent_factory.github import GitHubApiError, IssueComment, ProjectQueueItem
 from agent_factory.routing import SourceItem
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
@@ -309,9 +309,7 @@ def test_drag_to_ready_without_comment_unblocks(tmp_path: Path) -> None:
 def test_slot_busy_leaves_claim_blocked(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id = _blocked_claim(store)
-    other = store.create_claim(
-        ClaimDraft("example/work", 999, "I999", "P999", "fix", "fp2", {})
-    )
+    other = store.create_claim(ClaimDraft("example/work", 999, "I999", "P999", "fix", "fp2", {}))
     store.reserve_run(other.id, "fix", reason="initial", evidence_path="/tmp/other")
     client = FakeGitHub([], {})
     handler = _handler(store)
@@ -385,3 +383,97 @@ def test_gesture_returns_unblock_for_blocked_card_in_ready() -> None:
     assert handler.gesture(blocked, _card("Running"), []) is None
     comments = [IssueComment("1", "b", "writer")]
     assert handler.gesture(blocked, _card("Running"), comments) == "unblock"
+
+
+def test_comment_after_decline_is_eligible_across_iso8601_offset_notations(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    # The decline was recorded with a "+00:00" offset; the comment uses "Z" for the same
+    # instant one second later. Raw string comparison would misorder these.
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-01T00:00:01Z")]
+    client = FakeGitHub(comments, {"writer": "write"})
+    handler = _handler(store)
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    admitted = process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+    )
+
+    assert admitted is True
+
+
+def test_comment_with_missing_timestamp_is_not_eligible(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    comments = [IssueComment("1", "please retry", "writer", "")]
+    client = FakeGitHub(comments, {"writer": "write"})
+    handler = _handler(store)
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    admitted = process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+    )
+
+    assert admitted is False
+
+
+def test_permission_lookup_failure_for_one_author_does_not_abort_the_scan(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    comments = [
+        IssueComment("1", "from a broken lookup", "flaky", "2026-01-02T00:00:00+00:00"),
+        IssueComment("2", "please retry", "writer", "2026-01-02T00:00:01+00:00"),
+    ]
+
+    class RaisingGitHub(FakeGitHub):
+        def get_permission(self, repository: str, login: str) -> str | None:
+            if login == "flaky":
+                raise GitHubApiError("collaborator lookup failed")
+            return super().get_permission(repository, login)
+
+    client = RaisingGitHub(comments, {"writer": "write"})
+    handler = _handler(store)
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    admitted = process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+    )
+
+    assert admitted is True
+    reloaded = store.get_claim(claim_id)
+    assert reloaded is not None
+    issue = cast(dict[str, object], reloaded.preparation["issue"])
+    assert issue["comments"] == [{"author": "writer", "body": "please retry"}]

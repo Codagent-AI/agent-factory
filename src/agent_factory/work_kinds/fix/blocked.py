@@ -8,11 +8,18 @@ from pathlib import Path
 
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import quota_deadline
-from agent_factory.github import GitHubClient, IssueComment, ProjectQueueItem
+from agent_factory.github import GitHubApiError, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.store import Claim, ClaimStore, NonterminalRunError
 from agent_factory.work_kinds.fix.handler import FixHandler
 
 _WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+
+
+def _parse_timestamp(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def eligible_comments(
@@ -23,12 +30,17 @@ def eligible_comments(
     permission: Callable[[str], str | None],
 ) -> list[IssueComment]:
     """Keep writer comments newer than the decline; drop the bot's own and everyone else's."""
+    since_time = _parse_timestamp(since) if since is not None else None
     result: list[IssueComment] = []
     for comment in comments:
         if comment.author == bot_login:
             continue
-        if since is not None and comment.created_at and comment.created_at <= since:
-            continue
+        if since_time is not None:
+            comment_time = _parse_timestamp(comment.created_at)
+            # A missing or unparsable timestamp cannot be proven newer than the decline;
+            # treat it as ineligible rather than trusting stale or malformed input.
+            if comment_time is None or comment_time <= since_time:
+                continue
         if permission(comment.author) not in _WRITER_PERMISSIONS:
             continue
         result.append(comment)
@@ -57,7 +69,12 @@ def process_blocked_claim(
 
     def _permission(login: str) -> str | None:
         if login not in permission_cache:
-            permission_cache[login] = client.get_permission(claim.repository, login)
+            try:
+                permission_cache[login] = client.get_permission(claim.repository, login)
+            except (GitHubApiError, OSError):
+                # One author's lookup failing (API hiccup, renamed/deleted user) must not
+                # abort the whole pass; treat that author as ineligible and keep scanning.
+                permission_cache[login] = None
         return permission_cache[login]
 
     comments = client.list_comment_records(claim.repository, claim.issue_number)

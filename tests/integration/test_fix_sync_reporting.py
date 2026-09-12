@@ -84,9 +84,7 @@ def _local(working_clones: dict[str, Path] | None = None) -> LocalConfig:
 
 
 def _settled_claim_with_pr(store: ClaimStore, *, pr_number: int = 214) -> str:
-    claim = store.create_claim(
-        ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {})
-    )
+    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
     url = f"https://github.com/example/work/pull/{pr_number}"
     store.finish_run(
@@ -173,8 +171,18 @@ def test_successful_merge_closes_issue_and_records_completion(tmp_path: Path) ->
     (seed / "README.md").write_text("seed\n")
     subprocess.run(["git", "-C", str(seed), "add", "README.md"], check=True)
     subprocess.run(
-        ["git", "-C", str(seed), "-c", "user.name=T", "-c", "user.email=t@example.invalid",
-         "commit", "-m", "seed"],
+        [
+            "git",
+            "-C",
+            str(seed),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-m",
+            "seed",
+        ],
         check=True,
     )
     subprocess.run(["git", "-C", str(seed), "push", "-u", "origin", "main"], check=True)

@@ -149,9 +149,9 @@ def test_main_checked_out_elsewhere_blocks(tmp_path: Path) -> None:
     reason = _merge_working_clone(clone)
 
     assert reason is not None
-    assert _git(second_worktree, "rev-parse", "HEAD").stdout == _git(
-        clone, "rev-parse", "main"
-    ).stdout
+    assert (
+        _git(second_worktree, "rev-parse", "HEAD").stdout == _git(clone, "rev-parse", "main").stdout
+    )
 
 
 def test_main_checked_out_fast_forwards(tmp_path: Path) -> None:

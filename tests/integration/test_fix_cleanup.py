@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest import mock
 
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds.fix.cleanup import FixCleanup
@@ -64,6 +65,26 @@ def test_already_removed_clone_does_not_fail_retry(tmp_path: Path) -> None:
     result = cleanup.reconcile(claim_id, board_status="Done")
 
     assert result is True
+
+
+def test_missing_docker_binary_records_error_instead_of_crashing(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
+    store.set_preparation(claim.id, {"image": "agent-runner-factory:run-1"})
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+    cleanup = FixCleanup(store)
+    cleanup.reconcile(claim.id, board_status="Review")
+
+    with mock.patch(
+        "agent_factory.work_kinds.fix.cleanup.subprocess.run",
+        side_effect=OSError("docker not found"),
+    ):
+        result = cleanup.reconcile(claim.id, board_status="Done")
+
+    assert result is False
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None
+    assert "docker not found" in str(reloaded.cleanup["last_error"])
 
 
 def test_running_claim_is_never_touched(tmp_path: Path) -> None:

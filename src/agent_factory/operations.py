@@ -148,7 +148,7 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
         lines.extend(_cleanup_lines(claim))
-        lines.extend(_sync_lines(claim))
+        lines.extend(_sync_lines(store, claim))
     if config is not None:
         now = datetime.now(config.schedule.timezone)
         if not config.schedule.allows_admission(now):
@@ -472,14 +472,18 @@ def _reporting_lines(claim: Claim) -> list[str]:
     return [f"unfinished reporting: {', '.join(pending)}"] if pending else []
 
 
-def _sync_lines(claim: Claim) -> list[str]:
+def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
     if claim.kind != "fix" or claim.lifecycle != "settled":
+        return []
+    from agent_factory.work_kinds.fix.sync import _find_pr  # pyright: ignore[reportPrivateUsage]
+
+    if _find_pr(store, claim) is None:
         return []
     sync = claim.reporting.get("sync")
     sync_map: Mapping[str, object] = (
         cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
     )
-    if not sync_map or sync_map.get("completed"):
+    if sync_map.get("completed"):
         return []
     reason = sync_map.get("blocked_reason")
     detail = reason if isinstance(reason, str) else "awaiting merge"

@@ -92,6 +92,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 handler = controller.handler(claim.kind)
                 if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
+                    claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
                     process_blocked_claim(
                         store,
