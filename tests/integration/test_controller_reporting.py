@@ -257,9 +257,7 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
         "```eval\nrepetitions = 1\n"
         "lead = 'cursor:m:high'\nimplementor = 'cursor:m:high'\ntester = 'cursor:m:high'\n```"
     )
-    codex_claim = controller.accept(
-        snapshot(codex_body), resolve=lambda _: ("a" * 40, "b" * 40)
-    )
+    codex_claim = controller.accept(snapshot(codex_body), resolve=lambda _: ("a" * 40, "b" * 40))
     assert codex_claim is not None
     run = controller.reserve_next(codex_claim.id, readiness=lambda: None)
     assert run is not None

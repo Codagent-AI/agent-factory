@@ -16,7 +16,7 @@ class ConfigurationError(ValueError):
     """Raised when a deployment configuration is incomplete or unsafe."""
 
 
-_SHA = re.compile(r"^[0-9a-f]{40}$")
+_COMMIT_ID = re.compile(r"^[0-9a-fA-F]{7,40}$")
 
 
 def _table(value: object, name: str) -> Mapping[str, Any]:
@@ -254,16 +254,13 @@ class SharedConfig:
             )
         if "harness_sha" in eval_config:
             raise ConfigurationError(
-                "eval.harness_sha is obsolete; configure eval.harness_ref "
-                "(a branch name) instead"
+                "eval.harness_sha is obsolete; configure eval.harness_ref (a branch name) instead"
             )
         harness_ref = eval_config.get("harness_ref", "main")
         if not isinstance(harness_ref, str) or not harness_ref:
             raise ConfigurationError("eval.harness_ref must be a non-empty string")
-        if _SHA.fullmatch(harness_ref):
-            raise ConfigurationError(
-                "eval.harness_ref must be a branch name, not a commit SHA"
-            )
+        if _COMMIT_ID.fullmatch(harness_ref):
+            raise ConfigurationError("eval.harness_ref must be a branch name, not a commit SHA")
         repetitions = _positive_int(eval_config, "repetitions", "eval")
         project_number = _positive_int(project, "number", "project")
         return cls(

@@ -227,7 +227,7 @@ class Controller:
                 stored_result["quota_until"] = deadline.isoformat()
                 persist(run.id, execution_status="deferred", result=stored_result)
                 self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
-                provider = _quota_provider(stored_result)
+                provider = _quota_provider(stored_result, handler.providers(claim))
                 self._store.set_setting(
                     "admission", f"quota:{provider}", {"until": deadline.isoformat()}
                 )
@@ -423,9 +423,20 @@ def quota_deadline(hold: Mapping[str, object]) -> datetime:
 _KNOWN_PROVIDERS = ("codex", "cursor", "claude")
 
 
-def _quota_provider(stored_result: Mapping[str, object]) -> str:
-    """Identify the provider a quota diagnostic names; default to codex, the only detector today."""
+def _quota_provider(stored_result: Mapping[str, object], claim_providers: set[str]) -> str:
+    """Identify the provider a quota hold applies to.
+
+    The claim's own configured providers (structured data from its frozen roles) are the
+    authoritative source: when the claim uses exactly one, that is the answer. Only when a
+    claim mixes providers is the quota diagnostic's text consulted, and only to choose among
+    those already-configured providers, never as a blind guess.
+    """
+    if len(claim_providers) == 1:
+        return next(iter(claim_providers))
     text = str(stored_result).lower()
+    named = next((name for name in claim_providers if name in text), None)
+    if named is not None:
+        return named
     return next((name for name in _KNOWN_PROVIDERS if name in text), "codex")
 
 

@@ -7,7 +7,7 @@ import subprocess
 from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -95,7 +95,7 @@ def cycle(state: Path, config_path: Path) -> None:
         now = datetime.now(local.schedule.timezone)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
-        quota_holding, quota_error = _quota_hold_status(quota_holds)
+        quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
         prerequisites: str | None = None
         for card in cards:
@@ -115,10 +115,11 @@ def cycle(state: Path, config_path: Path) -> None:
                 client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 continue
             client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
-            # Admission is per kind: this kind's slot, window, and holds gate independently.
+            # Admission is per kind: this kind's slot and window gate independently.
+            # Quota holds are provider-scoped and enforced in Controller.reserve_next
+            # against the specific claim's providers, not pre-filtered here.
             ready = (
                 not paused
-                and not quota_holding
                 and handler.window(local).allows_admission(now)
                 and not store.nonterminal_runs(kind=handler.kind)
             )
@@ -189,20 +190,14 @@ def cycle(state: Path, config_path: Path) -> None:
                 _report(store, controller, client, shared, card, claim.id, handler)
 
 
-def _quota_hold_status(holds: Mapping[str, Mapping[str, object]]) -> tuple[bool, str | None]:
-    """Conservatively pre-filter admission on any provider hold before a claim is known."""
-    holding = False
-    error: str | None = None
+def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
+    """Surface a malformed quota hold for operator repair; valid holds gate per provider."""
     for hold in holds.values():
         try:
-            deadline = quota_deadline(hold)
+            quota_deadline(hold)
         except ValueError as exc:
-            error = f"Admission held: {exc}. Repair the saved quota reset timestamp."
-            holding = True
-            continue
-        if datetime.now(UTC) < deadline:
-            holding = True
-    return holding, error
+            return f"Admission held: {exc}. Repair the saved quota reset timestamp."
+    return None
 
 
 def _eval_handler(registered: Mapping[str, WorkKindHandler]) -> EvalHandler | None:

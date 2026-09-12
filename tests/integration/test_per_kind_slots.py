@@ -214,9 +214,7 @@ def test_v3_database_migrates_to_per_kind_slots_in_one_transaction(tmp_path: Pat
     runs = store.runs_for_claim("claim-settled")
     assert runs[0].result == {"score": 61}
     assert store.is_paused() is True
-    assert store.get_setting("admission", "quota:codex") == {
-        "until": "2026-06-01T00:00:00+00:00"
-    }
+    assert store.get_setting("admission", "quota:codex") == {"until": "2026-06-01T00:00:00+00:00"}
     assert store.get_setting("admission", "quota") is None
 
     for run in store.runs_for_claim("claim-settled") + store.runs_for_claim(waiting_id):

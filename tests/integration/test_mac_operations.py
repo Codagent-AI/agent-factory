@@ -85,7 +85,7 @@ def test_cli_doctor_is_read_only_and_status_explains_persisted_pause_and_holds(
 
 
 def _shared_config_text(*, eval_table: str) -> str:
-    return f'''\
+    return f"""\
 [github]
 organization = "Example Org"
 bot_login = "example-factory[bot]"
@@ -129,7 +129,7 @@ eval_label = "run-eval"
 eval_type = "Eval"
 
 {eval_table}
-'''
+"""
 
 
 def test_doctor_reports_resolved_harness_branch_without_fetching(tmp_path: Path) -> None:
@@ -137,8 +137,20 @@ def test_doctor_reports_resolved_harness_branch_without_fetching(tmp_path: Path)
     evals.mkdir()
     subprocess.run(["git", "init", "-q", "-b", "main", str(evals)], check=True)
     subprocess.run(
-        ["git", "-C", str(evals), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
-         "commit", "-q", "--allow-empty", "-m", "one"],
+        [
+            "git",
+            "-C",
+            str(evals),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "one",
+        ],
         check=True,
     )
     origin = tmp_path / "evals-origin.git"

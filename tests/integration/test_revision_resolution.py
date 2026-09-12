@@ -161,8 +161,17 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
     assert retried_claim is not None
     assert _revisions(retried_claim)["evals"] == old
 
-    git(origin, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit",
-        "--allow-empty", "-m", "advance")
+    git(
+        origin,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "advance",
+    )
     advanced = git(origin, "rev-parse", "HEAD")
     assert advanced != old
 

@@ -202,6 +202,11 @@ def test_shared_config_rejects_a_harness_commit_sha() -> None:
         SharedConfig.from_toml(config_text(harness_ref="a" * 40))
 
 
+def test_shared_config_rejects_a_short_harness_commit_id() -> None:
+    with pytest.raises(ConfigurationError, match="harness_ref"):
+        SharedConfig.from_toml(config_text(harness_ref="deadbee"))
+
+
 def test_shared_config_rejects_a_leftover_harness_sha_key() -> None:
     with pytest.raises(ConfigurationError, match="harness_ref"):
         SharedConfig.from_toml(config_text(extra_eval='harness_sha = "' + "a" * 40 + '"'))
