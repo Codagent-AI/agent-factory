@@ -140,11 +140,11 @@ Receipts and re-delivery behavior are unchanged. The caller workflows already ru
 
 `FixHandler.snapshot` mirrors the eval one: `Owner=factory`, `Status=Ready`, native type `Bug`, open, no `needs-input` label, author permission from `get_permission`. Board order is preserved by `list_project_items`, so the first eligible card in the Bug group wins.
 
-`accept`: fetch the target mirror, then resolve `origin/<branch>` in the mirror and in the local Runner and Skills checkouts through the existing `_resolve_revision`, and freeze all three. Mirrors live at `<root>/mirrors/<owner>__<repo>.git` and are created with `git clone --mirror` on first use. Fetching uses HTTPS with the App installation token through a temporary `GIT_ASKPASS` helper, the same trick the suite uses in the container; the token never lands on disk.
+`accept`: fetch the target mirror, then resolve `origin/<branch>` in the mirror and in the local Runner and Skills checkouts through the existing `_resolve_revision`, and freeze all three. Mirrors live at `<root>/mirrors/<owner>__<repo>.git` and are created with `git clone --mirror` on first use. Fetching uses HTTPS with the App installation token through a temporary `GIT_ASKPASS` helper, the same trick the suite uses in the container, with HTTP redirects disabled so the token is only ever offered to github.com; the token never lands on disk.
 
 `prepare`: `<root>/clones/<claim>/<attempt>/{repo,runner,skills}` via `git clone --local --no-checkout` from the mirror (target) or the local checkouts (Runner, Skills), then `git checkout --detach <sha>`. Recorded in `claim.preparation` for cleanup. A recovery or unblock attempt gets a fresh set at the same commits.
 
-Before reserving any attempt, `reconcile_side_effects`: `gh api repos/<repo>/branches/<branch_name>` and `gh pr list --head <branch_name> --state open`. Branch name is `factory/fix-<issue>-<claim8>`. An open PR settles the claim as `pull-request` without launching. A lookup failure holds the claim for the next poll.
+Before reserving any attempt, `reconcile_side_effects`: `gh api repos/<repo>/branches/<branch_name>` and `gh pr list --head <branch_name> --state open`. Branch name is `factory/fix-<issue>-<claim8>`. An open PR settles the claim as `pull-request` without launching. A missing branch (HTTP 404) proves no branch was pushed and launching continues; only a transport, authentication, or server failure holds the claim for the next poll.
 
 ### Launch
 

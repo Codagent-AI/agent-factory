@@ -11,6 +11,7 @@ import pytest
 from agent_factory import github as github_module
 from agent_factory import routing
 from agent_factory.config import ConfigurationError, SharedConfig
+from agent_factory.github import IssueComment
 from agent_factory.routing import ProjectItem, RouteEvent, Router, SourceItem
 
 
@@ -22,7 +23,7 @@ def _permissions() -> dict[tuple[str, str], str | None]:
     return {}
 
 
-def _comments() -> dict[str, list[str]]:
+def _comments() -> dict[str, list[IssueComment]]:
     return {}
 
 
@@ -30,11 +31,14 @@ def _issue_types() -> dict[str, str]:
     return {}
 
 
+BOT_LOGIN = "example-factory[bot]"
+
+
 def config_text(*, harness_ref: str = "main", extra_eval: str = "") -> str:
     return f'''\
 [github]
 organization = "Example Org"
-bot_login = "example-factory[bot]"
+bot_login = "{BOT_LOGIN}"
 app_id = "123"
 installation_id = "456"
 
@@ -86,7 +90,7 @@ repetitions = 3
 class MemoryGitHub:
     items: dict[str, ProjectItem] = field(default_factory=_items)
     permissions: dict[tuple[str, str], str | None] = field(default_factory=_permissions)
-    comments: dict[str, list[str]] = field(default_factory=_comments)
+    comments: dict[str, list[IssueComment]] = field(default_factory=_comments)
     issue_types: dict[str, str] = field(default_factory=_issue_types)
     added: int = 0
 
@@ -109,11 +113,17 @@ class MemoryGitHub:
         item = next(value for value in self.items.values() if value.id == item_id)
         item.fields[field_id] = option_id
 
-    def list_comments(self, repository: str, number: int) -> list[str]:
-        return self.comments.get(f"{repository}#{number}", [])
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
+        return list(self.comments.get(f"{repository}#{number}", []))
 
-    def create_comment(self, repository: str, number: int, body: str) -> None:
-        self.comments.setdefault(f"{repository}#{number}", []).append(body)
+    def create_comment(self, repository: str, number: int, body: str) -> str:
+        return self.add_comment(repository, number, body, author=BOT_LOGIN)
+
+    def add_comment(self, repository: str, number: int, body: str, *, author: str) -> str:
+        records = self.comments.setdefault(f"{repository}#{number}", [])
+        comment_id = f"comment-{len(records) + 1}"
+        records.append(IssueComment(id=comment_id, body=body, author=author))
+        return comment_id
 
 
 def item(
@@ -406,7 +416,9 @@ def test_hold_bypass_survives_a_receipt_write_that_actually_changes_fields() -> 
         "ISSUE-BUG-1",
         {"owner-field": "human-option", "status-field": "ready-option"},
     )
-    github.comments["example/work#99"] = [f"{_RECEIPT_PREFIX}{json.dumps(stale_receipt)} -->"]
+    github.add_comment(
+        "example/work", 99, f"{_RECEIPT_PREFIX}{json.dumps(stale_receipt)} -->", author=BOT_LOGIN
+    )
     router = Router(config, github)
     router.route(RouteEvent(bug_item(labels=set())))
 
@@ -465,3 +477,31 @@ def test_human_hold_on_a_routed_bug_survives_re_delivery() -> None:
         "owner-field": "human-option",
         "status-field": "backlog-option",
     }
+
+
+def test_forged_receipt_from_another_author_is_ignored() -> None:
+    """A receipt-shaped comment from anyone but the factory bot must not steer routing."""
+    from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
+
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    forged = {
+        "project": "PVT_example",
+        "item": "item-ISSUE-BUG-1",
+        "values": {"owner-field": "human-option", "status-field": "backlog-option"},
+        "complete": True,
+        "hold_bypassed": True,
+    }
+    github.add_comment(
+        "example/work", 99, f"{_RECEIPT_PREFIX}{json.dumps(forged)} -->", author="outsider"
+    )
+
+    result = Router(config, github).route(RouteEvent(bug_item()))
+
+    assert result.destination == "ready"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "factory-option",
+        "status-field": "ready-option",
+    }
+    receipts = [c for c in github.comments["example/work#99"] if c.author == BOT_LOGIN]
+    assert len(receipts) == 1

@@ -7,9 +7,12 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from agent_factory.config import SharedConfig
+
+if TYPE_CHECKING:
+    from agent_factory.github import IssueComment
 
 _RECEIPT_PREFIX = "<!-- agent-factory-routing:v1 "
 
@@ -59,7 +62,7 @@ class GitHubRoutingClient(Protocol):
         self, project_id: str, item_id: str, field_id: str, option_id: str
     ) -> None: ...
 
-    def list_comments(self, repository: str, number: int) -> list[str]: ...
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
@@ -183,7 +186,15 @@ class Router:
         raise ValueError(f"unsupported routing field: {field_name}")
 
     def _receipt(self, source: SourceItem) -> dict[str, object] | None:
-        for body in reversed(self._github.list_comments(source.repository, source.number)):
+        # Only the factory's own comments are receipts; anyone can comment on a public issue,
+        # so a body from another author must never set hold_bypassed, complete, or values.
+        records = self._github.list_comment_records(source.repository, source.number)
+        bot_login = self._config.bot_login.casefold()
+        for comment in reversed(records):
+            # GitHub logins are case-insensitive identifiers.
+            if comment.author.casefold() != bot_login:
+                continue
+            body = comment.body
             if body.startswith(_RECEIPT_PREFIX) and body.endswith(" -->"):
                 try:
                     parsed = json.loads(body[len(_RECEIPT_PREFIX) : -4])

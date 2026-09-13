@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
+import pytest
+
+from agent_factory.work_kinds.fix import sync
 from agent_factory.work_kinds.fix.sync import (
     _merge_working_clone,  # pyright: ignore[reportPrivateUsage]
 )
@@ -18,7 +22,9 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def _init_bare(path: Path) -> None:
     path.mkdir(parents=True)
-    subprocess.run(["git", "init", "--quiet", "--bare", str(path)], check=True)
+    subprocess.run(
+        ["git", "init", "--quiet", "--bare", "--initial-branch=main", str(path)], check=True
+    )
 
 
 def _write_commit(path: Path, name: str, content: str, message: str) -> None:
@@ -189,3 +195,41 @@ def test_retry_after_resolving_uncommitted_changes_succeeds(tmp_path: Path) -> N
     reason = _merge_working_clone(clone)
 
     assert reason is None
+
+
+def test_stalled_git_command_blocks_with_a_reason_instead_of_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _origin, clone = _setup_origin_and_clone(tmp_path)
+
+    def stalled(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["git", "fetch"], timeout=300)
+
+    monkeypatch.setattr(sync.subprocess, "run", stalled)
+
+    reason = _merge_working_clone(clone)
+
+    assert reason is not None
+    assert reason.startswith("git command did not complete:")
+
+
+def test_git_runs_without_a_terminal_or_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _origin, clone = _setup_origin_and_clone(tmp_path)
+    seen: list[dict[str, object]] = []
+    real_run = subprocess.run
+
+    def recording(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(dict(kwargs))
+        return cast(subprocess.CompletedProcess[str], real_run(*args, **kwargs))
+
+    monkeypatch.setattr(sync.subprocess, "run", recording)
+
+    assert _merge_working_clone(clone) is None
+    assert seen
+    for kwargs in seen:
+        assert kwargs["timeout"] == 300
+        assert kwargs["stdin"] is subprocess.DEVNULL
+        env = kwargs["env"]
+        assert isinstance(env, dict) and env["GIT_TERMINAL_PROMPT"] == "0"

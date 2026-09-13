@@ -130,7 +130,14 @@ class FixWorkspace:
                 environment["FACTORY_GIT_TOKEN"] = token
             try:
                 completed = subprocess.run(
-                    ["git", "-c", "credential.helper=", *arguments],
+                    [
+                        "git",
+                        "-c",
+                        "credential.helper=",
+                        "-c",
+                        "http.followRedirects=false",
+                        *arguments,
+                    ],
                     capture_output=True,
                     text=True,
                     check=False,

@@ -2,12 +2,12 @@
 
 ### Requirement: Clone from local mirrors at recorded commits
 
-The factory SHALL maintain a bare mirror for each configured target repository under the local storage root, fetched at admission using the controller's read credential. Each fix attempt SHALL run in fresh clones of the target repository, Agent Runner, and Agent Skills checked out at the claim's recorded commits. The push credential SHALL NOT be used for fetching or by the controller. Clones SHALL be factory-owned and recorded for cleanup.
+The factory SHALL maintain a bare mirror for each configured target repository under the local storage root, fetched at admission using the controller's read credential. Each fix attempt SHALL run in fresh clones checked out at the claim's recorded commits: the target repository from its local mirror, and Agent Runner and Agent Skills from their configured local checkouts. The push credential SHALL NOT be used for fetching or by the controller. Clones SHALL be factory-owned and recorded for cleanup.
 
 #### Scenario: Launch an attempt
 
 - **WHEN** an attempt is launched
-- **THEN** its clones are checked out at the claim's recorded commits from the local mirrors
+- **THEN** its clones are checked out at the claim's recorded commits from the target mirror and the configured Runner and Skills checkouts
 - **AND** no clone from a previous attempt is reused
 
 #### Scenario: Fail to fetch a mirror

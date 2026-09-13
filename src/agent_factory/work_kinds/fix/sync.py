@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -79,7 +80,13 @@ def _find_pr(store: ClaimStore, claim: Claim) -> tuple[int, str] | None:
 
 def _run(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(clone), *args], capture_output=True, text=True, check=False
+        ["git", "-C", str(clone), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=300,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
     )
 
 
@@ -87,6 +94,13 @@ def _merge_working_clone(clone: Path) -> str | None:
     """Run the exact fetch/merge sequence the design mandates; return a block reason, if any."""
     if not clone.is_dir():
         return "the operator's working clone is not configured"
+    try:
+        return _merge_sequence(clone)
+    except (subprocess.TimeoutExpired, OSError) as error:
+        return f"git command did not complete: {error}"
+
+
+def _merge_sequence(clone: Path) -> str | None:
     status = _run(clone, "status", "--porcelain", "--untracked-files=no")
     if status.returncode != 0:
         return f"cannot inspect working clone: {status.stderr.strip() or 'git status failed'}"

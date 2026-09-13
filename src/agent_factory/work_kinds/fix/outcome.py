@@ -15,7 +15,7 @@ def read_outcome(evidence_path: Path, contract: str) -> Mapping[str, object] | N
     path = evidence_path / "fix-outcome.json"
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
         return None
     try:
         payload = json.loads(text)

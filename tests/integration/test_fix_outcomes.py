@@ -11,6 +11,7 @@ from agent_factory.controller import Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimStore, Run
 from agent_factory.work_kinds.fix.handler import FixHandler, attempt_evidence
+from agent_factory.work_kinds.fix.outcome import read_outcome
 
 CONTRACT = "factory-fix/1"
 
@@ -282,6 +283,12 @@ def test_missing_malformed_or_wrong_contract_is_a_technical_failure_then_infra_e
     assert claim is not None
     assert claim.lifecycle == "settled"
     assert claim.outcome["verdict"] == "infra-error"
+
+
+def test_invalid_utf8_outcome_file_is_a_technical_failure(tmp_path: Path) -> None:
+    (tmp_path / "fix-outcome.json").write_bytes(b'{"contract": "\xff\xfe", "outcome": "failed"}')
+
+    assert read_outcome(tmp_path, CONTRACT) is None
 
 
 def test_valid_pull_request_file_with_nonzero_exit_still_settles_as_pr(tmp_path: Path) -> None:
