@@ -12,6 +12,12 @@
 
 Execution admission SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository, independently of the check routing performed. Organization membership or the presence of the request label alone SHALL NOT satisfy this check. Failure to establish the author's permission SHALL NOT be treated as authorization. Routing-time enforcement is specified in `factory-routing`.
 
+#### Scenario: Receive an outside contributor's request
+
+- **WHEN** a public-repository contributor without write access creates an issue from the eval template
+- **THEN** routing leaves the request in Backlog without factory ownership, as specified in `factory-routing`
+- **AND** execution admission never accepts it even though the template applied the request label
+
 #### Scenario: Recheck permission at execution admission
 
 - **WHEN** a Ready card has the eval marker but its author lacks the required repository access
