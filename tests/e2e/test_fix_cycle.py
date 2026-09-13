@@ -487,8 +487,9 @@ def test_e2e_002_fix_journey_launches_reports_syncs_and_cleans_up(tmp_path: Path
         assert _git(h.working, "merge-base", "--is-ancestor", merged_sha, "HEAD") == ""
         assert h.state()["issue"]["state"] == "closed"
         claim = h.store.get_claim(claim.id)
+        assert claim is not None
         sync = cast(dict[str, Any], claim.reporting["sync"])
-        assert claim is not None and sync["completed"] is True
+        assert sync["completed"] is True
         h.set_status("done")
         h.tick()
         assert not clones.exists()

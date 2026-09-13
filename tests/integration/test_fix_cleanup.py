@@ -105,3 +105,29 @@ def test_running_claim_is_never_touched(tmp_path: Path) -> None:
 
     assert result is False
     assert clone.exists()
+
+
+def test_done_removes_every_attempts_private_credential_copy(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
+    private = tmp_path / "private"
+    copies: list[Path] = []
+    for reason in ("initial", "recovery"):
+        run = store.reserve_run(claim.id, "fix", reason=reason, evidence_path=str(tmp_path / "a"))
+        copy = private / run.id / "fix.env"
+        copy.parent.mkdir(parents=True)
+        copy.write_text("GH_TOKEN=secret\n")
+        copies.append(copy)
+        store.configure_run(run.id, plan={"credential_files": [str(copy)]}, limits={})
+        store.finish_run(run.id, execution_status="failed", result={})
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "infra-error"})
+    cleanup = FixCleanup(store, private_root=private)
+    cleanup.reconcile(claim.id, board_status="Review")
+    assert all(copy.exists() for copy in copies)
+
+    with mock.patch("agent_factory.work_kinds.images.subprocess.run"):
+        result = cleanup.reconcile(claim.id, board_status="Done")
+
+    assert result is True
+    assert not any(copy.exists() for copy in copies)
+    assert not any(copy.parent.exists() for copy in copies)

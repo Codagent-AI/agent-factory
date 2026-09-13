@@ -48,7 +48,6 @@ These are recorded as undesired. The correct behaviour is not specified here.
 
 - `agent-factory status` lists every claim ever saved, including superseded and long-settled ones, so a fresh install with history reads as a wall of old claims. Paul does not want the whole history in status. What status should show instead is his call.
 - Doctor prints a repair action on lines that passed. The three repository lines and the suite entry point line say OK and then print "Clone or repair..." or "Install the pinned...". The `fix sandbox launch` OK line prints an empty action.
-- The private per-run copy of the fix credential under `<storage_root>/private/<run>/fix.env` is not removed by cleanup at Done.
 - Evidence under `<storage_root>/artifacts/` is never pruned. It is already about 2 GB from past evals and is the only unbounded growth on the volume.
 - The disk floor reads host free space, which stays low after image removal until Docker's disk file is trimmed, so the factory refuses admissions that would actually fit. The Playwright base image is re-pulled by every Runner image build, so removing it by hand does not save space for long.
 - `docs/github-setup.md` still describes the harness setting as an immutable SHA pin. It is a branch now.

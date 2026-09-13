@@ -5,6 +5,9 @@ from __future__ import annotations
 import dataclasses
 from pathlib import Path
 from typing import cast
+from unittest import mock
+
+import pytest
 
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.github import GitHubApiError, IssueComment, ProjectQueueItem
@@ -582,3 +585,122 @@ def test_provider_quota_hold_for_another_provider_does_not_block_unblock(tmp_pat
 
     assert _process(store, client, claim_id, tmp_path) is not None
     assert len(store.nonterminal_runs(kind="fix")) == 1
+
+
+class _ReconcilingHandler(_PreparedHandler):
+    """Counts reconciliations so the memory gate's split can be observed."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+        self.reconciled = 0
+
+    def reconcile(self, claim: Claim) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
+        self.reconciled += 1
+
+
+def test_without_memory_headroom_an_eligible_claim_is_reconciled_but_not_relaunched(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    client = FakeGitHub(
+        [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
+        {"writer": "write"},
+    )
+    handler = _ReconcilingHandler(_shared(), _local())
+    handler.attach_store(store)
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    admitted = process_blocked_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        _shared(),
+        _local(),
+        _card("Running"),
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+        memory_available=False,
+    )
+
+    assert admitted is None
+    assert handler.reconciled == 1
+    assert store.runs_for_claim(claim_id) == []
+    reloaded = store.get_claim(claim_id)
+    assert reloaded is not None and reloaded.lifecycle == "blocked"
+    assert client.labels == [], "the needs-input label stays until an attempt starts"
+
+
+def test_losing_the_slot_race_after_preparing_discards_the_fresh_clones(tmp_path: Path) -> None:
+    from agent_factory.store import NonterminalRunError
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    clone = tmp_path / "clones" / "attempt" / "repo"
+    clone.mkdir(parents=True)
+
+    class CloningHandler(_PreparedHandler):
+        def prepare(self, claim: Claim) -> Preparation:
+            return Preparation(payload={"clones": {"repo": str(clone)}})
+
+    handler = CloningHandler(_shared(), _local())
+    handler.attach_store(store)
+    client = FakeGitHub(
+        [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
+        {"writer": "write"},
+    )
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    def lose_race(*args: object, **kwargs: object) -> object:
+        raise NonterminalRunError("another fix attempt was reserved first")
+
+    with mock.patch.object(store, "reserve_run", side_effect=lose_race):
+        admitted = process_blocked_claim(
+            store,
+            client,  # pyright: ignore[reportArgumentType]
+            handler,
+            _shared(),
+            _local(),
+            _card("Running"),
+            claim,
+            bot_login="example-factory[bot]",
+            artifact_root=tmp_path / "artifacts",
+            now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+        )
+
+    assert admitted is None
+    assert not clone.exists()
+    reloaded = store.get_claim(claim_id)
+    assert reloaded is not None and reloaded.lifecycle == "blocked"
+
+
+def test_launch_input_fails_closed_when_a_commenter_permission_cannot_be_verified(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.suites.and_scene import ReadinessError
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    comments = [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")]
+
+    class IssueGitHub(FakeGitHub):
+        def get_source_item(self, repository: str, number: int) -> SourceItem:
+            return _card().source
+
+        def get_permission(self, repository: str, login: str) -> str | None:
+            raise GitHubApiError("collaborator lookup failed")
+
+    handler = FixHandler(_shared(), _local())
+    handler.attach_store(store)
+    handler.attach_github(IssueGitHub(comments, {}))  # pyright: ignore[reportArgumentType]
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+
+    with pytest.raises(ReadinessError, match="cannot verify commenter permission for writer"):
+        handler._issue_input(claim)  # pyright: ignore[reportPrivateUsage]

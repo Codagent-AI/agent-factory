@@ -85,11 +85,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
                     claim = store.get_claim(claim.id) or claim
-                if (
-                    claim.lifecycle == "blocked"
-                    and isinstance(handler, FixHandler)
-                    and memory.available
-                ):
+                if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
                     admitted = process_blocked_claim(
                         store,
                         client,
@@ -101,6 +97,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
+                        memory_available=memory.available,
                     )
                     claim = store.get_claim(claim.id) or claim
                     if admitted is not None:

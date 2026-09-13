@@ -97,7 +97,9 @@ class FixHandler:
 
     def attach_store(self, store: ClaimStore) -> None:
         self._store = store
-        self._cleanup = FixCleanup(store)
+        self._cleanup = FixCleanup(
+            store, private_root=self._local.storage_root.expanduser() / "private"
+        )
 
     def attach_installation_token(self, provider: Callable[[], str]) -> None:
         """Let readiness reject a fix credential that is really the App installation token."""
@@ -335,11 +337,15 @@ class FixHandler:
         cache: dict[str, str | None] = {}
 
         def permission(login: str) -> str | None:
+            # Launch input is frozen for the whole attempt, so a lookup failure must hold
+            # the attempt rather than silently drop a writer's comment from issue.json.
             if login not in cache:
                 try:
                     cache[login] = github.get_permission(claim.repository, login)
-                except (GitHubApiError, OSError):
-                    cache[login] = None
+                except (GitHubApiError, OSError) as error:
+                    raise ReadinessError(
+                        f"cannot verify commenter permission for {login}: {error}"
+                    ) from error
             return cache[login]
 
         since = claim.outcome.get("declined_at")

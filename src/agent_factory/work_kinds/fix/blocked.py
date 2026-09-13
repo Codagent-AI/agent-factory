@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import shutil
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import hold_active
@@ -69,8 +71,13 @@ def process_blocked_claim(
     bot_login: str,
     artifact_root: Path,
     now: datetime,
+    memory_available: bool = True,
 ) -> tuple[Run, Preparation] | None:
-    """Re-admit one blocked fix claim if eligible; return the reserved run and its clones."""
+    """Re-admit one blocked fix claim if eligible; return the reserved run and its clones.
+
+    Without memory headroom the eligible claim is still reconciled against an earlier
+    attempt's branch or pull request, but no clones are cut and no run is reserved.
+    """
     if claim.lifecycle != "blocked":
         return None
     # Cheap SQLite gates first; the paginated comment listing only runs when an
@@ -124,8 +131,12 @@ def process_blocked_claim(
     )
     # Reconcile side effects and cut fresh clones before any attempt is reserved, exactly
     # as first admission does; a launch problem leaves the claim blocked for the next poll.
+    preparation: Preparation | None = None
     try:
-        preparation = handler.prepare(claim)
+        if memory_available:
+            preparation = handler.prepare(claim)
+        else:
+            handler.reconcile(claim)
     except (ReadinessError, WorktreeError) as error:
         store.record_event(claim.id, f"unblock-readiness:{error}", f"Cannot re-admit yet: {error}")
         return None
@@ -133,6 +144,9 @@ def process_blocked_claim(
     if refreshed is None or refreshed.lifecycle != "blocked":
         # Reconciliation found an earlier attempt's pull request and settled the claim.
         client.set_attention_label(claim.repository, claim.issue_number, False)
+        return None
+    if preparation is None:
+        # Still blocked and eligible; the memory gate defers the relaunch to a later poll.
         return None
     try:
         run = store.reserve_run(
@@ -142,6 +156,7 @@ def process_blocked_claim(
             evidence_path=str(artifact_root / f"{claim.id}-fix-unblock"),
         )
     except NonterminalRunError:
+        _discard_clones(preparation)
         return None
     store.set_claim_lifecycle(claim.id, "active", {})
     client.set_attention_label(claim.repository, claim.issue_number, False)
@@ -149,3 +164,13 @@ def process_blocked_claim(
         claim.id, "unblock", "Re-admitted after eligible input; starting a new attempt."
     )
     return run, preparation
+
+
+def _discard_clones(preparation: Preparation) -> None:
+    """Remove clones cut for an attempt that lost the slot race; nothing tracks them."""
+    clones = preparation.payload.get("clones")
+    if not isinstance(clones, Mapping):
+        return
+    for path in cast(Mapping[str, object], clones).values():
+        if isinstance(path, str):
+            shutil.rmtree(path, ignore_errors=True)

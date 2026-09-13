@@ -94,7 +94,8 @@ and step output), and the structured `fix-outcome.json`. Attempts never share
 a directory, so a recovery retry cannot read a stale outcome. Evidence is
 retained until manual cleanup. The single-line copy of the fix credential the
 sandbox loads lives outside the artifacts, under `<storage_root>/private/<run>/`,
-owner-readable only.
+owner-readable only, and is deleted with the clones and images when the card
+reaches Done.
 
 ## Service management and storage
 
