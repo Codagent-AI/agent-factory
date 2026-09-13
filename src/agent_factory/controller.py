@@ -9,19 +9,16 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import re
 from collections.abc import Callable, Generator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.github import GitHubApiError, IssueComment
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
-from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
-
-_WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
+from agent_factory.work_kinds.base import Classification, Feedback, WorkKindHandler
 
 
 @dataclass(frozen=True)
@@ -80,6 +77,7 @@ class ClaimPresentation:
     status: str
     verdict: str | None
     events: tuple[str, ...]
+    labels: Mapping[str, bool] = field(default_factory=lambda: dict[str, bool]())
 
 
 class ReportingClient(Protocol):
@@ -95,24 +93,25 @@ class Controller:
         self,
         store: ClaimStore,
         github: ReportingClient,
-        defaults: EvalDefaults,
+        handlers: Mapping[str, WorkKindHandler],
         *,
-        harness_sha: str,
-        suite: str = "and-scene",
         factory_login: str = "codagent-factory[bot]",
         artifact_root: Path | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
         self._github = github
-        self._defaults = defaults
-        self._harness_sha = harness_sha
-        self._suite = suite
+        self._handlers = dict(handlers)
         self._factory_login = factory_login
         self._artifact_root = (
             artifact_root or (Path.home() / ".agent-factory" / "artifacts")
         ).resolve()
         self._now = now or (lambda: datetime.now(UTC))
+        for handler in self._handlers.values():
+            handler.attach_store(store)
+
+    def handler(self, kind: str) -> WorkKindHandler | None:
+        return self._handlers.get(kind)
 
     def pause(self) -> None:
         self._store.set_paused(True)
@@ -127,16 +126,16 @@ class Controller:
         self,
         snapshot: RequestSnapshot,
         *,
-        resolve: Callable[[ParsedRequest], tuple[str, str]],
+        resolve: Callable[[object], object],
         fresh: bool = False,
     ) -> Claim | None:
         """Validate and freeze a new request, never creating a claim for bad input."""
-        if not self._eligible(snapshot):
+        handler = self._handler_for_snapshot(snapshot)
+        if handler is None:
             return None
-        try:
-            request = parse_request(snapshot.body, self._defaults)
-        except ValueError as error:
-            self._invalid_feedback(snapshot, str(error))
+        fingerprint = handler.request_fingerprint(snapshot)
+        if isinstance(fingerprint, Feedback):
+            self._invalid_feedback(snapshot, fingerprint.explanation)
             return None
         old_claims = self._store.claims_for_item(snapshot.project_item_id)
         current = next(
@@ -149,28 +148,16 @@ class Controller:
         )
         if current is not None and self._is_active(current):
             return current
-        if current is not None and current.request_fingerprint == request.fingerprint and not fresh:
+        if current is not None and current.request_fingerprint == fingerprint and not fresh:
             return current
-        runner_sha, skills_sha = resolve(request)
-        frozen = request.freeze(
-            runner_sha=runner_sha,
-            skills_sha=skills_sha,
-            harness_sha=self._harness_sha,
-            suite=self._suite,
-        )
-        draft = ClaimDraft(
-            snapshot.repository,
-            snapshot.issue_number,
-            snapshot.issue_id,
-            snapshot.project_item_id,
-            "eval",
-            request.fingerprint,
-            frozen.payload,
-        )
+        accepted = handler.accept(snapshot, self._store, resolve)
+        if isinstance(accepted, Feedback):
+            self._invalid_feedback(snapshot, accepted.explanation)
+            return None
         claim = (
-            self._store.create_claim(draft)
+            self._store.create_claim(accepted)
             if current is None
-            else self._store.supersede_and_create(current.id, draft)
+            else self._store.supersede_and_create(current.id, accepted)
         )
         self._store.set_claim_lifecycle(claim.id, "active", {})
         self._store.record_event(claim.id, "accepted", "Evaluation inputs accepted and frozen.")
@@ -180,6 +167,7 @@ class Controller:
         """Reserve exactly one ready work unit after all launch-time controls pass."""
         with advisory_lock(self._store.path, "admission"):
             claim = self._required_claim(claim_id)
+            handler = self._required_handler(claim.kind)
             if claim.lifecycle in {"settled", "cancelled", "superseded"} or self.paused():
                 return None
             issue = readiness()
@@ -187,14 +175,15 @@ class Controller:
                 self._store.set_hold(claim.id, "readiness", {"reason": issue})
                 self._store.record_event(claim.id, f"readiness:{issue}", f"Waiting: {issue}")
                 return None
-            global_quota = self._store.get_setting("admission", "quota")
-            if global_quota is not None and _hold_active(global_quota, self._now()):
-                return None
+            provider_holds = self._store.get_settings_by_prefix("admission", "quota:")
+            for provider in handler.providers(claim):
+                hold = provider_holds.get(f"quota:{provider}")
+                if hold is not None and hold_active(hold, self._now()):
+                    return None
             quota = self._store.get_hold(claim.id, "quota")
-            if quota is not None and _hold_active(quota, self._now()):
+            if quota is not None and hold_active(quota, self._now()):
                 return None
-            repetitions = _repetitions(claim)
-            next_unit, reason = self._next_unit(claim, repetitions)
+            next_unit, reason = handler.next_unit(claim, self._store.runs_for_claim(claim.id))
             if next_unit is None:
                 self._settle_if_complete(claim)
                 return None
@@ -215,6 +204,8 @@ class Controller:
     def record_result(self, run_id: str, result: AttemptResult) -> None:
         """Persist a suite-normalized result before changing aggregate presentation."""
         run = self._required_run(run_id)
+        claim = self._required_claim(run.claim_id)
+        handler = self._required_handler(claim.kind)
         stored_result = dict(result.result)
         stored_result["execution_status"] = result.execution_status
         stored_result.setdefault("artifact_path", run.evidence_path)
@@ -227,20 +218,33 @@ class Controller:
             if run.status in NONTERMINAL_RUN_STATUSES
             else self._store.normalize_terminal_result
         )
-        if result.quota_until is not None:
-            stored_result["quota_until"] = result.quota_until.isoformat()
+        classification = handler.classify(run, result)
+        deadline = result.quota_until
+        if deadline is not None:
+            stored_result["quota_until"] = deadline.isoformat()
             persist(run.id, execution_status="deferred", result=stored_result)
-            self._store.set_hold(run.claim_id, "quota", {"until": result.quota_until.isoformat()})
-            self._store.set_setting("admission", "quota", {"until": result.quota_until.isoformat()})
+            self._store.set_hold(run.claim_id, "quota", {"until": deadline.isoformat()})
+            provider = _quota_provider(stored_result, handler.providers(claim))
+            self._store.set_setting(
+                "admission", f"quota:{provider}", {"until": deadline.isoformat()}
+            )
             self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "quota-deferred"})
             self._store.record_event(
                 run.claim_id,
                 f"{run.unit_key}:attempt-{run.attempt_number}:quota",
-                f"{run.unit_key} is waiting for usage reset at {result.quota_until.isoformat()}.",
+                f"{run.unit_key} is waiting for usage reset at {deadline.isoformat()}.",
             )
             return
+        if classification.kind == "quota":
+            # A quota classification without a reset deadline is invalid handler output;
+            # fail closed as a technical error instead of losing the run.
+            classification = Classification("technical")
         persist(run.id, execution_status=result.execution_status, result=stored_result)
-        if _technical_failure(result):
+        stage = "complete"
+        if classification.kind == "technical":
+            stage = "exhausted" if run.reason == "recovery" else "retry"
+        message = handler.attempt_message(run, stored_result, stage=stage)
+        if classification.kind == "technical":
             if run.reason == "recovery":
                 self._store.set_claim_lifecycle(
                     run.claim_id,
@@ -250,23 +254,20 @@ class Controller:
                 self._store.record_event(
                     run.claim_id,
                     f"{run.unit_key}:attempt-{run.attempt_number}:exhausted",
-                    f"{run.unit_key} exhausted its technical recovery attempt; "
-                    "later repetitions are unstarted.\n\n"
-                    + _completion_message(run.unit_key, stored_result),
+                    message,
                 )
             else:
                 self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "infra-error"})
                 self._store.record_event(
                     run.claim_id,
                     f"{run.unit_key}:attempt-{run.attempt_number}:retry",
-                    f"{run.unit_key} failed technically and will use its one recovery attempt.\n\n"
-                    + _completion_message(run.unit_key, stored_result),
+                    message,
                 )
             return
         self._store.record_event(
             run.claim_id,
             f"{run.unit_key}:attempt-{run.attempt_number}:complete",
-            _completion_message(run.unit_key, stored_result),
+            message,
         )
         self._settle_if_complete(self._required_claim(run.claim_id))
 
@@ -274,14 +275,7 @@ class Controller:
         claim = self._required_claim(claim_id)
         if claim.lifecycle == "cancelled":
             return ClaimPresentation("Done", None, ("cancelled",))
-        verdict = claim.outcome.get("verdict")
-        if claim.lifecycle == "settled":
-            return ClaimPresentation("Review", verdict if isinstance(verdict, str) else None, ())
-        if claim.lifecycle == "waiting":
-            return ClaimPresentation(
-                "Ready", verdict if isinstance(verdict, str) else "infra-error", ()
-            )
-        return ClaimPresentation("Running", None, ())
+        return self._required_handler(claim.kind).presentation(claim)
 
     def cancel(self, claim_id: str) -> None:
         claim = self._required_claim(claim_id)
@@ -295,8 +289,11 @@ class Controller:
 
     def deliver_reports(self, claim_id: str) -> None:
         claim = self._required_claim(claim_id)
+        pending = self._store.pending_events(claim.id)
+        if not pending:
+            return
         comments = self._github.list_comment_records(claim.repository, claim.issue_number)
-        for event in self._store.pending_events(claim.id):
+        for event in pending:
             marker = _marker(claim.id, event.key)
             existing = next(
                 (
@@ -318,15 +315,6 @@ class Controller:
                 self._store.record_delivery_failure(claim.id, event.key, error)
                 continue
             self._store.acknowledge_event(claim.id, event.key, comment_id or "acknowledged")
-
-    def _eligible(self, snapshot: RequestSnapshot) -> bool:
-        return (
-            not snapshot.closed
-            and snapshot.owner == "factory"
-            and snapshot.status == "Ready"
-            and snapshot.issue_type == "Eval"
-            and snapshot.author_permission in _WRITER_PERMISSIONS
-        )
 
     def report_request_readiness(self, snapshot: RequestSnapshot, reason: str) -> None:
         """Persist pre-claim failures and deliver corrective feedback without accepting inputs."""
@@ -378,46 +366,25 @@ class Controller:
             {"fingerprint": fingerprint, "comment_id": comment_id or "acknowledged"},
         )
 
-    def _next_unit(self, claim: Claim, repetitions: int) -> tuple[str | None, str]:
-        runs = self._store.runs_for_claim(claim.id)
-        for number in range(1, repetitions + 1):
-            key = f"rep-{number}"
-            unit_runs = [run for run in runs if run.unit_key == key]
-            if not unit_runs:
-                return key, "initial"
-            latest = unit_runs[-1]
-            if latest.status in NONTERMINAL_RUN_STATUSES:
-                return None, "initial"
-            if latest.status == "deferred":
-                return key, "quota"
-            if _run_needs_recovery(latest) and latest.reason != "recovery":
-                return key, "recovery"
-        return None, "initial"
-
     def _settle_if_complete(self, claim: Claim) -> None:
-        if claim.lifecycle == "settled":
+        handler = self._required_handler(claim.kind)
+        outcome = handler.settle(claim, self._store.runs_for_claim(claim.id))
+        if outcome is None:
             return
-        runs = self._store.runs_for_claim(claim.id)
-        repetitions = _repetitions(claim)
-        settled: list[Run] = []
-        for number in range(1, repetitions + 1):
-            unit_runs = [run for run in runs if run.unit_key == f"rep-{number}"]
-            if not unit_runs:
-                return
-            latest = unit_runs[-1]
-            if latest.status not in {"completed", "failed"}:
-                return
-            if _run_needs_recovery(latest):
-                return
-            settled.append(latest)
-        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in settled)
-        verdict = "failed" if failed else "pending-human-review"
-        self._store.set_claim_lifecycle(claim.id, "settled", {"verdict": verdict})
-        self._store.record_event(
-            claim.id,
-            "handoff",
-            f"All repetitions settled; aggregate verdict is {verdict}.",
-        )
+        self._store.set_claim_lifecycle(claim.id, "settled", {"verdict": outcome.verdict})
+        self._store.record_event(claim.id, outcome.event_key, outcome.event_body)
+
+    def _handler_for_snapshot(self, snapshot: RequestSnapshot) -> WorkKindHandler | None:
+        for handler in self._handlers.values():
+            if handler.handles(snapshot):
+                return handler
+        return None
+
+    def _required_handler(self, kind: str) -> WorkKindHandler:
+        handler = self._handlers.get(kind)
+        if handler is None:
+            raise KeyError(kind)
+        return handler
 
     def _is_active(self, claim: Claim) -> bool:
         return any(
@@ -441,17 +408,6 @@ def _marker(claim_id: str, event_key: str) -> str:
     return f"<!-- agent-factory:event:{claim_id}:{event_key} -->"
 
 
-def _repetitions(claim: Claim) -> int:
-    settings_raw = claim.frozen_spec.get("settings")
-    if not isinstance(settings_raw, Mapping):
-        raise RuntimeError("claim has no frozen eval settings")
-    settings = cast(Mapping[str, object], settings_raw)
-    repetitions = settings.get("repetitions")
-    if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
-        raise RuntimeError("claim has invalid frozen repetitions")
-    return repetitions
-
-
 def quota_deadline(hold: Mapping[str, object]) -> datetime:
     """Require a usable reset time; invalid saved holds never authorize admission."""
     value = hold.get("until")
@@ -466,104 +422,33 @@ def quota_deadline(hold: Mapping[str, object]) -> datetime:
     return deadline
 
 
-def _hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+def _quota_provider(stored_result: Mapping[str, object], claim_providers: set[str]) -> str:
+    """Identify the provider a quota hold applies to.
+
+    The claim's own configured providers (structured data from its frozen roles) are the
+    authoritative source and the only candidates ever returned when any are configured: when
+    the claim uses exactly one, that is the answer; when it mixes several, the quota
+    diagnostic's text is consulted only to choose among those already-configured providers,
+    never to guess an unrelated provider. A tie among unnamed configured providers breaks
+    deterministically rather than defaulting outside the claim's own set. Only a claim with no
+    configured providers at all falls back to codex, the only provider quota detection
+    recognizes today.
+    """
+    if len(claim_providers) == 1:
+        return next(iter(claim_providers))
+    if claim_providers:
+        text = str(stored_result).lower()
+        named = next((name for name in claim_providers if name in text), None)
+        return named if named is not None else min(claim_providers)
+    return "codex"
+
+
+def hold_active(hold: Mapping[str, object], now: datetime) -> bool:
+    """An unparsable hold blocks admission; only a passed deadline releases it."""
     try:
         return quota_deadline(hold) > now
     except ValueError:
         return True
-
-
-def _technical_failure(result: AttemptResult) -> bool:
-    if result.execution_status not in {"failed", "interrupted"}:
-        return False
-    resumable = result.resumable
-    if resumable is None:
-        reported = result.result.get("resumable")
-        resumable = reported if isinstance(reported, bool) else None
-    return not _is_nonresumable_workflow(result.result, resumable)
-
-
-def _run_needs_recovery(run: Run) -> bool:
-    if run.status not in {"failed", "interrupted"}:
-        return False
-    resumable = run.result.get("resumable")
-    return not _is_nonresumable_workflow(
-        run.result, resumable if isinstance(resumable, bool) else None
-    )
-
-
-def _product_failed(run: Run) -> bool:
-    return run.result.get("product_verdict") == "failed"
-
-
-def _nonresumable_workflow(run: Run) -> bool:
-    resumable = run.result.get("resumable")
-    return _is_nonresumable_workflow(run.result, resumable if isinstance(resumable, bool) else None)
-
-
-def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | None) -> bool:
-    failure_raw = result.get("failure")
-    if not isinstance(failure_raw, Mapping):
-        return False
-    failure = cast(Mapping[str, object], failure_raw)
-    return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
-
-
-def _public_diagnostic(value: str) -> str:
-    """Keep useful failure context without publishing common credential representations."""
-    value = re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[redacted]@", value)
-    value = re.sub(r"\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[redacted]", value)
-    value = re.sub(
-        r"(?i)\b(?:Proxy-)?Authorization\s*:\s*[^\r\n]*",
-        "Authorization: [redacted]",
-        value,
-    )
-    value = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", value)
-    return re.sub(
-        r"(?i)(\b[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*[\"']?\s*[:=]\s*)"
-        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
-        r"\1[redacted]",
-        value,
-    )
-
-
-def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
-    def text(value: object) -> str:
-        if not isinstance(value, (str, int, float)) or isinstance(value, bool):
-            return "unavailable"
-        return _public_diagnostic(str(value)).replace("\n", " ")[:500] or "unavailable"
-
-    lines = [
-        f"{unit_key} settled.",
-        f"Execution: {text(result.get('execution_status'))}",
-        f"Product verdict: {text(result.get('product_verdict'))}",
-    ]
-    raw = result.get("report_summary")
-    summary = (
-        cast(Mapping[str, object], raw)
-        if isinstance(raw, Mapping)
-        else {
-            "Automated score": result.get("score"),
-            "Cost": result.get("cost"),
-            "Artifacts": result.get("artifact_path"),
-        }
-    )
-    lines.extend(f"{key}: {text(value)}" for key, value in summary.items())
-    failure = result.get("failure")
-    if isinstance(failure, Mapping):
-        details = cast(Mapping[str, object], failure)
-        lines.append(
-            "Failure: "
-            + "; ".join(
-                f"{key}={text(details[key])}"
-                for key in ("owner", "code", "phase", "reason", "message")
-                if key in details
-            )
-        )
-    for key in ("failed_phase", "reason", "error", "timeout"):
-        if result.get(key) is not None:
-            lines.append(f"{key}: {text(result[key])}")
-    return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
 
 
 @contextmanager

@@ -1,12 +1,16 @@
 # `and-scene` suite integration
 
-Agent Factory evaluates only the `and-scene` suite in iteration 1. Its deployed
-harness is the full immutable SHA in `config/codagent.toml`, currently
-`488550420230d0fccf8135c8dfa6abc5937942c0`. That revision includes the
-automated-outcome contract, calibration-gate removal, linked-worktree metadata
-mounts, Cursor session persistence, and the `tester` role interface. Do not
-replace this pin with a branch name or a local checkout head. The configured
-role names are `lead`, `implementor`, and `tester`; their defaults are complete
+Agent Factory evaluates only the `and-scene` suite in iteration 1. Its harness
+branch is configured in `config/codagent.toml` as `eval.harness_ref` (default
+`main`). Factory resolves that branch to a commit at each claim's admission and
+records the resolved commit on the claim; the recorded commit, not the branch
+name, is the comparability key across nights. Before deploying a harness branch
+change, verify the branch's tip contains the automated-outcome (score-failure)
+contract, calibration-gate removal, linked-worktree metadata mounts, Cursor
+session persistence, and the `tester` role interface — `doctor` reports the
+commit the configured branch resolves to, but it does not fetch and it does
+not prove that commit carries these behaviors. The configured role names are
+`lead`, `implementor`, and `tester`; their defaults are complete
 `cli:model:effort` selections in the same configuration file.
 
 The machine-local configuration identifies the three source repositories, a

@@ -9,6 +9,7 @@ import socket
 import ssl
 import subprocess
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -19,9 +20,29 @@ from typing import Protocol, cast
 from agent_factory.config import ProjectConfig
 from agent_factory.routing import ProjectItem, SourceItem
 
+WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
+"""Effective repository permissions that may hand work to the factory."""
+
 
 class GitHubApiError(RuntimeError):
     """A GitHub response did not have the expected contract."""
+
+
+class GitHubNotFoundError(GitHubApiError):
+    """The requested resource does not exist (HTTP 404), distinct from a lookup failure."""
+
+
+@dataclass(frozen=True)
+class BranchInfo:
+    name: str
+    sha: str
+
+
+@dataclass(frozen=True)
+class PullRequestInfo:
+    url: str
+    number: int
+    head_sha: str
 
 
 @dataclass(frozen=True)
@@ -39,6 +60,13 @@ class IssueComment:
     id: str
     body: str
     author: str
+    created_at: str = ""
+
+
+@dataclass(frozen=True)
+class PullRequestState:
+    state: str
+    merged_at: str | None
 
 
 class GhRunner(Protocol):
@@ -66,6 +94,8 @@ class SubprocessGhRunner:
             env=child_environment,
         )
         if completed.returncode != 0:
+            if "HTTP 404" in completed.stderr:
+                raise GitHubNotFoundError("gh api request failed: not found")
             raise GitHubApiError("gh api request failed")
         return completed.stdout
 
@@ -207,6 +237,27 @@ class GitHubClient:
         if refs is None or refs.get("dataType") != "TEXT":
             raise GitHubApiError(f"configured text field is missing or changed: {project.refs.id}")
 
+    def whoami(self) -> str:
+        payload = _json_object(self._request(["api", "user"], None))
+        return _required_string(payload, "login")
+
+    def organization_role(self, organization: str, login: str) -> str | None:
+        org = urllib.parse.quote(organization, safe="")
+        user = urllib.parse.quote(login, safe="")
+        try:
+            payload = _json_object(self._request(["api", f"orgs/{org}/memberships/{user}"], None))
+        except GitHubApiError:
+            return None
+        role = payload.get("role")
+        return role if isinstance(role, str) else None
+
+    def can_read_repository(self, repository: str) -> bool:
+        try:
+            self._request(["api", f"repos/{repository}"], None)
+            return True
+        except GitHubApiError:
+            return False
+
     def get_permission(self, repository: str, login: str) -> str | None:
         try:
             response = self._request(
@@ -218,6 +269,56 @@ class GitHubClient:
         payload = _json_object(response)
         permission = payload.get("permission")
         return permission if isinstance(permission, str) else None
+
+    def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
+        """Return branch info, or None if it does not exist. Raises on any other lookup failure."""
+        encoded_branch = urllib.parse.quote(branch, safe="")
+        try:
+            response = self._request(
+                ["api", f"repos/{repository}/branches/{encoded_branch}", "--method", "GET"], None
+            )
+        except GitHubNotFoundError:
+            return None
+        payload = _json_object(response)
+        commit = _object(payload.get("commit"))
+        return BranchInfo(
+            name=_required_string(payload, "name"), sha=_required_string(commit, "sha")
+        )
+
+    def list_open_pull_requests_for_head(
+        self, repository: str, branch: str
+    ) -> list[PullRequestInfo]:
+        """List open pull requests whose head branch matches, raising on lookup failure."""
+        owner = repository.split("/", 1)[0]
+        query = urllib.parse.urlencode({"head": f"{owner}:{branch}", "state": "open"})
+        response = self._request(
+            ["api", f"repos/{repository}/pulls?{query}", "--method", "GET"], None
+        )
+        return [
+            PullRequestInfo(
+                url=_required_string(entry, "html_url"),
+                number=_required_int(entry, "number"),
+                head_sha=_required_string(_object(entry.get("head")), "sha"),
+            )
+            for entry in (_object(item) for item in _json_list(response))
+        ]
+
+    def get_pull_request(self, repository: str, number: int) -> PullRequestState:
+        response = self._request(
+            ["pr", "view", str(number), "--repo", repository, "--json", "state,mergedAt"], None
+        )
+        payload = _json_object(response)
+        merged_at = payload.get("mergedAt")
+        return PullRequestState(
+            state=_required_string(payload, "state"),
+            merged_at=merged_at if isinstance(merged_at, str) else None,
+        )
+
+    def close_issue(self, repository: str, number: int) -> None:
+        self._request(
+            ["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "--input", "-"],
+            {"state": "closed"},
+        )
 
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self._request(
@@ -250,6 +351,8 @@ class GitHubClient:
             issue_type=type_name if isinstance(type_name, str) else None,
             state=_required_string(payload, "state"),
             body=_optional_string(payload, "body"),
+            pull_request="pull_request" in payload,
+            title=_optional_string(payload, "title"),
         )
 
     def list_project_items(self, project_id: str) -> list[ProjectQueueItem]:
@@ -412,12 +515,20 @@ class GitHubClient:
                 user = _object(comment.get("user"))
                 identifier = comment.get("id")
                 login = user.get("login")
+                created_at = comment.get("created_at")
                 if (
                     isinstance(body, str)
                     and isinstance(identifier, (int, str))
                     and isinstance(login, str)
                 ):
-                    comments.append(IssueComment(str(identifier), body, login))
+                    comments.append(
+                        IssueComment(
+                            str(identifier),
+                            body,
+                            login,
+                            created_at if isinstance(created_at, str) else "",
+                        )
+                    )
             if len(values) < 100:
                 return comments
             page += 1

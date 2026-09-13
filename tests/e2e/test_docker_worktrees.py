@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.config import SharedConfig
 from agent_factory.suites.and_scene import GitWorktreeManager, SourceRepositories
 from agent_factory.supervisor import (
     container_matches_recorded_ownership,
@@ -33,10 +32,9 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
         pytest.skip(
             "Required separate Docker check: set AGENT_FACTORY_DOCKER_SOURCES; not passing evidence"
         )
-    shared = SharedConfig.from_file(Path("config/codagent.toml"))
     source_root = Path(root)
     paths: dict[str, Path] = {}
-    pins: dict[str, object] = {"evals": shared.eval.harness_sha}
+    pins: dict[str, object] = {}
     for name, repository in (
         ("runner", "agent-runner"),
         ("skills", "agent-skills"),
@@ -54,8 +52,7 @@ def test_e2e_004_actual_pinned_wrapper_metadata_and_container_identity(tmp_path:
             ]
         )
         paths[name] = target
-        if name != "evals":
-            pins[name] = _run(["git", "-C", str(target), "rev-parse", "HEAD"])
+        pins[name] = _run(["git", "-C", str(target), "rev-parse", "HEAD"])
     manager = GitWorktreeManager(
         tmp_path, SourceRepositories(paths["runner"], paths["skills"], paths["evals"])
     )

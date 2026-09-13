@@ -7,9 +7,12 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from agent_factory.config import SharedConfig
+
+if TYPE_CHECKING:
+    from agent_factory.github import IssueComment
 
 _RECEIPT_PREFIX = "<!-- agent-factory-routing:v1 "
 
@@ -24,6 +27,8 @@ class SourceItem:
     issue_type: str | None
     state: str
     body: str = ""
+    pull_request: bool = False
+    title: str = ""
 
 
 @dataclass
@@ -57,7 +62,7 @@ class GitHubRoutingClient(Protocol):
         self, project_id: str, item_id: str, field_id: str, option_id: str
     ) -> None: ...
 
-    def list_comments(self, repository: str, number: int) -> list[str]: ...
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
@@ -85,6 +90,24 @@ class Router:
                 self._set_eval_type_if_needed(source)
                 self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
                 return RouteResult("ready", project_item.id)
+        elif self._is_bug(source):
+            receipt = self._receipt(source)
+            hold_bypassed = bool(receipt and receipt.get("hold_bypassed"))
+            if self._config.routing.hold_label in source.labels:
+                self._initialize(
+                    project_item,
+                    source,
+                    (("owner", "human"), ("status", "backlog")),
+                    hold_bypassed=True,
+                )
+                return RouteResult("backlog", project_item.id)
+            if not hold_bypassed:
+                permission = self._github.get_permission(source.repository, source.author)
+                if permission in {"write", "maintain", "admin"}:
+                    self._initialize(
+                        project_item, source, (("owner", "factory"), ("status", "ready"))
+                    )
+                    return RouteResult("ready", project_item.id)
 
         self._initialize(project_item, source, (("status", "backlog"),))
         return RouteResult("backlog", project_item.id)
@@ -95,6 +118,13 @@ class Router:
             and self._config.routing.eval_label in source.labels
         )
 
+    def _is_bug(self, source: SourceItem) -> bool:
+        return (
+            not source.pull_request
+            and source.repository in self._config.routing.general_sources
+            and source.issue_type == self._config.routing.bug_type
+        )
+
     def _set_eval_type_if_needed(self, source: SourceItem) -> None:
         if source.issue_type != self._config.routing.eval_type:
             self._github.set_issue_type(
@@ -102,7 +132,12 @@ class Router:
             )
 
     def _initialize(
-        self, item: ProjectItem, source: SourceItem, values: tuple[tuple[str, str], ...]
+        self,
+        item: ProjectItem,
+        source: SourceItem,
+        values: tuple[tuple[str, str], ...],
+        *,
+        hold_bypassed: bool = False,
     ) -> None:
         receipt = self._receipt(source)
         desired: dict[str, str] = {}
@@ -131,7 +166,11 @@ class Router:
                     self._config.project.id, item.id, field_id, option
                 )
                 item.fields[field_id] = option
-        self._write_receipt(source, item, desired)
+        # Once observed, the hold bypass is sticky: a later receipt write (for example the
+        # generic backlog fallback after the label is removed) must not drop the flag, or a
+        # subsequent event could auto-admit the bug the hold was meant to keep out.
+        effective_hold_bypassed = hold_bypassed or bool(receipt and receipt.get("hold_bypassed"))
+        self._write_receipt(source, item, desired, hold_bypassed=effective_hold_bypassed)
 
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)
@@ -147,7 +186,15 @@ class Router:
         raise ValueError(f"unsupported routing field: {field_name}")
 
     def _receipt(self, source: SourceItem) -> dict[str, object] | None:
-        for body in reversed(self._github.list_comments(source.repository, source.number)):
+        # Only the factory's own comments are receipts; anyone can comment on a public issue,
+        # so a body from another author must never set hold_bypassed, complete, or values.
+        records = self._github.list_comment_records(source.repository, source.number)
+        bot_login = self._config.bot_login.casefold()
+        for comment in reversed(records):
+            # GitHub logins are case-insensitive identifiers.
+            if comment.author.casefold() != bot_login:
+                continue
+            body = comment.body
             if body.startswith(_RECEIPT_PREFIX) and body.endswith(" -->"):
                 try:
                     parsed = json.loads(body[len(_RECEIPT_PREFIX) : -4])
@@ -158,14 +205,21 @@ class Router:
         return None
 
     def _write_receipt(
-        self, source: SourceItem, item: ProjectItem, initialized: dict[str, str]
+        self,
+        source: SourceItem,
+        item: ProjectItem,
+        initialized: dict[str, str],
+        *,
+        hold_bypassed: bool = False,
     ) -> None:
-        payload = {
+        payload: dict[str, object] = {
             "project": self._config.project.id,
             "item": item.id,
             "values": initialized,
             "complete": True,
         }
+        if hold_bypassed:
+            payload["hold_bypassed"] = True
         self._github.create_comment(
             source.repository,
             source.number,

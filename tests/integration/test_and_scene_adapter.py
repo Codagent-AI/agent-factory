@@ -13,7 +13,7 @@ from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import SourceRepositories
-from agent_factory.work_kinds.eval import EvalDefaults
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -245,7 +245,9 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
     )
     controller = Controller(
-        ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults, harness_sha="e" * 40
+        ClaimStore(tmp_path / "state.sqlite3"),
+        Comments(),
+        {"eval": EvalHandler(defaults, harness_ref="e" * 40)},
     )
     snapshot = RequestSnapshot(
         "example/evals",
@@ -345,6 +347,22 @@ def test_store_migrates_existing_claim_rows_without_preparation_columns(tmp_path
             'claim', 'example/evals', 1, 'I1', 'P1', 'eval', 'fingerprint', '{}',
             'active', '{}', '{}', 'now', 'now'
         );
+        CREATE TABLE run (
+            id TEXT PRIMARY KEY, claim_id TEXT NOT NULL, unit_key TEXT NOT NULL,
+            attempt_number INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+            launch_nonce TEXT NOT NULL, supervisor_json TEXT NOT NULL, plan_json TEXT NOT NULL,
+            evidence_path TEXT NOT NULL, progress_json TEXT NOT NULL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, result_json TEXT NOT NULL,
+            created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+            UNIQUE(claim_id, unit_key, attempt_number)
+        );
+        CREATE UNIQUE INDEX one_nonterminal_run
+            ON run((CASE WHEN status IN ('reserved', 'running', 'observing') THEN 1 END))
+            WHERE status IN ('reserved', 'running', 'observing');
+        CREATE TABLE settings (
+            namespace TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL, PRIMARY KEY(namespace, key)
+        );
         PRAGMA user_version = 2;
         """
     )
@@ -372,8 +390,7 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"),
         Comments(),
-        defaults,
-        harness_sha="e" * 40,
+        {"eval": EvalHandler(defaults, harness_ref="e" * 40)},
         artifact_root=tmp_path / "artifacts",
     )
     claim = controller.accept(

@@ -138,14 +138,14 @@ import sys
 from pathlib import Path
 from agent_factory.controller import Controller
 from agent_factory.store import ClaimStore, ClaimDraft
-from agent_factory.work_kinds.eval import EvalDefaults
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 class Comments:
  def list_comment_records(self,*args): return []
  def create_comment(self,*args): return '1'
 s=ClaimStore(Path(sys.argv[1]))
 c=s.create_claim(ClaimDraft('org/repo',1,'I','P','eval','x',{'settings':{'repetitions':1}}))
 d=EvalDefaults('main','main',{},False,1)
-controller=Controller(s,Comments(),d,harness_sha='a'*40)
+controller=Controller(s,Comments(),{'eval':EvalHandler(d,harness_ref='a'*40)})
 controller.reserve_next(c.id,readiness=lambda: Path(sys.argv[2]).touch())
 """
     marker = tmp_path / "entered"
@@ -193,6 +193,102 @@ def test_native_issue_type_reads_current_rest_type_object() -> None:
         lambda: "test-token",
     )
     assert client.get_source_item("example/evals", 1).issue_type == "Eval"
+
+
+def test_get_source_item_flags_pull_requests() -> None:
+    client = GitHubClient(
+        Responses(
+            [
+                {
+                    "node_id": "PR1",
+                    "number": 1,
+                    "user": {"login": "writer"},
+                    "labels": [],
+                    "state": "open",
+                    "body": "",
+                    "type": {"name": "Bug"},
+                    "pull_request": {"url": "https://api.github.com/repos/example/work/pulls/1"},
+                }
+            ]
+        ),
+        lambda: "test-token",
+    )
+    assert client.get_source_item("example/work", 1).pull_request is True
+
+
+def test_whoami_returns_the_authenticated_login() -> None:
+    client = GitHubClient(Responses([{"login": "fix-bot"}]), lambda: "test-token")
+    assert client.whoami() == "fix-bot"
+
+
+def test_organization_role_returns_none_when_membership_lookup_fails() -> None:
+    class Failing:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubApiError("not found")
+
+    client = GitHubClient(Failing(), lambda: "test-token")
+    assert client.organization_role("Example Org", "fix-bot") is None
+
+
+def test_organization_role_reports_admin_membership() -> None:
+    client = GitHubClient(Responses([{"role": "admin"}]), lambda: "test-token")
+    assert client.organization_role("Example Org", "fix-bot") == "admin"
+
+
+def test_organization_role_url_encodes_organization_and_login() -> None:
+    class Recording:
+        def __init__(self) -> None:
+            self.arguments: list[str] = []
+
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            self.arguments = arguments
+            return json.dumps({"role": "member"})
+
+    runner = Recording()
+    client = GitHubClient(runner, lambda: "test-token")
+    client.organization_role("Example Org", "user name")
+
+    assert runner.arguments == ["api", "orgs/Example%20Org/memberships/user%20name"]
+
+
+def test_can_read_repository_false_on_lookup_failure() -> None:
+    class Failing:
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubApiError("not found")
+
+    client = GitHubClient(Failing(), lambda: "test-token")
+    assert client.can_read_repository("example/work") is False
+
+
+def test_can_read_repository_true_when_readable() -> None:
+    client = GitHubClient(Responses([{"full_name": "example/work"}]), lambda: "test-token")
+    assert client.can_read_repository("example/work") is True
+
+
+def test_get_source_item_does_not_flag_plain_issues_as_pull_requests() -> None:
+    client = GitHubClient(
+        Responses(
+            [
+                {
+                    "node_id": "I1",
+                    "number": 1,
+                    "user": {"login": "writer"},
+                    "labels": [],
+                    "state": "open",
+                    "body": "",
+                    "type": {"name": "Bug"},
+                }
+            ]
+        ),
+        lambda: "test-token",
+    )
+    assert client.get_source_item("example/work", 1).pull_request is False
 
 
 def test_replacement_watcher_uses_persisted_elapsed_time_after_clock_adjustment(
