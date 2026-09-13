@@ -704,3 +704,54 @@ def test_launch_input_fails_closed_when_a_commenter_permission_cannot_be_verifie
 
     with pytest.raises(ReadinessError, match="cannot verify commenter permission for writer"):
         handler._issue_input(claim)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_clone_removal_failure_after_a_lost_slot_race_is_reported(tmp_path: Path) -> None:
+    from agent_factory.store import NonterminalRunError
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id = _blocked_claim(store)
+    clone = tmp_path / "clones" / "attempt" / "repo"
+    clone.mkdir(parents=True)
+
+    class CloningHandler(_PreparedHandler):
+        def prepare(self, claim: Claim) -> Preparation:
+            return Preparation(payload={"clones": {"repo": str(clone)}})
+
+    handler = CloningHandler(_shared(), _local())
+    handler.attach_store(store)
+    client = FakeGitHub(
+        [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
+        {"writer": "write"},
+    )
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    import datetime as dt
+
+    def lose_race(*args: object, **kwargs: object) -> object:
+        raise NonterminalRunError("another fix attempt was reserved first")
+
+    with (
+        mock.patch.object(store, "reserve_run", side_effect=lose_race),
+        mock.patch(
+            "agent_factory.work_kinds.fix.blocked.shutil.rmtree",
+            side_effect=PermissionError("busy"),
+        ),
+    ):
+        admitted = process_blocked_claim(
+            store,
+            client,  # pyright: ignore[reportArgumentType]
+            handler,
+            _shared(),
+            _local(),
+            _card("Running"),
+            claim,
+            bot_login="example-factory[bot]",
+            artifact_root=tmp_path / "artifacts",
+            now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
+        )
+
+    assert admitted is None
+    events = {event.key: event.body for event in store.pending_events(claim_id)}
+    assert str(clone) in events["unblock-clone-cleanup"]
+    assert "busy" in events["unblock-clone-cleanup"]

@@ -156,7 +156,7 @@ def process_blocked_claim(
             evidence_path=str(artifact_root / f"{claim.id}-fix-unblock"),
         )
     except NonterminalRunError:
-        _discard_clones(preparation)
+        _discard_clones(store, claim, preparation)
         return None
     store.set_claim_lifecycle(claim.id, "active", {})
     client.set_attention_label(claim.repository, claim.issue_number, False)
@@ -166,11 +166,25 @@ def process_blocked_claim(
     return run, preparation
 
 
-def _discard_clones(preparation: Preparation) -> None:
-    """Remove clones cut for an attempt that lost the slot race; nothing tracks them."""
+def _discard_clones(store: ClaimStore, claim: Claim, preparation: Preparation) -> None:
+    """Remove clones cut for an attempt that lost the slot race; report what is left behind."""
     clones = preparation.payload.get("clones")
     if not isinstance(clones, Mapping):
         return
+    leftovers: list[str] = []
     for path in cast(Mapping[str, object], clones).values():
-        if isinstance(path, str):
-            shutil.rmtree(path, ignore_errors=True)
+        if not isinstance(path, str):
+            continue
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            leftovers.append(f"{path}: {error}")
+    if leftovers:
+        store.record_event(
+            claim.id,
+            "unblock-clone-cleanup",
+            "Could not remove clones prepared for an attempt that was not reserved:\n"
+            + "\n".join(f"- {item}" for item in leftovers),
+        )
