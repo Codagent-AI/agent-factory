@@ -13,45 +13,15 @@ The change SHALL provide a regular Markdown issue template in `Codagent-AI/agent
 - **THEN** the issue has native Type `Eval` and the `eval-request` label
 - **AND** routing adds it to the configured Project with `Owner=factory` and `Status=Ready` without another human action
 
-### Requirement: Route requests through shared configuration
-
-Routing rules and their implementation SHALL be maintained in `agent-factory` and invoked through a reusable GitHub Actions workflow. Source repositories SHALL use small caller workflows. Rules SHALL configure source repositories, request markers and work kinds, destination Projects, and initial Project fields. The initial eval rule SHALL route `agent-evals` evaluation requests to the shared Codagent Project. Adding a source repository or routing another work kind SHALL reuse this routing behavior through configuration; iteration 1 SHALL execute only eval work.
-
-Routing SHALL add an issue to its destination Project if absent and initialize fields once. For an authorized explicitly marked eval request, routing SHALL set the native issue Type to the configured eval type before initializing its factory fields. Repeated delivery SHALL NOT reset work in progress or overwrite subsequent human field changes. Routing SHALL recognize explicit request markers without requiring a valid eval block or inferring assignment from arbitrary issue prose.
-
-#### Scenario: Route while local execution is unavailable
-
-- **WHEN** an eval request from an author with the required repository access is created while the Mac mini is offline, factory execution is paused, or the admission window is closed
-- **THEN** GitHub Actions routes it to the configured Project and initializes its fields
-- **AND** routing does not require the local service or its database
-
-#### Scenario: Deliver the same routing event again
-
-- **WHEN** routing is repeated for a request whose initial routing completed
-- **THEN** the issue is not added as a duplicate Project item
-- **AND** its current Owner and Status are preserved
-
-#### Scenario: Route a request with invalid settings
-
-- **WHEN** an explicitly marked eval request from an author with the required repository access contains invalid execution settings
-- **THEN** routing still places it in Ready with Owner factory
-- **AND** the factory validates the settings before admitting execution
-
-#### Scenario: Route an eval request without a native type
-
-- **WHEN** an authorized explicitly marked eval request has no native issue Type
-- **THEN** routing assigns the configured native eval type and initializes `Owner=factory` and `Status=Ready`
-- **AND** an unauthorized request does not cause the type mutation
-
 ### Requirement: Restrict automatic execution to repository writers
 
-Routing and execution admission SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository. Organization membership or the presence of the request label alone SHALL NOT satisfy this check. An eval request from an author without sufficient access SHALL enter Backlog without factory assignment and SHALL NOT execute. Failure to establish the author's permission SHALL NOT be treated as authorization.
+Execution admission SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository, independently of the check routing performed. Organization membership or the presence of the request label alone SHALL NOT satisfy this check. Failure to establish the author's permission SHALL NOT be treated as authorization. Routing-time enforcement is specified in `factory-routing`.
 
 #### Scenario: Receive an outside contributor's request
 
 - **WHEN** a public-repository contributor without write access creates an issue from the eval template
-- **THEN** the request enters the Project in Backlog without factory ownership
-- **AND** no evaluation is admitted even though the template applied the request label
+- **THEN** routing leaves the request in Backlog without factory ownership, as specified in `factory-routing`
+- **AND** execution admission never accepts it even though the template applied the request label
 
 #### Scenario: Recheck permission at execution admission
 
@@ -62,9 +32,9 @@ Routing and execution admission SHALL verify that the issue author has effective
 
 The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `lead`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
 
-Revision selection SHALL apply to Agent Runner and Agent Skills. The factory SHALL use the deployed `agent-evals` harness version; request-level selection or evaluation of harness revisions is outside iteration 1. Recording the harness revision SHALL identify the test environment used for the result.
+Request-level revision selection SHALL apply to Agent Runner and Agent Skills. The `agent-evals` harness SHALL follow the configured harness branch (default `main`); request-level selection of harness revisions remains unsupported. Recording the resolved harness commit SHALL identify the test environment used for the result.
 
-Repetitions SHALL be a positive integer. An optional configured maximum SHALL reject excessive requests rather than reduce them silently. Iteration 1 SHALL NOT require a repetition ceiling.
+Repetitions SHALL be a positive integer. An optional configured maximum SHALL reject excessive requests rather than reduce them silently. A repetition ceiling is not required.
 
 #### Scenario: Override selected defaults
 
@@ -124,13 +94,18 @@ The factory SHALL select open issues from configured source repositories whose a
 
 ### Requirement: Freeze accepted evaluation inputs
 
-A new claim SHALL record the effective evaluation settings, including the selected eval suite, and resolve Runner, Skills, and `agent-evals` revisions to immutable commits before execution. `agent-evals` is the evaluation harness and may contain multiple suites; iteration 1 SHALL support `and-scene` as the default suite. Those accepted inputs SHALL remain fixed for the claim, including its repetitions and automatic recovery. Later changes to branches, defaults, or the issue SHALL NOT mutate an existing claim's frozen inputs.
+A new claim SHALL record the effective evaluation settings, including the selected eval suite, and resolve the requested Runner and Skills refs and the configured `agent-evals` harness branch to immutable commits from the remote at admission. `agent-evals` is the evaluation harness and may contain multiple suites; `and-scene` is the default suite. Those accepted inputs SHALL remain fixed for the claim, including its repetitions and automatic recovery. Later changes to branches, defaults, or the issue SHALL NOT mutate an existing claim's frozen inputs. Configuration SHALL name the harness branch, not a commit.
 
 #### Scenario: Continue after refs or defaults change
 
-- **WHEN** an unfinished claim resumes after its requested branches or configured defaults have changed
+- **WHEN** an unfinished claim resumes after its requested branches, the harness branch, or configured defaults have changed
 - **THEN** it uses the same accepted settings and immutable revisions
 - **AND** its completed repetitions remain completed
+
+#### Scenario: Admit two evals on different days
+
+- **WHEN** the harness branch advances between two admissions
+- **THEN** each claim records the harness commit it resolved at its own admission and the difference is visible in its Refs and results
 
 ### Requirement: Distinguish continuation from an explicit fresh request
 
