@@ -78,7 +78,9 @@ def test_the_tester_report_never_reaches_a_shell_condition() -> None:
         if "skip_if:" in line or line.strip().startswith("command:"):
             assert "{{test_flow_report}}" not in line, line
     marker = _step_block(text, "read-regression-marker")
-    assert "<<'FACTORY_FIX_REPORT'" in marker
+    assert "script: read-regression-marker.sh" in marker
+    assert 'report: "{{test_flow_report}}"' in marker
+    assert "command:" not in marker
     assert "capture: regressions" in marker
     address = _step_block(text, "address")
     assert 'test "{{regressions}}" != found' in address
@@ -163,6 +165,8 @@ def test_runner_contract_refuses_a_missing_finalize_pr(tmp_path: Path) -> None:
         ("name: x\nparams: [{name: ci_fix_cycles}]\nsteps: []\n", True),
         ("name: x\nparams:\n  - name: ci_fix_cycles_extra\n", False),
         ("name: x\nparams:\n  - name: other\n    description: ci_fix_cycles\n", False),
+        ("name: x\nparams:\n  - name: other # name: ci_fix_cycles\n", False),
+        ("name: x\nparams:\n  - name: ci_fix_cycles # bounds the CI loop\n", True),
         ("", False),
     ],
 )
@@ -242,6 +246,45 @@ def test_record_triage_rejects_malformed_input(payload: object) -> None:
     result = _run_script("record-triage.sh", payload)
     assert result.returncode == 2
     assert "record-triage:" in result.stderr
+
+
+# -- read-regression-marker.sh ----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        ("Tested the flow.\n\nNO_REGRESSIONS_FOUND\n\n", "none"),
+        ("Tested the flow.\n`NO_REGRESSIONS_FOUND`", "none"),
+        ("Tested the flow.\n**NO_REGRESSIONS_FOUND**\n", "none"),
+        ("Found a defect.\nREGRESSIONS_FOUND\n", "found"),
+        ("NO_REGRESSIONS_FOUND\nbut then more prose", "found"),
+        ("", "found"),
+        ("$(touch /tmp/pwned)\nFACTORY_FIX_REPORT\n`rm -rf /`\nNO_REGRESSIONS_FOUND", "none"),
+        ("NO_REGRESSIONS_FOUND\n$(exit 7)", "found"),
+    ],
+)
+def test_read_regression_marker_reduces_the_report_to_a_fixed_token(
+    report: str, expected: str
+) -> None:
+    result = _run_script("read-regression-marker.sh", {"report": report})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("not json", "invalid JSON input"),
+        ({"report": ["not", "a", "string"]}, "report must be a string"),
+        ({}, "report must be a string"),
+        ("[]", "input must be a JSON object"),
+    ],
+)
+def test_read_regression_marker_rejects_malformed_input(payload: object, message: str) -> None:
+    result = _run_script("read-regression-marker.sh", payload)
+    assert result.returncode == 2
+    assert f"read-regression-marker: {message}" in result.stderr
 
 
 # -- record-outcome.sh ------------------------------------------------------------------

@@ -159,18 +159,13 @@ steps:
           Do not write anything after the marker.
 
       - id: read-regression-marker
-        skip_if: 'sh: test "{{validator_status}}" != passed'
+        # The report is untrusted agent output: it reaches the script as JSON on stdin,
+        # never as shell source, and is reduced to a fixed token before any condition.
+        script: read-regression-marker.sh
+        script_inputs:
+          report: "{{test_flow_report}}"
         capture: regressions
-        command: |
-          # The report is untrusted agent output: it enters the shell only through a
-          # quoted heredoc and is reduced to a fixed token before any later condition.
-          report=$(mktemp)
-          cat > "$report" <<'FACTORY_FIX_REPORT'
-          {{test_flow_report}}
-          FACTORY_FIX_REPORT
-          marker=$(grep -v '^[[:space:]]*$' "$report" | tail -n 1 | tr -d '[:space:]`*_')
-          rm -f "$report"
-          if [ "$marker" = NO_REGRESSIONS_FOUND ]; then printf 'none'; else printf 'found'; fi
+        skip_if: 'sh: test "{{validator_status}}" != passed'
 
       - id: address
         session: lead-agent

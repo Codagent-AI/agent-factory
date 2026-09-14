@@ -16,7 +16,7 @@ from agent_factory.suites.and_scene import ReadinessError
 
 WORKFLOW_NAME = "factory-fix"
 WORKFLOW_FILE = "factory-fix-v1.0.yaml"
-WORKFLOW_SCRIPTS = ("record-triage.sh", "record-outcome.sh")
+WORKFLOW_SCRIPTS = ("record-triage.sh", "read-regression-marker.sh", "record-outcome.sh")
 # The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
 # links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
 # directory publishes the workflow without another mount.
@@ -99,6 +99,7 @@ def stage_workflow(evidence: Path, contract: str) -> Path:
     return destination
 
 
+_YAML_COMMENT = re.compile(r"(^|\s)#.*$")
 _PARAM_NAME = re.compile(
     r"(?<![\w-])name\s*:\s*[\"']?" + re.escape(FINALIZE_PR_PARAM) + r"[\"']?(?=[\s,}\]]|$)"
 )
@@ -108,13 +109,14 @@ def finalize_pr_accepts_fix_cycles(text: str) -> bool:
     """Whether a Runner ``finalize-pr`` definition declares the parameter the workflow passes.
 
     The factory has no YAML parser, so this isolates the top-level ``params`` block after
-    dropping comments and any document-level indentation, then accepts the parameter in
-    block form (``- name: ci_fix_cycles``), inline-map form, or flow-sequence form.
+    dropping comments (whole-line and trailing) and any document-level indentation, then
+    accepts the parameter in block form (``- name: ci_fix_cycles``), inline-map form, or
+    flow-sequence form.
     """
     lines = [
-        line.rstrip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
+        stripped
+        for stripped in (_YAML_COMMENT.sub("", line).rstrip() for line in text.splitlines())
+        if stripped.strip()
     ]
     if not lines:
         return False
