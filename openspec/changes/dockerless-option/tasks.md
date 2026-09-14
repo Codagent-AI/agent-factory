@@ -1,0 +1,4 @@
+- [ ] [Add `--session-dir` to `agent-runner run` and rebuild the installed binary](tasks/01-runner-session-dir-flag.md)
+- [ ] [Host execution mode for fix attempts: workflow artifact directory, host launcher, process-only supervision, provenance, and host readiness](tasks/02-host-fix-launch.md)
+- [ ] [Per-kind readiness matrix, kind-scoped Docker and disk holds, grouped doctor output, service PATH, and host-mode documentation](tasks/03-readiness-matrix-and-service-path.md)
+- [ ] [Age-based evidence retention, live-only status, and the host-mode fix journey end to end](tasks/04-evidence-retention-and-live-status.md)
