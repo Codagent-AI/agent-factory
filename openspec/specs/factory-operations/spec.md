@@ -70,7 +70,7 @@ The service SHALL poll GitHub every five minutes while independently supervising
 
 ### Requirement: Diagnose readiness with doctor
 
-`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, Docker availability and memory allowance against one reservation, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against the configured minimum. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, and the companion fix workflow at the configured Runner branch declares a compatible contract version. It SHALL distinguish available prerequisites from problems needing operator action and explain each failed check. Diagnosis SHALL NOT launch an attempt or attempt to repair credentials or configuration.
+`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, Docker availability and memory allowance against one reservation, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against the configured minimum. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, and the packaged fix workflow declares the configured contract version and the configured Runner branch can run it. It SHALL distinguish available prerequisites from problems needing operator action and explain each failed check. Diagnosis SHALL NOT launch an attempt or attempt to repair credentials or configuration.
 
 Shared diagnostics SHALL remain distinct from checks supplied by each work kind and suite.
 
@@ -86,7 +86,7 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 
 #### Scenario: Diagnose fix readiness
 
-- **WHEN** the fix credential is missing, contains additional variables, or the Runner branch lacks a compatible fix workflow
+- **WHEN** the fix credential is missing, contains additional variables, or the Runner branch cannot run the packaged fix workflow
 - **THEN** doctor reports the fix-specific problem and shows eval readiness independently
 
 ### Requirement: Expose current operational status
@@ -230,7 +230,7 @@ Credentials for the suite's candidate branch, the fix PR credential, and board/r
 
 #### Scenario: Set up the supported deployment
 
-- **WHEN** an operator follows the installation instructions with the required credentials, suite behavior, and companion workflow available
+- **WHEN** an operator follows the installation instructions with the required credentials, suite behavior, and a Runner branch that can run the packaged fix workflow
 - **THEN** the operator can configure the board and local service, diagnose readiness, start normal execution of both kinds, inspect progress, pause and resume work, run a posted human-review command, and review a factory fix PR
 
 #### Scenario: Reuse the public example

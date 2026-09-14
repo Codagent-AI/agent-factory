@@ -60,12 +60,18 @@ The fix workflow runs in the same Docker sandbox as evals, so plan capacity for
 both to run concurrently: free disk for two sets of clones and per-run images,
 plus enough Docker memory allowance for one eval and one fix attempt at once
 (`limits.memory_reservation_gib` in the local TOML gates admission on this;
-raise it if you increase Docker's memory allocation). The companion fix
-workflow lives in Agent Runner at `workflows/core/factory-fix-v1.0.yaml` on the
-configured Runner branch and declares its contract version
-(`# factory-contract: factory-fix/1`) on its first line; `doctor` checks that
-line so an incompatible Runner revision is caught before a fix is admitted, not
-after.
+raise it if you increase Docker's memory allocation). The fix workflow ships
+with the factory package (`agent_factory/work_kinds/fix/workflow/`) and declares
+its contract version (`# factory-contract: factory-fix/1`) on its first line.
+Each attempt stages it into the attempt's artifact directory, where the
+sandboxed Runner resolves `agent-runner run factory-fix` from its user-level
+workflow catalog; a target repository that ships its own `factory-fix` project
+workflow would shadow it, and the attempt then fails for lack of an outcome
+rather than running the wrong thing. The workflow calls the Runner's built-in
+`run-validator` and `finalize-pr` workflows, so the configured Runner branch
+must accept `builtin:` sub-workflow references and the `ci_fix_cycles`
+parameter on `finalize-pr`; `doctor` checks the parameter so an incompatible
+Runner revision is caught before a fix is admitted, not after.
 
 ## Configuration
 

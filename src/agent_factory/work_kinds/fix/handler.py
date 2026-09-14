@@ -402,6 +402,7 @@ class FixHandler:
         issue["attempt"] = run.attempt_number + 1
         issue["reason"] = run.reason
         launch.write_issue_input(evidence, issue)
+        launch.stage_workflow(evidence, self._contract)
         credential = launch.validated_credential_copy(
             self._local, self._local.storage_root.expanduser() / "private" / run.id / "fix.env"
         )

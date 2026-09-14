@@ -77,12 +77,8 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
     sources = Path(root)
     runner = tmp_path / "runner"
     _run(["git", "clone", "--quiet", "--no-hardlinks", str(sources / "agent-runner"), str(runner)])
-    workflow = runner / "workflows" / "core" / "factory-fix-v1.0.yaml"
-    workflow.write_text(TEST_WORKFLOW, encoding="utf-8")
     # A planted default secrets file must never reach the container.
     (runner / ".sandbox-secrets.env").write_text("PLANTED_SECRET=leak\n", encoding="utf-8")
-    _git(runner, "add", "workflows/core/factory-fix-v1.0.yaml")
-    _git(runner, "commit", "-q", "-m", "test: model-free factory-fix stand-in")
     runner_sha = _git(runner, "rev-parse", "HEAD")
     skills = tmp_path / "skills"
     _run(["git", "clone", "--quiet", "--no-hardlinks", str(sources / "agent-skills"), str(skills)])
@@ -141,6 +137,11 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
                     evidence,
                     {"repository": "example/work", "number": index + 1, "title": "t", "body": "b"},
                 )
+                # The stand-in takes the packaged workflow's place in the staged catalog the
+                # sandboxed Runner resolves `agent-runner run factory-fix` from.
+                staged = evidence / launch.STAGED_WORKFLOWS
+                staged.mkdir(parents=True)
+                (staged / launch.WORKFLOW_FILE).write_text(TEST_WORKFLOW, encoding="utf-8")
                 plan = launch.build_plan(
                     run_id=run.id,
                     evidence=evidence,

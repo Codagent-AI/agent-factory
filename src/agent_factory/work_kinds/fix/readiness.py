@@ -9,8 +9,8 @@ import stat
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic
 from agent_factory.suites.and_scene import ReadinessError
+from agent_factory.work_kinds.fix import launch
 
-_CONTRACT_PATH = "workflows/core/factory-fix-v1.0.yaml"
 _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
 
 
@@ -101,10 +101,22 @@ def _credential_diagnostic(local: LocalConfig, installation_token: str | None) -
 
 
 def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic:
+    """The packaged workflow declares the contract and the Runner branch head can run it."""
     name = "fix workflow contract"
+    marker = launch.contract_marker(shared.fix.contract)
+    try:
+        launch.packaged_workflow_text(shared.fix.contract)
+    except ReadinessError as error:
+        return Diagnostic(
+            name,
+            False,
+            str(error),
+            f"Reinstall the factory; its packaged {launch.WORKFLOW_FILE} must start with "
+            f"{marker!r}.",
+        )
     action = (
-        f"Publish {_CONTRACT_PATH} on the configured Runner branch with the first line "
-        f'"# factory-contract: {shared.fix.contract}".'
+        f"Update the configured Runner branch to a commit whose {launch.FINALIZE_PR_PATH} "
+        f"declares the {launch.FINALIZE_PR_PARAM} parameter."
     )
     from agent_factory import runtime
 
@@ -113,15 +125,21 @@ def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic
             local.repositories.agent_runner, shared.fix.branches.runner
         )
         text = runtime._git_show(  # pyright: ignore[reportPrivateUsage]
-            local.repositories.agent_runner, sha, _CONTRACT_PATH
+            local.repositories.agent_runner, sha, launch.FINALIZE_PR_PATH
         )
     except ReadinessError as error:
         return Diagnostic(name, False, str(error), action)
-    marker = f"# factory-contract: {shared.fix.contract}"
-    first_line = text.splitlines()[0] if text else ""
-    if first_line.strip() != marker:
-        where = f"{shared.fix.branches.runner}@{sha[:7]}"
+    where = f"{shared.fix.branches.runner}@{sha[:7]}"
+    if not launch.finalize_pr_accepts_fix_cycles(text):
         return Diagnostic(
-            name, False, f"{_CONTRACT_PATH} at {where} does not declare {marker!r}", action
+            name,
+            False,
+            f"{launch.FINALIZE_PR_PATH} at {where} does not accept {launch.FINALIZE_PR_PARAM}",
+            action,
         )
-    return Diagnostic(name, True, f"workflow contract {shared.fix.contract} is present", "")
+    return Diagnostic(
+        name,
+        True,
+        f"workflow contract {shared.fix.contract} is packaged and runnable at {where}",
+        "",
+    )

@@ -5,14 +5,24 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import shutil
 from collections.abc import Mapping
+from importlib.resources import as_file, files
 from pathlib import Path
 
 from agent_factory.config import LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
 
-CONTRACT_PATH = "workflows/core/factory-fix-v1.0.yaml"
+WORKFLOW_NAME = "factory-fix"
+WORKFLOW_FILE = "factory-fix-v1.0.yaml"
+WORKFLOW_SCRIPTS = ("record-triage.sh", "record-outcome.sh")
+# The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
+# links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
+# directory publishes the workflow without another mount.
+STAGED_WORKFLOWS = Path("agent-runner") / "workflows"
+FINALIZE_PR_PATH = "workflows/core/finalize-pr-v1.0.yaml"
+FINALIZE_PR_PARAM = "ci_fix_cycles"
 IMAGE_PREFIX = "agent-runner-factory"
 _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
 _AUTH_FLAGS = {
@@ -58,18 +68,68 @@ def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
     return path
 
 
-def check_runner_contract(runner_clone: Path, contract: str) -> None:
-    """The Runner clone must carry the fix workflow at this contract and a safe launcher."""
-    workflow = runner_clone / CONTRACT_PATH
+def contract_marker(contract: str) -> str:
+    return f"# factory-contract: {contract}"
+
+
+def packaged_workflow_text(contract: str) -> str:
+    """The fix workflow shipped with this package; it must declare ``contract`` first."""
+    resource = files("agent_factory.work_kinds.fix") / "workflow" / WORKFLOW_FILE
     try:
-        first_line = workflow.read_text(encoding="utf-8").splitlines()[0].strip()
-    except (OSError, UnicodeError, IndexError) as error:
+        text = resource.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ReadinessError(f"the packaged fix workflow cannot be read: {error}") from error
+    first_line = text.splitlines()[0].strip() if text.strip() else ""
+    if first_line != contract_marker(contract):
+        raise ReadinessError(f"the packaged fix workflow does not declare {contract!r}")
+    return text
+
+
+def stage_workflow(evidence: Path, contract: str) -> Path:
+    """Copy the packaged workflow and its scripts where the sandboxed Runner looks them up."""
+    packaged_workflow_text(contract)
+    destination = evidence / STAGED_WORKFLOWS
+    destination.mkdir(parents=True, exist_ok=True)
+    package = files("agent_factory.work_kinds.fix") / "workflow"
+    for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS):
+        with as_file(package / name) as source:
+            target = destination / name
+            shutil.copyfile(source, target)
+            target.chmod(0o755 if name.endswith(".sh") else 0o644)
+    return destination
+
+
+def finalize_pr_accepts_fix_cycles(text: str) -> bool:
+    """Whether a Runner ``finalize-pr`` definition declares the parameter the workflow passes."""
+    in_params = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        if not line.startswith((" ", "\t")):
+            in_params = line.startswith("params:")
+            continue
+        if not in_params or not line.strip().startswith("- name:"):
+            continue
+        if line.split(":", 1)[1].strip().strip("\"'") == FINALIZE_PR_PARAM:
+            return True
+    return False
+
+
+def check_runner_contract(runner_clone: Path, contract: str) -> None:
+    """The packaged workflow must declare the contract and the Runner clone must support it."""
+    packaged_workflow_text(contract)
+    finalize = runner_clone / FINALIZE_PR_PATH
+    try:
+        text = finalize.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
         raise ReadinessError(
-            f"{CONTRACT_PATH} is missing from the recorded Runner commit: {error}"
+            f"{FINALIZE_PR_PATH} is missing from the recorded Runner commit: {error}"
         ) from error
-    if first_line != f"# factory-contract: {contract}":
+    if not finalize_pr_accepts_fix_cycles(text):
         raise ReadinessError(
-            f"{CONTRACT_PATH} at the recorded Runner commit does not declare {contract!r}"
+            f"{FINALIZE_PR_PATH} at the recorded Runner commit does not accept "
+            f"{FINALIZE_PR_PARAM}; the recorded Runner commit is incompatible with {contract}"
         )
     launcher = runner_clone / "scripts" / "sandbox-run.sh"
     try:
@@ -216,7 +276,7 @@ def container_script(
             bootstrap.append("cursor plugins install /workspace/skills")
     run_command = " ".join(
         (
-            "agent-runner run core:factory-fix",
+            f"agent-runner run {WORKFLOW_NAME}",
             "--param issue_file=/artifacts/input/issue.json",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",

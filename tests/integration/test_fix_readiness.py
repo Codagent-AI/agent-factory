@@ -55,7 +55,10 @@ repetitions = 3
 """
 
 _CONTRACT = "factory-fix/1"
-_CONTRACT_PATH = "workflows/core/factory-fix-v1.0.yaml"
+_FINALIZE_WITH_PARAM = (
+    'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n'
+)
+_FINALIZE_WITHOUT_PARAM = "name: finalize-pr\nsteps: []\n"
 
 
 def git(path: Path, *args: str) -> str:
@@ -66,14 +69,13 @@ def _runner_checkout(tmp_path: Path, *, with_contract: bool) -> Path:
     origin = tmp_path / "runner-origin"
     origin.mkdir()
     git(origin, "init", "-b", "main")
-    if with_contract:
-        workflow = origin / "workflows" / "core"
-        workflow.mkdir(parents=True)
-        (workflow / "factory-fix-v1.0.yaml").write_text(
-            f"# factory-contract: {_CONTRACT}\nname: factory-fix\n"
-        )
-    else:
-        (origin / "README.md").write_text("no workflow here\n")
+    # The fix workflow ships with the factory; the Runner only has to accept the
+    # ci_fix_cycles parameter the workflow passes to finalize-pr.
+    workflow = origin / "workflows" / "core"
+    workflow.mkdir(parents=True)
+    (workflow / "finalize-pr-v1.0.yaml").write_text(
+        _FINALIZE_WITH_PARAM if with_contract else _FINALIZE_WITHOUT_PARAM
+    )
     git(origin, "add", "-A")
     git(
         origin,
@@ -208,7 +210,7 @@ def test_credential_equal_to_installation_token_fails_closed(tmp_path: Path) -> 
     assert credential.available is False
 
 
-def test_missing_workflow_contract_fails_closed(tmp_path: Path) -> None:
+def test_runner_finalize_pr_without_fix_cycles_fails_closed(tmp_path: Path) -> None:
     checkout = _runner_checkout(tmp_path, with_contract=False)
     env = tmp_path / "fix.env"
     env.write_text("GH_TOKEN=abc123\n")
@@ -217,6 +219,24 @@ def test_missing_workflow_contract_fails_closed(tmp_path: Path) -> None:
     diagnostics = check_readiness(local, _shared())
     contract = next(d for d in diagnostics if d.name == "fix workflow contract")
     assert contract.available is False
+    assert "ci_fix_cycles" in contract.detail
+
+
+def test_unknown_contract_version_fails_closed_before_consulting_the_runner(
+    tmp_path: Path,
+) -> None:
+    checkout = _runner_checkout(tmp_path, with_contract=True)
+    env = tmp_path / "fix.env"
+    env.write_text("GH_TOKEN=abc123\n")
+    env.chmod(0o600)
+    local = _local(tmp_path, checkout, fix_environment=env)
+    shared = dataclasses.replace(
+        _shared(), fix=dataclasses.replace(_shared().fix, contract="factory-fix/999")
+    )
+    diagnostics = check_readiness(local, shared)
+    contract = next(d for d in diagnostics if d.name == "fix workflow contract")
+    assert contract.available is False
+    assert "packaged" in contract.detail
 
 
 def test_launch_requires_a_sandbox_script_that_contains_the_credential(tmp_path: Path) -> None:
@@ -264,7 +284,8 @@ def test_present_workflow_contract_passes(tmp_path: Path) -> None:
     local = _local(tmp_path, checkout, fix_environment=env)
     diagnostics = check_readiness(local, _shared())
     contract = next(d for d in diagnostics if d.name == "fix workflow contract")
-    assert contract.available is True
+    assert contract.available is True, contract.detail
+    assert "packaged" in contract.detail
 
 
 def test_handler_readiness_uses_attached_installation_token(tmp_path: Path) -> None:

@@ -57,7 +57,7 @@ are retained.
 A writer files or drags a Bug-typed issue to `Owner=factory` / `Status=Ready`
 in a configured source repository. Factory admits it in board order, comments
 the admission notice with `Refs` recording the frozen target/Runner/Skills
-commits, and runs the companion fix workflow in the same Docker sandbox used
+commits, and runs the factory's packaged fix workflow in the same Docker sandbox used
 for evals, under its own slot and limits. The workflow produces one of three
 outcomes: a pull request against the target repository (moves the card to
 Review with `pending-human-review`); a `needs-input` decline with reasons,

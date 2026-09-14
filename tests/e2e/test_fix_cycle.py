@@ -164,7 +164,7 @@ class Harness:
             tmp_path / "runner",
             {
                 "scripts/sandbox-run.sh": SANDBOX,
-                "workflows/core/factory-fix-v1.0.yaml": "# factory-contract: factory-fix/1\nname: factory-fix\n",
+                "workflows/core/finalize-pr-v1.0.yaml": 'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n',
                 "workflows/core/implement-change-v1.0.yaml": "# fixture",
             },
         )
@@ -436,7 +436,13 @@ def test_e2e_002_fix_journey_launches_reports_syncs_and_cleans_up(tmp_path: Path
         assert (artifact / "cwd.txt").read_text() == str(clones / "runner")
         script = args[args.index("--") + 1]
         assert f"--param branch_name={branch}" in script
-        assert "core:factory-fix" in script
+        assert "agent-runner run factory-fix" in script
+        staged = artifact / "agent-runner" / "workflows"
+        workflow_text = (staged / "factory-fix-v1.0.yaml").read_text()
+        assert workflow_text.splitlines()[0] == "# factory-contract: factory-fix/1"
+        assert "builtin:core/finalize-pr-v1.0.yaml" in workflow_text
+        for name in ("record-triage.sh", "record-outcome.sh"):
+            assert os.access(staged / name, os.X_OK), name
         names: list[str] = json.loads((artifact / "env-names.json").read_text())
         assert "GH_TOKEN" not in names and "GITHUB_TOKEN" not in names
         assert "app-token-value" not in json.dumps(args) + json.dumps(run.plan)

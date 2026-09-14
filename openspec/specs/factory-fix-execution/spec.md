@@ -20,16 +20,16 @@ The factory SHALL maintain a bare mirror for each configured target repository u
 
 ### Requirement: Invoke the versioned fix workflow
 
-The factory SHALL run the companion Agent Runner fix workflow in the existing sandbox through the Runner sandbox script, passing a per-run image tag, the configured fix role profiles, the target repository and issue number, the recorded branch names and commits, the eligible issue comments, the attempt number, and the location of the fix credential. The workflow contract SHALL be versioned; the factory SHALL refuse to launch when the workflow at the recorded Runner commit does not declare a compatible contract version and SHALL report this as a readiness problem. The workflow SHALL return exactly one structured outcome: `pull-request` with the PR reference; `needs-input` with reasons; `failed` with reasons; or a technical failure. The outcome SHALL be written to `fix-outcome.json` in the attempt's artifact directory and SHALL declare its contract version; absence of a structured outcome SHALL be treated as a technical failure.
+The factory SHALL ship the fix workflow with its own package, stage it into the attempt's artifact directory where the sandboxed Runner resolves it by name, and run it in the existing sandbox through the Runner sandbox script, passing a per-run image tag, the configured fix role profiles, the target repository and issue number, the recorded branch names and commits, the eligible issue comments, the attempt number, and the location of the fix credential. The workflow contract SHALL be versioned; the factory SHALL refuse to launch when the packaged workflow does not declare the configured contract version or when the recorded Runner commit cannot run it (its `finalize-pr` workflow does not accept the `ci_fix_cycles` parameter), and SHALL report this as a readiness problem. The workflow SHALL return exactly one structured outcome: `pull-request` with the PR reference; `needs-input` with reasons; `failed` with reasons; or a technical failure. The outcome SHALL be written to `fix-outcome.json` in the attempt's artifact directory and SHALL declare its contract version; absence of a structured outcome SHALL be treated as a technical failure.
 
 #### Scenario: Launch with a compatible workflow
 
-- **WHEN** the recorded Runner commit contains the fix workflow at the expected contract version
+- **WHEN** the packaged fix workflow declares the configured contract version and the recorded Runner commit can run it
 - **THEN** the attempt starts under its own supervisor with the configured roles and a run-specific image tag
 
 #### Scenario: Launch with an incompatible workflow
 
-- **WHEN** the workflow is absent or declares an unsupported contract version
+- **WHEN** the packaged workflow declares an unsupported contract version or the recorded Runner commit cannot run it
 - **THEN** no attempt is recorded, the bug is held, and status and doctor name the incompatibility
 
 #### Scenario: Finish without an outcome
