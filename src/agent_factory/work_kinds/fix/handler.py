@@ -310,6 +310,7 @@ class FixHandler:
             claim.id, attempt, repository, mapping(claim.frozen_spec.get("revisions"))
         )
         launch.check_runner_contract(Path(clones["runner"]), self._contract)
+        launch.check_target_catalog(Path(clones["repo"]))
         recorded = dict(mapping(claim.preparation.get("clones")))
         recorded[f"attempt-{attempt}"] = str(self._workspace.attempt_directory(claim.id, attempt))
         self._store.set_preparation(

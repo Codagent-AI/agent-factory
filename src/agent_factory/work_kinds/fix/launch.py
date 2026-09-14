@@ -99,21 +99,58 @@ def stage_workflow(evidence: Path, contract: str) -> Path:
     return destination
 
 
+_PARAM_NAME = re.compile(
+    r"(?<![\w-])name\s*:\s*[\"']?" + re.escape(FINALIZE_PR_PARAM) + r"[\"']?(?=[\s,}\]]|$)"
+)
+
+
 def finalize_pr_accepts_fix_cycles(text: str) -> bool:
-    """Whether a Runner ``finalize-pr`` definition declares the parameter the workflow passes."""
-    in_params = False
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        if not line or line.lstrip().startswith("#"):
-            continue
+    """Whether a Runner ``finalize-pr`` definition declares the parameter the workflow passes.
+
+    The factory has no YAML parser, so this isolates the top-level ``params`` block after
+    dropping comments and any document-level indentation, then accepts the parameter in
+    block form (``- name: ci_fix_cycles``), inline-map form, or flow-sequence form.
+    """
+    lines = [
+        line.rstrip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    if not lines:
+        return False
+    indent = min(len(line) - len(line.lstrip()) for line in lines)
+    lines = [line[indent:] for line in lines]
+    block: list[str] = []
+    for line in lines:
         if not line.startswith((" ", "\t")):
-            in_params = line.startswith("params:")
+            if block:
+                break
+            if line.startswith("params:"):
+                block.append(line)
             continue
-        if not in_params or not line.strip().startswith("- name:"):
-            continue
-        if line.split(":", 1)[1].strip().strip("\"'") == FINALIZE_PR_PARAM:
-            return True
-    return False
+        if block:
+            block.append(line)
+    return any(_PARAM_NAME.search(line) for line in block)
+
+
+def check_target_catalog(repo_clone: Path) -> None:
+    """The target repository must not shadow the staged workflow with its own ``factory-fix``.
+
+    The sandboxed Runner consults the project's ``.agent-runner/workflows`` before the
+    staged user-level catalog, so a target that ships a workflow of the same logical name
+    would run instead of the packaged one, with this attempt's credential.
+    """
+    catalog = repo_clone / ".agent-runner" / "workflows"
+    shadows = sorted(
+        path.name
+        for path in catalog.glob(f"{WORKFLOW_NAME}-v*")
+        if path.is_file() and path.suffix in {".yaml", ".yml"}
+    )
+    if shadows:
+        raise ReadinessError(
+            f"the target repository's .agent-runner/workflows would shadow the packaged "
+            f"{WORKFLOW_NAME} workflow: {', '.join(shadows)}"
+        )
 
 
 def check_runner_contract(runner_clone: Path, contract: str) -> None:

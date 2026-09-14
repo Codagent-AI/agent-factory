@@ -8,6 +8,7 @@ import re
 import subprocess
 from importlib.resources import files
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -69,6 +70,18 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     assert 'ci_fix_cycles: "1"' in finalize
     assert "workflow: builtin:core/run-validator-v1.0.yaml" in _step_block(text, "run-validator")
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
+
+
+def test_the_tester_report_never_reaches_a_shell_condition() -> None:
+    text = _workflow_text()
+    for line in text.splitlines():
+        if "skip_if:" in line or line.strip().startswith("command:"):
+            assert "{{test_flow_report}}" not in line, line
+    marker = _step_block(text, "read-regression-marker")
+    assert "<<'FACTORY_FIX_REPORT'" in marker
+    assert "capture: regressions" in marker
+    address = _step_block(text, "address")
+    assert 'test "{{regressions}}" != found' in address
 
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
@@ -145,10 +158,37 @@ def test_runner_contract_refuses_a_missing_finalize_pr(tmp_path: Path) -> None:
         ),
         ("name: x\n# params:\n#   - name: ci_fix_cycles\nsteps: []\n", False),
         ("name: x\nparams:\n  - name: 'ci_fix_cycles'\n", True),
+        ("  name: x\n  params:\n    - name: ci_fix_cycles\n  steps: []\n", True),
+        ('name: x\nparams:\n  - { name: ci_fix_cycles, default: "3" }\n', True),
+        ("name: x\nparams: [{name: ci_fix_cycles}]\nsteps: []\n", True),
+        ("name: x\nparams:\n  - name: ci_fix_cycles_extra\n", False),
+        ("name: x\nparams:\n  - name: other\n    description: ci_fix_cycles\n", False),
+        ("", False),
     ],
 )
 def test_finalize_pr_parameter_detection(text: str, expected: bool) -> None:
     assert launch.finalize_pr_accepts_fix_cycles(text) is expected
+
+
+def test_target_catalog_without_a_shadowing_workflow_is_accepted(tmp_path: Path) -> None:
+    launch.check_target_catalog(tmp_path / "missing")
+    catalog = tmp_path / ".agent-runner" / "workflows"
+    catalog.mkdir(parents=True)
+    (catalog / "deploy-v1.0.yaml").write_text("name: deploy\n")
+    (catalog / "team").mkdir()
+    (catalog / "team" / "factory-fix-v1.0.yaml").write_text("name: factory-fix\n")
+    launch.check_target_catalog(tmp_path)
+
+
+@pytest.mark.parametrize("filename", ["factory-fix-v1.0.yaml", "factory-fix-v2.yml"])
+def test_target_catalog_shadowing_the_packaged_workflow_is_refused(
+    tmp_path: Path, filename: str
+) -> None:
+    catalog = tmp_path / ".agent-runner" / "workflows"
+    catalog.mkdir(parents=True)
+    (catalog / filename).write_text("name: factory-fix\n")
+    with pytest.raises(ReadinessError, match=f"shadow.*{filename}"):
+        launch.check_target_catalog(tmp_path)
 
 
 # -- record-triage.sh -------------------------------------------------------------------
@@ -275,7 +315,23 @@ def test_record_outcome_is_failed_when_no_pr_was_opened(tmp_path: Path) -> None:
     assert outcome["reasons"] == ["failed to push the branch or open a pull request"]
 
 
-def test_record_outcome_rejects_malformed_input() -> None:
-    result = _run_script("record-outcome.sh", "not json")
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ("not json", "invalid JSON input"),
+        ({"validator_status": "passed", "pr_details": "{not json"}, "pr_details is not valid"),
+        ({"validator_status": "passed", "pr_details": "[1]"}, "pr_details must be a JSON object"),
+        ({"validator_status": "failed", "reasons": "nope"}, "reasons is not valid"),
+        ({"validator_status": "failed", "reasons": "{}"}, "reasons must be a JSON array"),
+    ],
+)
+def test_record_outcome_rejects_malformed_input(
+    payload: object, message: str, tmp_path: Path
+) -> None:
+    if isinstance(payload, dict):
+        fields = cast(dict[str, str], payload)
+        payload = {"outcome_path": str(tmp_path / "fix-outcome.json"), **fields}
+    result = _run_script("record-outcome.sh", payload)
     assert result.returncode == 2
-    assert "record-outcome:" in result.stderr
+    assert f"record-outcome: {message}" in result.stderr
+    assert not (tmp_path / "fix-outcome.json").exists()

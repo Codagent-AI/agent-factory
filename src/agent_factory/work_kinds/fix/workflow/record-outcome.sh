@@ -27,21 +27,28 @@ validator_status = parsed.get("validator_status") or "failed"
 ci_status = parsed.get("ci_status") or ""
 branch_name = parsed.get("branch_name") or ""
 
+# A malformed structured input means an upstream step produced something this
+# script cannot trust; failing here makes verify-outcome report a technical
+# failure instead of recording a plausible but wrong outcome.
 pr_details_raw = parsed.get("pr_details") or "{}"
 try:
     pr_details = json.loads(pr_details_raw)
-except json.JSONDecodeError:
-    pr_details = {}
+except (json.JSONDecodeError, TypeError) as exc:
+    print(f"record-outcome: pr_details is not valid JSON: {exc}", file=sys.stderr)
+    sys.exit(2)
 if not isinstance(pr_details, dict):
-    pr_details = {}
+    print("record-outcome: pr_details must be a JSON object", file=sys.stderr)
+    sys.exit(2)
 
 reasons_raw = parsed.get("reasons") or "[]"
 try:
     reasons = json.loads(reasons_raw)
-except json.JSONDecodeError:
-    reasons = []
+except (json.JSONDecodeError, TypeError) as exc:
+    print(f"record-outcome: reasons is not valid JSON: {exc}", file=sys.stderr)
+    sys.exit(2)
 if not isinstance(reasons, list):
-    reasons = []
+    print("record-outcome: reasons must be a JSON array", file=sys.stderr)
+    sys.exit(2)
 reasons = [str(r) for r in reasons]
 
 pr_url = pr_details.get("url") or ""
