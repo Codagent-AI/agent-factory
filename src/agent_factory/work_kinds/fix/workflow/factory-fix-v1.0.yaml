@@ -130,16 +130,18 @@ steps:
       - id: run-validator
         workflow: builtin:core/run-validator-v1.0.yaml
 
+      # The gate captures a fixed token only; the full report goes to this attempt's
+      # private artifact directory rather than a shared, predictable /tmp path.
       - id: check-validator
         command: |
-          if agent-validator run --report >/tmp/factory-fix-validator.log 2>&1; then
+          mkdir -p /artifacts/logs
+          if agent-validator run --report >/artifacts/logs/{{step_id}}.log 2>&1; then
             printf 'passed'
           else
-            cat /tmp/factory-fix-validator.log >&2
+            echo "validator failed; see /artifacts/logs/{{step_id}}.log" >&2
             printf 'failed'
           fi
         capture: validator_status
-        capture_stderr: true
 
       - id: test-flows
         session: tester-agent
@@ -186,6 +188,21 @@ steps:
           Fix the regression, run the targeted checks needed to confirm the
           fix, then commit following the project's commit message conventions
           and prepend [{{step_id}}].
+
+      # A repair commits new code after validator_status was captured, so the gate
+      # runs once more on it (verification only, no further repair budget) and the
+      # PR is opened only on the fresh result.
+      - id: recheck-validator
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{regressions}}" != found'
+        command: |
+          mkdir -p /artifacts/logs
+          if agent-validator run --report >/artifacts/logs/{{step_id}}.log 2>&1; then
+            printf 'passed'
+          else
+            echo "validator failed after the regression repair; see /artifacts/logs/{{step_id}}.log" >&2
+            printf 'failed'
+          fi
+        capture: validator_status
 
       - id: verify-clean
         command: test -z "$(git status --porcelain)"

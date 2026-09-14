@@ -86,6 +86,28 @@ def test_the_tester_report_never_reaches_a_shell_condition() -> None:
     assert 'test "{{regressions}}" != found' in address
 
 
+def test_a_regression_repair_is_validated_again_before_the_pr_is_opened() -> None:
+    text = _workflow_text()
+    address_at = text.index("- id: address\n")
+    recheck_at = text.index("- id: recheck-validator\n")
+    verify_at = text.index("- id: verify-clean\n")
+    assert address_at < recheck_at < verify_at
+    recheck = _step_block(text, "recheck-validator")
+    assert "agent-validator run --report" in recheck
+    assert "capture: validator_status" in recheck
+    assert 'test "{{regressions}}" != found' in recheck
+    assert "revalidate" not in text, "the repair is verified once, not repaired again"
+
+
+def test_validator_gates_capture_a_fixed_token_and_log_under_the_artifact_directory() -> None:
+    text = _workflow_text()
+    for step in ("check-validator", "recheck-validator"):
+        block = _step_block(text, step)
+        assert "capture_stderr" not in block
+        assert "/tmp/" not in block
+        assert ">/artifacts/logs/{{step_id}}.log" in block
+
+
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
     for needle in ("Refs #", "agent-factory:claim:", "gh pr edit"):
