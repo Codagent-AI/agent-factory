@@ -248,6 +248,9 @@ def _observe(
             "sources": observed_sources,
             "persisted_at": time.time(),
         }
+        image_tag = plan.ownership_hints.get("image_tag")
+        if isinstance(image_tag, str) and image_tag:
+            progress["image_tag"] = image_tag
         store.update_progress(run_id, progress)
         last_persisted = _number(progress["persisted_at"], 0)
     last_container_probe = float("-inf")
@@ -260,7 +263,7 @@ def _observe(
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
-        if plan.ownership_hints.get("suite") == "and-scene" and (
+        if _discovers_container(plan) and (
             now - last_container_probe >= 5 or process_status == "missing"
         ):
             try:
@@ -408,6 +411,12 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
     if not all(isinstance(entry, dict) for entry in entries):
         raise ProcessProbeError("invalid Docker inspection")
     return [cast(dict[str, object], entry) for entry in entries]
+
+
+def _discovers_container(plan: ExecutionPlan) -> bool:
+    """Plans that run inside the Docker sandbox are owned through their container too."""
+    hints = plan.ownership_hints
+    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:

@@ -5,8 +5,8 @@ from pathlib import Path
 
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import GitHubApiError, IssueComment
-from agent_factory.store import ClaimStore
-from agent_factory.work_kinds.eval import EvalDefaults
+from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 
 
 def defaults() -> EvalDefaults:
@@ -55,7 +55,9 @@ class Comments:
 def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     comments = Comments()
-    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     controller.pause()
 
     invalid = snapshot("```eval\nrepetitions = 0\n```")
@@ -84,7 +86,9 @@ def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path:
     controller.deliver_reports(claim.id)
     delivered = comments.posted.copy()
     reopened = Controller(
-        ClaimStore(tmp_path / "state.sqlite3"), comments, defaults(), harness_sha="c" * 40
+        ClaimStore(tmp_path / "state.sqlite3"),
+        comments,
+        {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
     )
     reopened.deliver_reports(claim.id)
     assert comments.posted == delivered
@@ -94,7 +98,9 @@ def test_controller_preserves_product_failure_and_stops_after_second_technical_f
     tmp_path: Path,
 ) -> None:
     controller = Controller(
-        ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults(), harness_sha="c" * 40
+        ClaimStore(tmp_path / "state.sqlite3"),
+        Comments(),
+        {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
     )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
@@ -133,7 +139,9 @@ def test_controller_does_not_trust_user_markers_and_records_delivery_failure(
             ]
 
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, FailingComments(), defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, FailingComments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
 
@@ -148,7 +156,9 @@ def test_controller_does_not_trust_user_markers_and_records_delivery_failure(
 
 def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> None:
     controller = Controller(
-        ClaimStore(tmp_path / "state.sqlite3"), Comments(), defaults(), harness_sha="c" * 40
+        ClaimStore(tmp_path / "state.sqlite3"),
+        Comments(),
+        {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
     )
     claim = controller.accept(
         snapshot("```eval\nrepetitions = 1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
@@ -164,7 +174,9 @@ def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> No
 
 def test_delivery_diagnostics_survive_later_event_acknowledgement(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, Comments(), defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
     store.record_delivery_failure(claim.id, "accepted", GitHubApiError("temporary outage"))
@@ -191,7 +203,10 @@ def test_nondefault_bot_recovers_a_lost_successful_comment_response(tmp_path: Pa
     store = ClaimStore(tmp_path / "state.sqlite3")
     comments = LostResponse()
     controller = Controller(
-        store, comments, defaults(), harness_sha="c" * 40, factory_login="example-worker[bot]"
+        store,
+        comments,
+        {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
+        factory_login="example-worker[bot]",
     )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
@@ -206,7 +221,9 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
     from datetime import UTC, datetime, timedelta
 
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, Comments(), defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     first = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert first is not None
     run = controller.reserve_next(first.id, readiness=lambda: None)
@@ -224,6 +241,53 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
     store.close()
 
 
+def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from datetime import UTC, datetime, timedelta
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(
+        store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
+    codex_body = (
+        "```eval\nrepetitions = 1\n"
+        "lead = 'codex:m:high'\nimplementor = 'codex:m:high'\ntester = 'codex:m:high'\n```"
+    )
+    cursor_body = (
+        "```eval\nrepetitions = 1\n"
+        "lead = 'cursor:m:high'\nimplementor = 'cursor:m:high'\ntester = 'cursor:m:high'\n```"
+    )
+    codex_claim = controller.accept(snapshot(codex_body), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert codex_claim is not None
+    run = controller.reserve_next(codex_claim.id, readiness=lambda: None)
+    assert run is not None
+    controller.record_result(
+        run.id,
+        AttemptResult(
+            "failed",
+            None,
+            {"failure": {"reason": "Codex usage limit reached"}},
+            quota_until=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+
+    another_codex_claim = controller.accept(
+        replace(snapshot(codex_body), issue_id="I2", project_item_id="P2", issue_number=2),
+        resolve=lambda _: ("a" * 40, "b" * 40),
+    )
+    assert another_codex_claim is not None
+    assert controller.reserve_next(another_codex_claim.id, readiness=lambda: None) is None
+
+    cursor_claim = controller.accept(
+        replace(snapshot(cursor_body), issue_id="I3", project_item_id="P3", issue_number=3),
+        resolve=lambda _: ("a" * 40, "b" * 40),
+    )
+    assert cursor_claim is not None
+    cursor_run = controller.reserve_next(cursor_claim.id, readiness=lambda: None)
+    assert cursor_run is not None
+    store.close()
+
+
 def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
     tmp_path: Path,
 ) -> None:
@@ -232,7 +296,16 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     controller = Controller(
-        store, Comments(), defaults(), harness_sha="c" * 40, artifact_root=tmp_path / "artifacts"
+        store,
+        Comments(),
+        {
+            "eval": EvalHandler(
+                defaults(),
+                harness_ref="c" * 40,
+                adapter=AndSceneAdapter(environment_file=tmp_path / "unused"),
+            )
+        },
+        artifact_root=tmp_path / "artifacts",
     )
     claim = controller.accept(
         snapshot("```eval\nrepetitions=1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
@@ -248,15 +321,45 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
         execution_status="completed",
         result={"product_verdict": "ready-for-human-review", "score": 60},
     )
-    runtime._consume_results(  # pyright: ignore[reportPrivateUsage]
-        store, controller, AndSceneAdapter(environment_file=tmp_path / "unused")
-    )
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
     saved = store.get_run(run.id)
     assert saved is not None and saved.status == "failed"
     assert "invalid result.json" in str(saved.result["reason"])
     assert "invalid result.json" in str(store.pending_events(claim.id))
     assert controller.presentation(claim.id).verdict == "infra-error"
     assert (artifact / "result.json").read_text() == '{"incomplete":'
+    store.close()
+
+
+def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
+    tmp_path: Path,
+) -> None:
+    from agent_factory import runtime
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    # No handler is registered for "ghost", simulating config drift or a rollout mismatch.
+    controller = Controller(store, Comments(), {}, artifact_root=tmp_path / "artifacts")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 1, "I1", "P1", "ghost", "fp", {"version": 1})
+    )
+    store.set_claim_lifecycle(claim.id, "active", {})
+    run = store.reserve_run(
+        claim.id, "unit", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+    store.finish_run(run.id, execution_status="completed", result={})
+
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
+
+    saved_claim = store.get_claim(claim.id)
+    assert saved_claim is not None
+    assert saved_claim.lifecycle == "waiting"
+    assert saved_claim.outcome.get("verdict") == "infra-error"
+    events = [event.body for event in store.pending_events(claim.id)]
+    assert any("no work-kind handler is registered" in body for body in events)
+
+    # Re-running consumption does not spam duplicate events for the same run.
+    runtime._consume_results(store, controller)  # pyright: ignore[reportPrivateUsage]
+    assert len(store.pending_events(claim.id)) == 1
     store.close()
 
 
@@ -270,7 +373,9 @@ def test_real_suite_result_is_reported_concisely_with_delivery_and_usage(tmp_pat
     )
     comments = Comments()
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
@@ -294,7 +399,9 @@ def test_real_suite_result_is_reported_concisely_with_delivery_and_usage(tmp_pat
 def test_technical_retry_and_exhaustion_report_failure_details(tmp_path: Path) -> None:
     comments = Comments()
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
     for _ in range(2):
@@ -325,7 +432,9 @@ def test_technical_retry_and_exhaustion_report_failure_details(tmp_path: Path) -
 def test_report_redacts_credentials_in_failure_diagnostics(tmp_path: Path) -> None:
     comments = Comments()
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, comments, defaults(), harness_sha="c" * 40)
+    controller = Controller(
+        store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
     claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)

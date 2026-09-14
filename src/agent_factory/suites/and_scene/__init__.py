@@ -426,6 +426,9 @@ class WorktreeCleanup:
             self._store.set_cleanup(claim_id, cleanup)
             return False
         errors = self._manager.remove(worktrees)
+        from agent_factory.work_kinds.images import remove_images, run_image_tags
+
+        errors.update(remove_images(run_image_tags(self._store, claim_id)))
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
         self._store.set_cleanup(claim_id, cleanup)

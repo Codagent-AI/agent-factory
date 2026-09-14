@@ -8,7 +8,10 @@ import re
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
+
+if TYPE_CHECKING:
+    from agent_factory.work_kinds.eval.handler import EvalHandler as EvalHandler
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
 _ROLES = frozenset({"lead", "implementor", "tester"})
@@ -124,3 +127,20 @@ def _profile(value: object, name: str) -> None:
 def _sha(value: str, name: str) -> None:
     if not re.fullmatch(r"[0-9a-f]{40}", value):
         raise ValueError(f"{name} revision must be a full commit SHA")
+
+
+__all__ = [
+    "EvalDefaults",
+    "EvalHandler",
+    "FrozenSpec",
+    "ParsedRequest",
+    "parse_request",
+]
+
+
+def __getattr__(name: str) -> object:
+    if name == "EvalHandler":
+        from agent_factory.work_kinds.eval.handler import EvalHandler
+
+        return EvalHandler
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -326,3 +326,65 @@ def test_bounded_claude_wait_does_not_consume_execution_or_idle_budget(
         assert finished is not None and finished.status == expected
         if expected == "timed_out":
             assert finished.result["timeout"] == "total"
+
+
+def _fix_claim(store: ClaimStore) -> str:
+    return store.create_claim(
+        ClaimDraft("example/work", 2, "I2", "P2", "fix", "fix:example/work#2", {"kind": "fix"})
+    ).id
+
+
+@pytest.mark.darwin
+def test_e2e_003_two_slots_survive_a_controller_restart_and_refuse_seconds(tmp_path: Path) -> None:
+    """E2E-003: an eval and a fix run together under separate supervisors."""
+    from agent_factory.store import NonterminalRunError
+
+    state = tmp_path / "state.sqlite3"
+    store = ClaimStore(state)
+    eval_claim = _claim(store)
+    fix_claim = _fix_claim(store)
+    eval_run = store.reserve_run(
+        eval_claim, "rep-1", reason="initial", evidence_path=str(tmp_path / "eval")
+    )
+    fix_run = store.reserve_run(
+        fix_claim, "fix", reason="initial", evidence_path=str(tmp_path / "fix")
+    )
+    # A second attempt of either kind is refused while its slot is held; the other kind's
+    # slot is independent.
+    with pytest.raises(NonterminalRunError):
+        store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path="/tmp/x")
+    with pytest.raises(NonterminalRunError):
+        store.reserve_run(_fix_claim(store), "fix", reason="initial", evidence_path="/tmp/y")
+    eval_marker = tmp_path / "eval-started"
+    fix_marker = tmp_path / "fix-started"
+    eval_dir = tmp_path / "eval-plan"
+    fix_dir = tmp_path / "fix-plan"
+    eval_dir.mkdir()
+    fix_dir.mkdir()
+    limits = SupervisionLimits(inactivity_seconds=10, execution_seconds=10, total_seconds=10)
+    eval_supervisor = launch_supervisor(state, eval_run.id, _plan(eval_dir, eval_marker), limits)
+    fix_supervisor = launch_supervisor(state, fix_run.id, _plan(fix_dir, fix_marker), limits)
+    _wait_for(eval_marker)
+    _wait_for(fix_marker)
+    active = store.nonterminal_runs()
+    assert {run.kind for run in active} == {"eval", "fix"}
+    assert len({run.supervisor.get("pid") for run in active}) == 2
+    assert eval_supervisor.pid != fix_supervisor.pid
+    # Controller restart: the store handle goes away; the supervisors do not.
+    store.close()
+    restarted = ClaimStore(state)
+    for run_id, marker in ((eval_run.id, eval_marker), (fix_run.id, fix_marker)):
+        observed = restarted.get_run(run_id)
+        assert observed is not None and observed.status == "running"
+        assert observed.process.get("pid") == int(marker.read_text(encoding="utf-8"))
+    eval_marker.with_suffix(".done").touch()
+    fix_marker.with_suffix(".done").touch()
+    eval_supervisor.wait(timeout=5)
+    fix_supervisor.wait(timeout=5)
+    for run_id, claim_id in ((eval_run.id, eval_claim), (fix_run.id, fix_claim)):
+        finished = restarted.get_run(run_id)
+        assert finished is not None and finished.status == "completed"
+        assert finished.claim_id == claim_id
+        assert len(restarted.runs_for_claim(claim_id)) == 1
+    assert not restarted.nonterminal_runs()
+    restarted.close()

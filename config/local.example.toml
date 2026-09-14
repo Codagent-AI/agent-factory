@@ -22,7 +22,31 @@ inactivity_seconds = 1800
 execution_seconds = 21600
 total_seconds = 43200
 codex_reset_fallback_seconds = 18000
+# Docker memory allowance minus running containers' usage, checked before every admission.
+memory_reservation_gib = 3
 
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"
 suite_environment = "/etc/agent-factory/suite.env"
+# One line, GH_TOKEN=<value> only; never the App installation token.
+fix_environment = "/etc/agent-factory/fix.env"
+
+[fix.limits]
+inactivity_seconds = 900
+execution_seconds = 7200
+total_seconds = 10800
+
+[fix.schedule]
+# Fix admission defaults to always open. This window only matters when a fix role
+# selects Codex, which has its own scheduling considerations.
+timezone = "America/New_York"
+poll_seconds = 60
+
+[repositories.working_clones]
+# Operator's working-copy path per configured fix target repository, consumed by
+# the merge sync (not by the controller).
+"Codagent-AI/agent-runner" = "/srv/working/agent-runner"
+"Codagent-AI/agent-skills" = "/srv/working/agent-skills"
+"Codagent-AI/agent-validator" = "/srv/working/agent-validator"
+"Codagent-AI/agent-plugin" = "/srv/working/agent-plugin"
+"Codagent-AI/agent-evals" = "/srv/working/agent-evals"
