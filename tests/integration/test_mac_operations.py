@@ -656,11 +656,13 @@ def test_doctor_gives_docker_and_authentication_time_to_complete(tmp_path: Path)
         check: bool,
         timeout: float,
         text: bool = False,
-    ) -> subprocess.CompletedProcess[bytes]:
+    ) -> subprocess.CompletedProcess[bytes] | subprocess.CompletedProcess[str]:
         commands.append((command, timeout))
         if timeout < 10:
             raise subprocess.TimeoutExpired(command, timeout)
-        return subprocess.CompletedProcess(command, 0, "" if text else b"", "" if text else b"")
+        if text:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
 
     with patch("agent_factory.operations.subprocess.run", side_effect=delayed_check):
         diagnostics = operations.doctor(config)

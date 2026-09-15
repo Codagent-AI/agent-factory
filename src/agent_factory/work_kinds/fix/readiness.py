@@ -425,6 +425,14 @@ def _gh_auth_status_diagnostic(local: LocalConfig) -> Diagnostic:
     )
 
 
+# adapter -> (auth-status command, plugin-listing command, expected plugin name).
+_ADAPTER_CHECKS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
+    "claude": (("claude", "auth", "status"), ("claude", "plugin", "list"), "codagent"),
+    "codex": (("codex", "login", "status"), ("codex", "plugin", "list", "--json"), "codagent"),
+    "cursor": (("agent", "status"), ("agent", "plugin", "marketplace", "list"), "codagent"),
+}
+
+
 def _role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     adapters = sorted(
@@ -457,17 +465,88 @@ def _role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
                 )
             )
             continue
+        checks = _ADAPTER_CHECKS.get(adapter)
+        if checks is None:
+            diagnostics.append(
+                Diagnostic(
+                    name,
+                    False,
+                    f"no host readiness probe is defined for adapter {adapter!r}",
+                    "Use a supported CLI adapter.",
+                    group="fix-host",
+                )
+            )
+            continue
+        auth_command, plugin_command, plugin_name = checks
+        auth_failure = _run_adapter_check(auth_command)
+        if auth_failure is not None:
+            diagnostics.append(
+                Diagnostic(
+                    name,
+                    False,
+                    f"{' '.join(auth_command)} failed: {auth_failure}",
+                    f"Log in to {adapter} ({executable}) on this Mac, then rerun doctor.",
+                    group="fix-host",
+                )
+            )
+            continue
+        plugin_output, plugin_error = _run_adapter_check_output(plugin_command)
+        if plugin_error is not None:
+            diagnostics.append(
+                Diagnostic(
+                    name,
+                    False,
+                    f"{' '.join(plugin_command)} failed: {plugin_error}",
+                    f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun "
+                    "doctor.",
+                    group="fix-host",
+                )
+            )
+            continue
+        if plugin_name not in plugin_output:
+            diagnostics.append(
+                Diagnostic(
+                    name,
+                    False,
+                    f"{' '.join(plugin_command)} does not list the {plugin_name} plugin",
+                    f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun "
+                    "doctor.",
+                    group="fix-host",
+                )
+            )
+            continue
         diagnostics.append(
             Diagnostic(
                 name,
                 True,
-                f"{executable} resolves to {found}; login and codagent plugin presence are "
-                "verified when the attempt runs",
+                f"{executable} is authenticated and carries the {plugin_name} plugin",
                 "",
                 group="fix-host",
             )
         )
     return diagnostics
+
+
+def _run_adapter_check(command: tuple[str, ...]) -> str | None:
+    """Run a noninteractive readiness command; return None on success, else the failure text."""
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return str(error)
+    if completed.returncode != 0:
+        return (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
+    return None
+
+
+def _run_adapter_check_output(command: tuple[str, ...]) -> tuple[str, str | None]:
+    """Run a listing command; return its combined output, or an error on failure."""
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=15)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return "", str(error)
+    if completed.returncode != 0:
+        return "", (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
+    return completed.stdout + completed.stderr, None
 
 
 def _runner_settings_diagnostic() -> Diagnostic:

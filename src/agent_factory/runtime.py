@@ -169,6 +169,9 @@ def cycle(state: Path, config_path: Path) -> None:
             diagnostics = shared_eval_diagnostics()
             if candidate_handler.kind == "eval":
                 failures = [d for d in diagnostics if not d.available]
+                memory = sandbox_memory()
+                if not memory.available:
+                    failures.append(memory)
             else:
                 failures = [d for d in diagnostics if d.group == "shared" and not d.available]
                 docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
