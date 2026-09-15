@@ -5,6 +5,7 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
 from agent_factory import cli
@@ -16,6 +17,9 @@ from agent_factory.supervisor import (
     process_start_identity,
     resume_supervisor,
     supervise,
+)
+from agent_factory.supervisor import (
+    _identity_status as supervise_identity_status,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -361,3 +365,127 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
     assert saved.result["reason"] == "Docker ownership discovery unavailable"
     assert len(store.nonterminal_runs()) == 1
     store.close()
+
+
+# -- host-mode attempts are owned by process only (INT-004) --------------------------------
+
+_HOST_ATTEMPT = """#!/bin/bash
+# Stand-in for host-run.sh: a child in the same session and Runner-like session writes.
+evidence="$1"; writes="$2"
+sleep 300 &
+echo $! > "$evidence/child.pid"
+echo $$ > "$evidence/script.pid"
+mkdir -p "$evidence/agent-runner-session"
+for i in $(seq 1 "$writes"); do
+  echo "$i" > "$evidence/agent-runner-session/state.json"
+  sleep 0.25
+done
+wait
+"""
+
+
+def _host_plan(tmp_path: Path, *, writes: int) -> tuple[ExecutionPlan, Path, Path]:
+    script = tmp_path / "host-run.sh"
+    script.write_text(_HOST_ATTEMPT)
+    script.chmod(0o700)
+    evidence = tmp_path / "attempt-1"
+    evidence.mkdir()
+    docker_log = tmp_path / "docker-calls.log"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "docker").write_text(f'#!/bin/sh\necho "$@" >> "{docker_log}"\nexit 1\n')
+    (bin_dir / "docker").chmod(0o755)
+    session = evidence / "agent-runner-session"
+    plan = ExecutionPlan(
+        ("/bin/bash", str(script), str(evidence), str(writes)),
+        str(tmp_path),
+        {},
+        (),
+        (str(evidence / "factory-suite.log"), f"glob:{session}/state.json"),
+        {"artifact_path": str(evidence), "sandbox": "host", "session_dir": str(session)},
+        False,
+    )
+    return plan, evidence, docker_log
+
+
+def _pid_alive(pid: int) -> bool:
+    return (
+        subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+        .stdout.strip()
+        .replace("Z", "")
+        != ""
+    )
+
+
+def _wait_file(path: Path, timeout: float = 5) -> None:
+    end = time.monotonic() + timeout
+    while not path.exists() and time.monotonic() < end:
+        time.sleep(0.02)
+    assert path.exists(), path
+
+
+@pytest.mark.darwin
+def test_host_attempt_progresses_through_the_session_directory_then_times_out_by_process(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    plan, evidence, docker_log = _host_plan(tmp_path, writes=8)  # ~2s of session writes
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    state = tmp_path / "state.sqlite3"
+    store = ClaimStore(state)
+    run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
+    started = time.monotonic()
+    watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.8, 30, 30))
+    try:
+        _wait_file(evidence / "child.pid")
+        child = int((evidence / "child.pid").read_text())
+        script = int((evidence / "script.pid").read_text())
+        watcher.wait(timeout=20)
+        elapsed = time.monotonic() - started
+        finished = store.get_run(run.id)
+        assert finished is not None and finished.status == "timed_out", finished
+        assert finished.result == {"timeout": "inactivity"}
+        # Eight writes 0.25s apart outlast the 0.8s inactivity limit only if session writes count.
+        assert elapsed >= 2.0, elapsed
+        assert "container" not in finished.progress
+        deadline = time.monotonic() + 3
+        while (_pid_alive(script) or _pid_alive(child)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(script) and not _pid_alive(child)
+        assert not docker_log.exists()
+    finally:
+        if watcher.poll() is None:
+            watcher.kill()
+        store.close()
+
+
+@pytest.mark.darwin
+def test_cancelling_a_host_attempt_kills_the_runner_stand_in_and_its_child(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    plan, evidence, docker_log = _host_plan(tmp_path, writes=400)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    state = tmp_path / "state.sqlite3"
+    store = ClaimStore(state)
+    run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
+    watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(30, 60, 60))
+    try:
+        _wait_file(evidence / "child.pid")
+        child = int((evidence / "child.pid").read_text())
+        script = int((evidence / "script.pid").read_text())
+        store.request_cancellation(run.id)
+        watcher.wait(timeout=20)
+        finished = store.get_run(run.id)
+        assert finished is not None and finished.status == "cancelled", finished
+        deadline = time.monotonic() + 3
+        while (_pid_alive(script) or _pid_alive(child)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not _pid_alive(script) and not _pid_alive(child)
+        assert "container" not in finished.progress
+        assert not docker_log.exists()
+        # The post-termination ownership check reports the process gone without Docker.
+        identity = finished.process
+        assert supervise_identity_status(identity) == "missing"
+    finally:
+        if watcher.poll() is None:
+            watcher.kill()
+        store.close()

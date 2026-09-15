@@ -170,18 +170,29 @@ def _credential_diagnostic(
 def _contract_diagnostic(
     local: LocalConfig, shared: SharedConfig, *, group: DiagnosticGroup = "fix-sandbox"
 ) -> Diagnostic:
-    """The packaged workflow declares the contract and the Runner branch head can run it."""
+    """The packaged workflow declares the contract and, in Docker mode, the recorded Runner
+    branch head can run it. Host admission never depends on the recorded Runner commit,
+    because that commit does not execute on the host."""
     name = "fix workflow contract"
     marker = launch.contract_marker(shared.fix.contract)
     try:
-        launch.packaged_workflow_text(shared.fix.contract)
+        launch.check_packaged_workflow(shared.fix.contract)
     except ReadinessError as error:
         return Diagnostic(
             name,
             False,
             str(error),
             f"Reinstall the factory; its packaged {launch.WORKFLOW_FILE} must start with "
-            f"{marker!r}.",
+            f"{marker!r} and take its artifact directory as the {launch.ARTIFACT_DIR_PARAM} "
+            "parameter.",
+            group=group,
+        )
+    if group == "fix-host":
+        return Diagnostic(
+            name,
+            True,
+            f"workflow contract {shared.fix.contract} is packaged with {launch.ARTIFACT_DIR_PARAM}",
+            "",
             group=group,
         )
     action = (
@@ -439,7 +450,10 @@ _ADAPTER_CHECKS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str, bool]] =
         "codagent",
         True,
     ),
-    "cursor": (("agent", "status"), ("agent", "plugin", "list"), "codagent", False),
+    # Cursor's `agent` CLI has no installed-plugin listing; `agent plugin marketplace list`
+    # names the marketplaces registered for the account, and the codagent marketplace is
+    # what the Skills plugin is installed from.
+    "cursor": (("agent", "status"), ("agent", "plugin", "marketplace", "list"), "codagent", False),
 }
 
 
@@ -597,25 +611,42 @@ def _json_names_plugin(data: object, plugin_name: str) -> bool:
     return False
 
 
+_TOP_LEVEL_SETTING = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*?)\s*$")
+
+
+def runner_user_settings(text: str) -> dict[str, str]:
+    """Top-level scalar keys of the Runner's ``settings.yaml``.
+
+    The factory has no YAML parser; the keys it checks are flat ``key: value`` lines at
+    column zero, and nested blocks (``setup:``, ``splash:``) are skipped by construction.
+    """
+    settings: dict[str, str] = {}
+    for line in text.splitlines():
+        if line.startswith((" ", "\t", "#")) or not line.strip():
+            continue
+        match = _TOP_LEVEL_SETTING.match(line.split(" #", 1)[0])
+        if match is not None:
+            settings[match.group(1)] = match.group(2).strip("'\"")
+    return settings
+
+
 def _runner_settings_diagnostic() -> Diagnostic:
     name = "fix host Runner user settings"
     from pathlib import Path as _Path
 
-    settings_path = _Path.home() / ".agent-runner" / "settings.json"
+    settings_path = _Path.home() / ".agent-runner" / "settings.yaml"
     if not settings_path.is_file():
         return Diagnostic(
             name,
             False,
             f"Runner user settings are unavailable: {settings_path}",
-            "Set autonomous_backend=headless and autonomous_permission_mode=yolo in the "
+            "Set autonomous_backend: headless and autonomous_permission_mode: yolo in the "
             "Runner user settings.",
             group="fix-host",
         )
     try:
-        import json as _json
-
-        settings = _json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
+        settings = runner_user_settings(settings_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError) as error:
         return Diagnostic(
             name,
             False,
@@ -631,7 +662,7 @@ def _runner_settings_diagnostic() -> Diagnostic:
             False,
             f"Runner user settings are autonomous_backend={backend!r}, "
             f"autonomous_permission_mode={permission!r}",
-            "Set autonomous_backend=headless and autonomous_permission_mode=yolo in the "
+            "Set autonomous_backend: headless and autonomous_permission_mode: yolo in the "
             "Runner user settings.",
             group="fix-host",
         )

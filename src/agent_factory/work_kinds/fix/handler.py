@@ -317,7 +317,12 @@ class FixHandler:
         clones = self._workspace.prepare_clones(
             claim.id, attempt, repository, mapping(claim.frozen_spec.get("revisions"))
         )
-        launch.check_runner_contract(Path(clones["runner"]), self._contract)
+        if self._local.fix.execution == "host":
+            # The recorded Runner commit does not execute on the host, so only the packaged
+            # workflow is checked here; the installed Runner is checked by host readiness.
+            launch.check_packaged_workflow(self._contract)
+        else:
+            launch.check_runner_contract(Path(clones["runner"]), self._contract)
         launch.check_target_catalog(Path(clones["repo"]))
         recorded = dict(mapping(claim.preparation.get("clones")))
         recorded[f"attempt-{attempt}"] = str(self._workspace.attempt_directory(claim.id, attempt))
@@ -411,10 +416,21 @@ class FixHandler:
         issue["attempt"] = run.attempt_number + 1
         issue["reason"] = run.reason
         launch.write_issue_input(evidence, issue)
-        launch.stage_workflow(evidence, self._contract)
         credential = launch.validated_credential_copy(
             self._local, self._local.storage_root.expanduser() / "private" / run.id / "fix.env"
         )
+        if self._local.fix.execution == "host":
+            return launch.build_host_plan(
+                run_id=run.id,
+                evidence=evidence,
+                repo_clone=Path(str(clones["repo"])),
+                credential_copy=credential,
+                roles=mapping(claim.frozen_spec.get("roles")),
+                branch=self.branch_name(claim),
+                contract=self._contract,
+                recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
+            )
+        launch.stage_workflow(evidence, self._contract)
         return launch.build_plan(
             run_id=run.id,
             evidence=evidence,
@@ -431,7 +447,14 @@ class FixHandler:
         hints = mapping(run.plan.get("ownership_hints"))
         extra = {
             key: hints[key]
-            for key in ("image_tag", "branch_name")
+            for key in (
+                "image_tag",
+                "branch_name",
+                "sandbox",
+                "runner_executable",
+                "runner_version",
+                "session_dir",
+            )
             if isinstance(hints.get(key), str)
         }
         base = AttemptResult(
@@ -474,8 +497,9 @@ class FixHandler:
                 self._store.set_claim_lifecycle(
                     claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()}
                 )
+                body = f"Needs input.\n\n{reasons}"
                 self._store.record_event(
-                    claim.id, f"{latest.id}:needs-input", f"Needs input.\n\n{reasons}"
+                    claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
                 )
             return None
         if outcome == "pull-request":
@@ -541,9 +565,10 @@ class FixHandler:
                 "from fresh clones at the recorded commits follows."
             )
         if stage == "exhausted":
-            return (
+            return _with_host_note(
                 f"Fix attempt {attempt} failed technically ({reason}); the recovery attempt is "
-                "used up, so this bug is handed back with `infra-error`."
+                "used up, so this bug is handed back with `infra-error`.",
+                stored_result,
             )
         return f"Fix attempt {attempt} settled."
 
@@ -620,10 +645,18 @@ def _reasons_text(result: Mapping[str, object]) -> str:
     return ""
 
 
+def _with_host_note(body: str, result: Mapping[str, object]) -> str:
+    """Outcome comments for host-mode runs say so; Docker-mode comments are unchanged."""
+    if result.get("sandbox") == "host":
+        return f"{body}\n\n{launch.HOST_NOTE}"
+    return body
+
+
 def _pr_message(result: Mapping[str, object]) -> str:
     pr = mapping(result.get("pr"))
     url = pr.get("url")
-    return f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
+    body = f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
+    return _with_host_note(body, result)
 
 
 def _failed_message(result: Mapping[str, object]) -> str:
@@ -635,4 +668,4 @@ def _failed_message(result: Mapping[str, object]) -> str:
         lines.append(reasons)
     if isinstance(url, str):
         lines.append(f"Pull request: {url}")
-    return "\n\n".join(lines)
+    return _with_host_note("\n\n".join(lines), result)

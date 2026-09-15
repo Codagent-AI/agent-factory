@@ -92,7 +92,7 @@ Before setting `execution = "host"`, `doctor` must pass the `fix-host` group:
 - Each CLI adapter selected by the fix roles (`claude`, `codex`, or `cursor`,
   whose installed executable is `agent`) is on PATH, logged in, and carries
   the installed codagent plugin.
-- The operator's Runner user settings (`~/.agent-runner/settings.json`) select
+- The operator's Runner user settings (`~/.agent-runner/settings.yaml`) select
   the headless backend and yolo permission mode.
 - The fix credential and packaged workflow contract, exactly as in Docker mode.
 

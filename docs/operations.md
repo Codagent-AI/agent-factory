@@ -124,6 +124,19 @@ human merge (the factory never merges its own fix PRs). See
 [installation](installation.md#host-execution-for-fixes) for the doctor checks
 host mode requires.
 
+A host attempt leaves these traces and nothing else: the packaged workflow and
+the role profiles staged into the attempt's own clone under `.agent-runner/`
+(git-ignored there and deleted with the clone at Done); the wrapper
+`host-run.sh`, a per-attempt global git config, and the askpass helper next to
+the credential copy under `<storage_root>/private/<run>/` (deleted at Done);
+`host-provenance.json` in the attempt's artifact directory, written before
+launch so it exists however the attempt ends; and the Runner session under
+`<artifact directory>/agent-runner-session/`, which the wrapper passes with
+`--session-dir` so nothing accumulates under `~/.agent-runner/projects/`. The
+persisted plan holds those paths only; the token is read by the wrapper at
+exec time and never enters SQLite, the argv, or the logs. Outcome comments for
+a host attempt say it ran on the host with the installed Runner and Skills.
+
 **Evidence.** Each fix attempt gets its own artifact directory,
 `<storage_root>/artifacts/<claim>-fix/attempt-<n>/`, mounted at `/artifacts`
 inside the sandbox. It holds the issue input the factory wrote

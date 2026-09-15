@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import cast
@@ -105,7 +106,7 @@ def test_validator_gates_capture_a_fixed_token_and_log_under_the_artifact_direct
         block = _step_block(text, step)
         assert "capture_stderr" not in block
         assert "/tmp/" not in block
-        assert ">/artifacts/logs/{{step_id}}.log" in block
+        assert ">{{artifact_dir}}/logs/{{step_id}}.log" in block
 
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
@@ -120,6 +121,70 @@ def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:
     assert scripts == set(launch.WORKFLOW_SCRIPTS)
     for name in launch.WORKFLOW_SCRIPTS:
         assert os.access(str(PACKAGE / name), os.X_OK), name
+
+
+# -- the artifact directory parameter (INT-002) -------------------------------------------
+
+
+def _constant(text: str) -> Callable[[str], str]:
+    def packaged(contract: str) -> str:
+        del contract
+        return text
+
+    return packaged
+
+
+def test_packaged_workflow_declares_artifact_dir_with_the_container_default() -> None:
+    text = launch.check_packaged_workflow(CONTRACT)
+    params = text[text.index("params:") : text.index("sessions:")]
+    assert "- name: artifact_dir" in params
+    assert "default: /artifacts" in params
+    literal = [
+        line
+        for line in text.splitlines()
+        if "/artifacts" in line and not line.strip().startswith(("#", "default:"))
+    ]
+    assert literal == []
+    for needle in (
+        'outcome_path: "{{artifact_dir}}/fix-outcome.json"',
+        "[ ! -s {{artifact_dir}}/fix-outcome.json ]",
+    ):
+        assert needle in text, needle
+
+
+def test_packaged_workflow_check_refuses_a_missing_artifact_dir_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = _workflow_text().replace(
+        "  - name: artifact_dir\n    required: false\n    default: /artifacts\n", ""
+    )
+    monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
+    with pytest.raises(ReadinessError, match="does not declare the artifact_dir parameter"):
+        launch.check_packaged_workflow(CONTRACT)
+
+
+def test_packaged_workflow_check_refuses_a_stray_container_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = _workflow_text().replace("mkdir -p {{artifact_dir}}/logs", "mkdir -p /artifacts/logs", 1)
+    monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
+    with pytest.raises(ReadinessError, match=r"hardcodes /artifacts on line\(s\) \d+"):
+        launch.check_packaged_workflow(CONTRACT)
+
+
+def test_docker_container_script_passes_the_container_artifact_directory() -> None:
+    script = launch.container_script(
+        {"lead": ("codex", "m", "high")}, branch="b", contract=CONTRACT, bootstrap_skills=False
+    )
+    assert "--param artifact_dir=/artifacts" in script
+
+
+def test_stage_workflow_into_an_arbitrary_catalog(tmp_path: Path) -> None:
+    catalog = tmp_path / "repo" / ".agent-runner" / "workflows"
+    assert launch.stage_workflow_into(catalog, CONTRACT) == catalog
+    assert (catalog / launch.WORKFLOW_FILE).read_text() == _workflow_text()
+    for name in launch.WORKFLOW_SCRIPTS:
+        assert os.access(catalog / name, os.X_OK), name
 
 
 # -- staging into the evidence directory ----------------------------------------------
