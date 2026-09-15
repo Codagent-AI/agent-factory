@@ -71,10 +71,14 @@ def validated_credential_copy(local: LocalConfig, destination: Path) -> Path:
         raise ReadinessError("the fix credential file must contain exactly one GH_TOKEN= line")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.parent.chmod(0o700)
-    destination.touch(mode=0o600, exist_ok=True)
-    destination.chmod(0o600)
-    destination.write_text(f"GH_TOKEN={match.group(1)}\n", encoding="utf-8")
-    return destination
+    return _private_file(destination, f"GH_TOKEN={match.group(1)}\n", 0o600)
+
+
+def _private_file(path: Path, text: str, mode: int) -> Path:
+    path.touch(mode=mode, exist_ok=True)
+    path.chmod(mode)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
@@ -533,13 +537,6 @@ def host_script(
     return "\n".join(lines) + "\n"
 
 
-def _private_file(path: Path, text: str, mode: int) -> Path:
-    path.touch(mode=mode, exist_ok=True)
-    path.chmod(mode)
-    path.write_text(text, encoding="utf-8")
-    return path
-
-
 def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
     exclude = repo_clone / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -574,7 +571,6 @@ def write_host_provenance(
 
 def build_host_plan(
     *,
-    run_id: str,
     evidence: Path,
     repo_clone: Path,
     credential_copy: Path,
@@ -586,7 +582,6 @@ def build_host_plan(
 ) -> ExecutionPlan:
     """Assemble the host launch: workflow and profiles in the clone, secrets and wrapper in
     the attempt's private directory, and a plan document that holds only paths."""
-    del run_id  # Host attempts build no image; the private directory is keyed by the caller.
     profiles = role_profiles(roles)
     runner = resolve_runner_executable(runner_executable)
     version = runner_version(runner)

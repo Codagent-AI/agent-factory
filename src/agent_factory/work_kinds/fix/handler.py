@@ -421,7 +421,6 @@ class FixHandler:
         )
         if self._local.fix.execution == "host":
             return launch.build_host_plan(
-                run_id=run.id,
                 evidence=evidence,
                 repo_clone=Path(str(clones["repo"])),
                 credential_copy=credential,

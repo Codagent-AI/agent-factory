@@ -205,7 +205,6 @@ class HostFixture:
         credential.write_text(f"GH_TOKEN={TOKEN}\n")
         credential.chmod(0o600)
         self.plan = launch.build_host_plan(
-            run_id=run.id,
             evidence=self.evidence,
             repo_clone=self.clone,
             credential_copy=credential,

@@ -40,7 +40,7 @@ _GROUP_ORDER: tuple[DiagnosticGroup, ...] = ("shared", "eval-sandbox", "fix-sand
 ADAPTER_EXECUTABLES: Mapping[str, str] = {"claude": "claude", "codex": "codex", "cursor": "agent"}
 
 # Every executable host-mode fixes need, beyond the role CLIs selected by configuration.
-_HOST_BASE_EXECUTABLES: tuple[str, ...] = (
+HOST_BASE_EXECUTABLES: tuple[str, ...] = (
     "agent-runner",
     "git",
     "gh",
@@ -48,6 +48,21 @@ _HOST_BASE_EXECUTABLES: tuple[str, ...] = (
     "python3",
     "agent-validator",
 )
+
+
+def configured_adapters(shared: SharedConfig) -> list[str]:
+    """The CLI adapters the configured fix roles select, in a stable order."""
+    return sorted({str(value).split(":", 1)[0] for value in shared.fix.defaults.values() if value})
+
+
+def host_executables(shared: SharedConfig | None) -> list[str]:
+    """Everything a host-mode fix needs on PATH: the base tools plus each role CLI."""
+    needed = list(HOST_BASE_EXECUTABLES)
+    for adapter in configured_adapters(shared) if shared is not None else []:
+        executable = ADAPTER_EXECUTABLES.get(adapter)
+        if executable is not None and executable not in needed:
+            needed.append(executable)
+    return needed
 
 
 @dataclass(frozen=True)
@@ -59,12 +74,16 @@ class Diagnostic:
     group: DiagnosticGroup = "shared"
 
 
-def doctor(config: LocalConfig, *, include_fix: bool = True) -> list[Diagnostic]:
+def doctor(
+    config: LocalConfig, *, include_fix: bool = True, include_informational: bool = True
+) -> list[Diagnostic]:
     """Inspect prerequisites only; this function never starts work or repairs state.
 
     ``include_fix`` is disabled by the runtime's shared-prerequisite gate: fix-kind
     readiness is diagnosed and admitted per kind through ``handler.readiness()``, and
     must never block eval admission just because a fix mirror or clone isn't ready yet.
+    ``include_informational`` is disabled by the runtime too: lines that never hold
+    admission (Docker's reclaimable space walks every image layer) are for operators.
     """
     diagnostics: list[Diagnostic] = []
     shared: SharedConfig | None = None
@@ -93,7 +112,8 @@ def doctor(config: LocalConfig, *, include_fix: bool = True) -> list[Diagnostic]
         group="eval-sandbox",
     )
     diagnostics.append(docker)
-    diagnostics.append(_docker_reclaimable_diagnostic(docker_available=docker.available))
+    if include_informational:
+        diagnostics.append(_docker_reclaimable_diagnostic(docker_available=docker.available))
     profiles = (
         {
             role: str(shared.eval.defaults.get(role, ""))
@@ -104,7 +124,7 @@ def doctor(config: LocalConfig, *, include_fix: bool = True) -> list[Diagnostic]
     )
     diagnostics.extend(model_authentication(profiles, group="eval-sandbox"))
     diagnostics.append(
-        _free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval-sandbox")
+        free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval-sandbox")
     )
     diagnostics.append(_resolved_path_diagnostic())
     diagnostics.append(_launch_agent_path_diagnostic(config, shared=shared))
@@ -339,7 +359,11 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
         ("eval repository", config.repositories.agent_evals, "and-scene harness and fixtures"),
     ]
     result: list[Diagnostic] = []
-    for checks, group in ((shared_checks, "shared"), (eval_checks, "eval-sandbox")):
+    grouped: tuple[tuple[list[tuple[str, Path, str]], DiagnosticGroup], ...] = (
+        (shared_checks, "shared"),
+        (eval_checks, "eval-sandbox"),
+    )
+    for checks, group in grouped:
         for name, path, purpose in checks:
             available = path.is_dir() and (path / ".git").exists()
             detail = (
@@ -353,7 +377,7 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
                     available,
                     detail,
                     f"Clone or repair the configured repository for {purpose}.",
-                    group=cast(DiagnosticGroup, group),
+                    group=group,
                 )
             )
     runner = config.repositories.agent_runner / "scripts" / "sandbox-run.sh"
@@ -375,7 +399,8 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
 _FIX_TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
 
 
-def _fix_group(local: LocalConfig) -> DiagnosticGroup:
+def fix_group(local: LocalConfig) -> DiagnosticGroup:
+    """The doctor group that holds fix work under its configured execution mode."""
     return "fix-host" if local.fix.execution == "host" else "fix-sandbox"
 
 
@@ -387,7 +412,7 @@ def _fix_diagnostics(
         return []
     from agent_factory.work_kinds.fix.readiness import check_readiness
 
-    group = _fix_group(local)
+    group = fix_group(local)
     # Readiness diagnostics already carry the "fix " prefix in their names.
     diagnostics = list(check_readiness(local, shared, docker_diagnostic=docker_diagnostic))
     diagnostics.extend(_mirror_diagnostics(local, shared, group=group))
@@ -400,7 +425,7 @@ def _fix_diagnostics(
             )
         )
     credential_path = local.credentials.fix_environment
-    token = _read_fix_token(credential_path)
+    token = read_fix_token(credential_path)
     if token is not None:
         diagnostics.extend(_fix_identity_diagnostics(shared, token, group=group))
     elif credential_path is not None and credential_path.is_file():
@@ -491,7 +516,7 @@ def _working_clone_diagnostics(
     return diagnostics
 
 
-def _read_fix_token(path: Path | None) -> str | None:
+def read_fix_token(path: Path | None) -> str | None:
     """Extract GH_TOKEN even from a malformed file; shape correctness is check_readiness's job."""
     if path is None or not path.is_file():
         return None
@@ -816,44 +841,20 @@ def _launch_agent_path_diagnostic(
         path_raw = environment.get("PATH", "")
         if isinstance(path_raw, str):
             path_value = path_raw
-    needed = list(_HOST_BASE_EXECUTABLES)
-    if shared is not None:
-        for value in shared.fix.defaults.values():
-            adapter = str(value).split(":", 1)[0]
-            executable = ADAPTER_EXECUTABLES.get(adapter)
-            if executable is not None and executable not in needed:
-                needed.append(executable)
-    missing = [exe for exe in needed if _which_on_path(exe, path_value) is None]
-    if missing and config.fix.execution == "host":
-        return Diagnostic(
-            name,
-            False,
-            f"{target} PATH does not resolve: {', '.join(missing)}",
-            f"Add the directories containing {', '.join(missing)} to the PATH entry in {target}.",
-            group="shared",
-        )
-    if missing:
-        return Diagnostic(
-            name,
-            True,
-            f"{target} PATH does not resolve: {', '.join(missing)} (informational; fix "
-            "execution is not host)",
-            "",
-            group="shared",
-        )
+    missing = [
+        exe for exe in host_executables(shared) if shutil.which(exe, path=path_value) is None
+    ]
+    if not missing:
+        return Diagnostic(name, True, f"{target} PATH resolves every required host executable", "")
+    detail = f"{target} PATH does not resolve: {', '.join(missing)}"
+    if config.fix.execution != "host":
+        return Diagnostic(name, True, f"{detail} (informational; fix execution is not host)", "")
     return Diagnostic(
-        name, True, f"{target} PATH resolves every required host executable", "", group="shared"
+        name,
+        False,
+        detail,
+        f"Add the directories containing {', '.join(missing)} to the PATH entry in {target}.",
     )
-
-
-def _which_on_path(executable: str, path_value: str) -> str | None:
-    for directory in path_value.split(os.pathsep):
-        if not directory:
-            continue
-        candidate = Path(directory) / executable
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
-    return None
 
 
 def fix_floor_gib(config: LocalConfig) -> float:
@@ -863,7 +864,7 @@ def fix_floor_gib(config: LocalConfig) -> float:
     return float(config.limits.minimum_free_gib)
 
 
-def _free_space(
+def free_space(
     config: LocalConfig,
     *,
     floor_gib: float | None = None,
@@ -1018,39 +1019,19 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
         "delivery_failures"
     ):
         return True
-    if _pending_sync(store, claim):
+    from agent_factory.work_kinds.fix.sync import pending_sync
+
+    if pending_sync(store, claim):
         return True
     return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
 
 
-def _pending_sync(store: ClaimStore, claim: Claim) -> bool:
-    if claim.kind != "fix":
-        return False
-    from agent_factory.work_kinds.fix.sync import _find_pr  # pyright: ignore[reportPrivateUsage]
-
-    if _find_pr(store, claim) is None:
-        return False
-    sync = claim.reporting.get("sync")
-    sync_map: Mapping[str, object] = (
-        cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
-    )
-    return not sync_map.get("completed")
-
-
 def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
-    if claim.kind != "fix" or claim.lifecycle != "settled":
-        return []
-    from agent_factory.work_kinds.fix.sync import _find_pr  # pyright: ignore[reportPrivateUsage]
+    from agent_factory.work_kinds.fix.sync import pending_sync, sync_state
 
-    if _find_pr(store, claim) is None:
+    if claim.lifecycle != "settled" or not pending_sync(store, claim):
         return []
-    sync = claim.reporting.get("sync")
-    sync_map: Mapping[str, object] = (
-        cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
-    )
-    if sync_map.get("completed"):
-        return []
-    reason = sync_map.get("blocked_reason")
+    reason = sync_state(claim).get("blocked_reason")
     detail = reason if isinstance(reason, str) else "awaiting merge"
     return [f"pending sync: {detail}"]
 

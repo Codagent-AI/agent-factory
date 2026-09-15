@@ -61,7 +61,6 @@ class Built:
         self.credential.write_text(f"GH_TOKEN={TOKEN}\n")
         self.credential.chmod(0o600)
         self.plan = launch.build_host_plan(
-            run_id="run-1",
             evidence=self.evidence,
             repo_clone=self.clone,
             credential_copy=self.credential,
@@ -191,7 +190,6 @@ def test_host_plan_stages_the_workflow_only_in_the_clone_and_excludes_it(
     assert _git(built.clone, "status", "--porcelain") == ""
     # Staging again is idempotent and does not duplicate exclude entries.
     launch.build_host_plan(
-        run_id="run-1",
         evidence=built.evidence,
         repo_clone=built.clone,
         credential_copy=built.credential,
@@ -254,7 +252,6 @@ def test_host_plan_refuses_without_an_installed_runner(
     credential.write_text(f"GH_TOKEN={TOKEN}\n")
     with pytest.raises(ReadinessError, match="agent-runner is not on PATH"):
         launch.build_host_plan(
-            run_id="run",
             evidence=tmp_path / "evidence",
             repo_clone=clone,
             credential_copy=credential,

@@ -356,11 +356,12 @@ def _check_plugin_installed(output: str, plugin_name: str, *, json_format: bool)
 
 
 def _check_role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
+    from agent_factory.operations import configured_adapters  # noqa: PLC0415
     from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
-        _role_cli_diagnostics,  # pyright: ignore[reportPrivateUsage]
+        _role_cli_diagnostic,  # pyright: ignore[reportPrivateUsage]
     )
 
-    return list(_role_cli_diagnostics(shared))
+    return [_role_cli_diagnostic(adapter) for adapter in configured_adapters(shared)]
 
 
 def test_plugin_installed_rejects_a_bare_substring_match_in_text_output() -> None:

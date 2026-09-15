@@ -457,16 +457,12 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
     execution = fix.get("execution", "docker")
     if execution not in ("docker", "host"):
         raise ConfigurationError('fix.execution must be "docker" or "host"')
-    minimum_free_gib_value = fix.get("minimum_free_gib")
+    floor = fix.get("minimum_free_gib")
     minimum_free_gib: float | None = None
-    if minimum_free_gib_value is not None:
-        if isinstance(minimum_free_gib_value, bool) or not isinstance(
-            minimum_free_gib_value, (int, float)
-        ):
+    if floor is not None:
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or floor < 0:
             raise ConfigurationError("fix.minimum_free_gib must be a non-negative number")
-        minimum_free_gib = float(minimum_free_gib_value)
-        if minimum_free_gib < 0:
-            raise ConfigurationError("fix.minimum_free_gib must be a non-negative number")
+        minimum_free_gib = float(floor)
     return FixLocalConfig(
         limits=limits, schedule=schedule, execution=execution, minimum_free_gib=minimum_free_gib
     )

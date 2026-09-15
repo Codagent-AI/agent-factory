@@ -8,25 +8,28 @@ import re
 import shutil
 import stat
 import subprocess
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import cast
 
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.operations import ADAPTER_EXECUTABLES, Diagnostic, DiagnosticGroup, fix_floor_gib
+from agent_factory.operations import (
+    ADAPTER_EXECUTABLES,
+    HOST_BASE_EXECUTABLES,
+    Diagnostic,
+    DiagnosticGroup,
+    configured_adapters,
+    fix_floor_gib,
+    fix_group,
+    free_space,
+    read_fix_token,
+)
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.work_kinds.fix import launch
 
 _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
-
-# Every executable host-mode fixes need on PATH, beyond the configured role CLIs.
-_HOST_BASE_EXECUTABLES: tuple[str, ...] = (
-    "agent-runner",
-    "git",
-    "gh",
-    "jq",
-    "python3",
-    "agent-validator",
-)
+_PROBE_TIMEOUT = 15
 
 
 def check_readiness(
@@ -39,22 +42,16 @@ def check_readiness(
     """Diagnostics gating fix admission for the configured execution mode only."""
     if not shared.fix.targets:
         return []
-    group: DiagnosticGroup = "fix-host" if local.fix.execution == "host" else "fix-sandbox"
+    group = fix_group(local)
     diagnostics: list[Diagnostic] = []
     if local.fix.execution == "host":
         diagnostics.extend(_host_diagnostics(local, shared))
     else:
         diagnostics.append(_launch_diagnostic(local, shared, docker_diagnostic=docker_diagnostic))
-    diagnostics.append(_free_space_diagnostic(local, group=group))
+    diagnostics.append(free_space(local, floor_gib=fix_floor_gib(local), group=group))
     diagnostics.append(_credential_diagnostic(local, installation_token, group=group))
-    diagnostics.append(_contract_diagnostic(local, shared, group=group))
+    diagnostics.append(_contract_diagnostic(local, shared))
     return diagnostics
-
-
-def _free_space_diagnostic(local: LocalConfig, *, group: DiagnosticGroup) -> Diagnostic:
-    from agent_factory.operations import _free_space  # pyright: ignore[reportPrivateUsage]
-
-    return _free_space(local, floor_gib=fix_floor_gib(local), group=group)
 
 
 def _launch_diagnostic(
@@ -167,13 +164,12 @@ def _credential_diagnostic(
     )
 
 
-def _contract_diagnostic(
-    local: LocalConfig, shared: SharedConfig, *, group: DiagnosticGroup = "fix-sandbox"
-) -> Diagnostic:
+def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic:
     """The packaged workflow declares the contract and, in Docker mode, the recorded Runner
     branch head can run it. Host admission never depends on the recorded Runner commit,
     because that commit does not execute on the host."""
     name = "fix workflow contract"
+    group = fix_group(local)
     marker = launch.contract_marker(shared.fix.contract)
     try:
         launch.check_packaged_workflow(shared.fix.contract)
@@ -187,7 +183,7 @@ def _contract_diagnostic(
             "parameter.",
             group=group,
         )
-    if group == "fix-host":
+    if local.fix.execution == "host":
         return Diagnostic(
             name,
             True,
@@ -231,212 +227,137 @@ def _contract_diagnostic(
 def _host_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
     """Everything host-mode fixes need: the installed Runner, host CLIs, and Runner settings."""
     diagnostics: list[Diagnostic] = []
-    diagnostics.append(_executable_diagnostic("agent-runner", ("agent-runner", "-version")))
-    diagnostics.append(_session_dir_flag_diagnostic())
-    diagnostics.append(_validate_diagnostic(shared))
-    for executable in ("git", "gh", "jq", "python3", "agent-validator"):
-        diagnostics.append(_which_diagnostic(executable))
+    runner = shutil.which("agent-runner")
+    if runner is None:
+        diagnostics.append(_missing_executable("fix host agent-runner on PATH", "agent-runner"))
+    else:
+        diagnostics.append(_runner_version_diagnostic(runner))
+        diagnostics.append(_session_dir_flag_diagnostic(runner))
+        diagnostics.append(_validate_diagnostic(runner, shared))
+    for executable in HOST_BASE_EXECUTABLES:
+        if executable != "agent-runner":
+            diagnostics.append(_which_diagnostic(executable))
     diagnostics.append(_gh_auth_status_diagnostic(local))
-    diagnostics.extend(_role_cli_diagnostics(shared))
+    diagnostics.extend(_role_cli_diagnostic(adapter) for adapter in configured_adapters(shared))
     diagnostics.append(_runner_settings_diagnostic())
     return diagnostics
+
+
+def _host_failure(name: str, detail: str, action: str) -> Diagnostic:
+    return Diagnostic(name, False, detail, action, group="fix-host")
+
+
+def _host_pass(name: str, detail: str) -> Diagnostic:
+    return Diagnostic(name, True, detail, "", group="fix-host")
+
+
+def _missing_executable(name: str, executable: str) -> Diagnostic:
+    return _host_failure(
+        name,
+        f"{executable} is not on PATH",
+        f"Install {executable} and put it on the service PATH.",
+    )
+
+
+def _probe(
+    command: tuple[str, ...], *, env: Mapping[str, str] | None = None
+) -> tuple[str, str | None]:
+    """Run a read-only probe; return its combined output and, on failure, the failure text."""
+    try:
+        # The env keyword is passed only when set so test doubles of subprocess.run that
+        # take the plain probe signature keep working.
+        completed = (
+            subprocess.run(
+                command, capture_output=True, text=True, check=False, timeout=_PROBE_TIMEOUT
+            )
+            if env is None
+            else subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_PROBE_TIMEOUT,
+                env=dict(env),
+            )
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return "", f"{' '.join(command)} could not run: {error}"
+    output = completed.stdout + completed.stderr
+    if completed.returncode != 0:
+        return output, (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
+    return output, None
 
 
 def _which_diagnostic(executable: str) -> Diagnostic:
     name = f"fix host {executable} on PATH"
     found = shutil.which(executable)
     if found is None:
-        return Diagnostic(
-            name,
-            False,
-            f"{executable} is not on PATH",
-            f"Install {executable} and put it on the service PATH.",
-            group="fix-host",
-        )
-    return Diagnostic(name, True, f"{executable} resolves to {found}", "", group="fix-host")
+        return _missing_executable(name, executable)
+    return _host_pass(name, f"{executable} resolves to {found}")
 
 
-def _executable_diagnostic(name: str, command: tuple[str, ...]) -> Diagnostic:
-    label = f"fix host {name} on PATH"
-    found = shutil.which(command[0])
-    if found is None:
-        return Diagnostic(
-            label,
-            False,
-            f"{command[0]} is not on PATH",
-            f"Install {command[0]} and put it on the service PATH.",
-            group="fix-host",
-        )
-    try:
-        completed = subprocess.run(command, capture_output=True, check=False, timeout=15)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return Diagnostic(
-            label,
-            False,
-            f"{' '.join(command)} could not run: {error}",
-            "Repair the installation.",
-            group="fix-host",
-        )
-    if completed.returncode != 0:
-        return Diagnostic(
-            label,
-            False,
-            f"{' '.join(command)} failed",
-            "Repair the installed Agent Runner.",
-            group="fix-host",
-        )
-    return Diagnostic(
-        label, True, f"{found} responds to {' '.join(command[1:])}", "", group="fix-host"
-    )
+def _runner_version_diagnostic(runner: str) -> Diagnostic:
+    name = "fix host agent-runner on PATH"
+    output, failure = _probe((runner, "-version"))
+    if failure is not None:
+        return _host_failure(name, failure, "Repair the installed Agent Runner.")
+    return _host_pass(name, f"{runner} reports version {output.strip() or 'unknown'}")
 
 
-def _session_dir_flag_diagnostic() -> Diagnostic:
+def _session_dir_flag_diagnostic(runner: str) -> Diagnostic:
     name = "fix host agent-runner --session-dir support"
-    found = shutil.which("agent-runner")
-    if found is None:
-        return Diagnostic(
+    output, failure = _probe((runner, "run", "--help"))
+    if failure is not None:
+        return _host_failure(name, failure, "Repair the installed Agent Runner.")
+    if "--session-dir" not in output:
+        return _host_failure(
             name,
-            False,
-            "agent-runner is not on PATH",
-            "Install agent-runner and put it on the service PATH.",
-            group="fix-host",
-        )
-    try:
-        completed = subprocess.run(
-            ["agent-runner", "run", "--help"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return Diagnostic(
-            name,
-            False,
-            f"agent-runner run --help could not run: {error}",
-            "Repair the installation.",
-            group="fix-host",
-        )
-    text = completed.stdout + completed.stderr
-    if "--session-dir" not in text:
-        return Diagnostic(
-            name,
-            False,
             "installed agent-runner run --help does not list --session-dir",
             "Update the installed Agent Runner to a build that supports --session-dir.",
-            group="fix-host",
         )
-    return Diagnostic(
-        name, True, "installed agent-runner supports --session-dir", "", group="fix-host"
-    )
+    return _host_pass(name, "installed agent-runner supports --session-dir")
 
 
-def _validate_diagnostic(shared: SharedConfig) -> Diagnostic:
+def _validate_diagnostic(runner: str, shared: SharedConfig) -> Diagnostic:
     name = "fix host workflow validation"
-    found = shutil.which("agent-runner")
-    if found is None:
-        return Diagnostic(
-            name,
-            False,
-            "agent-runner is not on PATH",
-            "Install agent-runner and put it on the service PATH.",
-            group="fix-host",
-        )
     try:
         workflow_text = launch.packaged_workflow_text(shared.fix.contract)
     except ReadinessError as error:
-        return Diagnostic(
-            name, False, str(error), "Reinstall the factory package.", group="fix-host"
-        )
-    import tempfile
-    from pathlib import Path as _Path
-
+        return _host_failure(name, str(error), "Reinstall the factory package.")
     with tempfile.TemporaryDirectory() as tmp:
-        workflow_path = _Path(tmp) / "factory-fix-v1.0.yaml"
+        workflow_path = Path(tmp) / launch.WORKFLOW_FILE
         workflow_path.write_text(workflow_text, encoding="utf-8")
-        try:
-            completed = subprocess.run(
-                ["agent-runner", "-validate", str(workflow_path)],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=15,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            return Diagnostic(
-                name,
-                False,
-                f"agent-runner -validate could not run: {error}",
-                "Repair the installation.",
-                group="fix-host",
-            )
-    if completed.returncode != 0:
-        return Diagnostic(
+        _output, failure = _probe((runner, "-validate", str(workflow_path)))
+    if failure is not None:
+        return _host_failure(
             name,
-            False,
-            f"agent-runner -validate rejected the packaged workflow: {completed.stderr.strip()}",
+            f"agent-runner -validate rejected the packaged workflow: {failure}",
             "Repair the packaged fix workflow or the installed Runner.",
-            group="fix-host",
         )
-    return Diagnostic(name, True, "packaged workflow validates", "", group="fix-host")
+    return _host_pass(name, "packaged workflow validates")
 
 
 def _gh_auth_status_diagnostic(local: LocalConfig) -> Diagnostic:
     name = "fix host gh auth status"
-    path = local.credentials.fix_environment
-    token = None
-    if path is not None and path.is_file():
-        try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                match = _TOKEN_LINE.match(line.strip())
-                if match:
-                    token = match.group(1)
-                    break
-        except (OSError, UnicodeError):
-            token = None
     if shutil.which("gh") is None:
-        return Diagnostic(
-            name,
-            False,
-            "gh is not on PATH",
-            "Install gh and put it on the service PATH.",
-            group="fix-host",
-        )
+        return _missing_executable(name, "gh")
+    token = read_fix_token(local.credentials.fix_environment)
     if token is None:
-        return Diagnostic(
+        return _host_failure(
             name,
-            False,
             "no GH_TOKEN found to check gh auth status against",
             "Configure credentials.fix_environment with a GH_TOKEN line.",
-            group="fix-host",
         )
-    try:
-        completed = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            check=False,
-            timeout=15,
-            env={"GH_TOKEN": token, "PATH": os.environ.get("PATH", "")},
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return Diagnostic(
+    _output, failure = _probe(
+        ("gh", "auth", "status"), env={"GH_TOKEN": token, "PATH": os.environ.get("PATH", "")}
+    )
+    if failure is not None:
+        return _host_failure(
             name,
-            False,
-            f"gh auth status could not run: {error}",
-            "Repair the gh installation.",
-            group="fix-host",
-        )
-    if completed.returncode != 0:
-        return Diagnostic(
-            name,
-            False,
             "gh auth status failed with the configured fix credential",
             "Verify the fix credential token is valid.",
-            group="fix-host",
         )
-    return Diagnostic(
-        name, True, "gh auth status succeeded with the fix credential", "", group="fix-host"
-    )
+    return _host_pass(name, "gh auth status succeeded with the fix credential")
 
 
 # adapter -> (auth-status command, installed-plugin-listing command, expected plugin name,
@@ -457,120 +378,40 @@ _ADAPTER_CHECKS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str, bool]] =
 }
 
 
-def _role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
-    diagnostics: list[Diagnostic] = []
-    adapters = sorted(
-        {str(value).split(":", 1)[0] for value in shared.fix.defaults.values() if value}
+def _role_cli_diagnostic(adapter: str) -> Diagnostic:
+    """One configured role CLI: installed, authenticated, and carrying the codagent plugin."""
+    name = f"fix host {adapter} CLI"
+    fail: Callable[[str, str], Diagnostic] = lambda detail, action: _host_failure(  # noqa: E731
+        name, detail, action
     )
-    for adapter in adapters:
-        executable = ADAPTER_EXECUTABLES.get(adapter)
-        name = f"fix host {adapter} CLI"
-        if executable is None:
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"unsupported fix role CLI: {adapter}",
-                    "Use a supported CLI adapter.",
-                    group="fix-host",
-                )
-            )
-            continue
-        found = shutil.which(executable)
-        if found is None:
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"{executable} is not on PATH",
-                    f"Install and log in to {adapter} ({executable}) and put it on the "
-                    "service PATH.",
-                    group="fix-host",
-                )
-            )
-            continue
-        checks = _ADAPTER_CHECKS.get(adapter)
-        if checks is None:
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"no host readiness probe is defined for adapter {adapter!r}",
-                    "Use a supported CLI adapter.",
-                    group="fix-host",
-                )
-            )
-            continue
-        auth_command, plugin_command, plugin_name, plugin_is_json = checks
-        auth_failure = _run_adapter_check(auth_command)
-        if auth_failure is not None:
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"{' '.join(auth_command)} failed: {auth_failure}",
-                    f"Log in to {adapter} ({executable}) on this Mac, then rerun doctor.",
-                    group="fix-host",
-                )
-            )
-            continue
-        plugin_output, plugin_error = _run_adapter_check_output(plugin_command)
-        if plugin_error is not None:
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"{' '.join(plugin_command)} failed: {plugin_error}",
-                    f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun "
-                    "doctor.",
-                    group="fix-host",
-                )
-            )
-            continue
-        if not _plugin_installed(plugin_output, plugin_name, json_format=plugin_is_json):
-            diagnostics.append(
-                Diagnostic(
-                    name,
-                    False,
-                    f"{' '.join(plugin_command)} does not list an installed {plugin_name} plugin",
-                    f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun "
-                    "doctor.",
-                    group="fix-host",
-                )
-            )
-            continue
-        diagnostics.append(
-            Diagnostic(
-                name,
-                True,
-                f"{executable} is authenticated and carries the {plugin_name} plugin",
-                "",
-                group="fix-host",
-            )
+    executable = ADAPTER_EXECUTABLES.get(adapter)
+    checks = _ADAPTER_CHECKS.get(adapter)
+    if executable is None or checks is None:
+        return fail(f"unsupported fix role CLI: {adapter}", "Use a supported CLI adapter.")
+    if shutil.which(executable) is None:
+        return fail(
+            f"{executable} is not on PATH",
+            f"Install and log in to {adapter} ({executable}) and put it on the service PATH.",
         )
-    return diagnostics
-
-
-def _run_adapter_check(command: tuple[str, ...]) -> str | None:
-    """Run a noninteractive readiness command; return None on success, else the failure text."""
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=15)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return str(error)
-    if completed.returncode != 0:
-        return (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
-    return None
-
-
-def _run_adapter_check_output(command: tuple[str, ...]) -> tuple[str, str | None]:
-    """Run a listing command; return its combined output, or an error on failure."""
-    try:
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=15)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return "", str(error)
-    if completed.returncode != 0:
-        return "", (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
-    return completed.stdout + completed.stderr, None
+    auth_command, plugin_command, plugin_name, plugin_is_json = checks
+    _output, auth_failure = _probe(auth_command)
+    if auth_failure is not None:
+        return fail(
+            f"{' '.join(auth_command)} failed: {auth_failure}",
+            f"Log in to {adapter} ({executable}) on this Mac, then rerun doctor.",
+        )
+    install_action = (
+        f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun doctor."
+    )
+    plugin_output, plugin_failure = _probe(plugin_command)
+    if plugin_failure is not None:
+        return fail(f"{' '.join(plugin_command)} failed: {plugin_failure}", install_action)
+    if not _plugin_installed(plugin_output, plugin_name, json_format=plugin_is_json):
+        return fail(
+            f"{' '.join(plugin_command)} does not list an installed {plugin_name} plugin",
+            install_action,
+        )
+    return _host_pass(name, f"{executable} is authenticated and carries the {plugin_name} plugin")
 
 
 def _plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bool:
@@ -632,9 +473,7 @@ def runner_user_settings(text: str) -> dict[str, str]:
 
 def _runner_settings_diagnostic() -> Diagnostic:
     name = "fix host Runner user settings"
-    from pathlib import Path as _Path
-
-    settings_path = _Path.home() / ".agent-runner" / "settings.yaml"
+    settings_path = Path.home() / ".agent-runner" / "settings.yaml"
     if not settings_path.is_file():
         return Diagnostic(
             name,

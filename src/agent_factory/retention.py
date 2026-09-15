@@ -10,6 +10,7 @@ from typing import cast
 
 from agent_factory.config import LocalConfig
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
+from agent_factory.work_kinds.fix.sync import pending_sync
 
 _FIX_ATTEMPT_REMOVE = (
     "logs",
@@ -35,8 +36,6 @@ def reconcile(
     cleanup = dict(claim.cleanup)
     if _observe_done(cleanup, board_status, now):
         store.set_cleanup(claim.id, cleanup)
-        claim = store.get_claim(claim.id) or claim
-        cleanup = dict(claim.cleanup)
     retention_days = local.limits.evidence_retention_days
     if not _eligible(store, claim, cleanup, board_status, now, retention_days):
         return
@@ -63,6 +62,10 @@ def _eligible(
     now: datetime,
     retention_days: int,
 ) -> bool:
+    # Cheapest checks first: an already-pruned or not-yet-eligible claim costs no queries.
+    retention = cleanup.get("retention")
+    if isinstance(retention, Mapping) and cast(Mapping[str, object], retention).get("pruned_at"):
+        return False
     if board_status != "Done":
         return False
     observed_at = cleanup.get("done_observed_at")
@@ -79,31 +82,12 @@ def _eligible(
         return False
     if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
         return False
-    if _sync_incomplete(store, claim):
+    if pending_sync(store, claim):
         return False
     # Clone, image, and credential cleanup only ever runs for settled claims (it is the
     # Review-then-Done gate), so its completion gates only them: a superseded or cancelled
     # claim has no cleanup pass that could ever mark it complete.
-    if claim.lifecycle == "settled" and cleanup.get("complete") is not True:
-        return False
-    retention = cleanup.get("retention")
-    return not (
-        isinstance(retention, Mapping) and cast(Mapping[str, object], retention).get("pruned_at")
-    )
-
-
-def _sync_incomplete(store: ClaimStore, claim: Claim) -> bool:
-    if claim.kind != "fix":
-        return False
-    from agent_factory.work_kinds.fix.sync import _find_pr  # pyright: ignore[reportPrivateUsage]
-
-    if _find_pr(store, claim) is None:
-        return False
-    sync = claim.reporting.get("sync")
-    sync_map: Mapping[str, object] = (
-        cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
-    )
-    return not sync_map.get("completed")
+    return claim.lifecycle != "settled" or cleanup.get("complete") is True
 
 
 def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: datetime) -> None:
@@ -132,16 +116,8 @@ def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: dat
 def _removal_targets(store: ClaimStore, claim: Claim) -> list[Path]:
     runs = store.runs_for_claim(claim.id)
     if claim.kind == "fix":
-        targets: list[Path] = []
-        for run in runs:
-            if run.unit_key != "fix":
-                continue
-            targets.extend(_fix_attempt_targets(run))
-        return targets
-    targets = []
-    for run in runs:
-        targets.extend(_eval_rep_targets(run))
-    return targets
+        return [t for run in runs if run.unit_key == "fix" for t in _fix_attempt_targets(run)]
+    return [t for run in runs for t in _eval_rep_targets(run)]
 
 
 def _fix_attempt_targets(run: Run) -> list[Path]:

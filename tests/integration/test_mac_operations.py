@@ -241,7 +241,7 @@ def test_doctor_helpers_report_local_io_and_spawn_failures(tmp_path: Path) -> No
 def test_doctor_reports_disk_probe_failure_without_aborting(tmp_path: Path) -> None:
     config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
     with patch("agent_factory.operations.shutil.disk_usage", side_effect=OSError("stale mount")):
-        storage = operations._free_space(config)  # pyright: ignore[reportPrivateUsage]
+        storage = operations.free_space(config)
 
     assert not storage.available
     assert "cannot inspect" in storage.detail

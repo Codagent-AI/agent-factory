@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
@@ -74,16 +75,13 @@ def cycle(state: Path, config_path: Path) -> None:
 
         # The Docker memory probe only runs when a sandbox kind is actually a candidate
         # for admission this tick, and its result is cached so it runs at most once.
-        memory_cache: list[Diagnostic] = []
-
+        @functools.cache
         def sandbox_memory() -> Diagnostic:
-            if not memory_cache:
-                probed = check_memory_headroom(local.limits.memory_reservation_gib)
-                memory_cache.append(probed)
-                store.set_setting(
-                    "runtime", "memory", {} if probed.available else {"reason": probed.detail}
-                )
-            return memory_cache[0]
+            probed = check_memory_headroom(local.limits.memory_reservation_gib)
+            store.set_setting(
+                "runtime", "memory", {} if probed.available else {"reason": probed.detail}
+            )
+            return probed
 
         for card in cards:
             claims = store.claims_for_item(card.id)
@@ -155,42 +153,19 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
-        shared_eval_cache: list[list[Diagnostic]] = []
 
+        @functools.cache
         def shared_eval_diagnostics() -> list[Diagnostic]:
-            if not shared_eval_cache:
-                shared_eval_cache.append(doctor(local, include_fix=False))
-            return shared_eval_cache[0]
+            return doctor(local, include_fix=False, include_informational=False)
 
         kind_failure_cache: dict[str, list[Diagnostic]] = {}
 
         def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
-            """Only the groups applicable to this kind under its configured mode can hold it."""
-            if candidate_handler.kind in kind_failure_cache:
-                return kind_failure_cache[candidate_handler.kind]
-            diagnostics = shared_eval_diagnostics()
-            if candidate_handler.kind == "eval":
-                failures = [d for d in diagnostics if not d.available]
-                memory = sandbox_memory()
-                if not memory.available:
-                    failures.append(memory)
-            else:
-                failures = [d for d in diagnostics if d.group == "shared" and not d.available]
-                docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
-                if isinstance(candidate_handler, FixHandler) and local.fix.execution == "docker":
-                    if docker_diagnostic is not None and not docker_diagnostic.available:
-                        failures.append(docker_diagnostic)
-                    memory = sandbox_memory()
-                    if not memory.available:
-                        failures.append(memory)
-                    handler_readiness = candidate_handler.readiness(
-                        local, shared, docker_diagnostic=docker_diagnostic
-                    )
-                else:
-                    handler_readiness = candidate_handler.readiness(local, shared)
-                failures.extend(d for d in handler_readiness if not d.available)
-            kind_failure_cache[candidate_handler.kind] = failures
-            return failures
+            if candidate_handler.kind not in kind_failure_cache:
+                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
+                )
+            return kind_failure_cache[candidate_handler.kind]
 
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
@@ -419,6 +394,31 @@ def _repair_unclaimed(
                 marker + "\nStatus restored to Ready because no evaluation is running.",
             )
         store.set_setting("status-repair", card.id, {"complete": True})
+
+
+def _kind_failures(
+    handler: WorkKindHandler,
+    local: LocalConfig,
+    shared: SharedConfig,
+    diagnostics: list[Diagnostic],
+    sandbox_memory: Callable[[], Diagnostic],
+) -> list[Diagnostic]:
+    """Only the groups applicable to this kind under its configured mode can hold it."""
+    if handler.kind == "eval":
+        failures = [d for d in diagnostics if not d.available]
+        memory = sandbox_memory()
+        return failures + ([memory] if not memory.available else [])
+    failures = [d for d in diagnostics if d.group == "shared" and not d.available]
+    if not (isinstance(handler, FixHandler) and local.fix.execution == "docker"):
+        return failures + [d for d in handler.readiness(local, shared) if not d.available]
+    docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
+    if docker_diagnostic is not None and not docker_diagnostic.available:
+        failures.append(docker_diagnostic)
+    memory = sandbox_memory()
+    if not memory.available:
+        failures.append(memory)
+    readiness = handler.readiness(local, shared, docker_diagnostic=docker_diagnostic)
+    return failures + [d for d in readiness if not d.available]
 
 
 def _should_cancel(claim: Claim) -> bool:
