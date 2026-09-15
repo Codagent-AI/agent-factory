@@ -68,8 +68,8 @@ sandboxed Runner resolves `agent-runner run factory-fix` from its user-level
 workflow catalog; a target repository that ships its own `factory-fix` project
 workflow would shadow it, and the attempt then fails for lack of an outcome
 rather than running the wrong thing. The workflow uses one shared lead session
-for triage and review, one shared implementor session for every code-changing
-step, and one shared tester session for flow testing. It runs the built-in
+for triage and review, one shared implementor session for implementation and
+validation or review repairs, and one shared tester session for flow testing. It runs the built-in
 `run-validator` immediately after implementation and again after review
 findings are addressed, then reuses `core/finalize-pr-v1.0` for the PR and CI
 loop. The configured Runner branch must accept `builtin:` sub-workflow

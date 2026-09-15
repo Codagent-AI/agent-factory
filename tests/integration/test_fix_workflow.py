@@ -74,7 +74,7 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
 
 
-def test_workflow_uses_one_shared_session_per_role_and_only_implementor_changes_code() -> None:
+def test_factory_steps_use_one_shared_session_per_role_and_implementor_for_code() -> None:
     text = _workflow_text()
     sessions = text[text.index("sessions:") : text.index("steps:")]
     assert sessions.count("- name: lead-agent") == 1
