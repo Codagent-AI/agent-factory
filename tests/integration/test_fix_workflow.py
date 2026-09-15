@@ -527,3 +527,109 @@ def test_record_triage_accepts_a_decision_wrapped_in_a_json_array(tmp_path: Path
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "true"
+
+
+def _shell_templates(text: str) -> list[str]:
+    """Every workflow field Agent Runner interpolates as shell: commands and sh: skip_ifs."""
+    templates: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        block = re.match(r"^( *)command: \|\s*$", line)
+        if block is not None:
+            indent = len(block.group(1))
+            body: list[str] = []
+            for following in lines[index + 1 :]:
+                if following.strip() and len(following) - len(following.lstrip()) <= indent:
+                    break
+                body.append(following)
+            templates.append("\n".join(body))
+            continue
+        inline = re.match(r"^ *command: (.+)$", line)
+        if inline is not None:
+            templates.append(inline.group(1))
+            continue
+        skip = re.match(r"^ *skip_if: (.+?)\s*$", line)
+        if skip is not None:
+            value = skip.group(1)
+            if value.startswith("'") and value.endswith("'"):
+                value = value[1:-1].replace("''", "'")
+            elif value.startswith('"') and value.endswith('"'):
+                value = json.loads(value)
+            if value.startswith("sh:"):
+                templates.append(value)
+    return templates
+
+
+def _single_quoted_placeholders(template: str) -> list[str]:
+    """Port of Agent Runner's shellQuoteContext: placeholders it refuses to interpolate."""
+    refused: list[str] = []
+    for match in re.finditer(r"\{\{\s*([\w.]+)\s*\}\}", template):
+        state = "bare"
+        prefix = template[: match.start()]
+        i = 0
+        while i < len(prefix):
+            char = prefix[i]
+            if state == "bare":
+                if char == "'":
+                    state = "single"
+                elif char == '"':
+                    state = "double"
+                elif char == "\\":
+                    i += 1
+            elif state == "single":
+                if char == "'":
+                    state = "bare"
+            elif state == "double":
+                if char == '"':
+                    state = "bare"
+                elif char == "\\" and i + 1 < len(prefix) and prefix[i + 1] in '$`"\\\n':
+                    i += 1
+            i += 1
+        if state == "single":
+            refused.append(match.group(1))
+    return refused
+
+
+def test_no_shell_step_interpolates_a_parameter_inside_single_quotes() -> None:
+    """Agent Runner fails a step at run time when a placeholder sits inside single quotes;
+    -validate does not catch it, so the live host attempt hit it in verify-outcome."""
+    templates = _shell_templates(_workflow_text())
+    assert any("fix-outcome.json" in template for template in templates)
+    refused = {
+        template.strip().splitlines()[0]: names
+        for template in templates
+        if (names := _single_quoted_placeholders(template))
+    }
+    assert refused == {}
+
+
+@pytest.mark.parametrize(
+    ("template", "refused"),
+    [
+        ("""printf '{{a}}'""", ["a"]),
+        ("""echo "x" '{{a}}'""", ["a"]),
+        ("""echo "it's {{a}}" """, []),
+        ("""# it's here\nrun "{{a}}\"""", ["a"]),
+        ("""python3 -c 'print(1)' "{{a}}\"""", []),
+    ],
+)
+def test_single_quote_scan_matches_agent_runner_quote_states(
+    template: str, refused: list[str]
+) -> None:
+    assert _single_quoted_placeholders(template) == refused
+
+
+def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
+    text = "\n".join(
+        (
+            "    skip_if: 'sh: test {{a}} != x'",
+            '    skip_if: "sh: test {{b}} != x"',
+            "    skip_if: sh: test {{c}} != x",
+            "    skip_if: previous_success",
+        )
+    )
+    assert _shell_templates(text) == [
+        "sh: test {{a}} != x",
+        "sh: test {{b}} != x",
+        "sh: test {{c}} != x",
+    ]

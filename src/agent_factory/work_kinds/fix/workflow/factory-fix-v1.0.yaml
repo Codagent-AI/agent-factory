@@ -245,7 +245,7 @@ steps:
       - id: annotate-pr
         continue_on_failure: true
         command: |
-          # The factory's reconciliation and merge sync read the issue reference and the
+          # Factory reconciliation and merge sync read the issue reference and the
           # claim marker from the PR body; "Refs" links without closing the issue, since
           # the factory closes it itself after the merge sync succeeds.
           if ! command -v gh >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
@@ -287,7 +287,7 @@ steps:
       if command -v jq >/dev/null 2>&1; then
         outcome=$(jq -r '.outcome // empty' "{{artifact_dir}}/fix-outcome.json")
       else
-        outcome=$(python3 -c 'import json,sys; print(json.load(open("{{artifact_dir}}/fix-outcome.json")).get("outcome",""))')
+        outcome=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outcome",""))' "{{artifact_dir}}/fix-outcome.json")
       fi
       case "$outcome" in
         pull-request|needs-input|failed) ;;
