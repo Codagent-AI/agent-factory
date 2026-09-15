@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -664,7 +665,10 @@ def build_host_plan(
             runner_executable=runner_executable,
         )
     except BaseException:
-        credential_copy.unlink(missing_ok=True)
+        # Best effort: the claim's cleanup retries the removal, and a failure here must not
+        # replace the planning error that explains why the launch never started.
+        with contextlib.suppress(OSError):
+            credential_copy.unlink(missing_ok=True)
         raise
 
 

@@ -387,3 +387,25 @@ def test_host_plan_reports_a_failed_skip_worktree_update_as_readiness(
         )
     # The launch never starts, so the token copy must not stay on disk until Done.
     assert not built.credential.exists()
+
+
+def test_host_plan_failure_keeps_its_cause_when_the_token_copy_cannot_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    shutil.rmtree(built.clone / ".agent-runner")
+    (built.clone / ".agent-runner").symlink_to(tmp_path, target_is_directory=True)
+
+    def refuse_unlink(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(Path, "unlink", refuse_unlink)
+    with pytest.raises(ReadinessError, match="symlink"):
+        launch.build_host_plan(
+            evidence=built.evidence,
+            repo_clone=built.clone,
+            credential_copy=built.credential,
+            roles=ROLES,
+            branch="factory/fix-7-claim",
+            contract=CONTRACT,
+        )
