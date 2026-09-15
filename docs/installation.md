@@ -88,6 +88,16 @@ attempt and the tracked file is restored from HEAD when the attempt ends. A
 fix that deliberately edits that file is therefore not committed in host mode;
 the file holds Runner profiles, not product code, so this is accepted.
 
+Every process a host attempt starts inherits the wrapper's environment,
+including the target repository's own validator checks and test suite. That
+environment exports `GIT_CONFIG_GLOBAL` (the attempt's private git
+configuration), `GIT_CONFIG_NOSYSTEM=1`, and `AGENT_RUNNER_NO_TUI=1`. A target
+test that points `HOME` at a temporary directory and expects git, or a spawned
+Agent Runner, to honour it must drop those variables from the environment it
+passes to child processes. Otherwise it passes in a developer's shell but fails
+under the factory, and every fix attempt on that repository stops at
+validation.
+
 The Cursor readiness check confirms the `codagent` marketplace is registered
 with the `agent` CLI, which is the strongest read-only evidence Cursor exposes;
 a Cursor without the plugin installed fails inside the attempt with evidence
