@@ -495,9 +495,9 @@ def host_script(
 ) -> str:
     """The bash wrapper that is the host plan's argv target.
 
-    It reads the private credential copy only at exec time, so the token appears in the
-    process environment of the Runner and its agents but never in the persisted plan, the
-    wrapper text, or the factory's logs.
+    It reads the private credential copy only at exec time, as data rather than shell
+    code, so the token appears in the process environment of the Runner and its agents
+    but never in the persisted plan, the wrapper text, or the factory's logs.
     """
     session_dir = evidence / SESSION_DIR_NAME
     run_command = " ".join(
@@ -518,10 +518,15 @@ def host_script(
         f"exec > >(tee -a {shlex.quote(str(evidence / 'logs' / 'agent-runner.log'))}) 2>&1",
         f"echo 'factory-fix: launching on the host' | tee -a "
         f"{shlex.quote(str(evidence / 'factory-suite.log'))}",
-        "set -a",
-        f". {shlex.quote(str(credential_copy))}",
-        "set +a",
-        'if [ -z "${GH_TOKEN:-}" ]; then echo "GH_TOKEN is not set" >&2; exit 2; fi',
+        # The credential copy is read as data, never sourced: a token value is exported
+        # literally even if it contains shell syntax.
+        f"IFS= read -r credential_line < {shlex.quote(str(credential_copy))} || true",
+        'case "$credential_line" in',
+        "  GH_TOKEN=?*) ;;",
+        '  *) echo "the credential copy has no GH_TOKEN line" >&2; exit 2 ;;',
+        "esac",
+        'export GH_TOKEN="${credential_line#GH_TOKEN=}"',
+        "unset credential_line",
         'export GITHUB_TOKEN="$GH_TOKEN"',
         f"export GIT_CONFIG_GLOBAL={shlex.quote(str(gitconfig))}",
         "export GIT_CONFIG_NOSYSTEM=1",

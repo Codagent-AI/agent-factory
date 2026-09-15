@@ -139,8 +139,8 @@ steps:
       # private artifact directory rather than a shared, predictable /tmp path.
       - id: check-validator
         command: |
-          mkdir -p {{artifact_dir}}/logs
-          if agent-validator run --report >{{artifact_dir}}/logs/{{step_id}}.log 2>&1; then
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then
             printf 'passed'
           else
             echo "validator failed; see {{artifact_dir}}/logs/{{step_id}}.log" >&2
@@ -200,8 +200,8 @@ steps:
       - id: recheck-validator
         skip_if: 'sh: test "{{validator_status}}" != passed || test "{{regressions}}" != found'
         command: |
-          mkdir -p {{artifact_dir}}/logs
-          if agent-validator run --report >{{artifact_dir}}/logs/{{step_id}}.log 2>&1; then
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then
             printf 'passed'
           else
             echo "validator failed after the regression repair; see {{artifact_dir}}/logs/{{step_id}}.log" >&2
@@ -280,12 +280,12 @@ steps:
 
   - id: verify-outcome
     command: |
-      if [ ! -s {{artifact_dir}}/fix-outcome.json ]; then
+      if [ ! -s "{{artifact_dir}}/fix-outcome.json" ]; then
         echo "fix-outcome.json was not written; treating this run as a technical failure" >&2
         exit 1
       fi
       if command -v jq >/dev/null 2>&1; then
-        outcome=$(jq -r '.outcome // empty' {{artifact_dir}}/fix-outcome.json)
+        outcome=$(jq -r '.outcome // empty' "{{artifact_dir}}/fix-outcome.json")
       else
         outcome=$(python3 -c 'import json,sys; print(json.load(open("{{artifact_dir}}/fix-outcome.json")).get("outcome",""))')
       fi

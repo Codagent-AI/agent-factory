@@ -106,7 +106,7 @@ def test_validator_gates_capture_a_fixed_token_and_log_under_the_artifact_direct
         block = _step_block(text, step)
         assert "capture_stderr" not in block
         assert "/tmp/" not in block
-        assert ">{{artifact_dir}}/logs/{{step_id}}.log" in block
+        assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in block
 
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
@@ -147,7 +147,7 @@ def test_packaged_workflow_declares_artifact_dir_with_the_container_default() ->
     assert literal == []
     for needle in (
         'outcome_path: "{{artifact_dir}}/fix-outcome.json"',
-        "[ ! -s {{artifact_dir}}/fix-outcome.json ]",
+        '[ ! -s "{{artifact_dir}}/fix-outcome.json" ]',
     ):
         assert needle in text, needle
 
@@ -166,7 +166,10 @@ def test_packaged_workflow_check_refuses_a_missing_artifact_dir_parameter(
 def test_packaged_workflow_check_refuses_a_stray_container_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    text = _workflow_text().replace("mkdir -p {{artifact_dir}}/logs", "mkdir -p /artifacts/logs", 1)
+    text = _workflow_text().replace(
+        'mkdir -p "{{artifact_dir}}/logs"', "mkdir -p /artifacts/logs", 1
+    )
+    assert text != _workflow_text()
     monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
     with pytest.raises(ReadinessError, match=r"hardcodes /artifacts on line\(s\) \d+"):
         launch.check_packaged_workflow(CONTRACT)

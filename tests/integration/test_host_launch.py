@@ -259,3 +259,21 @@ def test_host_plan_refuses_without_an_installed_runner(
             branch="b",
             contract=CONTRACT,
         )
+
+
+def test_host_wrapper_exports_the_token_as_data_not_shell_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    marker = tmp_path / "injected"
+    hostile = f"abc$(touch {marker})`touch {marker}`;touch {marker}"
+    built.credential.write_text(f"GH_TOKEN={hostile}\n")
+    seen = tmp_path / "seen-token.txt"
+    # A stand-in Runner that records the token it was handed instead of running anything.
+    built.runner.write_text(f"#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" > {seen}\n")
+    done = subprocess.run(
+        ["/bin/bash", str(built.wrapper)], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert seen.read_text() == hostile
+    assert not marker.exists(), "token contents were executed by the wrapper"
