@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
@@ -84,6 +86,15 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
     assert shared.fix.branches.runner == "main"
     assert shared.fix.branches.skills == "main"
     assert shared.fix.contract == "factory-fix/1"
+
+
+def test_deployed_fix_defaults_match_the_factory_role_split() -> None:
+    shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
+    assert shared.fix.defaults == {
+        "lead": "claude:fable:medium",
+        "implementor": "codex:gpt-5.6-terra:medium",
+        "tester": "codex:gpt-5.6-luna:medium",
+    }
 
 
 def test_shared_config_parses_fix_targets_and_defaults() -> None:
@@ -193,4 +204,69 @@ poll_seconds = 60
 def test_local_config_rejects_malformed_fix_limit() -> None:
     text = _LOCAL_BASE + "\n[fix.limits]\ninactivity_seconds = -1\n"
     with pytest.raises(ConfigurationError, match="fix.limits.inactivity_seconds"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_defaults_fix_execution_to_docker() -> None:
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    assert local.fix.execution == "docker"
+    assert local.fix.minimum_free_gib is None
+
+
+def test_local_config_parses_fix_execution_host() -> None:
+    text = _LOCAL_BASE + '\n[fix]\nexecution = "host"\n'
+    local = LocalConfig.from_toml(text)
+    assert local.fix.execution == "host"
+
+
+def test_local_config_rejects_unknown_fix_execution() -> None:
+    text = _LOCAL_BASE + '\n[fix]\nexecution = "vm"\n'
+    with pytest.raises(ConfigurationError, match="fix.execution"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_parses_fix_minimum_free_gib() -> None:
+    text = _LOCAL_BASE + "\n[fix]\nminimum_free_gib = 2.5\n"
+    local = LocalConfig.from_toml(text)
+    assert local.fix.minimum_free_gib == 2.5
+
+
+def test_local_config_rejects_negative_fix_minimum_free_gib() -> None:
+    text = _LOCAL_BASE + "\n[fix]\nminimum_free_gib = -1\n"
+    with pytest.raises(ConfigurationError, match="fix.minimum_free_gib"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_accepts_eval_execution_docker() -> None:
+    text = _LOCAL_BASE + '\n[eval]\nexecution = "docker"\n'
+    local = LocalConfig.from_toml(text)
+    assert local is not None
+
+
+def test_local_config_rejects_eval_execution_host() -> None:
+    text = _LOCAL_BASE + '\n[eval]\nexecution = "host"\n'
+    with pytest.raises(ConfigurationError, match="eval.execution"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_defaults_evidence_retention_days() -> None:
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    assert local.limits.evidence_retention_days == 14
+
+
+def test_local_config_parses_evidence_retention_days() -> None:
+    text = _LOCAL_BASE.replace(
+        "[limits]\nminimum_free_gib = 8",
+        "[limits]\nminimum_free_gib = 8\nevidence_retention_days = 30",
+    )
+    local = LocalConfig.from_toml(text)
+    assert local.limits.evidence_retention_days == 30
+
+
+def test_local_config_rejects_non_positive_evidence_retention_days() -> None:
+    text = _LOCAL_BASE.replace(
+        "[limits]\nminimum_free_gib = 8",
+        "[limits]\nminimum_free_gib = 8\nevidence_retention_days = 0",
+    )
+    with pytest.raises(ConfigurationError, match="evidence_retention_days"):
         LocalConfig.from_toml(text)

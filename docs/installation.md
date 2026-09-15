@@ -67,11 +67,82 @@ Each attempt stages it into the attempt's artifact directory, where the
 sandboxed Runner resolves `agent-runner run factory-fix` from its user-level
 workflow catalog; a target repository that ships its own `factory-fix` project
 workflow would shadow it, and the attempt then fails for lack of an outcome
-rather than running the wrong thing. The workflow calls the Runner's built-in
-`run-validator` and `finalize-pr` workflows, so the configured Runner branch
-must accept `builtin:` sub-workflow references and the `ci_fix_cycles`
-parameter on `finalize-pr`; `doctor` checks the parameter so an incompatible
-Runner revision is caught before a fix is admitted, not after.
+rather than running the wrong thing. The workflow uses one shared lead session
+for triage and review, one shared implementor session for implementation and
+validation or review repairs, and one shared tester session for flow testing. It runs the built-in
+`run-validator` immediately after implementation and again after review
+findings are addressed, then reuses `core/finalize-pr-v1.0` for the PR and CI
+loop. The configured Runner branch must accept `builtin:` sub-workflow
+references and the `ci_fix_cycles` parameter on that finalizer; `doctor` checks
+the parameter so an incompatible Runner revision is caught before a fix is
+admitted, not after.
+
+### Host execution for fixes
+
+`[fix] execution` selects how fix attempts run: `"docker"` (default) runs the
+packaged fix workflow in the same Docker sandbox as evals; `"host"` runs the
+installed Agent Runner directly on this Mac, as the operator's own user, with
+the operator's real HOME, git configuration where the wrapper does not
+override it, and installed CLI logins. Host mode never writes anything
+user-level; it stages the workflow into the attempt's own clone.
+
+Every attempt, host or Docker, runs the workflow with `--profile factory`. When
+the target repository itself tracks `.agent-runner/config.yaml` (as
+Codagent-AI/agent-runner does), the launcher adds its `factory` profile set to
+that file rather than replacing it, so profile sets the target's own tests
+select stay available. The edited file is hidden from git for the attempt and
+restored from HEAD when the attempt ends. A fix that deliberately edits that
+file is therefore not committed; the file holds Runner profiles, not product
+code, so this is accepted. A tracked file that declares `profiles` in flow
+style, or already defines a `factory` set, holds the attempt with a readiness
+error instead.
+
+Every process a host attempt starts inherits the wrapper's environment,
+including the target repository's own validator checks and test suite. That
+environment exports `GIT_CONFIG_GLOBAL` (the attempt's private git
+configuration), `GIT_CONFIG_NOSYSTEM=1`, and `AGENT_RUNNER_NO_TUI=1`. A target
+test that points `HOME` at a temporary directory and expects git, or a spawned
+Agent Runner, to honour it must drop those variables from the environment it
+passes to child processes. Otherwise it passes in a developer's shell but fails
+under the factory, and every fix attempt on that repository stops at
+validation.
+
+The Cursor readiness check confirms the `codagent` marketplace is registered
+with the `agent` CLI, which is the strongest read-only evidence Cursor exposes;
+a Cursor without the plugin installed fails inside the attempt with evidence
+rather than as a readiness hold.
+
+Before setting `execution = "host"`, `doctor` must pass the `fix-host` group:
+
+- The installed `agent-runner` resolves on PATH, its `-version` succeeds, and
+  `agent-runner run --help` lists `--session-dir` (Codagent-AI/agent-runner
+  PR #90 or later).
+- `git`, `gh`, `jq`, `python3`, and `agent-validator` resolve on PATH.
+- `gh auth status` succeeds using the configured fix credential.
+- Each CLI adapter selected by the fix roles (`claude`, `codex`, or `cursor`,
+  whose installed executable is `agent`) is on PATH, logged in, and carries
+  the installed codagent plugin.
+- The operator's Runner user settings (`~/.agent-runner/settings.yaml`) select
+  the headless backend and yolo permission mode.
+- The fix credential and packaged workflow contract, exactly as in Docker mode.
+
+The service (not just an interactive shell) needs every one of those
+executables on its own PATH: fill the LaunchAgent's `__PATH__` token (below)
+with a PATH that resolves `agent-runner`, `gh`, and each configured role CLI,
+not just the interactive shell's PATH. `doctor` checks both the PATH it
+resolved against and, when the LaunchAgent is installed, the PATH baked into
+that installed definition, so a passing interactive `doctor` run cannot hide a
+service that would fail to find `agent-runner` at login.
+
+`fix.minimum_free_gib` sets an optional disk floor for fix admission lower
+than the shared `limits.minimum_free_gib`; when unset, fix uses the shared
+floor. Host mode has no separate Docker memory requirement of its own — the
+shared reservation only gates sandboxed (Docker-mode) attempts.
+
+See [operations](operations.md#the-fix-work-kind) for what host mode keeps and
+gives up: the separate fix credential and the target repositories' PR-only
+rulesets are conventions the launched process follows, not boundaries an
+autonomous host agent cannot cross.
 
 ## Configuration
 
@@ -89,6 +160,11 @@ Copy `config/local.example.toml` to a private location, such as
 - `credentials.fix_environment`, and `[fix]` settings for limits and the fix
   admission window (see the versioned `[fix]` table in the shared TOML for
   targets, branches, and role defaults).
+- `limits.evidence_retention_days` (default 14): how long a settled claim's
+  evidence is kept before Factory prunes it. See
+  [operations](operations.md#service-management-and-storage) for exactly what
+  it keeps and removes, and `status --all` versus plain `status` for
+  inspecting settled claims after they are hidden from the default view.
 
 The shared TOML is versioned deployment data: organization/repositories,
 Project destination and logical field mappings, routing, defaults, and the
@@ -121,6 +197,10 @@ The template tokens map as follows:
 - `__ROOT__`: `/absolute/path/to/.agent-factory`
 - `__LOG__`: `/absolute/path/to/.agent-factory/logs/controller.log`
 - `__CREDENTIAL__`: `/absolute/path/to/credentials/github-app.pem`
+- `__PATH__`: a colon-separated PATH that resolves `agent-runner`, `git`,
+  `gh`, `jq`, `python3`, `agent-validator`, and each CLI adapter selected by
+  the fix roles (needed only when `[fix] execution = "host"`, but harmless to
+  fill in either mode; `doctor` checks it either way)
 
 Keep those paths explicit: launchd does not inherit an interactive shell's PATH,
 working directory, or credentials. Validate the rendered file and load it for

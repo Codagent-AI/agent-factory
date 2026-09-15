@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -147,6 +147,7 @@ class LimitsConfig:
     total_seconds: int
     codex_reset_fallback_seconds: int
     memory_reservation_gib: int = 3
+    evidence_retention_days: int = 14
 
 
 @dataclass(frozen=True)
@@ -169,6 +170,8 @@ class FixLocalConfig:
 
     limits: FixLimitsConfig = field(default_factory=FixLimitsConfig)
     schedule: ScheduleConfig | None = None
+    execution: Literal["docker", "host"] = "docker"
+    minimum_free_gib: float | None = None
 
 
 @dataclass(frozen=True)
@@ -231,6 +234,12 @@ class LocalConfig:
             key: _path(working_clones_raw, key, "repositories.working_clones")
             for key in working_clones_raw
         }
+        eval_local = _table(document.get("eval", {}), "eval")
+        eval_execution = eval_local.get("execution", "docker")
+        if eval_execution != "docker":
+            raise ConfigurationError(
+                'eval.execution only supports "docker"; eval host execution is unsupported'
+            )
         fix_environment_value = credentials.get("fix_environment")
         fix_environment = (
             _path(credentials, "fix_environment", "credentials")
@@ -257,6 +266,9 @@ class LocalConfig:
                 ),
                 memory_reservation_gib=_optional_positive_int(
                     limits, "memory_reservation_gib", "limits", 3
+                ),
+                evidence_retention_days=_optional_positive_int(
+                    limits, "evidence_retention_days", "limits", 14
                 ),
             ),
             credentials=CredentialsConfig(
@@ -442,4 +454,15 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
             schedule = ScheduleConfig(timezone, poll_seconds, start_hour, stop_hour)
         else:
             schedule = ScheduleConfig.always(timezone, poll_seconds)
-    return FixLocalConfig(limits=limits, schedule=schedule)
+    execution = fix.get("execution", "docker")
+    if execution not in ("docker", "host"):
+        raise ConfigurationError('fix.execution must be "docker" or "host"')
+    floor = fix.get("minimum_free_gib")
+    minimum_free_gib: float | None = None
+    if floor is not None:
+        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or floor < 0:
+            raise ConfigurationError("fix.minimum_free_gib must be a non-negative number")
+        minimum_free_gib = float(floor)
+    return FixLocalConfig(
+        limits=limits, schedule=schedule, execution=execution, minimum_free_gib=minimum_free_gib
+    )

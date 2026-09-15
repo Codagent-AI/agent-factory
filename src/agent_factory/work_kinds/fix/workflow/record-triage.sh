@@ -27,11 +27,64 @@ if not isinstance(decision_raw, str):
     print("record-triage: decision must be a string", file=sys.stderr)
     sys.exit(2)
 
+
+
+def decision_objects(text):
+    """Every JSON object in the captured text that has the decision's shape.
+
+    The prompt asks for exactly one object and nothing else, but real agents still
+    add prose or a markdown fence around it. A single left-to-right pass decodes at
+    each opening brace and skips past what it decoded; only objects carrying a boolean
+    'fixable', a 'reasons' list, and a 'plan' string count as candidates, so an
+    illustrative object in prose is ignored
+    and the caller can refuse an answer that offers more than one decision.
+    """
+    decoder = json.JSONDecoder()
+    candidates = []
+    index = text.find("{")
+    while index != -1:
+        try:
+            value, end = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            index = text.find("{", index + 1)
+            continue
+        if is_decision(value):
+            candidates.append(value)
+        index = text.find("{", max(end, index + 1))
+    return candidates
+
+
+def is_decision(value):
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("fixable"), bool)
+        and isinstance(value.get("reasons"), list)
+        and isinstance(value.get("plan"), str)
+    )
+
+
 try:
     decision = json.loads(decision_raw)
+    parse_error = None
 except json.JSONDecodeError as exc:
-    print(f"record-triage: triage decision is not valid JSON: {exc}", file=sys.stderr)
-    sys.exit(2)
+    decision = None
+    parse_error = exc
+
+# Valid JSON that is not itself a decision (an array holding one, say) gets the same
+# search as prose does.
+if not is_decision(decision):
+    candidates = decision_objects(decision_raw)
+    if len(candidates) > 1:
+        print(
+            f"record-triage: triage decision is ambiguous: {len(candidates)} decision objects",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    if candidates:
+        decision = candidates[0]
+    elif parse_error is not None:
+        print(f"record-triage: triage decision is not valid JSON: {parse_error}", file=sys.stderr)
+        sys.exit(2)
 
 if not isinstance(decision, dict):
     print("record-triage: triage decision must be a JSON object", file=sys.stderr)
@@ -63,5 +116,6 @@ if not fixable:
         json.dump(outcome, f)
         f.write("\n")
 
-print("true" if fixable else "false")
+# Agent Runner keeps a text capture byte for byte, and skip_if compares it to "true".
+sys.stdout.write("true" if fixable else "false")
 PY
