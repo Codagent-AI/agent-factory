@@ -119,8 +119,15 @@ def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
-    for needle in ("Refs #", "agent-factory:claim:", "gh pr edit"):
+    for needle in ("Refs #", "agent-factory:claim:"):
         assert needle in block
+    # `gh pr edit` also queries projectItems over GraphQL, which a fine-grained fix
+    # token cannot read, so the body is read and written through the REST pulls API.
+    assert "gh pr edit" not in block
+    assert "gh pr view" not in block
+    # A PR with no description has a null body, which must not become the text "null".
+    assert 'gh api "repos/{owner}/{repo}/pulls/$number" --jq \'.body // ""\'' in block
+    assert 'gh api -X PATCH "repos/{owner}/{repo}/pulls/$number" -F body=@-' in block
 
 
 def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:

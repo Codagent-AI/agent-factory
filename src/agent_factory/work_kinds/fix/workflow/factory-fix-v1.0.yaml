@@ -319,7 +319,7 @@ steps:
           number=$(gh pr list --head "$branch" --state open --json number --limit 1 \
             | python3 -c 'import json,sys; v=json.load(sys.stdin); print(v[0]["number"] if v else "")')
           [ -n "$number" ] || exit 0
-          body=$(gh pr view "$number" --json body -q .body)
+          body=$(gh api "repos/{owner}/{repo}/pulls/$number" --jq '.body // ""')
           case "$body" in
             *"agent-factory:claim:"*) exit 0 ;;
           esac
@@ -330,7 +330,9 @@ steps:
           print(f"<!-- agent-factory:claim:{issue.get('claim_id', '')} -->")
           PY
           )
-          printf '%s\n\n%s\n' "$header" "$body" | gh pr edit "$number" --body-file -
+          # REST, not the gh PR editor: it reads projectItems over GraphQL, which a fix token cannot.
+          printf '%s\n\n%s\n' "$header" "$body" \
+            | gh api -X PATCH "repos/{owner}/{repo}/pulls/$number" -F body=@- >/dev/null
 
   - id: record-outcome
     script: record-outcome.sh
