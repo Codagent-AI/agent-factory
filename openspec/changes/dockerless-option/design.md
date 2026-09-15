@@ -155,7 +155,7 @@ Two `shared` diagnostics close the gap between an interactive `doctor` and the s
 
 ## Migration Plan
 
-1. Land and build the Runner `--session-dir` PR.
+1. Land and build the Runner `--session-dir` PR. Done: Codagent-AI/agent-runner PR #90 (commit `ca87072`) is merged and the installed binary lists the flag.
 2. Ship this change. Default `fix.execution = "docker"` keeps behaviour identical for existing deployments; the only visible differences are grouped doctor output, live-only status, the PATH token in the plist template for the next manual render, and retention starting its 14-day clock from first observation.
 3. Operators opting into host mode set `[fix] execution = "host"`, re-render and reload the LaunchAgent with the PATH filled in, and check `doctor` until the `fix-host` group passes.
 4. Rollback is setting `execution` back to `docker`; running host attempts finish in host mode, later attempts use Docker. No data migration to reverse.
