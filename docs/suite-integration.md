@@ -50,12 +50,16 @@ Run it on the Mac holding the files. The command is valid while the item remains
 in Review; Factory never performs the human rating. Product failures and
 incomplete results intentionally receive no review command.
 
-Evidence, candidate branches, draft PRs, controller logs, and SQLite history
-are retained until operator-managed cleanup. After a reviewed item is observed
-in Done, Factory removes only its recorded Runner, Skills, and evals worktrees.
-It records partial failures and retries later; it does not prune evidence or
-touch source checkouts, other claims, candidate branches, or PRs. Before manual
-storage cleanup, confirm no remaining item is Running, waiting, or in Review.
+Candidate branches, draft PRs, controller logs, and SQLite history are never
+deleted by Factory. After a reviewed item is observed in Done, Factory removes
+only its recorded Runner, Skills, and evals worktrees; it records partial
+failures and retries later, and does not touch source checkouts, other
+claims, candidate branches, or PRs. Evidence under the artifact root remains
+available until the evidence retention rule in
+[operations](operations.md#service-management-and-storage) removes it —
+logs, session state, and agent output, keeping each repetition's result and
+provenance records. Before any operator-managed cleanup outside that rule,
+confirm no remaining item is Running, waiting, or in Review.
 
 Candidate environment files follow the selected Runner launcher's literal
 `NAME=value` format: quotes, backslashes, spaces after `=`, and inline `#` are

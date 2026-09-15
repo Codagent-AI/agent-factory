@@ -197,6 +197,94 @@ suite_environment = "{tmp_path / "missing-suite.env"}"
     return LocalConfig.from_file(local_path)
 
 
+def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_rest(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+
+    running = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp1", {}))
+    store.reserve_run(running.id, "rep-1", reason="initial", evidence_path="/tmp/ev")
+
+    blocked = store.create_claim(ClaimDraft("example/work", 2, "I2", "P2", "fix", "fp2", {}))
+    run = store.reserve_run(blocked.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(run.id, execution_status="completed", result={"outcome": "needs-input"})
+    store.set_claim_lifecycle(blocked.id, "blocked", {})
+
+    review_incomplete = store.create_claim(
+        ClaimDraft("example/work", 3, "I3", "P3", "fix", "fp3", {})
+    )
+    run = store.reserve_run(review_incomplete.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(run.id, execution_status="completed", result={})
+    store.set_claim_lifecycle(review_incomplete.id, "settled", {"verdict": "pending-human-review"})
+    store.set_cleanup(review_incomplete.id, {"review_observed": True, "complete": False})
+
+    done_pending_report = store.create_claim(
+        ClaimDraft("example/work", 4, "I4", "P4", "fix", "fp4", {})
+    )
+    run = store.reserve_run(
+        done_pending_report.id, "fix", reason="initial", evidence_path="/tmp/ev"
+    )
+    store.finish_run(run.id, execution_status="completed", result={})
+    store.set_claim_lifecycle(done_pending_report.id, "settled", {"verdict": "failed"})
+    store.set_cleanup(done_pending_report.id, {"review_observed": True, "complete": True})
+    store.record_event(done_pending_report.id, "handoff", "pending")
+
+    done_pending_sync = store.create_claim(
+        ClaimDraft("example/work", 5, "I5", "P5", "fix", "fp5", {})
+    )
+    run = store.reserve_run(done_pending_sync.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={"pr": {"url": "https://github.com/example/work/pull/9", "number": 9}},
+    )
+    store.set_claim_lifecycle(done_pending_sync.id, "settled", {"verdict": "pending-human-review"})
+    store.set_cleanup(done_pending_sync.id, {"review_observed": True, "complete": True})
+
+    fully_settled = store.create_claim(ClaimDraft("example/work", 6, "I6", "P6", "fix", "fp6", {}))
+    run = store.reserve_run(fully_settled.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(run.id, execution_status="completed", result={})
+    store.set_claim_lifecycle(fully_settled.id, "settled", {"verdict": "failed"})
+    store.set_cleanup(fully_settled.id, {"review_observed": True, "complete": True})
+
+    superseded_original = store.create_claim(
+        ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp7", {})
+    )
+    run = store.reserve_run(
+        superseded_original.id, "fix", reason="initial", evidence_path="/tmp/ev"
+    )
+    store.finish_run(run.id, execution_status="completed", result={})
+    replacement = store.supersede_and_create(
+        superseded_original.id, ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp7b", {})
+    )
+    run = store.reserve_run(replacement.id, "fix", reason="initial", evidence_path="/tmp/ev2")
+    store.finish_run(run.id, execution_status="completed", result={})
+    store.set_claim_lifecycle(replacement.id, "settled", {"verdict": "failed"})
+    store.set_cleanup(replacement.id, {"review_observed": True, "complete": True})
+
+    default_text = status(store)
+    assert "example/evals#1" in default_text
+    assert "example/work#2" in default_text
+    assert "example/work#3" in default_text
+    assert "example/work#4" in default_text
+    assert "example/work#5" in default_text
+    assert "example/work#6" not in default_text
+    assert "example/work#7" not in default_text
+    assert "hidden: 3" in default_text
+
+    all_text = status(store, include_all=True)
+    for repo_line in (
+        "example/evals#1",
+        "example/work#2",
+        "example/work#3",
+        "example/work#4",
+        "example/work#5",
+        "example/work#6",
+        "example/work#7",
+    ):
+        assert repo_line in all_text
+
+
 def test_status_shows_quota_hold_does_not_block_fix_when_fix_uses_another_provider(
     tmp_path: Path,
 ) -> None:

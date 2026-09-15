@@ -236,3 +236,26 @@ def test_local_config_rejects_eval_execution_host() -> None:
     text = _LOCAL_BASE + '\n[eval]\nexecution = "host"\n'
     with pytest.raises(ConfigurationError, match="eval.execution"):
         LocalConfig.from_toml(text)
+
+
+def test_local_config_defaults_evidence_retention_days() -> None:
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    assert local.limits.evidence_retention_days == 14
+
+
+def test_local_config_parses_evidence_retention_days() -> None:
+    text = _LOCAL_BASE.replace(
+        "[limits]\nminimum_free_gib = 8",
+        "[limits]\nminimum_free_gib = 8\nevidence_retention_days = 30",
+    )
+    local = LocalConfig.from_toml(text)
+    assert local.limits.evidence_retention_days == 30
+
+
+def test_local_config_rejects_non_positive_evidence_retention_days() -> None:
+    text = _LOCAL_BASE.replace(
+        "[limits]\nminimum_free_gib = 8",
+        "[limits]\nminimum_free_gib = 8\nevidence_retention_days = 0",
+    )
+    with pytest.raises(ConfigurationError, match="evidence_retention_days"):
+        LocalConfig.from_toml(text)

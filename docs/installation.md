@@ -130,6 +130,11 @@ Copy `config/local.example.toml` to a private location, such as
 - `credentials.fix_environment`, and `[fix]` settings for limits and the fix
   admission window (see the versioned `[fix]` table in the shared TOML for
   targets, branches, and role defaults).
+- `limits.evidence_retention_days` (default 14): how long a settled claim's
+  evidence is kept before Factory prunes it. See
+  [operations](operations.md#service-management-and-storage) for exactly what
+  it keeps and removes, and `status --all` versus plain `status` for
+  inspecting settled claims after they are hidden from the default view.
 
 The shared TOML is versioned deployment data: organization/repositories,
 Project destination and logical field mappings, routing, defaults, and the

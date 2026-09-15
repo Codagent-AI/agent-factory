@@ -25,7 +25,7 @@ from agent_factory.github import (
     InstallationTokenProvider,
     SubprocessGhRunner,
 )
-from agent_factory.store import Claim, ClaimStore, Event
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Event
 from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
 
 if TYPE_CHECKING:
@@ -177,11 +177,18 @@ def format_doctor(diagnostics: Iterable[Diagnostic]) -> str:
     return "\n".join(lines)
 
 
-def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
+def status(
+    store: ClaimStore, config: LocalConfig | None = None, *, include_all: bool = False
+) -> str:
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
-    claims = store.all_claims()
+    all_claims = store.all_claims()
+    if include_all:
+        claims = all_claims
+    else:
+        claims = [claim for claim in all_claims if _is_live(store, claim)]
+        lines.append(f"hidden: {len(all_claims) - len(claims)} settled or superseded claim(s)")
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
         lines.append("current: none")
@@ -990,6 +997,35 @@ def _reporting_lines(claim: Claim) -> list[str]:
         failure_values = cast(Mapping[str, object], failures)
         pending.extend(key for key in failure_values if key not in pending)
     return [f"unfinished reporting: {', '.join(pending)}"] if pending else []
+
+
+def _is_live(store: ClaimStore, claim: Claim) -> bool:
+    """A claim still worth showing by default: active, or with something pending."""
+    if claim.lifecycle == "superseded":
+        return False
+    if claim.lifecycle not in {"settled", "cancelled"}:
+        return True
+    if any(run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)):
+        return True
+    if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
+        return True
+    if _pending_sync(store, claim):
+        return True
+    return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
+
+
+def _pending_sync(store: ClaimStore, claim: Claim) -> bool:
+    if claim.kind != "fix":
+        return False
+    from agent_factory.work_kinds.fix.sync import _find_pr  # pyright: ignore[reportPrivateUsage]
+
+    if _find_pr(store, claim) is None:
+        return False
+    sync = claim.reporting.get("sync")
+    sync_map: Mapping[str, object] = (
+        cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
+    )
+    return not sync_map.get("completed")
 
 
 def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:

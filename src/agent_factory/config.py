@@ -147,6 +147,7 @@ class LimitsConfig:
     total_seconds: int
     codex_reset_fallback_seconds: int
     memory_reservation_gib: int = 3
+    evidence_retention_days: int = 14
 
 
 @dataclass(frozen=True)
@@ -265,6 +266,9 @@ class LocalConfig:
                 ),
                 memory_reservation_gib=_optional_positive_int(
                     limits, "memory_reservation_gib", "limits", 3
+                ),
+                evidence_retention_days=_optional_positive_int(
+                    limits, "evidence_retention_days", "limits", 14
                 ),
             ),
             credentials=CredentialsConfig(

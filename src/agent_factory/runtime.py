@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import work_kinds
+from agent_factory import retention, work_kinds
 from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
@@ -90,6 +90,8 @@ def cycle(state: Path, config_path: Path) -> None:
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
             for claim in claims:
+                retention.reconcile(store, local, claim, card_status(shared, card), now)
+                claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "superseded":
                     continue
                 handler = controller.handler(claim.kind)

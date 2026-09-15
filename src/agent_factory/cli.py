@@ -32,10 +32,10 @@ def _tick(state: Path, config_path: Path | None = None) -> None:
         cycle(state, config_path)
 
 
-def _status(state: Path, config: LocalConfig | None = None) -> str:
+def _status(state: Path, config: LocalConfig | None = None, *, include_all: bool = False) -> str:
     store = ClaimStore(state)
     try:
-        return status(store, config)
+        return status(store, config, include_all=include_all)
     finally:
         store.close()
 
@@ -48,7 +48,10 @@ def main() -> None:
     parser.add_argument("--config", type=Path, help="explicit installed local configuration path")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("tick")
-    subcommands.add_parser("status")
+    status_parser = subcommands.add_parser("status")
+    status_parser.add_argument(
+        "--all", action="store_true", help="list every saved claim, including settled ones"
+    )
     subcommands.add_parser("doctor")
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
@@ -71,7 +74,7 @@ def main() -> None:
     if args.command == "tick":
         _tick(state, args.config)
     elif args.command == "status":
-        print(_status(state, local))
+        print(_status(state, local, include_all=args.all))
     elif args.command in {"pause", "resume"}:
         store = ClaimStore(state)
         try:

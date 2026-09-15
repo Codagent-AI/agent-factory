@@ -55,6 +55,12 @@ other operator action has no invented recovery date. A quota hold on a
 provider that no configured role for a kind uses is reported as not blocking
 that kind's admission.
 
+By default `status` lists only claims that are running, waiting, blocked,
+held, in Review, or pending a merge sync; a claim whose card is Done with
+nothing left pending, and any superseded claim, is hidden, and the header
+reports how many were hidden. `agent-factory ... status --all` lists every
+saved claim, including settled and superseded ones.
+
 `tick` runs the resident service's normal immediate reconciliation path. It is
 not a preview or force option: pause, window, quota/readiness holds, free-space
 checks, and the one-execution guard still apply. A running supervisor continues
@@ -126,7 +132,8 @@ eligible writer comments), the sandbox log (`factory-suite.log`), the Runner
 session (`agent-runner/projects/.../runs/<id>/` with `state.json`, `audit.log`,
 and step output), and the structured `fix-outcome.json`. Attempts never share
 a directory, so a recovery retry cannot read a stale outcome. Evidence is
-retained until manual cleanup. The single-line copy of the fix credential the
+retained until the evidence retention rule below removes it. The single-line
+copy of the fix credential the
 sandbox loads lives outside the artifacts, under `<storage_root>/private/<run>/`,
 owner-readable only, and is deleted with the clones and images when the card
 reaches Done.
@@ -148,9 +155,33 @@ through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
 per-run Docker image; both are cleaned up once the claim reaches Done, but
 mirrors persist and grow slowly with history. When a reviewed card moves to
-Done, Factory removes only its recorded owned worktrees, clones, and images; it
-never automatically deletes evidence, candidate branches, PRs, mirrors, or
-shared checkouts.
+Done, Factory removes only its recorded owned worktrees, clones, and images;
+it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
+only prunes evidence under the rule below.
+
+**Evidence retention.** A configurable retention period, `[limits]
+evidence_retention_days` (default 14), bounds how long a settled claim's
+evidence is kept. The clock starts the first time Factory durably observes a
+claim's card as Done; observing any other status resets it, so moving a card
+back out of Done and later returning it to Done restarts the period from that
+later observation. Once the period has elapsed since that observation, and
+the claim has no non-terminal or unverified run, no unfinished reporting, no
+pending post-merge sync, and (for a non-superseded claim) its worktree, clone,
+image, and credential cleanup has completed, the next tick prunes that
+claim's evidence: logs, Runner and agent session state, and agent output
+under each attempt's artifact directory (and, for a host attempt, its
+recorded Runner session directory). It keeps the fix outcome or eval result
+and provenance records, the attempt's issue input, and never touches
+candidate branches, PRs, mirrors, SQLite history, or the operator's working
+clones. A superseded claim is pruned on the same conditions judged on its own
+runs and reporting, without waiting on cleanup it never performs. Pruning is
+retried on later polls if a removal fails; `claim.cleanup.retention` records
+what was removed and any failures — inspect it with `status --all` or by
+reading the claim's row in `state.sqlite3` directly. This check runs from the
+per-claim loop on every tick, so history predating this rule is covered
+automatically: the first tick after upgrading records the Done observation
+for old claims and prunes them only after the retention period from that
+observation, not retroactively.
 
 For a ready-for-human-review result, use the absolute, quoted command in the
 Factory report on the Mac holding its retained artifacts and harness worktree.
