@@ -648,7 +648,37 @@ def build_host_plan(
     runner_executable: str | None = None,
 ) -> ExecutionPlan:
     """Assemble the host launch: workflow and profiles in the clone, secrets and wrapper in
-    the attempt's private directory, and a plan document that holds only paths."""
+    the attempt's private directory, and a plan document that holds only paths.
+
+    A launch that fails to plan never starts, so its token copy is deleted before the
+    error propagates rather than left on disk until the claim's cleanup."""
+    try:
+        return _assemble_host_plan(
+            evidence=evidence,
+            repo_clone=repo_clone,
+            credential_copy=credential_copy,
+            roles=roles,
+            branch=branch,
+            contract=contract,
+            recorded_revisions=recorded_revisions,
+            runner_executable=runner_executable,
+        )
+    except BaseException:
+        credential_copy.unlink(missing_ok=True)
+        raise
+
+
+def _assemble_host_plan(
+    *,
+    evidence: Path,
+    repo_clone: Path,
+    credential_copy: Path,
+    roles: Mapping[str, object],
+    branch: str,
+    contract: str,
+    recorded_revisions: Mapping[str, object] | None,
+    runner_executable: str | None,
+) -> ExecutionPlan:
     profiles = role_profiles(roles)
     runner = resolve_runner_executable(runner_executable)
     version = runner_version(runner)

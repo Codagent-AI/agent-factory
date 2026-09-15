@@ -812,6 +812,7 @@ def _resolved_path_diagnostic() -> Diagnostic:
     )
 
 
+_LAUNCHD_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 _LAUNCH_AGENT_PLIST = Path("~/Library/LaunchAgents/com.codagent.agent-factory.plist").expanduser()
 
 
@@ -847,7 +848,8 @@ def _launch_agent_path_diagnostic(
     path_value = ""
     if isinstance(environment_raw, dict):
         environment = cast(Mapping[str, object], environment_raw)
-        path_raw = environment.get("PATH", "")
+        # Without a PATH entry launchd starts the service on its default search path.
+        path_raw = environment.get("PATH", _LAUNCHD_DEFAULT_PATH)
         if isinstance(path_raw, str):
             path_value = path_raw
     missing = [

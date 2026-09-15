@@ -732,3 +732,18 @@ def test_launch_agent_template_omits_path_unless_one_is_given(tmp_path: Path) ->
 
     assert "PATH" not in without["EnvironmentVariables"]
     assert with_path["EnvironmentVariables"]["PATH"] == "/usr/bin:/bin"
+
+
+def test_launch_agent_without_a_path_entry_resolves_against_launchd_default(
+    tmp_path: Path,
+) -> None:
+    """render_launch_agent omits an empty PATH; launchd then uses its default search path."""
+    target = tmp_path / "agent.plist"
+    target.write_bytes(plistlib.dumps({"EnvironmentVariables": {"AGENT_FACTORY_ROOT": "/r"}}))
+
+    with patch("agent_factory.operations.host_executables", return_value=("sh",)):
+        host = operations._launch_agent_path_diagnostic(  # pyright: ignore[reportPrivateUsage]
+            _plist_local(tmp_path, execution="host"), plist_path=target
+        )
+
+    assert host.available, host.detail

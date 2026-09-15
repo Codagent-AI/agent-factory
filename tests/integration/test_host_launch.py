@@ -385,3 +385,5 @@ def test_host_plan_reports_a_failed_skip_worktree_update_as_readiness(
             branch="factory/fix-7-claim",
             contract=CONTRACT,
         )
+    # The launch never starts, so the token copy must not stay on disk until Done.
+    assert not built.credential.exists()
