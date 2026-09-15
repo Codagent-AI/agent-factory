@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -330,3 +331,57 @@ def test_container_script_hides_a_tracked_runner_config_from_git() -> None:
     assert "update-index --skip-worktree .agent-runner/config.yaml" in script
     assert "update-index --no-skip-worktree .agent-runner/config.yaml" in script
     assert "trap restore_tracked_config EXIT" in script
+
+
+@pytest.mark.parametrize("linked", [".agent-runner", ".agent-runner/workflows", "config"])
+def test_host_plan_refuses_staging_through_a_symlink_the_target_committed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, linked: str
+) -> None:
+    """A target repository controls the clone's contents; a committed symlink must never
+    make host planning write outside the disposable clone as the operator."""
+    built = Built(tmp_path, monkeypatch)
+    shutil.rmtree(built.clone / ".agent-runner")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    victim = outside / "config.yaml"
+    victim.write_text("keep\n")
+    if linked == "config":
+        (built.clone / ".agent-runner").mkdir()
+        (built.clone / ".agent-runner" / "config.yaml").symlink_to(victim)
+    else:
+        link = built.clone / linked
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ReadinessError, match="symlink"):
+        launch.build_host_plan(
+            evidence=built.evidence,
+            repo_clone=built.clone,
+            credential_copy=built.credential,
+            roles=ROLES,
+            branch="factory/fix-7-claim",
+            contract=CONTRACT,
+        )
+    assert sorted(path.name for path in outside.iterdir()) == ["config.yaml"]
+    assert victim.read_text() == "keep\n"
+
+
+def test_host_plan_reports_a_failed_skip_worktree_update_as_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    config = built.clone / ".agent-runner" / "config.yaml"
+    config.write_text("active_profile: theirs\n")
+    _git(built.clone, "add", "-f", ".agent-runner/config.yaml")
+    _git(
+        built.clone, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-qm", "t"
+    )
+    (built.clone / ".git" / "index.lock").write_text("")
+    with pytest.raises(ReadinessError, match="skip-worktree"):
+        launch.build_host_plan(
+            evidence=built.evidence,
+            repo_clone=built.clone,
+            credential_copy=built.credential,
+            roles=ROLES,
+            branch="factory/fix-7-claim",
+            contract=CONTRACT,
+        )

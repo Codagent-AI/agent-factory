@@ -517,3 +517,13 @@ def test_record_outcome_rejects_malformed_input(
     assert result.returncode == 2
     assert f"record-outcome: {message}" in result.stderr
     assert not (tmp_path / "fix-outcome.json").exists()
+
+
+def test_record_triage_accepts_a_decision_wrapped_in_a_json_array(tmp_path: Path) -> None:
+    outcome = tmp_path / "fix-outcome.json"
+    decision: dict[str, object] = {"fixable": True, "reasons": [], "plan": "p"}
+    result = _run_script(
+        "record-triage.sh", {"decision": json.dumps([decision]), "outcome_path": str(outcome)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "true"

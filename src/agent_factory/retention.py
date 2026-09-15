@@ -84,10 +84,13 @@ def _eligible(
         return False
     if pending_sync(store, claim):
         return False
-    # Clone, image, and credential cleanup gates only settled claims (the Review-then-Done
-    # pass). A cancelled claim releases those as soon as execution stops and a superseded
-    # claim never has a cleanup pass, so neither waits on `complete` here.
-    return claim.lifecycle != "settled" or cleanup.get("complete") is True
+    # Retention is for finished claims. A settled claim also waits on its Review-then-Done
+    # clone, image, and credential cleanup. A cancelled claim releases those as soon as
+    # execution stops and a superseded claim never has a cleanup pass, so neither waits on
+    # `complete`. Active, waiting, and blocked claims may still need their evidence.
+    if claim.lifecycle in {"cancelled", "superseded"}:
+        return True
+    return claim.lifecycle == "settled" and cleanup.get("complete") is True
 
 
 def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: datetime) -> None:
@@ -116,7 +119,12 @@ def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: dat
 def _removal_targets(store: ClaimStore, claim: Claim) -> list[Path]:
     runs = store.runs_for_claim(claim.id)
     if claim.kind == "fix":
-        return [t for run in runs if run.unit_key == "fix" for t in _fix_attempt_targets(run)]
+        fix_runs = [run for run in runs if run.unit_key == "fix"]
+        # The supervisor appends each launched process's output to the claim-level suite
+        # log, one level above the attempt directories that every attempt shares.
+        claim_logs = [Path(run.evidence_path).resolve() / "factory-suite.log" for run in fix_runs]
+        attempts = [t for run in fix_runs for t in _fix_attempt_targets(run)]
+        return list(dict.fromkeys([*claim_logs, *attempts]))
     return [t for run in runs for t in _eval_rep_targets(run)]
 
 
@@ -127,12 +135,11 @@ def _fix_attempt_targets(run: Run) -> list[Path]:
     if isinstance(session_dir, str):
         session_path = Path(session_dir).resolve()
         default = attempt_dir / "agent-runner-session"
-        # A run's recorded session_dir is only ever trusted when it falls under this
-        # attempt's own evidence directory; anything else is ignored rather than pruned,
-        # since run.result is suite-controlled output, not a verified factory path.
-        if session_path != default and (
-            session_path == attempt_dir or attempt_dir in session_path.parents
-        ):
+        # A run's recorded session_dir is only ever trusted when it falls strictly under
+        # this attempt's own evidence directory, never the directory itself; anything else
+        # is ignored rather than pruned, since run.result is suite-controlled output, not a
+        # verified factory path.
+        if session_path != default and attempt_dir in session_path.parents:
             targets.append(session_path)
     return targets
 

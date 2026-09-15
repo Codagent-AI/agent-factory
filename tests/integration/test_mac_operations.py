@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from agent_factory import operations
 from agent_factory.cli import _poll_seconds  # pyright: ignore[reportPrivateUsage]
@@ -672,3 +675,60 @@ def test_doctor_gives_docker_and_authentication_time_to_complete(tmp_path: Path)
     assert len(relevant) >= 2
     assert all(d.available for d in relevant)
     assert all(10 <= timeout <= 60 for command, timeout in commands if command[0] != "cursor")
+
+
+def _plist_local(tmp_path: Path, *, execution: str) -> LocalConfig:
+    import dataclasses
+
+    base = LocalConfig.from_toml(_local_config(tmp_path, tmp_path / "shared.toml").read_text())
+    return dataclasses.replace(base, fix=dataclasses.replace(base.fix, execution=execution))
+
+
+@pytest.mark.parametrize(
+    "body", [b"<plist><dict><key>PATH</key>", plistlib.dumps(["not", "a", "dict"])]
+)
+def test_launch_agent_path_diagnostic_survives_an_unusable_plist(
+    tmp_path: Path, body: bytes
+) -> None:
+    """doctor() and every runtime tick call this; a malformed plist must not raise."""
+    target = tmp_path / "agent.plist"
+    target.write_bytes(body)
+
+    docker = operations._launch_agent_path_diagnostic(  # pyright: ignore[reportPrivateUsage]
+        _plist_local(tmp_path, execution="docker"), plist_path=target
+    )
+    host = operations._launch_agent_path_diagnostic(  # pyright: ignore[reportPrivateUsage]
+        _plist_local(tmp_path, execution="host"), plist_path=target
+    )
+
+    assert docker.available and "informational" in docker.detail
+    assert not host.available and host.group == "fix-host"
+
+
+def test_launch_agent_path_failure_gates_only_host_fixes(tmp_path: Path) -> None:
+    target = tmp_path / "agent.plist"
+    target.write_bytes(plistlib.dumps({"EnvironmentVariables": {"PATH": str(tmp_path)}}))
+
+    host = operations._launch_agent_path_diagnostic(  # pyright: ignore[reportPrivateUsage]
+        _plist_local(tmp_path, execution="host"), plist_path=target
+    )
+
+    assert not host.available
+    assert host.group == "fix-host"
+
+
+def test_launch_agent_template_omits_path_unless_one_is_given(tmp_path: Path) -> None:
+    from agent_factory.operations import render_launch_agent
+
+    paths = (
+        Path("/x/agent-factory"),
+        tmp_path / "c",
+        tmp_path / "r",
+        tmp_path / "l",
+        tmp_path / "k",
+    )
+    without = plistlib.loads(render_launch_agent(*paths).encode())
+    with_path = plistlib.loads(render_launch_agent(*paths, path="/usr/bin:/bin").encode())
+
+    assert "PATH" not in without["EnvironmentVariables"]
+    assert with_path["EnvironmentVariables"]["PATH"] == "/usr/bin:/bin"

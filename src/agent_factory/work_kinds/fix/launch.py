@@ -573,11 +573,35 @@ def _hide_tracked_file_from_git(repo_clone: Path, relative: str) -> None:
         check=False,
     )
     if tracked.returncode == 0:
-        subprocess.run(
+        hidden = subprocess.run(
             ["git", "-C", str(repo_clone), "update-index", "--skip-worktree", relative],
             capture_output=True,
-            check=True,
+            text=True,
+            check=False,
         )
+        if hidden.returncode != 0:
+            raise ReadinessError(
+                f"could not set skip-worktree on {relative} in {repo_clone}: "
+                f"{hidden.stderr.strip() or f'git exited {hidden.returncode}'}"
+            )
+
+
+def _refuse_symlinked_staging(repo_clone: Path) -> None:
+    """The target repository controls the clone's contents, so a committed symlink at a
+    staging path would make host planning write outside the clone as the operator."""
+    workflows = PROJECT_WORKFLOWS
+    candidates = (
+        workflows.parent,
+        workflows,
+        PROJECT_CONFIG,
+        *(workflows / name for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS)),
+    )
+    for relative in candidates:
+        if (repo_clone / relative).is_symlink():
+            raise ReadinessError(
+                f"the target repository has a symlink at {relative.as_posix()}; "
+                "the factory will not stage its workflow or profile config through it"
+            )
 
 
 def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
@@ -631,6 +655,7 @@ def build_host_plan(
     evidence = evidence.resolve()
     repo_clone = repo_clone.resolve()
     (evidence / "logs").mkdir(parents=True, exist_ok=True)
+    _refuse_symlinked_staging(repo_clone)
     stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract)
     config_path = repo_clone / PROJECT_CONFIG
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -638,7 +663,6 @@ def build_host_plan(
     _exclude_from_git(
         repo_clone, (f"/{PROJECT_CONFIG.as_posix()}", f"/{PROJECT_WORKFLOWS.as_posix()}/")
     )
-    _hide_tracked_file_from_git(repo_clone, PROJECT_CONFIG.as_posix())
     private = credential_copy.parent
     private.mkdir(parents=True, exist_ok=True)
     private.chmod(0o700)
@@ -658,6 +682,9 @@ def build_host_plan(
         ),
         0o700,
     )
+    # Set last among the clone changes so a failure writing the private files above never
+    # leaves the bit set without the wrapper whose exit trap clears it.
+    _hide_tracked_file_from_git(repo_clone, PROJECT_CONFIG.as_posix())
     write_host_provenance(
         evidence, runner=runner, version=version, recorded_revisions=recorded_revisions
     )

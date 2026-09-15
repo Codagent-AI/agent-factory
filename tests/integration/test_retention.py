@@ -154,7 +154,7 @@ def test_first_done_observation_writes_marker_and_removes_nothing(tmp_path: Path
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     now = datetime.now(UTC)
 
     retention.reconcile(store, local, _get(store, claim.id), "Done", now)
@@ -172,7 +172,7 @@ def test_nothing_removed_before_retention_period_elapses(tmp_path: Path) -> None
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -189,7 +189,7 @@ def test_prunes_fix_attempt_evidence_after_retention_period(tmp_path: Path) -> N
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     _reserve_and_finish(store, claim.id, "fix", evidence)
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -210,7 +210,7 @@ def test_prunes_eval_repetition_evidence_after_retention_period(tmp_path: Path) 
     claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {}))
     evidence = _make_eval_tree(tmp_path / "factory" / "artifacts", claim.id, rep=1)
     _reserve_and_finish(store, claim.id, "rep-1", evidence)
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -231,7 +231,7 @@ def test_observing_review_after_done_clears_marker_and_a_later_done_restarts_clo
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     _reserve_and_finish(store, claim.id, "fix", evidence)
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -262,7 +262,7 @@ def test_a_claim_never_visited_is_never_pruned(tmp_path: Path) -> None:
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
 
     claim = _get(store, claim.id)
     assert claim is not None and claim.cleanup.get("done_observed_at") is None
@@ -278,7 +278,7 @@ def test_nonterminal_run_leaves_evidence_untouched(tmp_path: Path) -> None:
     _reserve_and_finish(store, claim.id, "fix", evidence)
     # A second attempt is still reserved (non-terminal).
     store.reserve_run(claim.id, "fix", reason="recovery", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -295,7 +295,7 @@ def test_pending_reporting_event_leaves_evidence_untouched(tmp_path: Path) -> No
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     store.record_event(claim.id, "handoff", "pending report")
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -313,7 +313,7 @@ def test_pending_delivery_failure_leaves_evidence_untouched(tmp_path: Path) -> N
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     store.record_delivery_failure(claim.id, "handoff", RuntimeError("delivery boom"))
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -335,7 +335,7 @@ def test_session_dir_inside_the_attempt_directory_is_pruned(tmp_path: Path) -> N
     (session_dir / "state.json").write_text("x")
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
     store.finish_run(run.id, execution_status="completed", result={"session_dir": str(session_dir)})
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -355,7 +355,7 @@ def test_session_dir_outside_the_evidence_tree_is_never_deleted(tmp_path: Path) 
     (outside / "do-not-delete.txt").write_text("precious")
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
     store.finish_run(run.id, execution_status="completed", result={"session_dir": str(outside)})
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -378,7 +378,7 @@ def test_incomplete_sync_leaves_evidence_untouched(tmp_path: Path) -> None:
         result={"pr": {"url": "https://github.com/example/work/pull/1", "number": 1}},
     )
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     store.set_claim_sync(claim.id, {"attempted": True, "blocked_reason": "uncommitted changes"})
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -434,7 +434,7 @@ def test_failed_removal_records_an_error_and_retries_until_removable(tmp_path: P
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     _reserve_and_finish(store, claim.id, "fix", evidence)
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
@@ -464,7 +464,7 @@ def test_second_reconcile_after_success_removes_and_records_nothing_new(tmp_path
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     _reserve_and_finish(store, claim.id, "fix", evidence)
-    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
     later = start + timedelta(days=14)
@@ -500,3 +500,67 @@ def test_cancelled_claim_prunes_without_a_cleanup_pass(tmp_path: Path) -> None:
         assert not path.exists()
     for path in _kept_paths(evidence, kind="fix"):
         assert path.exists()
+
+
+def _settle_with_cleanup_complete(store: ClaimStore, claim_id: str) -> None:
+    store.set_claim_lifecycle(claim_id, "settled", {"verdict": "pending-human-review"})
+    store.set_cleanup(claim_id, {"review_observed": True, "complete": True})
+
+
+def test_waiting_claim_is_never_pruned_even_when_its_card_is_done(tmp_path: Path) -> None:
+    """A waiting claim may still retry or recover from its evidence; retention is for settled
+    claims, with cancelled and superseded as the only exceptions."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    _reserve_and_finish(store, claim.id, "fix", evidence)
+    store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+
+    for path in _removed_paths(evidence, kind="fix"):
+        assert path.exists()
+
+
+def test_session_dir_equal_to_the_attempt_directory_never_removes_the_attempt(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={"session_dir": str(evidence / "attempt-1")},
+    )
+    _settle_with_cleanup_complete(store, claim.id)
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+
+    for path in _kept_paths(evidence, kind="fix"):
+        assert path.exists()
+
+
+def test_prunes_the_claim_level_suite_log_of_a_fix_claim(tmp_path: Path) -> None:
+    """The supervisor appends the launched process's output to <evidence>/factory-suite.log,
+    one level above the attempt directories."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    (evidence / "factory-suite.log").write_text("x")
+    _reserve_and_finish(store, claim.id, "fix", evidence)
+    _settle_with_cleanup_complete(store, claim.id)
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+
+    assert not (evidence / "factory-suite.log").exists()

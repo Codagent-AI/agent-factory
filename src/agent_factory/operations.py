@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
+from xml.parsers.expat import ExpatError
 
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
 from agent_factory.github import (
@@ -261,6 +262,10 @@ def render_launch_agent(
         "__PATH__": path,
     }
     rendered = _PLIST_TEMPLATE
+    if not path:
+        # An empty PATH entry would override launchd's default search path, so the entry is
+        # dropped unless the operator supplied one.
+        rendered = rendered.replace("<key>PATH</key><string>__PATH__</string>", "")
     for token, value in values.items():
         rendered = rendered.replace(token, html.escape(value, quote=True))
     return rendered
@@ -829,12 +834,16 @@ def _launch_agent_path_diagnostic(
         )
     try:
         with target.open("rb") as handle:
-            document = plistlib.load(handle)
-    except (OSError, plistlib.InvalidFileException) as error:
-        return Diagnostic(
-            name, False, f"cannot read {target}: {error}", f"Repair {target}.", group="shared"
+            document: object = plistlib.load(handle)
+    except (OSError, ValueError, ExpatError) as error:
+        return _launch_agent_path_result(
+            config, name, f"cannot read {target}: {error}", f"Repair {target}."
         )
-    environment_raw = document.get("EnvironmentVariables", {})
+    if not isinstance(document, dict):
+        return _launch_agent_path_result(
+            config, name, f"{target} is not a property-list dictionary", f"Repair {target}."
+        )
+    environment_raw = cast(Mapping[str, object], document).get("EnvironmentVariables", {})
     path_value = ""
     if isinstance(environment_raw, dict):
         environment = cast(Mapping[str, object], environment_raw)
@@ -846,15 +855,21 @@ def _launch_agent_path_diagnostic(
     ]
     if not missing:
         return Diagnostic(name, True, f"{target} PATH resolves every required host executable", "")
-    detail = f"{target} PATH does not resolve: {', '.join(missing)}"
-    if config.fix.execution != "host":
-        return Diagnostic(name, True, f"{detail} (informational; fix execution is not host)", "")
-    return Diagnostic(
+    return _launch_agent_path_result(
+        config,
         name,
-        False,
-        detail,
+        f"{target} PATH does not resolve: {', '.join(missing)}",
         f"Add the directories containing {', '.join(missing)} to the PATH entry in {target}.",
     )
+
+
+def _launch_agent_path_result(
+    config: LocalConfig, name: str, detail: str, action: str
+) -> Diagnostic:
+    """Only host fixes run with the LaunchAgent's PATH, so only they are gated by it."""
+    if config.fix.execution != "host":
+        return Diagnostic(name, True, f"{detail} (informational; fix execution is not host)", "")
+    return Diagnostic(name, False, detail, action, group="fix-host")
 
 
 def fix_floor_gib(config: LocalConfig) -> float:
@@ -1022,6 +1037,8 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
     from agent_factory.work_kinds.fix.sync import pending_sync
 
     if pending_sync(store, claim):
+        return True
+    if claim.cleanup.get("last_error") is not None:
         return True
     return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
 

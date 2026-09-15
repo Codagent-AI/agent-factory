@@ -297,3 +297,17 @@ def test_status_shows_quota_hold_does_not_block_fix_when_fix_uses_another_provid
     line = next(line for line in text.splitlines() if line.startswith("quota hold: codex"))
     assert "blocks: eval" in line
     assert "fix" not in line.split("blocks:")[1]
+
+
+def test_status_shows_a_cancelled_claim_whose_release_failed(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 8, "I8", "P8", "fix", "fp8", {}))
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(run.id, execution_status="cancelled", result={})
+    store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
+    store.set_cleanup(claim.id, {"complete": False, "last_error": {"clone": "busy"}})
+
+    text = status(store)
+
+    assert "example/work#8" in text
+    assert "cleanup errors" in text

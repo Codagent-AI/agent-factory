@@ -48,20 +48,31 @@ def decision_objects(text):
         except json.JSONDecodeError:
             index = text.find("{", index + 1)
             continue
-        if (
-            isinstance(value, dict)
-            and isinstance(value.get("fixable"), bool)
-            and isinstance(value.get("reasons"), list)
-            and isinstance(value.get("plan"), str)
-        ):
+        if is_decision(value):
             candidates.append(value)
         index = text.find("{", max(end, index + 1))
     return candidates
 
 
+def is_decision(value):
+    return (
+        isinstance(value, dict)
+        and isinstance(value.get("fixable"), bool)
+        and isinstance(value.get("reasons"), list)
+        and isinstance(value.get("plan"), str)
+    )
+
+
 try:
     decision = json.loads(decision_raw)
+    parse_error = None
 except json.JSONDecodeError as exc:
+    decision = None
+    parse_error = exc
+
+# Valid JSON that is not itself a decision (an array holding one, say) gets the same
+# search as prose does.
+if not is_decision(decision):
     candidates = decision_objects(decision_raw)
     if len(candidates) > 1:
         print(
@@ -69,10 +80,11 @@ except json.JSONDecodeError as exc:
             file=sys.stderr,
         )
         sys.exit(2)
-    if not candidates:
-        print(f"record-triage: triage decision is not valid JSON: {exc}", file=sys.stderr)
+    if candidates:
+        decision = candidates[0]
+    elif parse_error is not None:
+        print(f"record-triage: triage decision is not valid JSON: {parse_error}", file=sys.stderr)
         sys.exit(2)
-    decision = candidates[0]
 
 if not isinstance(decision, dict):
     print("record-triage: triage decision must be a JSON object", file=sys.stderr)
