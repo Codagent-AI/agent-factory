@@ -478,3 +478,25 @@ def test_second_reconcile_after_success_removes_and_records_nothing_new(tmp_path
     claim = _get(store, claim.id)
     assert _retention(claim) == first_retention
     assert (evidence / "attempt-1" / "future.json").exists()
+
+
+def test_cancelled_claim_prunes_without_a_cleanup_pass(tmp_path: Path) -> None:
+    """Cancelled claims never get the settled-only cleanup pass, so they must not wait on it."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.finish_run(run.id, execution_status="cancelled", result={"reason": "cancelled"})
+    store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+    for path in _removed_paths(evidence, kind="fix"):
+        assert path.exists()
+
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+
+    for path in _removed_paths(evidence, kind="fix"):
+        assert not path.exists()
+    for path in _kept_paths(evidence, kind="fix"):
+        assert path.exists()

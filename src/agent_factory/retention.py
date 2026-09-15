@@ -81,7 +81,10 @@ def _eligible(
         return False
     if _sync_incomplete(store, claim):
         return False
-    if claim.lifecycle != "superseded" and cleanup.get("complete") is not True:
+    # Clone, image, and credential cleanup only ever runs for settled claims (it is the
+    # Review-then-Done gate), so its completion gates only them: a superseded or cancelled
+    # claim has no cleanup pass that could ever mark it complete.
+    if claim.lifecycle == "settled" and cleanup.get("complete") is not True:
         return False
     retention = cleanup.get("retention")
     return not (
