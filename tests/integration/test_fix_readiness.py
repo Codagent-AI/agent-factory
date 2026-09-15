@@ -5,7 +5,10 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
+from agent_factory.operations import Diagnostic
 from agent_factory.work_kinds.fix.readiness import check_readiness
 
 _SHARED_BASE = """\
@@ -339,3 +342,116 @@ def test_handler_readiness_fails_closed_on_unexpected_provider_errors(tmp_path: 
     credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
     assert credential.available is False
     assert "transport wrapper exploded" in credential.detail
+
+
+def _check_plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bool:
+    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+        _plugin_installed,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return _plugin_installed(output, plugin_name, json_format=json_format)
+
+
+def _check_role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
+    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+        _role_cli_diagnostics,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return list(_role_cli_diagnostics(shared))
+
+
+def test_plugin_installed_rejects_a_bare_substring_match_in_text_output() -> None:
+    # "codagent-extra" contains "codagent" as a substring but is a different plugin.
+    assert _check_plugin_installed("codagent-extra 1.0.0\n", "codagent", json_format=False) is False
+    # Marketplace/help text mentioning the plugin name is not an installed-plugin record.
+    assert (
+        _check_plugin_installed(
+            "Run `agent plugin install codagent@codagent` to add it.\n",
+            "codagent",
+            json_format=False,
+        )
+        is False
+    )
+
+
+def test_plugin_installed_accepts_an_exact_line_entry() -> None:
+    assert _check_plugin_installed("codagent\n", "codagent", json_format=False) is True
+    assert (
+        _check_plugin_installed("- codagent@codagent  1.2.0\n", "codagent", json_format=False)
+        is True
+    )
+    assert (
+        _check_plugin_installed("other-plugin\ncodagent\n", "codagent", json_format=False) is True
+    )
+
+
+def test_plugin_installed_json_requires_exact_name_or_id() -> None:
+    assert (
+        _check_plugin_installed('[{"name": "codagent-extra"}]', "codagent", json_format=True)
+        is False
+    )
+    assert _check_plugin_installed('[{"name": "codagent"}]', "codagent", json_format=True) is True
+    assert (
+        _check_plugin_installed(
+            '{"plugins": [{"id": "codagent@codagent"}]}', "codagent", json_format=True
+        )
+        is True
+    )
+    assert _check_plugin_installed("not json", "codagent", json_format=True) is False
+
+
+def test_role_cli_diagnostics_fails_when_plugin_only_mentioned_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = dataclasses.replace(
+        _shared(), fix=dataclasses.replace(_shared().fix, defaults={"lead": "claude:profile:high"})
+    )
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name == "claude" else None
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, text: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command[:2]) == ["claude", "auth"]:
+            return subprocess.CompletedProcess(command, 0, "logged in", "")
+        if list(command[:2]) == ["claude", "plugin"]:
+            return subprocess.CompletedProcess(
+                command, 0, "Install codagent-extra or codagent-pro.\n", ""
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+
+    diagnostics = _check_role_cli_diagnostics(shared)
+    claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
+    assert claude.available is False
+    assert "not list an installed codagent plugin" in claude.detail
+
+
+def test_role_cli_diagnostics_passes_with_authenticated_installed_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = dataclasses.replace(
+        _shared(), fix=dataclasses.replace(_shared().fix, defaults={"lead": "claude:profile:high"})
+    )
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name == "claude" else None
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, text: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command[:2]) == ["claude", "auth"]:
+            return subprocess.CompletedProcess(command, 0, "logged in", "")
+        if list(command[:2]) == ["claude", "plugin"]:
+            return subprocess.CompletedProcess(command, 0, "codagent\n", "")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+
+    diagnostics = _check_role_cli_diagnostics(shared)
+    claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
+    assert claude.available is True

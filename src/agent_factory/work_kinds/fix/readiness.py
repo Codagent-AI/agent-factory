@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+from collections.abc import Mapping
+from typing import cast
 
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.operations import ADAPTER_EXECUTABLES, Diagnostic, DiagnosticGroup, fix_floor_gib
@@ -425,11 +428,18 @@ def _gh_auth_status_diagnostic(local: LocalConfig) -> Diagnostic:
     )
 
 
-# adapter -> (auth-status command, plugin-listing command, expected plugin name).
-_ADAPTER_CHECKS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str]] = {
-    "claude": (("claude", "auth", "status"), ("claude", "plugin", "list"), "codagent"),
-    "codex": (("codex", "login", "status"), ("codex", "plugin", "list", "--json"), "codagent"),
-    "cursor": (("agent", "status"), ("agent", "plugin", "marketplace", "list"), "codagent"),
+# adapter -> (auth-status command, installed-plugin-listing command, expected plugin name,
+# whether the listing command emits JSON). Each listing command reports the CLI's own
+# installed plugins, not available marketplaces, so a match proves the plugin is installed.
+_ADAPTER_CHECKS: dict[str, tuple[tuple[str, ...], tuple[str, ...], str, bool]] = {
+    "claude": (("claude", "auth", "status"), ("claude", "plugin", "list"), "codagent", False),
+    "codex": (
+        ("codex", "login", "status"),
+        ("codex", "plugin", "list", "--json"),
+        "codagent",
+        True,
+    ),
+    "cursor": (("agent", "status"), ("agent", "plugin", "list"), "codagent", False),
 }
 
 
@@ -477,7 +487,7 @@ def _role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
                 )
             )
             continue
-        auth_command, plugin_command, plugin_name = checks
+        auth_command, plugin_command, plugin_name, plugin_is_json = checks
         auth_failure = _run_adapter_check(auth_command)
         if auth_failure is not None:
             diagnostics.append(
@@ -503,12 +513,12 @@ def _role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
                 )
             )
             continue
-        if plugin_name not in plugin_output:
+        if not _plugin_installed(plugin_output, plugin_name, json_format=plugin_is_json):
             diagnostics.append(
                 Diagnostic(
                     name,
                     False,
-                    f"{' '.join(plugin_command)} does not list the {plugin_name} plugin",
+                    f"{' '.join(plugin_command)} does not list an installed {plugin_name} plugin",
                     f"Install the {plugin_name} plugin in {adapter} ({executable}), then rerun "
                     "doctor.",
                     group="fix-host",
@@ -547,6 +557,44 @@ def _run_adapter_check_output(command: tuple[str, ...]) -> tuple[str, str | None
     if completed.returncode != 0:
         return "", (completed.stderr or completed.stdout or "non-zero exit").strip()[:300]
     return completed.stdout + completed.stderr, None
+
+
+def _plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bool:
+    """Require an exact installed-plugin match; a raw substring can match help text or a
+    marketplace suggestion for an uninstalled plugin, so this never uses ``in``."""
+    if json_format:
+        try:
+            data = json.loads(output)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        return _json_names_plugin(data, plugin_name)
+    for line in output.splitlines():
+        token = line.strip().lstrip("-*• \t")
+        if not token:
+            continue
+        token = token.split()[0]
+        # Strip a "name@scope" or "name(version)" suffix so "codagent@codagent" still
+        # matches the bare plugin name, without letting "codagent-extra" match it.
+        token = token.split("@", 1)[0].split("(", 1)[0]
+        if token == plugin_name:
+            return True
+    return False
+
+
+def _json_names_plugin(data: object, plugin_name: str) -> bool:
+    """Search parsed plugin-list JSON for an entry whose id or name is exactly the plugin."""
+    if isinstance(data, Mapping):
+        mapping = cast(Mapping[str, object], data)
+        for key in ("name", "id"):
+            value = mapping.get(key)
+            if isinstance(value, str) and (
+                value == plugin_name or value.split("@", 1)[0] == plugin_name
+            ):
+                return True
+        return any(_json_names_plugin(value, plugin_name) for value in mapping.values())
+    if isinstance(data, list):
+        return any(_json_names_plugin(item, plugin_name) for item in cast(list[object], data))
+    return False
 
 
 def _runner_settings_diagnostic() -> Diagnostic:
