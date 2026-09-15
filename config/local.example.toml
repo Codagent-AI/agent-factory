@@ -31,6 +31,14 @@ suite_environment = "/etc/agent-factory/suite.env"
 # One line, GH_TOKEN=<value> only; never the App installation token.
 fix_environment = "/etc/agent-factory/fix.env"
 
+[fix]
+# "docker" (default) runs fixes in the same sandbox as evals; "host" runs the
+# installed agent-runner directly on this Mac with the operator's real HOME and
+# logins. See docs/installation.md#host-execution-for-fixes before choosing host.
+execution = "docker"
+# Optional, lower than [limits] minimum_free_gib; falls back to it when unset.
+minimum_free_gib = 8
+
 [fix.limits]
 inactivity_seconds = 900
 execution_seconds = 7200

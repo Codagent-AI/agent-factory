@@ -213,7 +213,13 @@ class FixHandler:
             frozen,
         )
 
-    def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    def readiness(
+        self,
+        local: LocalConfig,
+        shared: SharedConfig,
+        *,
+        docker_diagnostic: Diagnostic | None = None,
+    ) -> list[Diagnostic]:
         token: str | None = None
         minting_failure: Diagnostic | None = None
         if self._installation_token is not None:
@@ -230,7 +236,9 @@ class FixHandler:
                     f"{error}",
                     "Repair the GitHub App key or installation, then rerun doctor.",
                 )
-        diagnostics = check_readiness(local, shared, installation_token=token)
+        diagnostics = check_readiness(
+            local, shared, installation_token=token, docker_diagnostic=docker_diagnostic
+        )
         if minting_failure is not None:
             diagnostics = [
                 minting_failure if d.name == "fix credential" else d for d in diagnostics

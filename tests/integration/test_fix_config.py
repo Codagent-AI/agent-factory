@@ -194,3 +194,45 @@ def test_local_config_rejects_malformed_fix_limit() -> None:
     text = _LOCAL_BASE + "\n[fix.limits]\ninactivity_seconds = -1\n"
     with pytest.raises(ConfigurationError, match="fix.limits.inactivity_seconds"):
         LocalConfig.from_toml(text)
+
+
+def test_local_config_defaults_fix_execution_to_docker() -> None:
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    assert local.fix.execution == "docker"
+    assert local.fix.minimum_free_gib is None
+
+
+def test_local_config_parses_fix_execution_host() -> None:
+    text = _LOCAL_BASE + '\n[fix]\nexecution = "host"\n'
+    local = LocalConfig.from_toml(text)
+    assert local.fix.execution == "host"
+
+
+def test_local_config_rejects_unknown_fix_execution() -> None:
+    text = _LOCAL_BASE + '\n[fix]\nexecution = "vm"\n'
+    with pytest.raises(ConfigurationError, match="fix.execution"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_parses_fix_minimum_free_gib() -> None:
+    text = _LOCAL_BASE + "\n[fix]\nminimum_free_gib = 2.5\n"
+    local = LocalConfig.from_toml(text)
+    assert local.fix.minimum_free_gib == 2.5
+
+
+def test_local_config_rejects_negative_fix_minimum_free_gib() -> None:
+    text = _LOCAL_BASE + "\n[fix]\nminimum_free_gib = -1\n"
+    with pytest.raises(ConfigurationError, match="fix.minimum_free_gib"):
+        LocalConfig.from_toml(text)
+
+
+def test_local_config_accepts_eval_execution_docker() -> None:
+    text = _LOCAL_BASE + '\n[eval]\nexecution = "docker"\n'
+    local = LocalConfig.from_toml(text)
+    assert local is not None
+
+
+def test_local_config_rejects_eval_execution_host() -> None:
+    text = _LOCAL_BASE + '\n[eval]\nexecution = "host"\n'
+    with pytest.raises(ConfigurationError, match="eval.execution"):
+        LocalConfig.from_toml(text)

@@ -73,6 +73,47 @@ must accept `builtin:` sub-workflow references and the `ci_fix_cycles`
 parameter on `finalize-pr`; `doctor` checks the parameter so an incompatible
 Runner revision is caught before a fix is admitted, not after.
 
+### Host execution for fixes
+
+`[fix] execution` selects how fix attempts run: `"docker"` (default) runs the
+packaged fix workflow in the same Docker sandbox as evals; `"host"` runs the
+installed Agent Runner directly on this Mac, as the operator's own user, with
+the operator's real HOME, git configuration where the wrapper does not
+override it, and installed CLI logins. Host mode never writes anything
+user-level; it stages the workflow into the attempt's own clone.
+
+Before setting `execution = "host"`, `doctor` must pass the `fix-host` group:
+
+- The installed `agent-runner` resolves on PATH, its `-version` succeeds, and
+  `agent-runner run --help` lists `--session-dir` (Codagent-AI/agent-runner
+  PR #90 or later).
+- `git`, `gh`, `jq`, `python3`, and `agent-validator` resolve on PATH.
+- `gh auth status` succeeds using the configured fix credential.
+- Each CLI adapter selected by the fix roles (`claude`, `codex`, or `cursor`,
+  whose installed executable is `agent`) is on PATH, logged in, and carries
+  the installed codagent plugin.
+- The operator's Runner user settings (`~/.agent-runner/settings.json`) select
+  the headless backend and yolo permission mode.
+- The fix credential and packaged workflow contract, exactly as in Docker mode.
+
+The service (not just an interactive shell) needs every one of those
+executables on its own PATH: fill the LaunchAgent's `__PATH__` token (below)
+with a PATH that resolves `agent-runner`, `gh`, and each configured role CLI,
+not just the interactive shell's PATH. `doctor` checks both the PATH it
+resolved against and, when the LaunchAgent is installed, the PATH baked into
+that installed definition, so a passing interactive `doctor` run cannot hide a
+service that would fail to find `agent-runner` at login.
+
+`fix.minimum_free_gib` sets an optional disk floor for fix admission lower
+than the shared `limits.minimum_free_gib`; when unset, fix uses the shared
+floor. Host mode has no separate Docker memory requirement of its own — the
+shared reservation only gates sandboxed (Docker-mode) attempts.
+
+See [operations](operations.md#the-fix-work-kind) for what host mode keeps and
+gives up: the separate fix credential and the target repositories' PR-only
+rulesets are conventions the launched process follows, not boundaries an
+autonomous host agent cannot cross.
+
 ## Configuration
 
 Copy `config/local.example.toml` to a private location, such as
@@ -121,6 +162,10 @@ The template tokens map as follows:
 - `__ROOT__`: `/absolute/path/to/.agent-factory`
 - `__LOG__`: `/absolute/path/to/.agent-factory/logs/controller.log`
 - `__CREDENTIAL__`: `/absolute/path/to/credentials/github-app.pem`
+- `__PATH__`: a colon-separated PATH that resolves `agent-runner`, `git`,
+  `gh`, `jq`, `python3`, `agent-validator`, and each CLI adapter selected by
+  the fix roles (needed only when `[fix] execution = "host"`, but harmless to
+  fill in either mode; `doctor` checks it either way)
 
 Keep those paths explicit: launchd does not inherit an interactive shell's PATH,
 working directory, or credentials. Validate the rendered file and load it for

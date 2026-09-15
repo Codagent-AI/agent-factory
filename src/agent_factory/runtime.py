@@ -26,7 +26,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.operations import check_memory_headroom, doctor
+from agent_factory.operations import Diagnostic, check_memory_headroom, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     ReadinessError,
@@ -71,9 +71,20 @@ def cycle(state: Path, config_path: Path) -> None:
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
-        memory = check_memory_headroom(local.limits.memory_reservation_gib)
-        memory_setting = {} if memory.available else {"reason": memory.detail}
-        store.set_setting("runtime", "memory", memory_setting)
+
+        # The Docker memory probe only runs when a sandbox kind is actually a candidate
+        # for admission this tick, and its result is cached so it runs at most once.
+        memory_cache: list[Diagnostic] = []
+
+        def sandbox_memory() -> Diagnostic:
+            if not memory_cache:
+                probed = check_memory_headroom(local.limits.memory_reservation_gib)
+                memory_cache.append(probed)
+                store.set_setting(
+                    "runtime", "memory", {} if probed.available else {"reason": probed.detail}
+                )
+            return memory_cache[0]
+
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
@@ -86,6 +97,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     controller.cancel(claim.id)
                     claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
+                    fix_memory_available = (
+                        True if local.fix.execution == "host" else sandbox_memory().available
+                    )
                     admitted = process_blocked_claim(
                         store,
                         client,
@@ -97,7 +111,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
-                        memory_available=memory.available,
+                        memory_available=fix_memory_available,
                     )
                     claim = store.get_claim(claim.id) or claim
                     if admitted is not None:
@@ -139,8 +153,40 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
-        prerequisites: str | None = None
-        kind_readiness: dict[str, str] = {}
+        shared_eval_cache: list[list[Diagnostic]] = []
+
+        def shared_eval_diagnostics() -> list[Diagnostic]:
+            if not shared_eval_cache:
+                shared_eval_cache.append(doctor(local, include_fix=False))
+            return shared_eval_cache[0]
+
+        kind_failure_cache: dict[str, list[Diagnostic]] = {}
+
+        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
+            """Only the groups applicable to this kind under its configured mode can hold it."""
+            if candidate_handler.kind in kind_failure_cache:
+                return kind_failure_cache[candidate_handler.kind]
+            diagnostics = shared_eval_diagnostics()
+            if candidate_handler.kind == "eval":
+                failures = [d for d in diagnostics if not d.available]
+            else:
+                failures = [d for d in diagnostics if d.group == "shared" and not d.available]
+                docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
+                if isinstance(candidate_handler, FixHandler) and local.fix.execution == "docker":
+                    if docker_diagnostic is not None and not docker_diagnostic.available:
+                        failures.append(docker_diagnostic)
+                    memory = sandbox_memory()
+                    if not memory.available:
+                        failures.append(memory)
+                    handler_readiness = candidate_handler.readiness(
+                        local, shared, docker_diagnostic=docker_diagnostic
+                    )
+                else:
+                    handler_readiness = candidate_handler.readiness(local, shared)
+                failures.extend(d for d in handler_readiness if not d.available)
+            kind_failure_cache[candidate_handler.kind] = failures
+            return failures
+
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
         for card in cards:
@@ -170,22 +216,10 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             if not ready:
                 continue
-            if not memory.available:
-                continue
-            if prerequisites is None:
-                failures = [d for d in doctor(local, include_fix=False) if not d.available]
-                prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
-            if prerequisites:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": prerequisites})
-                break
-            if handler.kind not in kind_readiness:
-                kind_failures = [d for d in handler.readiness(local, shared) if not d.available]
-                kind_readiness[handler.kind] = "; ".join(
-                    f"{d.name}: {d.detail}" for d in kind_failures
-                )
-            kind_reason = kind_readiness[handler.kind]
-            if kind_reason:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": kind_reason})
+            failures = kind_failures(handler)
+            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
+            if reason:
+                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": reason})
                 continue
             store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:

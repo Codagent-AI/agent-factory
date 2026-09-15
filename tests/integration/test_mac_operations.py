@@ -285,8 +285,8 @@ def test_doctor_reports_fix_diagnostics_in_a_separate_section(tmp_path: Path) ->
     fix_names = [d.name for d in diagnostics if d.name.startswith("fix ")]
     assert fix_names
     text = operations.format_doctor(diagnostics)
-    assert "-- fix --" in text
-    assert text.index("-- fix --") > text.index("shared configuration")
+    assert "-- fix-sandbox --" in text
+    assert text.index("-- fix-sandbox --") > text.index("shared configuration")
 
 
 def test_doctor_reports_missing_working_clone(tmp_path: Path) -> None:
@@ -497,17 +497,170 @@ def test_doctor_excludes_fix_diagnostics_from_the_shared_prerequisite_gate(
     assert not any(d.name.startswith("fix ") for d in diagnostics)
 
 
+def test_diagnostic_defaults_to_shared_group() -> None:
+    diagnostic = operations.Diagnostic("check", True, "detail", "")
+    assert diagnostic.group == "shared"
+
+
+def test_format_doctor_prints_one_heading_per_group_in_order() -> None:
+    diagnostics = [
+        operations.Diagnostic("b check", True, "ok", "", group="eval-sandbox"),
+        operations.Diagnostic("a check", True, "ok", "", group="shared"),
+        operations.Diagnostic("c check", True, "ok", "", group="fix-sandbox"),
+    ]
+    text = operations.format_doctor(diagnostics)
+    assert text.index("-- shared --") < text.index("-- eval-sandbox --")
+    assert text.index("-- eval-sandbox --") < text.index("-- fix-sandbox --")
+
+
+def test_format_doctor_prints_no_action_line_on_a_passing_check() -> None:
+    diagnostics = [operations.Diagnostic("a check", True, "ok", "should not print")]
+    text = operations.format_doctor(diagnostics)
+    assert "action:" not in text
+
+
+def test_format_doctor_prints_action_line_on_a_failing_check() -> None:
+    diagnostics = [operations.Diagnostic("a check", False, "bad", "fix it")]
+    text = operations.format_doctor(diagnostics)
+    assert "action: fix it" in text
+
+
+def test_doctor_reports_per_kind_free_space_floors(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text()
+    text = text.replace("minimum_free_gib = 999999", "minimum_free_gib = 5")
+    text += "\n[fix]\nminimum_free_gib = 1\n"
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    diagnostics = operations.doctor(config)
+    eval_floor = next(
+        d for d in diagnostics if d.name == "free storage" and d.group == "eval-sandbox"
+    )
+    fix_floor = next(
+        d for d in diagnostics if d.name == "free storage" and d.group == "fix-sandbox"
+    )
+    assert "5" in eval_floor.detail
+    assert "1" in fix_floor.detail
+
+
+def test_doctor_shared_group_never_depends_on_eval_only_prerequisites(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    config = LocalConfig.from_file(_local_config(tmp_path, shared_path))
+
+    diagnostics = operations.doctor(config)
+    eval_only_names = {
+        "eval repository",
+        "shared configuration",
+        "selected suite entry point and launcher",
+        "suite candidate credentials",
+    }
+    for diagnostic in diagnostics:
+        if diagnostic.name in eval_only_names:
+            assert diagnostic.group == "eval-sandbox", diagnostic
+
+
+def test_doctor_with_docker_stopped_and_fix_host_shows_expected_groups(tmp_path: Path) -> None:
+    shared_path = tmp_path / "shared.toml"
+    shared_path.write_text(_fix_shared_config_text())
+    local_config_path = _local_config(tmp_path, shared_path)
+    text = local_config_path.read_text() + '\n[fix]\nexecution = "host"\n'
+    local_config_path.write_text(text)
+    config = LocalConfig.from_file(local_config_path)
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, check: bool, timeout: float, text: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command[:2]) == ["docker", "info"]:
+            return subprocess.CompletedProcess(command, 1, "", "docker daemon not running")
+        return subprocess.CompletedProcess(command, 1, "", "")
+
+    with patch("agent_factory.operations.subprocess.run", side_effect=fake_run):
+        diagnostics = operations.doctor(config)
+        text_out = operations.format_doctor(diagnostics)
+
+    docker = next(d for d in diagnostics if d.name == "Docker")
+    assert docker.available is False
+    assert docker.group == "eval-sandbox"
+    assert any(d.group == "fix-host" for d in diagnostics)
+    action_lines = text_out.count("  action:")
+    failing = sum(1 for d in diagnostics if not d.available)
+    assert action_lines == failing
+    reclaimable = next(d for d in diagnostics if d.name == "Docker reclaimable space")
+    assert reclaimable.available is True
+    assert any(d.name == "resolved PATH" for d in diagnostics)
+    assert any(d.name == "LaunchAgent PATH" for d in diagnostics)
+
+
+def test_doctor_reports_docker_reclaimable_space_without_pruning(tmp_path: Path) -> None:
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
+    calls: list[list[str]] = []
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, check: bool, timeout: float, text: bool = False
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(list(command))
+        if list(command[:2]) == ["docker", "info"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if list(command[:2]) == ["docker", "system"]:
+            stdout = (
+                '{"Type":"Images","Reclaimable":"1.2GB"}\n'
+                '{"Type":"Build Cache","Reclaimable":"300MB"}\n'
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+        return subprocess.CompletedProcess(command, 1, "", "")
+
+    with patch("agent_factory.operations.subprocess.run", side_effect=fake_run):
+        diagnostics = operations.doctor(config)
+
+    reclaimable = next(d for d in diagnostics if d.name == "Docker reclaimable space")
+    assert reclaimable.available is True
+    assert "prune" in reclaimable.action
+    assert not any(list(call[:2]) == ["docker", "system"] and "prune" in call for call in calls)
+
+
+def test_doctor_reports_resolved_path(tmp_path: Path) -> None:
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
+    diagnostics = operations.doctor(config)
+    resolved = next(d for d in diagnostics if d.name == "resolved PATH")
+    assert resolved.available is True
+    assert resolved.group == "shared"
+
+
+def test_launch_agent_template_renders_path(tmp_path: Path) -> None:
+    from agent_factory.operations import render_launch_agent
+
+    rendered = render_launch_agent(
+        Path("/opt/agent-factory/.venv/bin/agent-factory"),
+        tmp_path / "config.toml",
+        tmp_path / "factory",
+        tmp_path / "factory" / "logs" / "controller.log",
+        tmp_path / "credentials" / "github-app.pem",
+        path="/usr/bin:/usr/local/bin",
+    )
+    assert "/usr/bin:/usr/local/bin" in rendered
+    assert "<key>PATH</key>" in rendered
+
+
 def test_doctor_gives_docker_and_authentication_time_to_complete(tmp_path: Path) -> None:
     config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "shared.toml"))
     commands: list[tuple[tuple[str, ...], float]] = []
 
     def delayed_check(
-        command: tuple[str, ...], *, capture_output: bool, check: bool, timeout: float
+        command: tuple[str, ...],
+        *,
+        capture_output: bool,
+        check: bool,
+        timeout: float,
+        text: bool = False,
     ) -> subprocess.CompletedProcess[bytes]:
         commands.append((command, timeout))
         if timeout < 10:
             raise subprocess.TimeoutExpired(command, timeout)
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, "" if text else b"", "" if text else b"")
 
     with patch("agent_factory.operations.subprocess.run", side_effect=delayed_check):
         diagnostics = operations.doctor(config)

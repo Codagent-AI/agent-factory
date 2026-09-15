@@ -18,6 +18,25 @@ action; it neither starts an evaluation nor repairs credentials or configuration
 Run it again after a repair—ordinary readiness rechecks clear an available
 prerequisite without consuming an execution retry.
 
+`doctor` groups every check under one heading per readiness class, in this
+order: `shared` (storage root and free space with both kinds' floors, the
+shared configuration file and Project mappings, GitHub App key and access, the
+Agent Runner and Agent Skills repository checks both kinds clone, Docker's
+reclaimable space, the PATH `doctor` resolved executables against, and the
+installed LaunchAgent's PATH check); `eval-sandbox` (the Docker daemon, the
+memory allowance against the reservation, eval role model authentication, the
+harness branch, the `agent-evals` repository, the suite entry point and
+launcher, the suite environment file, and suite prerequisites); and, for the
+configured `[fix] execution` mode only, either `fix-sandbox` (Docker-mode fix
+checks) or `fix-host` (host-mode fix checks). A passing line never prints an
+`action:`. Admission mirrors this: a kind is held only by a failure in
+`shared` or in the group applicable to that kind under its configured mode, so
+a Docker outage holds evals but not a fix kind configured for host execution,
+and a disk floor below the eval minimum but above the (optionally lower) fix
+minimum holds evals only. When Docker is running, `doctor` also reports the
+space `docker system prune` / `docker builder prune` would reclaim; it never
+runs either command.
+
 `doctor` reports the configured `agent-evals` harness branch and the commit it
 currently resolves to as `harness branch <ref> → <sha>`, resolved locally
 without fetching. This is not proof that revision carries the suite behavior
@@ -83,6 +102,21 @@ example, the working clone has uncommitted changes, is missing entirely, or
 the fast-forward itself failed — until the operator resolves it (commit or
 stash local changes, restore the clone, or fetch and fast-forward it by hand)
 and Factory's next pass retries.
+
+**Host execution.** When `[fix] execution = "host"`, fix attempts run through
+the installed Agent Runner directly on the Mac, as the operator's own user,
+rather than in the Docker sandbox. In host mode, on a machine where the
+operator's own GitHub login is available, the separate fix credential and the
+target repositories' PR-only rulesets are conventions the launched process
+follows, not boundaries an autonomous agent cannot cross — a host attempt runs
+yolo as the operator's user with no filesystem boundary. Neither the recorded
+Runner commit nor the recorded Skills commit executes in host mode; the
+installed `agent-runner` binary runs instead, and its resolved path and
+`-version` output are recorded on the attempt. The enforceable controls are
+trusted-writer admission (only writers can route a bug to the factory) and
+human merge (the factory never merges its own fix PRs). See
+[installation](installation.md#host-execution-for-fixes) for the doctor checks
+host mode requires.
 
 **Evidence.** Each fix attempt gets its own artifact directory,
 `<storage_root>/artifacts/<claim>-fix/attempt-<n>/`, mounted at `/artifacts`

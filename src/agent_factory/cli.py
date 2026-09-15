@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from agent_factory.config import ConfigurationError, LocalConfig
-from agent_factory.operations import doctor, format_doctor, status
+from agent_factory.operations import Diagnostic, doctor, format_doctor, status
 from agent_factory.store import ClaimStore
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
 
@@ -55,6 +55,12 @@ def main() -> None:
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
+    if args.command == "doctor":
+        if args.config is None:
+            parser.error("doctor requires --config")
+        diagnostics = _doctor_diagnostics(args.config)
+        print(format_doctor(diagnostics))
+        raise SystemExit(0 if all(item.available for item in diagnostics) else 1)
     local = _load_local(args.config, required=args.state is None)
     if args.state is None:
         if local is None:  # pragma: no cover - _load_local exits in this case
@@ -62,12 +68,6 @@ def main() -> None:
         state = local.state_path
     else:
         state = args.state
-    if args.command == "doctor":
-        if local is None:
-            parser.error("doctor requires --config")
-        diagnostics = doctor(local)
-        print(format_doctor(diagnostics))
-        raise SystemExit(0 if all(item.available for item in diagnostics) else 1)
     if args.command == "tick":
         _tick(state, args.config)
     elif args.command == "status":
@@ -91,6 +91,23 @@ def main() -> None:
         while keep_running:
             _tick(state, args.config)
             time.sleep(_poll_seconds(args.poll_seconds, local))
+
+
+def _doctor_diagnostics(config_path: Path) -> list[Diagnostic]:
+    """A broken local file must still yield a grouped doctor report, not a bare exit."""
+    try:
+        local = LocalConfig.from_file(config_path)
+    except ConfigurationError as error:
+        return [
+            Diagnostic(
+                "local configuration",
+                False,
+                str(error),
+                "Correct the local configuration file, then rerun doctor.",
+                group="shared",
+            )
+        ]
+    return doctor(local)
 
 
 def _load_local(path: Path | None, *, required: bool) -> LocalConfig | None:
