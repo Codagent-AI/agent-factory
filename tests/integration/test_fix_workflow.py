@@ -692,3 +692,57 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (repo / "implemented").exists()
     assert (repo / "addressed").exists()
+
+
+@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+def test_installed_runner_loads_a_merged_config_with_both_profile_sets(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    workflows = repo / ".agent-runner" / "workflows"
+    workflows.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    tracked = (
+        "profiles:\n"
+        "  smoke_test:\n"
+        "    extends: default\n"
+        "    agents:\n"
+        "      probe:\n"
+        "        default_mode: autonomous\n"
+        "        cli: claude\n"
+        "        model: haiku\n"
+        "        effort: low\n"
+    )
+    staged = launch.staged_config_text(tracked, {"lead": ("cursor", "m", "high")})
+    (repo / ".agent-runner" / "config.yaml").write_text(staged, encoding="utf-8")
+    (workflows / "profile-probe-v1.0.yaml").write_text(
+        "name: profile-probe\ndescription: loads the merged profile config\n"
+        "steps:\n  - id: noop\n    command: printf ok\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "AGENT_RUNNER_NO_TUI": "1"}
+
+    def run(profile: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "agent-runner",
+                "run",
+                "profile-probe",
+                "--profile",
+                profile,
+                "--session-dir",
+                str(tmp_path / f"session-{profile}"),
+            ],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    for profile in ("factory", "smoke_test"):
+        result = run(profile)
+        assert result.returncode == 0, result.stdout + result.stderr
+    missing = run("absent")
+    assert missing.returncode != 0
+    assert "does not exist" in missing.stdout + missing.stderr

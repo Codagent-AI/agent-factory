@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -185,7 +186,9 @@ def test_host_plan_stages_the_workflow_only_in_the_clone_and_excludes_it(
     for name in launch.WORKFLOW_SCRIPTS:
         assert os.access(catalog / name, os.X_OK), name
     config = (built.clone / ".agent-runner" / "config.yaml").read_text()
-    assert "active_profile: factory" in config
+    assert "\n  factory:\n    agents:\n" in config
+    assert "active_profile" not in config
+    assert "--profile factory" in built.wrapper.read_text()
     assert "cli: cursor" in config and "cli: claude" in config and "cli: codex" in config
     exclude = (built.clone / ".git" / "info" / "exclude").read_text().splitlines()
     assert "/.agent-runner/workflows/" in exclude
@@ -311,7 +314,8 @@ def test_host_plan_keeps_the_tree_clean_when_the_target_tracks_its_runner_config
         branch="factory/fix-7-claim",
         contract=CONTRACT,
     )
-    assert "active_profile: factory" in config.read_text()
+    staged = config.read_text()
+    assert "\n  theirs:\n" in staged and "\n  factory:\n" in staged
     assert _git(built.clone, "status", "--porcelain") == ""
     _git(built.clone, "add", "-A")
     assert _git(built.clone, "diff", "--cached", "--name-only") == ""
@@ -409,3 +413,145 @@ def test_host_plan_failure_keeps_its_cause_when_the_token_copy_cannot_be_deleted
             branch="factory/fix-7-claim",
             contract=CONTRACT,
         )
+
+
+_PROFILES = {"lead": ("cursor", "m", "high")}
+_FACTORY_SET = (
+    "  factory:\n"
+    "    agents:\n"
+    "      lead:\n"
+    "        default_mode: autonomous\n"
+    "        cli: cursor\n"
+    "        model: m\n"
+    "        effort: high\n"
+)
+
+
+def test_staged_config_without_a_tracked_file_holds_only_the_factory_set() -> None:
+    assert launch.staged_config_text(None, _PROFILES) == "profiles:\n" + _FACTORY_SET
+
+
+def test_staged_config_keeps_a_tracked_file_and_adds_the_factory_set_at_its_indent() -> None:
+    tracked = (
+        "# Runner profiles for this repository\n"
+        "profiles:\n"
+        "    smoke_test:\n"
+        "        extends: default\n"
+        "        agents: {}\n"
+        "\n"
+        "other: value"
+    )
+    staged = launch.staged_config_text(tracked, _PROFILES)
+    assert staged == (
+        "# Runner profiles for this repository\n"
+        "profiles:\n"
+        "    smoke_test:\n"
+        "        extends: default\n"
+        "        agents: {}\n"
+        "    factory:\n"
+        "        agents:\n"
+        "            lead:\n"
+        "                default_mode: autonomous\n"
+        "                cli: cursor\n"
+        "                model: m\n"
+        "                effort: high\n"
+        "\n"
+        "other: value\n"
+    )
+
+
+def test_staged_config_adds_a_profiles_block_when_the_tracked_file_has_none() -> None:
+    staged = launch.staged_config_text("active_profile: theirs\n", _PROFILES)
+    assert staged == "active_profile: theirs\nprofiles:\n" + _FACTORY_SET
+
+
+@pytest.mark.parametrize(
+    "tracked",
+    [
+        "profiles: {}\n",
+        "profiles:\n  factory:\n    agents: {}\n",
+    ],
+)
+def test_staged_config_refuses_a_tracked_file_it_cannot_merge(tracked: str) -> None:
+    with pytest.raises(ReadinessError, match="config.yaml"):
+        launch.staged_config_text(tracked, _PROFILES)
+
+
+def _track_runner_config(clone: Path, text: str) -> Path:
+    config = clone / ".agent-runner" / "config.yaml"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(text)
+    _git(clone, "add", "-f", ".agent-runner/config.yaml")
+    _git(clone, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-qm", "t")
+    return config
+
+
+_THEIRS = "profiles:\n  smoke_test:\n    extends: default\n    agents: {}\n"
+
+
+def test_host_plan_keeps_the_targets_profile_sets_and_selects_the_factory_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codagent-AI/agent-runner's own tests run `--profile smoke_test` against its tracked
+    config; replacing that file made every host fix attempt fail its validator."""
+    built = Built(tmp_path, monkeypatch)
+    config = _track_runner_config(built.clone, _THEIRS)
+    for _ in range(2):  # re-planning must merge into the committed file, not the staged one
+        launch.build_host_plan(
+            evidence=built.evidence,
+            repo_clone=built.clone,
+            credential_copy=built.credential,
+            roles=ROLES,
+            branch="factory/fix-7-claim",
+            contract=CONTRACT,
+        )
+    staged = config.read_text()
+    assert staged.startswith(_THEIRS)
+    assert staged.count("\n  factory:\n") == 1
+    assert "--profile factory" in built.wrapper.read_text()
+
+
+def test_docker_plan_keeps_the_targets_profile_sets_and_selects_the_factory_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    _track_runner_config(built.clone, _THEIRS)
+    plan = launch.build_plan(
+        run_id="run-1",
+        evidence=built.evidence,
+        clones={"repo": str(built.clone), "runner": str(tmp_path), "skills": str(tmp_path)},
+        credential_copy=built.credential,
+        roles=ROLES,
+        branch="factory/fix-7-claim",
+        contract=CONTRACT,
+        bootstrap_skills=False,
+    )
+    script = plan.argv[-1]
+    assert "--profile factory" in script
+    staged = launch.staged_config_text(_THEIRS, launch.role_profiles(ROLES))
+    assert shlex.quote(staged) in script
+
+
+def test_staged_config_refuses_a_tracked_file_whose_whole_document_is_indented() -> None:
+    """Top-level keys then start past column 0; appending a column-0 `profiles` block would
+    add a second mapping instead of merging into the first."""
+    with pytest.raises(ReadinessError, match="config.yaml"):
+        launch.staged_config_text("  profiles:\n    theirs:\n      agents: {}\n", _PROFILES)
+
+
+def test_tracked_config_text_distinguishes_an_untracked_config_from_a_git_failure(
+    tmp_path: Path,
+) -> None:
+    clone = _clone(tmp_path)
+    assert launch.tracked_config_text(clone) is None
+    _track_runner_config(clone, _THEIRS)
+    assert launch.tracked_config_text(clone) == _THEIRS
+    not_a_repository = tmp_path / "not-a-repository"
+    not_a_repository.mkdir()
+    with pytest.raises(ReadinessError, match="config.yaml"):
+        launch.tracked_config_text(not_a_repository)
+
+
+def test_staged_config_adds_a_profiles_block_to_a_tracked_file_holding_only_comments() -> None:
+    staged = launch.staged_config_text("# Runner profiles live elsewhere\n", _PROFILES)
+    assert staged == "# Runner profiles live elsewhere\nprofiles:\n" + _FACTORY_SET

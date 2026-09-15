@@ -82,11 +82,16 @@ the operator's real HOME, git configuration where the wrapper does not
 override it, and installed CLI logins. Host mode never writes anything
 user-level; it stages the workflow into the attempt's own clone.
 
-When the target repository itself tracks `.agent-runner/config.yaml` (as
-Codagent-AI/agent-runner does), the launcher's copy is hidden from git for the
-attempt and the tracked file is restored from HEAD when the attempt ends. A
-fix that deliberately edits that file is therefore not committed in host mode;
-the file holds Runner profiles, not product code, so this is accepted.
+Every attempt, host or Docker, runs the workflow with `--profile factory`. When
+the target repository itself tracks `.agent-runner/config.yaml` (as
+Codagent-AI/agent-runner does), the launcher adds its `factory` profile set to
+that file rather than replacing it, so profile sets the target's own tests
+select stay available. The edited file is hidden from git for the attempt and
+restored from HEAD when the attempt ends. A fix that deliberately edits that
+file is therefore not committed; the file holds Runner profiles, not product
+code, so this is accepted. A tracked file that declares `profiles` in flow
+style, or already defines a `factory` set, holds the attempt with a readiness
+error instead.
 
 Every process a host attempt starts inherits the wrapper's environment,
 including the target repository's own validator checks and test suite. That

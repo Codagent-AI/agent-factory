@@ -29,6 +29,8 @@ STAGED_WORKFLOWS = Path("agent-runner") / "workflows"
 # the operator's ~/.agent-runner and removes it together with the clone.
 PROJECT_WORKFLOWS = Path(".agent-runner") / "workflows"
 PROJECT_CONFIG = Path(".agent-runner") / "config.yaml"
+# The profile set the factory adds to the project config and selects with --profile.
+FACTORY_PROFILE = "factory"
 ARTIFACT_DIR_PARAM = "artifact_dir"
 CONTAINER_ARTIFACTS = "/artifacts"
 SESSION_DIR_NAME = "agent-runner-session"
@@ -291,7 +293,11 @@ def build_plan(
             f"type=bind,source={clones['skills']},target=/workspace/skills,readonly",
             "--",
             container_script(
-                profiles, branch=branch, contract=contract, bootstrap_skills=bootstrap_skills
+                profiles,
+                branch=branch,
+                contract=contract,
+                bootstrap_skills=bootstrap_skills,
+                config_text=staged_config_text(tracked_config_text(Path(clones["repo"])), profiles),
             ),
         )
     )
@@ -333,8 +339,12 @@ def container_script(
     branch: str,
     contract: str,
     bootstrap_skills: bool = True,
+    config_text: str | None = None,
 ) -> str:
     """The bash body run inside the sandbox after the Runner build.
+
+    ``config_text`` is the project Runner config to stage (see ``staged_config_text``);
+    without it the script stages the factory profile set alone.
 
     ``bootstrap_skills`` is switched off only by model-free launch tests: installing the
     Skills clone into each CLI needs that CLI's authentication, which those tests lack.
@@ -342,7 +352,7 @@ def container_script(
     adapters = (
         sorted({cli for cli, _model, _effort in profiles.values()}) if bootstrap_skills else []
     )
-    config_lines = role_config_lines(profiles)
+    staged_config = config_text if config_text is not None else staged_config_text(None, profiles)
     bootstrap: list[str] = []
     for adapter in adapters:
         if adapter == "claude":
@@ -365,6 +375,7 @@ def container_script(
     run_command = " ".join(
         (
             f"agent-runner run {WORKFLOW_NAME}",
+            f"--profile {FACTORY_PROFILE}",
             "--param issue_file=/artifacts/input/issue.json",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",
@@ -396,9 +407,7 @@ def container_script(
         'git config --global user.email "${login}@users.noreply.github.com"',
         *bootstrap,
         "mkdir -p /workspace/repo/.agent-runner",
-        "cat > /workspace/repo/.agent-runner/config.yaml <<'PROFILES'",
-        *config_lines,
-        "PROFILES",
+        f"printf '%s' {shlex.quote(staged_config)} > /workspace/repo/.agent-runner/config.yaml",
         "printf '%s\\n' /.agent-runner/config.yaml >> /workspace/repo/.git/info/exclude",
         "cd /workspace/repo",
         # A target that tracks its own Runner config must not see ours as a modification.
@@ -410,20 +419,103 @@ def container_script(
     return "\n".join(lines) + "\n"
 
 
-def role_config_lines(profiles: Mapping[str, tuple[str, str, str]]) -> list[str]:
-    """The repo-local Runner profile config selecting the configured fix roles."""
-    lines = ["active_profile: factory", "profiles:", "  factory:", "    agents:"]
+def staged_config_text(tracked: str | None, profiles: Mapping[str, tuple[str, str, str]]) -> str:
+    """The project Runner config a fix attempt runs with.
+
+    A target may commit its own ``.agent-runner/config.yaml`` whose profile sets its own
+    tests select (Codagent-AI/agent-runner's smoke tests run ``--profile smoke_test``).
+    That file is kept byte for byte and the factory profile set is added to its
+    ``profiles`` block, at the block's own indentation; the workflow then selects the
+    set with ``--profile``. The factory has no YAML parser, so a tracked file it cannot
+    extend safely is refused rather than guessed at.
+    """
+    if tracked is None or not tracked.strip():
+        return "profiles:\n" + _factory_profile_block(profiles, "  ")
+    lines = tracked.splitlines()
+    first_content = next(
+        (line for line in lines if line.strip() and not line.lstrip().startswith("#")), None
+    )
+    if first_content is not None and first_content[0].isspace():
+        raise ReadinessError(
+            f"the target's {PROJECT_CONFIG.as_posix()} indents its top-level keys; "
+            "the factory cannot add its profile set to it"
+        )
+    header = next((i for i, line in enumerate(lines) if _PROFILES_KEY.match(line)), None)
+    if header is None:
+        return "\n".join(lines) + "\nprofiles:\n" + _factory_profile_block(profiles, "  ")
+    if not _PROFILES_BLOCK_HEADER.match(lines[header]):
+        raise ReadinessError(
+            f"the target's {PROJECT_CONFIG.as_posix()} writes profiles in flow style; "
+            "the factory cannot add its profile set to it"
+        )
+    unit: str | None = None
+    last_content = header
+    for index in range(header + 1, len(lines)):
+        line = lines[index]
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line[0].isspace():
+            break
+        indent = line[: len(line) - len(stripped)]
+        if unit is None:
+            unit = indent
+        if indent == unit and _FACTORY_PROFILE_KEY.match(stripped):
+            raise ReadinessError(
+                f"the target's {PROJECT_CONFIG.as_posix()} already defines a "
+                f"{FACTORY_PROFILE!r} profile set"
+            )
+        last_content = index
+    block = _factory_profile_block(profiles, unit or "  ").rstrip("\n").split("\n")
+    merged = [*lines[: last_content + 1], *block, *lines[last_content + 1 :]]
+    return "\n".join(merged) + "\n"
+
+
+_PROFILES_KEY = re.compile(r"^profiles\s*:")
+_PROFILES_BLOCK_HEADER = re.compile(r"^profiles\s*:\s*(#.*)?$")
+_FACTORY_PROFILE_KEY = re.compile(rf"^{re.escape(FACTORY_PROFILE)}\s*:")
+
+
+def _factory_profile_block(profiles: Mapping[str, tuple[str, str, str]], unit: str) -> str:
+    lines = [f"{unit}{FACTORY_PROFILE}:", f"{unit * 2}agents:"]
     for role, (cli, model, effort) in profiles.items():
         lines.extend(
             (
-                f"      {role}:",
-                "        default_mode: autonomous",
-                f"        cli: {cli}",
-                f"        model: {model}",
-                f"        effort: {effort}",
+                f"{unit * 3}{role}:",
+                f"{unit * 4}default_mode: autonomous",
+                f"{unit * 4}cli: {cli}",
+                f"{unit * 4}model: {model}",
+                f"{unit * 4}effort: {effort}",
             )
         )
-    return lines
+    return "\n".join(lines) + "\n"
+
+
+def tracked_config_text(repo_clone: Path) -> str | None:
+    """The target's committed Runner config, read from HEAD so re-planning an attempt never
+    merges into a file an earlier plan already staged. ``None`` means HEAD has no such
+    file; any git failure is raised, never mistaken for an untracked config."""
+    path = PROJECT_CONFIG.as_posix()
+    listed = _git_output(repo_clone, "ls-tree", "--name-only", "HEAD", "--", path)
+    if not listed.strip():
+        return None
+    try:
+        return _git_output(repo_clone, "show", f"HEAD:{path}")
+    except UnicodeDecodeError as error:
+        raise ReadinessError(f"the target's {path} is not valid UTF-8: {error}") from error
+
+
+def _git_output(repo_clone: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo_clone), *args], capture_output=True, check=False
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", "replace").strip()
+        raise ReadinessError(
+            f"could not read the target's {PROJECT_CONFIG.as_posix()} from HEAD in "
+            f"{repo_clone}: {detail or f'git exited {completed.returncode}'}"
+        )
+    return completed.stdout.decode("utf-8")
 
 
 # -- host execution ---------------------------------------------------------------------
@@ -508,6 +600,7 @@ def host_script(
     run_command = " ".join(
         (
             f"{shlex.quote(runner)} run {WORKFLOW_NAME}",
+            f"--profile {FACTORY_PROFILE}",
             f"--session-dir {shlex.quote(str(session_dir))}",
             f"--param issue_file={shlex.quote(str(evidence / 'input' / 'issue.json'))}",
             f"--param branch_name={shlex.quote(branch)}",
@@ -693,7 +786,9 @@ def _assemble_host_plan(
     stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract)
     config_path = repo_clone / PROJECT_CONFIG
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("\n".join(role_config_lines(profiles)) + "\n", encoding="utf-8")
+    config_path.write_text(
+        staged_config_text(tracked_config_text(repo_clone), profiles), encoding="utf-8"
+    )
     _exclude_from_git(
         repo_clone, (f"/{PROJECT_CONFIG.as_posix()}", f"/{PROJECT_WORKFLOWS.as_posix()}/")
     )
