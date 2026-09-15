@@ -77,7 +77,7 @@ def _eligible(
     runs = store.runs_for_claim(claim.id)
     if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
         return False
-    if store.pending_events(claim.id):
+    if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
         return False
     if _sync_incomplete(store, claim):
         return False
@@ -146,8 +146,14 @@ def _fix_attempt_targets(run: Run) -> list[Path]:
     targets = [attempt_dir / name for name in _FIX_ATTEMPT_REMOVE]
     session_dir = run.result.get("session_dir")
     if isinstance(session_dir, str):
-        session_path = Path(session_dir)
-        if session_path != attempt_dir / "agent-runner-session":
+        session_path = Path(session_dir).resolve()
+        default = attempt_dir / "agent-runner-session"
+        # A run's recorded session_dir is only ever trusted when it falls under this
+        # attempt's own evidence directory; anything else is ignored rather than pruned,
+        # since run.result is suite-controlled output, not a verified factory path.
+        if session_path != default and (
+            session_path == attempt_dir or attempt_dir in session_path.parents
+        ):
             targets.append(session_path)
     return targets
 

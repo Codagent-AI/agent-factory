@@ -235,9 +235,7 @@ def test_observing_review_after_done_clears_marker_and_a_later_done_restarts_clo
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
 
-    retention.reconcile(
-        store, local, _get(store, claim.id), "Review", start + timedelta(days=1)
-    )
+    retention.reconcile(store, local, _get(store, claim.id), "Review", start + timedelta(days=1))
     claim = _get(store, claim.id)
     assert claim is not None and claim.cleanup.get("done_observed_at") is None
 
@@ -307,6 +305,65 @@ def test_pending_reporting_event_leaves_evidence_untouched(tmp_path: Path) -> No
 
     for path in _removed_paths(evidence, kind="fix"):
         assert path.exists()
+
+
+def test_pending_delivery_failure_leaves_evidence_untouched(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    store.record_delivery_failure(claim.id, "handoff", RuntimeError("delivery boom"))
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    later = start + timedelta(days=14)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", later)
+
+    for path in _removed_paths(evidence, kind="fix"):
+        assert path.exists()
+
+
+def test_session_dir_inside_the_attempt_directory_is_pruned(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    session_dir = evidence / "attempt-1" / "custom-session"
+    session_dir.mkdir()
+    (session_dir / "state.json").write_text("x")
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.finish_run(run.id, execution_status="completed", result={"session_dir": str(session_dir)})
+    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    later = start + timedelta(days=14)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", later)
+
+    assert not session_dir.exists()
+
+
+def test_session_dir_outside_the_evidence_tree_is_never_deleted(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    outside = tmp_path / "not-evidence"
+    outside.mkdir()
+    (outside / "do-not-delete.txt").write_text("precious")
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.finish_run(run.id, execution_status="completed", result={"session_dir": str(outside)})
+    store.set_cleanup(claim.id, {"review_observed": True, "complete": True})
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    later = start + timedelta(days=14)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", later)
+
+    assert outside.exists()
+    assert (outside / "do-not-delete.txt").exists()
 
 
 def test_incomplete_sync_leaves_evidence_untouched(tmp_path: Path) -> None:
@@ -395,9 +452,7 @@ def test_failed_removal_records_an_error_and_retries_until_removable(tmp_path: P
     assert _retention(claim).get("pruned_at") is None
     assert _retention(claim)["errors"]
 
-    retention.reconcile(
-        store, local, _get(store, claim.id), "Done", later + timedelta(seconds=1)
-    )
+    retention.reconcile(store, local, _get(store, claim.id), "Done", later + timedelta(seconds=1))
     claim = _get(store, claim.id)
     assert _retention(claim)["pruned_at"] is not None
     assert not logs_dir.exists()

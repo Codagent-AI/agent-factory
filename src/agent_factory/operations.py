@@ -25,7 +25,7 @@ from agent_factory.github import (
     InstallationTokenProvider,
     SubprocessGhRunner,
 )
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Event
+from agent_factory.store import Claim, ClaimStore, Event
 from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
 
 if TYPE_CHECKING:
@@ -184,12 +184,12 @@ def status(
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
     all_claims = store.all_claims()
+    active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if include_all:
         claims = all_claims
     else:
-        claims = [claim for claim in all_claims if _is_live(store, claim)]
+        claims = [claim for claim in all_claims if _is_live(store, claim, active_by_claim)]
         lines.append(f"hidden: {len(all_claims) - len(claims)} settled or superseded claim(s)")
-    active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if not claims:
         lines.append("current: none")
     quota_error = store.get_setting("runtime", "quota-error")
@@ -999,15 +999,24 @@ def _reporting_lines(claim: Claim) -> list[str]:
     return [f"unfinished reporting: {', '.join(pending)}"] if pending else []
 
 
-def _is_live(store: ClaimStore, claim: Claim) -> bool:
-    """A claim still worth showing by default: active, or with something pending."""
+def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]) -> bool:
+    """A claim still worth showing by default: active, or with something pending.
+
+    ``active_by_claim`` is the single global non-terminal-run lookup ``status`` already
+    builds, reused here instead of a per-claim query; pending events come straight from
+    the already-loaded ``claim.reporting`` for the same reason. Only the sync lookup
+    still costs its own per-claim query, since it is only reached for the settled or
+    cancelled claims this function does not already resolve without one.
+    """
     if claim.lifecycle == "superseded":
         return False
     if claim.lifecycle not in {"settled", "cancelled"}:
         return True
-    if any(run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)):
+    if claim.id in active_by_claim:
         return True
-    if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
+    if any(event.comment_id is None for event in _events(claim)) or claim.reporting.get(
+        "delivery_failures"
+    ):
         return True
     if _pending_sync(store, claim):
         return True
