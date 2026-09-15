@@ -19,7 +19,7 @@ from agent_factory.suites.and_scene import ReadinessError
 
 WORKFLOW_NAME = "factory-fix"
 WORKFLOW_FILE = "factory-fix-v1.0.yaml"
-WORKFLOW_SCRIPTS = ("record-triage.sh", "read-regression-marker.sh", "record-outcome.sh")
+WORKFLOW_SCRIPTS = ("record-triage.sh", "record-outcome.sh")
 # The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
 # links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
 # directory publishes the workflow without another mount.

@@ -70,44 +70,51 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     finalize = _step_block(text, "finalize-pr")
     assert "workflow: builtin:core/finalize-pr-v1.0.yaml" in finalize
     assert 'ci_fix_cycles: "1"' in finalize
-    assert "workflow: builtin:core/run-validator-v1.0.yaml" in _step_block(text, "run-validator")
+    assert text.count("workflow: builtin:core/run-validator-v1.0.yaml") == 2
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
 
 
-def test_the_tester_report_never_reaches_a_shell_condition() -> None:
+def test_workflow_uses_one_shared_session_per_role_and_only_implementor_changes_code() -> None:
     text = _workflow_text()
-    for line in text.splitlines():
-        if "skip_if:" in line or line.strip().startswith("command:"):
-            assert "{{test_flow_report}}" not in line, line
-    marker = _step_block(text, "read-regression-marker")
-    assert "script: read-regression-marker.sh" in marker
-    assert 'report: "{{test_flow_report}}"' in marker
-    assert "command:" not in marker
-    assert "capture: regressions" in marker
-    address = _step_block(text, "address")
-    assert 'test "{{regressions}}" != found' in address
+    sessions = text[text.index("sessions:") : text.index("steps:")]
+    assert sessions.count("- name: lead-agent") == 1
+    assert sessions.count("- name: implementor-agent") == 1
+    assert sessions.count("- name: tester-agent") == 1
+    assert "agent: lead" in sessions
+    assert "agent: implementor" in sessions
+    assert "agent: tester" in sessions
+    assert "session: implementor-agent" in _step_block(text, "implement-fix")
+    assert "session: tester-agent" in _step_block(text, "test-flows")
+    assert "session: lead-agent" in _step_block(text, "review-fix")
+    assert "session: implementor-agent" in _step_block(text, "address-findings")
+    assert "skip_if:" not in _step_block(text, "address-findings")
 
 
-def test_a_regression_repair_is_validated_again_before_the_pr_is_opened() -> None:
+def test_validation_runs_after_initial_implementation_and_after_findings_repairs() -> None:
     text = _workflow_text()
-    address_at = text.index("- id: address\n")
-    recheck_at = text.index("- id: recheck-validator\n")
-    verify_at = text.index("- id: verify-clean\n")
-    assert address_at < recheck_at < verify_at
-    recheck = _step_block(text, "recheck-validator")
-    assert "agent-validator run --report" in recheck
-    assert "capture: validator_status" in recheck
-    assert 'test "{{regressions}}" != found' in recheck
-    assert "revalidate" not in text, "the repair is verified once, not repaired again"
+    implement_at = text.index("- id: implement-fix\n")
+    initial_at = text.index("- id: initial-validator\n")
+    test_at = text.index("- id: test-flows\n")
+    review_at = text.index("- id: review-fix\n")
+    address_at = text.index("- id: address-findings\n")
+    final_at = text.index("- id: final-validator\n")
+    finalize_at = text.index("- id: finalize-pr\n")
+    assert implement_at < initial_at < test_at < review_at < address_at < final_at < finalize_at
 
 
-def test_validator_gates_capture_a_fixed_token_and_log_under_the_artifact_directory() -> None:
+def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
     text = _workflow_text()
-    for step in ("check-validator", "recheck-validator"):
-        block = _step_block(text, step)
-        assert "capture_stderr" not in block
-        assert "/tmp/" not in block
-        assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in block
+    for phase in ("initial", "final"):
+        gate_at = text.index(f"- id: {phase}-validation-gate\n")
+        repair_at = text.index(f"- id: repair-{phase}-validation\n")
+        recheck_at = text.index(f"- id: recheck-{phase}-validation\n")
+        assert gate_at < repair_at < recheck_at
+        assert "continue_on_failure: true" in _step_block(text, f"{phase}-validation-gate")
+        assert "session: implementor-agent" in _step_block(text, f"repair-{phase}-validation")
+        assert "skip_if: previous_success" in _step_block(text, f"repair-{phase}-validation")
+        recheck = _step_block(text, f"recheck-{phase}-validation")
+        assert "agent-validator run --report" in recheck
+        assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in recheck
 
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
@@ -221,7 +228,7 @@ def _runner_clone(tmp_path: Path, finalize_pr: str | None) -> Path:
     if finalize_pr is not None:
         core = clone / "workflows" / "core"
         core.mkdir(parents=True)
-        (core / "finalize-pr-v1.0.yaml").write_text(finalize_pr)
+        (clone / launch.FINALIZE_PR_PATH).write_text(finalize_pr)
     return clone
 
 

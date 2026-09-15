@@ -67,11 +67,15 @@ Each attempt stages it into the attempt's artifact directory, where the
 sandboxed Runner resolves `agent-runner run factory-fix` from its user-level
 workflow catalog; a target repository that ships its own `factory-fix` project
 workflow would shadow it, and the attempt then fails for lack of an outcome
-rather than running the wrong thing. The workflow calls the Runner's built-in
-`run-validator` and `finalize-pr` workflows, so the configured Runner branch
-must accept `builtin:` sub-workflow references and the `ci_fix_cycles`
-parameter on `finalize-pr`; `doctor` checks the parameter so an incompatible
-Runner revision is caught before a fix is admitted, not after.
+rather than running the wrong thing. The workflow uses one shared lead session
+for triage and review, one shared implementor session for every code-changing
+step, and one shared tester session for flow testing. It runs the built-in
+`run-validator` immediately after implementation and again after review
+findings are addressed, then reuses `core/finalize-pr-v1.0` for the PR and CI
+loop. The configured Runner branch must accept `builtin:` sub-workflow
+references and the `ci_fix_cycles` parameter on that finalizer; `doctor` checks
+the parameter so an incompatible Runner revision is caught before a fix is
+admitted, not after.
 
 ### Host execution for fixes
 

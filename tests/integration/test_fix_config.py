@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
@@ -84,6 +86,15 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
     assert shared.fix.branches.runner == "main"
     assert shared.fix.branches.skills == "main"
     assert shared.fix.contract == "factory-fix/1"
+
+
+def test_deployed_fix_defaults_match_the_factory_role_split() -> None:
+    shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
+    assert shared.fix.defaults == {
+        "lead": "claude:fable:medium",
+        "implementor": "codex:gpt-5.6-terra:medium",
+        "tester": "codex:gpt-5.6-luna:medium",
+    }
 
 
 def test_shared_config_parses_fix_targets_and_defaults() -> None:
