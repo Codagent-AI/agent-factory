@@ -38,6 +38,7 @@ steps:
   - id: record
     command: |
       mkdir -p "{{artifact_dir}}"
+      git status --porcelain > "{{artifact_dir}}/git-status.txt"
       env | cut -d= -f1 | sort > "{{artifact_dir}}/env-names.txt"
       printf '%s\\n' "${AGENT_RUNNER_SOURCE_COMMIT:-}" > "{{artifact_dir}}/source-commit.txt"
       if touch /workspace/repo/.factory-writable 2>/dev/null; then echo writable; else echo readonly; fi > "{{artifact_dir}}/repo-mode.txt"
@@ -91,7 +92,10 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
     target.mkdir()
     _git(target, "init", "-q", "-b", "main")
     (target / "README.md").write_text("fixture\n")
-    _git(target, "add", "README.md")
+    # Like Codagent-AI/agent-runner, the target commits its own Runner config.
+    (target / ".agent-runner").mkdir()
+    (target / ".agent-runner" / "config.yaml").write_text("active_profile: theirs\n")
+    _git(target, "add", "README.md", ".agent-runner/config.yaml")
     _git(target, "commit", "-q", "-m", "fixture")
     target_sha = _git(target, "rev-parse", "HEAD")
     storage = tmp_path / "storage"
@@ -174,6 +178,9 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
             assert outcome["outcome"] == "failed"
             assert (evidence / "source-commit.txt").read_text().strip() == runner_sha
             assert (evidence / "repo-mode.txt").read_text().strip() == "writable"
+            assert (evidence / "git-status.txt").read_text().strip() == "", (
+                "the launcher left the target's tracked Runner config modified"
+            )
             assert (evidence / "skills-mode.txt").read_text().strip() == "readonly"
             names = (evidence / "env-names.txt").read_text().split()
             assert "GH_TOKEN" in names

@@ -100,9 +100,11 @@ def test_host_wrapper_execs_the_resolved_runner_with_session_and_artifact_parame
     wrapper = built.wrapper.read_text()
     evidence = built.evidence.resolve()
     exec_line = next(
-        line for line in wrapper.splitlines() if line.startswith("exec ") and " run " in line
+        line
+        for line in wrapper.splitlines()
+        if line.startswith(str(built.runner.resolve())) and " run " in line
     )
-    assert exec_line.startswith(f"exec {built.runner.resolve()} run factory-fix ")
+    assert exec_line.startswith(f"{built.runner.resolve()} run factory-fix ")
     assert f"--session-dir {evidence / 'agent-runner-session'}" in exec_line
     assert f"--param artifact_dir={evidence}" in exec_line
     assert f"--param issue_file={evidence / 'input' / 'issue.json'}" in exec_line
@@ -277,3 +279,54 @@ def test_host_wrapper_exports_the_token_as_data_not_shell_code(
     assert done.returncode == 0, done.stderr
     assert seen.read_text() == hostile
     assert not marker.exists(), "token contents were executed by the wrapper"
+
+
+def test_host_plan_keeps_the_tree_clean_when_the_target_tracks_its_runner_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Targets such as Codagent-AI/agent-runner commit their own .agent-runner/config.yaml.
+    The launcher's profile config must not surface as a modified tracked file: the packaged
+    workflow refuses to triage on a dirty tree, and finalize-pr must never commit it."""
+    built = Built(tmp_path, monkeypatch)
+    config = built.clone / ".agent-runner" / "config.yaml"
+    config.write_text("active_profile: theirs\nprofiles:\n  theirs:\n    agents: {}\n")
+    _git(built.clone, "add", "-f", ".agent-runner/config.yaml")
+    _git(
+        built.clone,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@example.invalid",
+        "commit",
+        "-qm",
+        "track",
+    )
+    assert _git(built.clone, "status", "--porcelain") == ""
+    launch.build_host_plan(
+        evidence=built.evidence,
+        repo_clone=built.clone,
+        credential_copy=built.credential,
+        roles=ROLES,
+        branch="factory/fix-7-claim",
+        contract=CONTRACT,
+    )
+    assert "active_profile: factory" in config.read_text()
+    assert _git(built.clone, "status", "--porcelain") == ""
+    _git(built.clone, "add", "-A")
+    assert _git(built.clone, "diff", "--cached", "--name-only") == ""
+    # After the attempt the wrapper puts the tracked file back and clears the bit.
+    built.runner.write_text("#!/bin/sh\nexit 0\n")
+    subprocess.run(["/bin/bash", str(built.wrapper)], capture_output=True, check=True)
+    assert config.read_text() == "active_profile: theirs\nprofiles:\n  theirs:\n    agents: {}\n"
+    assert not any(
+        line.startswith("S ") for line in _git(built.clone, "ls-files", "-v").splitlines()
+    )
+
+
+def test_container_script_hides_a_tracked_runner_config_from_git() -> None:
+    script = launch.container_script(
+        {"lead": ("codex", "m", "high")}, branch="b", contract=CONTRACT, bootstrap_skills=False
+    )
+    assert "update-index --skip-worktree .agent-runner/config.yaml" in script
+    assert "update-index --no-skip-worktree .agent-runner/config.yaml" in script
+    assert "trap restore_tracked_config EXIT" in script

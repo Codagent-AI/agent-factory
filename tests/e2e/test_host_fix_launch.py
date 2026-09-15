@@ -322,7 +322,7 @@ def test_e2e_001_cancelling_a_host_attempt_stops_the_runner_and_its_children(
             assert running is not None
             pid_value = running.process["pid"]
             assert isinstance(pid_value, int)
-            runner_pid = pid_value  # the wrapper exec'd the Runner
+            runner_pid = pid_value  # the wrapper process that owns the Runner
             assert _pid_alive(runner_pid)
             store.request_cancellation(fixture.run_id)
         watcher.wait(timeout=60)

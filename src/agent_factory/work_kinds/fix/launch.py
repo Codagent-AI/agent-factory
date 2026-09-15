@@ -400,6 +400,10 @@ def container_script(
         "PROFILES",
         "printf '%s\\n' /.agent-runner/config.yaml >> /workspace/repo/.git/info/exclude",
         "cd /workspace/repo",
+        # A target that tracks its own Runner config must not see ours as a modification.
+        "if git ls-files --error-unmatch .agent-runner/config.yaml >/dev/null 2>&1; then "
+        "git update-index --skip-worktree .agent-runner/config.yaml; fi",
+        *_RESTORE_TRACKED_CONFIG_LINES,
         f"{run_command} 2>&1 | tee /artifacts/logs/agent-runner.log",
     ]
     return "\n".join(lines) + "\n"
@@ -502,7 +506,7 @@ def host_script(
     session_dir = evidence / SESSION_DIR_NAME
     run_command = " ".join(
         (
-            f"exec {shlex.quote(runner)} run {WORKFLOW_NAME}",
+            f"{shlex.quote(runner)} run {WORKFLOW_NAME}",
             f"--session-dir {shlex.quote(str(session_dir))}",
             f"--param issue_file={shlex.quote(str(evidence / 'input' / 'issue.json'))}",
             f"--param branch_name={shlex.quote(branch)}",
@@ -537,9 +541,43 @@ def host_script(
         'git config --file "$GIT_CONFIG_GLOBAL" user.name "$login"',
         'git config --file "$GIT_CONFIG_GLOBAL" user.email "${login}@users.noreply.github.com"',
         f"cd {shlex.quote(str(repo_clone))}",
+        *_RESTORE_TRACKED_CONFIG_LINES,
         run_command,
     ]
     return "\n".join(lines) + "\n"
+
+
+# When the target tracks its own Runner config, the launcher hid its overwrite with the
+# skip-worktree bit so the workflow's clean-tree gate passes and finalize-pr never commits
+# it. The bit must not outlive the attempt: on exit the tree is put back the way the target
+# committed it, so nothing stays hidden from a later inspection of the clone.
+_RESTORE_TRACKED_CONFIG_LINES = (
+    "restore_tracked_config() {",
+    "  if git ls-files --error-unmatch .agent-runner/config.yaml >/dev/null 2>&1; then",
+    "    git update-index --no-skip-worktree .agent-runner/config.yaml 2>/dev/null || true",
+    "    git checkout -- .agent-runner/config.yaml 2>/dev/null || true",
+    "  fi",
+    "}",
+    "trap restore_tracked_config EXIT",
+)
+
+
+def _hide_tracked_file_from_git(repo_clone: Path, relative: str) -> None:
+    """A target that commits its own Runner config (Codagent-AI/agent-runner does) would
+    otherwise show the factory's profile config as a modified tracked file: the packaged
+    workflow refuses to triage on a dirty tree and finalize-pr must never commit it. The
+    skip-worktree bit keeps the file out of status and staging without touching HEAD."""
+    tracked = subprocess.run(
+        ["git", "-C", str(repo_clone), "ls-files", "--error-unmatch", relative],
+        capture_output=True,
+        check=False,
+    )
+    if tracked.returncode == 0:
+        subprocess.run(
+            ["git", "-C", str(repo_clone), "update-index", "--skip-worktree", relative],
+            capture_output=True,
+            check=True,
+        )
 
 
 def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
@@ -600,6 +638,7 @@ def build_host_plan(
     _exclude_from_git(
         repo_clone, (f"/{PROJECT_CONFIG.as_posix()}", f"/{PROJECT_WORKFLOWS.as_posix()}/")
     )
+    _hide_tracked_file_from_git(repo_clone, PROJECT_CONFIG.as_posix())
     private = credential_copy.parent
     private.mkdir(parents=True, exist_ok=True)
     private.chmod(0o700)
