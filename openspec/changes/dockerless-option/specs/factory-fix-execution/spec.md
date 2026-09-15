@@ -95,7 +95,7 @@ In `host` mode the factory SHALL run the packaged fix workflow through the opera
 
 ### Requirement: Keep the fix credential out of persisted state
 
-In both execution modes the fix token SHALL NOT appear in the persisted execution plan, the SQLite run record, the launched command line, factory logs, or attempt evidence. The plan MAY record the path of the factory's private credential copy. The credential copy SHALL be deleted when the claim reaches Done, as today.
+In both execution modes the fix token SHALL NOT appear in the persisted execution plan, the SQLite run record, the launched command line, factory logs, or attempt evidence. The plan MAY record the path of the factory's private credential copy. The credential copy SHALL be deleted when the claim reaches Done, as today, and for a cancelled claim as soon as its execution has stopped.
 
 #### Scenario: Inspect the run record after launch
 

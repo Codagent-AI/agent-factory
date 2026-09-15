@@ -73,7 +73,9 @@ The default local admission window is 00:00 through (but excluding) 15:00 in
 the configured timezone. Defaults are 30 minutes without progress, six hours of
 execution excluding recognized quota waits, 12 hours total, and a five-hour
 recognized-Codex fallback; all are local TOML values. Closing a tracked issue
-cancels only Factory-owned work. A Running item dragged to Ready, Review, or
+cancels only Factory-owned work; a cancelled fix claim's clones and credential
+copy are released as soon as its attempt has stopped, and its evidence stays
+until retention removes it. A Running item dragged to Ready, Review, or
 Done while its execution is verified is corrected back to Running; its worktrees
 are retained.
 

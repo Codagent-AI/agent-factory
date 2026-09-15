@@ -82,6 +82,17 @@ the operator's real HOME, git configuration where the wrapper does not
 override it, and installed CLI logins. Host mode never writes anything
 user-level; it stages the workflow into the attempt's own clone.
 
+When the target repository itself tracks `.agent-runner/config.yaml` (as
+Codagent-AI/agent-runner does), the launcher's copy is hidden from git for the
+attempt and the tracked file is restored from HEAD when the attempt ends. A
+fix that deliberately edits that file is therefore not committed in host mode;
+the file holds Runner profiles, not product code, so this is accepted.
+
+The Cursor readiness check confirms the `codagent` marketplace is registered
+with the `agent` CLI, which is the strongest read-only evidence Cursor exposes;
+a Cursor without the plugin installed fails inside the attempt with evidence
+rather than as a readiness hold.
+
 Before setting `execution = "host"`, `doctor` must pass the `fix-host` group:
 
 - The installed `agent-runner` resolves on PATH, its `-version` succeeds, and

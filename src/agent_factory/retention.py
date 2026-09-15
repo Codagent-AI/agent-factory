@@ -84,9 +84,9 @@ def _eligible(
         return False
     if pending_sync(store, claim):
         return False
-    # Clone, image, and credential cleanup only ever runs for settled claims (it is the
-    # Review-then-Done gate), so its completion gates only them: a superseded or cancelled
-    # claim has no cleanup pass that could ever mark it complete.
+    # Clone, image, and credential cleanup gates only settled claims (the Review-then-Done
+    # pass). A cancelled claim releases those as soon as execution stops and a superseded
+    # claim never has a cleanup pass, so neither waits on `complete` here.
     return claim.lifecycle != "settled" or cleanup.get("complete") is True
 
 

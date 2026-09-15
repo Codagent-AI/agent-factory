@@ -1,4 +1,8 @@
-"""Releases a settled fix claim's clones, run images, and credential copies after Review."""
+"""Releases a fix claim's clones, run images, and credential copies.
+
+A settled claim is released after Review then Done; a cancelled claim is released as soon
+as its execution has stopped, since its card may never travel through Review.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
-from agent_factory.store import ClaimStore
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore
 from agent_factory.work_kinds.images import remove_images, run_image_tags
 
 
@@ -20,9 +24,20 @@ class FixCleanup:
 
     def reconcile(self, claim_id: str, *, board_status: str) -> bool:
         claim = self._store.get_claim(claim_id)
-        if claim is None or claim.lifecycle != "settled":
+        if claim is None:
             return False
         cleanup = dict(claim.cleanup)
+        if cleanup.get("complete") is True:
+            return True
+        if claim.lifecycle == "cancelled":
+            # Cancellation stops execution asynchronously; the clones and the token copy are
+            # released once no attempt can still be using them, whatever the card status.
+            runs = self._store.runs_for_claim(claim_id)
+            if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
+                return False
+            return self._release(claim, cleanup)
+        if claim.lifecycle != "settled":
+            return False
         if board_status == "Review":
             if cleanup.get("review_observed") is not True:
                 cleanup["review_observed"] = True
@@ -30,8 +45,10 @@ class FixCleanup:
             return False
         if board_status != "Done" or cleanup.get("review_observed") is not True:
             return False
-        if cleanup.get("complete") is True:
-            return True
+        return self._release(claim, cleanup)
+
+    def _release(self, claim: Claim, cleanup: dict[str, object]) -> bool:
+        claim_id = claim.id
         errors: dict[str, str] = {}
         clones = claim.preparation.get("clones")
         if isinstance(clones, Mapping):

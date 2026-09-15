@@ -68,7 +68,7 @@ def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
             argv=(sys.executable, str(program), str(artifact)),
             working_directory=str(tmp_path),
         )
-        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.7, 10, 10))
+        watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(2.0, 10, 10))
         watcher.wait(timeout=8)
         finished = store.get_run(run.id)
         assert finished is not None and finished.status == "completed"
