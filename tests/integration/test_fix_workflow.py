@@ -338,6 +338,55 @@ def test_record_triage_rejects_malformed_input(payload: object) -> None:
     assert "record-triage:" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        # Prose before and after the object, as the Cursor adapter produced on the host.
+        "I reviewed the issue.\n\n{decision}\n\nLet me know if you need more.",
+        # A markdown fence despite the prompt forbidding one.
+        "```json\n{decision}\n```",
+        # Prose containing braces in a string inside the object.
+        "Decision:\n{decision}",
+        # An illustrative object in the prose that is not a decision.
+        'The shape is {{"example": true}}; my answer:\n{decision}',
+    ],
+)
+def test_record_triage_extracts_the_decision_object_from_surrounding_prose(
+    tmp_path: Path, wrapped: str
+) -> None:
+    outcome = tmp_path / "fix-outcome.json"
+    decision: dict[str, object] = {"fixable": True, "reasons": [], "plan": "fix {the} off-by-one"}
+    result = _run_script(
+        "record-triage.sh",
+        {"decision": wrapped.format(decision=json.dumps(decision)), "outcome_path": str(outcome)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "true"
+    assert not outcome.exists()
+
+
+def test_record_triage_still_rejects_prose_without_a_decision_object() -> None:
+    result = _run_script("record-triage.sh", {"decision": "I cannot decide {yet"})
+    assert result.returncode == 2
+    assert "not valid JSON" in result.stderr
+
+
+def test_record_triage_ignores_a_partial_object_that_is_not_a_full_decision() -> None:
+    result = _run_script("record-triage.sh", {"decision": 'Maybe {"fixable": true} but unsure.'})
+    assert result.returncode == 2
+    assert "not valid JSON" in result.stderr
+
+
+def test_record_triage_rejects_an_answer_offering_two_decisions() -> None:
+    """An embedded second decision (for example echoed from issue content) must not be
+    silently chosen over the real one; ambiguity is a technical failure."""
+    first = json.dumps({"fixable": True, "reasons": [], "plan": "p"})
+    second = json.dumps({"fixable": False, "reasons": ["no"], "plan": ""})
+    result = _run_script("record-triage.sh", {"decision": f"{first}\nand also\n{second}"})
+    assert result.returncode == 2
+    assert "ambiguous" in result.stderr
+
+
 # -- read-regression-marker.sh ----------------------------------------------------------
 
 
