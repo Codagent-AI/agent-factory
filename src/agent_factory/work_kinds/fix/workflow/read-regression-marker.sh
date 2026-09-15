@@ -29,5 +29,6 @@ if not isinstance(report, str):
 
 lines = [line.strip() for line in report.splitlines() if line.strip()]
 marker = lines[-1].strip("`*_ \t") if lines else ""
-print("none" if marker == "NO_REGRESSIONS_FOUND" else "found")
+# Agent Runner keeps a text capture byte for byte, and skip_if compares it to "found".
+sys.stdout.write("none" if marker == "NO_REGRESSIONS_FOUND" else "found")
 PY

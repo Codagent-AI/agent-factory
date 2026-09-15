@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 from collections.abc import Callable
 from importlib.resources import files
@@ -301,7 +302,7 @@ def test_record_triage_declines_with_reasons_and_writes_a_needs_input_outcome(
         "record-triage.sh", {"decision": json.dumps(decision), "outcome_path": str(outcome)}
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "false"
+    assert result.stdout == "false"
     assert json.loads(outcome.read_text()) == {
         "contract": CONTRACT,
         "outcome": "needs-input",
@@ -319,7 +320,7 @@ def test_record_triage_fixable_decision_writes_no_outcome_and_reports_true(
         "record-triage.sh", {"decision": json.dumps(decision), "outcome_path": str(outcome)}
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "true"
+    assert result.stdout == "true"
     assert not outcome.exists()
 
 
@@ -361,7 +362,7 @@ def test_record_triage_extracts_the_decision_object_from_surrounding_prose(
         {"decision": wrapped.format(decision=json.dumps(decision)), "outcome_path": str(outcome)},
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "true"
+    assert result.stdout == "true"
     assert not outcome.exists()
 
 
@@ -408,7 +409,7 @@ def test_read_regression_marker_reduces_the_report_to_a_fixed_token(
 ) -> None:
     result = _run_script("read-regression-marker.sh", {"report": report})
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == expected
+    assert result.stdout == expected
 
 
 @pytest.mark.parametrize(
@@ -526,7 +527,7 @@ def test_record_triage_accepts_a_decision_wrapped_in_a_json_array(tmp_path: Path
         "record-triage.sh", {"decision": json.dumps([decision]), "outcome_path": str(outcome)}
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "true"
+    assert result.stdout == "true"
 
 
 def _shell_templates(text: str) -> list[str]:
@@ -633,3 +634,61 @@ def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
         "sh: test {{b}} != x",
         "sh: test {{c}} != x",
     ]
+
+
+_RUNNER_CAPTURE_WORKFLOW = """name: capture-probe
+description: The packaged scripts' captures gate steps the way factory-fix-v1.0 does.
+steps:
+  - id: record-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: '{"fixable": true, "reasons": [], "plan": "p"}'
+      outcome_path: "/dev/null"
+    capture: fixable
+  - id: implement
+    skip_if: 'sh: test {{fixable}} != true'
+    command: touch implemented
+  - id: read-regression-marker
+    script: read-regression-marker.sh
+    script_inputs:
+      report: "Found a defect.\\nREGRESSIONS_FOUND"
+    capture: regressions
+  - id: address
+    skip_if: 'sh: test "{{regressions}}" != found'
+    command: touch addressed
+"""
+
+
+@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: Path) -> None:
+    """Agent Runner keeps a text capture byte for byte, so a trailing newline from a script
+    made every skip_if comparison fail and skipped implementation in the live attempt."""
+    repo = tmp_path / "repo"
+    workflows = repo / ".agent-runner" / "workflows"
+    workflows.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    for name in ("record-triage.sh", "read-regression-marker.sh"):
+        target = workflows / name
+        target.write_text((PACKAGE / name).read_text(encoding="utf-8"), encoding="utf-8")
+        target.chmod(0o755)
+    (workflows / "capture-probe-v1.0.yaml").write_text(_RUNNER_CAPTURE_WORKFLOW, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "AGENT_RUNNER_NO_TUI": "1",
+    }
+
+    result = subprocess.run(
+        ["agent-runner", "run", "capture-probe", "--session-dir", str(tmp_path / "session")],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / "implemented").exists()
+    assert (repo / "addressed").exists()

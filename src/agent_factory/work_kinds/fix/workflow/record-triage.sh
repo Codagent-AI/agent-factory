@@ -116,5 +116,6 @@ if not fixable:
         json.dump(outcome, f)
         f.write("\n")
 
-print("true" if fixable else "false")
+# Agent Runner keeps a text capture byte for byte, and skip_if compares it to "true".
+sys.stdout.write("true" if fixable else "false")
 PY
