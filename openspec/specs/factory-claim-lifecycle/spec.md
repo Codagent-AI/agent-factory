@@ -234,7 +234,13 @@ The factory SHALL check admission controls before starting each repetition and b
 
 ### Requirement: Cancel a request when its issue is closed
 
-On the next successful GitHub check after the user closes a request's issue, the factory SHALL stop verified owned execution for that request, skip its remaining repetitions, and preserve existing evidence. Cancellation SHALL NOT trigger a recovery retry or prevent other eligible requests from proceeding once execution has stopped. The factory SHALL respect the closed issue rather than moving it back into the active queue; GitHub closure automation SHALL move its card to Done.
+On the next successful GitHub check after the user closes a request's issue, the factory SHALL stop verified owned execution for that request, skip its remaining repetitions, and preserve existing evidence. Cancellation SHALL NOT trigger a recovery retry or prevent other eligible requests from proceeding once execution has stopped. The factory SHALL respect the closed issue rather than moving it back into the active queue; GitHub closure automation SHALL move its card to Done. A cancelled claim SHALL stop controlling its card once the issue is reopened, so the reopened issue is admitted as a new request when it is otherwise eligible.
+
+#### Scenario: Reopen a cancelled request
+
+- **WHEN** the user reopens an issue whose claim was cancelled by closure and moves its card to Ready for the factory
+- **THEN** the factory does not move the card back to Done on behalf of the cancelled claim
+- **AND** the issue is admitted as a new request when it is otherwise eligible, while the cancelled claim's evidence is retained
 
 #### Scenario: Close an active request
 

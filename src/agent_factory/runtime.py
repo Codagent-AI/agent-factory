@@ -145,7 +145,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     )
                     claim = store.get_claim(claim.id) or claim
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
-                if not (gesture == "fresh" and claim.lifecycle == "settled"):
+                if not (gesture == "fresh" and claim.lifecycle == "settled") and _presents_card(
+                    claim, issue_state=card.source.state
+                ):
                     _report(store, controller, client, shared, card, claim.id, handler)
                 if handler is not None:
                     handler.cleanup(claim, board_status=card_status(shared, card))
@@ -424,6 +426,11 @@ def _kind_failures(
 def _should_cancel(claim: Claim) -> bool:
     """Closure cancels only unfinished execution; a settled claim keeps its recorded outcome."""
     return claim.lifecycle != "settled"
+
+
+def _presents_card(claim: Claim, *, issue_state: str) -> bool:
+    """A claim cancelled by closure stops owning the card once its issue is reopened."""
+    return not (claim.lifecycle == "cancelled" and issue_state.lower() != "closed")
 
 
 def _consume_results(store: ClaimStore, controller: Controller) -> None:
