@@ -69,7 +69,7 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     text = _workflow_text()
     finalize = _step_block(text, "finalize-pr")
     assert "workflow: builtin:core/finalize-pr-v1.0.yaml" in finalize
-    assert 'ci_fix_cycles: "1"' in finalize
+    assert 'ci_fix_cycles: "3"' in finalize
     assert text.count("workflow: builtin:core/run-validator-v1.0.yaml") == 2
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
 

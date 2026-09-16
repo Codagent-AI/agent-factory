@@ -285,7 +285,7 @@ steps:
       - id: finalize-pr
         workflow: builtin:core/finalize-pr-v1.0.yaml
         params:
-          ci_fix_cycles: "1"
+          ci_fix_cycles: "3"
         skip_if: 'sh: test "{{validator_status}}" != passed'
         continue_on_failure: true
 

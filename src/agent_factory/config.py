@@ -225,8 +225,6 @@ class LocalConfig:
         )
         start_hour = _hour(schedule, "start_hour")
         stop_hour = _hour(schedule, "stop_hour")
-        if start_hour == stop_hour:
-            raise ConfigurationError("schedule start_hour and stop_hour must differ")
         working_clones_raw = _table(
             repositories.get("working_clones", {}), "repositories.working_clones"
         )
@@ -255,7 +253,14 @@ class LocalConfig:
                 agent_skills=_path(repositories, "agent_skills", "repositories"),
                 working_clones=working_clones,
             ),
-            schedule=ScheduleConfig(timezone, poll_seconds, start_hour, stop_hour),
+            schedule=ScheduleConfig(
+                timezone,
+                poll_seconds,
+                start_hour,
+                stop_hour,
+                # Equal hours leave no closed period: the window never shuts.
+                always_open=start_hour == stop_hour,
+            ),
             limits=LimitsConfig(
                 minimum_free_gib=_nonnegative_int(limits, "minimum_free_gib", "limits"),
                 inactivity_seconds=_positive_int(limits, "inactivity_seconds", "limits"),
@@ -449,9 +454,13 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
         if "start_hour" in schedule_table or "stop_hour" in schedule_table:
             start_hour = _hour(schedule_table, "start_hour")
             stop_hour = _hour(schedule_table, "stop_hour")
-            if start_hour == stop_hour:
-                raise ConfigurationError("fix.schedule start_hour and stop_hour must differ")
-            schedule = ScheduleConfig(timezone, poll_seconds, start_hour, stop_hour)
+            schedule = ScheduleConfig(
+                timezone,
+                poll_seconds,
+                start_hour,
+                stop_hour,
+                always_open=start_hour == stop_hour,
+            )
         else:
             schedule = ScheduleConfig.always(timezone, poll_seconds)
     execution = fix.get("execution", "docker")
