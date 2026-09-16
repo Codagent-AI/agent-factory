@@ -5,8 +5,10 @@ integration, end-to-end, agent-acceptance, and exceptional human-only obligation
 
 Repository conventions: integration tests live in `tests/integration/`, end-to-end tests in
 `tests/e2e/`, and run with `pytest` (`--strict-markers`). Tests needing macOS process-session
-semantics carry `@pytest.mark.darwin`; tests needing Docker carry `@pytest.mark.docker` and skip with
-an explicit "not passing evidence" message when `AGENT_FACTORY_DOCKER_SOURCES` is unset. The host
+semantics carry `@pytest.mark.darwin`; tests needing Docker carry `@pytest.mark.docker` and are
+deselected by default (`-m 'not docker'` in `addopts`), so a host without a responsive daemon never
+stalls on a Docker call. Run them with `pytest -m docker` on a Docker-enabled host, where they still
+skip with an explicit "not passing evidence" message when `AGENT_FACTORY_DOCKER_SOURCES` is unset. The host
 launch end-to-end test follows the same skip pattern keyed on the installed Runner.
 
 The companion Runner change (`agent-runner run --session-dir`) is tested in the agent-runner
@@ -117,11 +119,16 @@ repository; here it is exercised only through E2E-001 and AT-001.
 - Steps: run `doctor`; run one cycle; run `status`
 - Expected: `doctor` marks Docker unavailable under `eval-sandbox` only; `status` shows an eval hold naming Docker and no fix hold; the fix is admitted
 - Evidence: `doctor` and `status` output
-- Effects and cleanup: the admitted fix may be the AT-001 attempt; restart Docker afterwards
+- Effects and cleanup: the admitted fix may be the AT-001 attempt; Docker stays stopped (see AT-003)
 - Permitted substitutes: None
 
 ### AT-003: Docker mode is unchanged
-- Classification: Required
+- Classification: Deferred (was Required) — descoped from this change by the operator on 2026-09-16. This Mac cannot
+  run Docker reliably (Docker Desktop no longer starts here), and the operator is moving sandboxed
+  eval execution off this machine in a follow-up change. Docker mode's code is untouched by this
+  change, `tests/e2e/test_docker_fix_launch.py` stays in the repository, and it still skips with an
+  explicit "not passing evidence" message when `AGENT_FACTORY_DOCKER_SOURCES` is unset. The
+  follow-up change owns re-establishing this evidence.
 - Covers: Invoke the versioned fix workflow (docker); Isolate concurrent sandbox builds
 - Actor and surface: operator running the Docker-marked end-to-end test
 - Setup: Docker running, `AGENT_FACTORY_DOCKER_SOURCES` set to the checkouts of agent-runner and agent-skills, at least the configured free disk
@@ -153,8 +160,8 @@ None.
 | Run a fix attempt on the host | INT-001 | E2E-001 | AT-001 | — |
 | Keep the fix credential out of persisted state | INT-001 | E2E-001 | — | — |
 | Record host provenance | INT-001 | E2E-001 | AT-001 | — |
-| Invoke the versioned fix workflow | INT-002 | E2E-002 | AT-003 | — |
-| Isolate concurrent sandbox builds | — | E2E-002 | AT-003 | — |
+| Invoke the versioned fix workflow | INT-002 | E2E-002 | AT-001 (host); AT-003 deferred (docker) | — |
+| Isolate concurrent sandbox builds | — | E2E-002 | AT-003 deferred | — |
 | Preserve fix evidence | INT-005 | E2E-001 | — | — |
 | Supervise a host attempt by process | INT-004 | E2E-001 | — | — |
 | Verify execution ownership before termination | INT-004 | — | — | — |

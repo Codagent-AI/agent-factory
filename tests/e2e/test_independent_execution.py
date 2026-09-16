@@ -22,6 +22,9 @@ from agent_factory.supervisor import (
 )
 
 
+# An and-scene plan is owned through its container, so the supervisor probes Docker for
+# ownership; without a daemon the run is recorded uncertain and never completes.
+@pytest.mark.docker
 def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -280,6 +283,7 @@ def test_container_termination_requires_recorded_id_image_and_exact_artifact_mou
         (False, 0.8, "timed_out"),
     ],
 )
+@pytest.mark.docker
 def test_bounded_claude_wait_does_not_consume_execution_or_idle_budget(
     tmp_path: Path,
     restart: bool,
