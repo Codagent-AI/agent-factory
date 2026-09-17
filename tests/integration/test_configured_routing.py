@@ -369,6 +369,22 @@ def test_bug_typed_after_creation_routes_to_factory_on_the_type_event() -> None:
     }
 
 
+def test_owner_edit_before_the_type_event_keeps_the_bug_out_of_ready() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(issue_type=None)))
+    github.items["ISSUE-BUG-1"].fields["owner-field"] = "human-option"
+
+    result = router.route(RouteEvent(bug_item()))
+
+    assert result.destination == "preserved"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "human-option",
+        "status-field": "backlog-option",
+    }
+
+
 def test_non_writer_bug_enters_backlog_without_ownership() -> None:
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/work", "outsider"): "read"})

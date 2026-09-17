@@ -90,31 +90,33 @@ class Router:
             permission = self._github.get_permission(source.repository, source.author)
             if permission in {"write", "maintain", "admin"}:
                 self._set_eval_type_if_needed(source)
-                self._initialize(project_item, source, (("owner", "factory"), ("status", "ready")))
-                return RouteResult("ready", project_item.id)
+                applied = self._initialize(
+                    project_item, source, (("owner", "factory"), ("status", "ready"))
+                )
+                return RouteResult("ready" if applied else "preserved", project_item.id)
         elif self._is_bug(source):
             receipt = self._receipt(source)
             hold_bypassed = bool(receipt and receipt.get("hold_bypassed"))
             if self._config.routing.hold_label in source.labels:
-                self._initialize(
+                applied = self._initialize(
                     project_item,
                     source,
                     (("owner", "human"), ("status", "backlog")),
                     hold_bypassed=True,
                 )
-                return RouteResult("backlog", project_item.id)
+                return RouteResult("backlog" if applied else "preserved", project_item.id)
             if not hold_bypassed:
                 # Bugs are admitted without review of a request block, so only maintainers
                 # and admins hand them to the factory automatically.
                 role = self._github.get_role(source.repository, source.author)
                 if role in {"maintain", "admin"}:
-                    self._initialize(
+                    applied = self._initialize(
                         project_item, source, (("owner", "factory"), ("status", "ready"))
                     )
-                    return RouteResult("ready", project_item.id)
+                    return RouteResult("ready" if applied else "preserved", project_item.id)
 
-        self._initialize(project_item, source, (("status", "backlog"),))
-        return RouteResult("backlog", project_item.id)
+        applied = self._initialize(project_item, source, (("status", "backlog"),))
+        return RouteResult("backlog" if applied else "preserved", project_item.id)
 
     def _is_eval(self, source: SourceItem) -> bool:
         return (
@@ -142,7 +144,8 @@ class Router:
         values: tuple[tuple[str, str], ...],
         *,
         hold_bypassed: bool = False,
-    ) -> None:
+    ) -> bool:
+        """Apply routing's initial fields; False when a human edit since routing is preserved."""
         receipt = self._receipt(source)
         desired: dict[str, str] = {}
         for field_name, logical_option in values:
@@ -160,7 +163,15 @@ class Router:
             and receipt_values is not None
             and all(receipt_values.get(field_id) == option for field_id, option in desired.items())
         ):
-            return
+            return True
+        if completed and any(
+            item.fields.get(field_id)
+            != (receipt_values.get(field_id) if receipt_values is not None else None)
+            for field_id in desired
+        ):
+            # A later rule (authorization, a Bug type) re-initializes only an untouched card;
+            # applying part of it over a human edit would mix human and routing values.
+            return False
         for field_id, option in desired.items():
             current = item.fields.get(field_id)
             prior = receipt_values.get(field_id) if receipt_values is not None else None
@@ -175,6 +186,7 @@ class Router:
         # subsequent event could auto-admit the bug the hold was meant to keep out.
         effective_hold_bypassed = hold_bypassed or bool(receipt and receipt.get("hold_bypassed"))
         self._write_receipt(source, item, desired, hold_bypassed=effective_hold_bypassed)
+        return True
 
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)

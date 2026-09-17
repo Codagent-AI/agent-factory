@@ -56,7 +56,7 @@ Routing SHALL verify that the issue author has effective write, maintain, or adm
 
 ### Requirement: Route bug reports to the factory
 
-For an open issue whose native Type is the configured bug type in a configured source repository, routing SHALL initialize `Owner=factory` and `Status=Ready` when the author holds the maintain or admin repository role and the issue carries no bypass marker. A bug from an author with only write access SHALL enter Backlog without factory ownership. When the bug type is set after the issue was first routed, the type-change event SHALL apply this rule, replacing only the Project values routing itself initialized. When the configured bypass marker (`factory-hold` in the Codagent deployment) is present at routing time, routing SHALL initialize `Owner=human` and `Status=Backlog` so the bug is tracked without factory work. Pull requests SHALL NOT be routed as bugs. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence. Bug routing SHALL NOT require a template or fenced configuration block. Because the bypass marker must be present when the creation event is delivered, each configured source repository SHALL provide a "Bug (tracking only)" issue template that sets the bug type and pre-applies the bypass label.
+For an open issue whose native Type is the configured bug type in a configured source repository, routing SHALL initialize `Owner=factory` and `Status=Ready` when the author holds the maintain or admin repository role and the issue carries no bypass marker. A bug from an author with only write access SHALL enter Backlog without factory ownership. When the bug type is set after the issue was first routed, the type-change event SHALL apply this rule only when the card's Owner and Status still hold routing's initial values; if a human changed either, routing SHALL leave both unchanged. When the configured bypass marker (`factory-hold` in the Codagent deployment) is present at routing time, routing SHALL initialize `Owner=human` and `Status=Backlog` so the bug is tracked without factory work. Pull requests SHALL NOT be routed as bugs. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence. Bug routing SHALL NOT require a template or fenced configuration block. Because the bypass marker must be present when the creation event is delivered, each configured source repository SHALL provide a "Bug (tracking only)" issue template that sets the bug type and pre-applies the bypass label.
 
 #### Scenario: File a bug as a repository maintainer or admin
 
@@ -72,6 +72,11 @@ For an open issue whose native Type is the configured bug type in a configured s
 
 - **WHEN** a maintainer or admin creates an issue without a native type, routing places it in Backlog, and the Bug type is set afterwards while its Owner and Status still hold routing's initial values
 - **THEN** the type-change event routes it to `Owner=factory` and `Status=Ready`
+
+#### Scenario: Edit a card before setting the bug type
+
+- **WHEN** routing placed an untyped issue in Backlog, a human then set its Owner, and a maintainer or admin afterwards sets the Bug type
+- **THEN** routing leaves the human's Owner and the Backlog status unchanged
 
 #### Scenario: File a bug for tracking only
 
