@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore, Run
 
@@ -76,6 +78,47 @@ if script.strip() == 'crash':
 (out / 'fix-outcome.json').write_text(script)
 """
 
+RUNNER = f"""#!{sys.executable}
+# Controlled stand-in for the installed agent-runner in host mode. Answers the readiness
+# probes and runs `factory-fix` the way the wrapper invokes it: --session-dir plus --param.
+import json, os, pathlib, subprocess, sys, time
+args = sys.argv[1:]
+if args[:1] == ['-version']:
+    print('stub-runner 1.0'); sys.exit(0)
+if args[:1] == ['-validate']:
+    sys.exit(0)
+if args[:2] == ['run', '--help']:
+    print('Usage: agent-runner run <workflow> [--session-dir <path>] [--param key=value]'); sys.exit(0)
+session = None; params = {{}}
+it = iter(range(len(args)))
+for i in it:
+    if args[i] == '--session-dir':
+        session = args[i + 1]; next(it)
+    elif args[i] == '--param':
+        k, v = args[i + 1].split('=', 1); params[k] = v; next(it)
+out = pathlib.Path(params['artifact_dir']); out.mkdir(parents=True, exist_ok=True)
+sess = pathlib.Path(session); sess.mkdir(parents=True, exist_ok=True)
+(out / 'runner-args.json').write_text(json.dumps(args))
+(out / 'env-names.json').write_text(json.dumps(sorted(os.environ)))
+(out / 'cwd.txt').write_text(os.getcwd())
+(out / 'git-user.txt').write_text(subprocess.run(['git', 'config', '--get', 'user.name'], capture_output=True, text=True).stdout)
+(out / 'started').touch()
+while not (out / 'finish').exists():
+    (sess / 'state.json').write_text(str(time.time()))
+    time.sleep(.02)
+script = (out / 'finish').read_text()
+if script.strip() == 'crash':
+    sys.exit(3)
+(out / 'fix-outcome.json').write_text(script)
+"""
+
+CODEX = """#!/bin/sh
+case "$1 $2" in
+  "plugin list") echo '[{"name": "codagent"}]' ;;
+esac
+exit 0
+"""
+
 DOCKER = """#!/bin/sh
 case "$1" in
   info) echo 17179869184 ;;
@@ -90,8 +133,12 @@ exit 0
 
 def _gh_stub(board: Path, bot_login: str) -> str:
     return f"""#!{sys.executable}
-import json, re, sys, pathlib
+import json, os, re, sys, pathlib
 p = pathlib.Path({str(board)!r}); s = json.loads(p.read_text()); args = sys.argv[1:]
+if args[:2] == ['auth', 'status']:
+    sys.exit(0 if os.environ.get('GH_TOKEN') else 1)
+if args[:2] == ['api', 'user']:
+    print('fixbot'); sys.exit(0)
 body = json.load(sys.stdin) if '--input' in args else {{}}
 command = args[0]; endpoint = args[1] if len(args) > 1 else ''
 q = body.get('query', ''); v = body.get('variables', {{}})
@@ -152,9 +199,10 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 
 
 class Harness:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, execution: str = "docker") -> None:
         self.tmp = tmp_path
         self.root = tmp_path / "factory"
+        self.execution = execution
         self.target_sha = _repo(
             tmp_path / "work",
             {"README.md": "fixture\n", "lib.py": "def add(a, b):\n    return a - b\n"},
@@ -225,6 +273,8 @@ inactivity_seconds = 20
 execution_seconds = 30
 total_seconds = 60
 codex_reset_fallback_seconds = 18000
+[fix]
+execution = "{execution}"
 [fix.limits]
 inactivity_seconds = 20
 execution_seconds = 30
@@ -234,6 +284,16 @@ github_app_key = "{tmp_path / "key.pem"}"
 suite_environment = "{tmp_path / "suite.env"}"
 fix_environment = "{tmp_path / "fix.env"}"
 ''')
+        # Host mode reads the Runner's user settings and git identity from HOME; the harness
+        # owns a HOME so the journey never depends on the developer's own configuration.
+        self.home = tmp_path / "home"
+        (self.home / ".agent-runner").mkdir(parents=True)
+        (self.home / ".agent-runner" / "settings.yaml").write_text(
+            "autonomous_backend: headless\nautonomous_permission_mode: yolo\n"
+        )
+        (self.home / ".gitconfig").write_text(
+            "[user]\n\tname = Harness\n\temail = harness@example.invalid\n"
+        )
         for name, content in (
             ("key.pem", "test key"),
             ("suite.env", "CANDIDATE_TOKEN=test-only\n"),
@@ -320,13 +380,20 @@ fix_environment = "{tmp_path / "fix.env"}"
             "gh": _gh_stub(self.board, self.shared.bot_login),
             "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
             "docker": DOCKER,
-            "codex": "#!/bin/sh\nexit 0",
+            "codex": CODEX,
             "cursor": "#!/bin/sh\nexit 0",
+            "agent-runner": RUNNER,
+            "jq": "#!/bin/sh\nexit 0",
+            "agent-validator": "#!/bin/sh\nexit 0",
         }.items():
             script = bin_dir / name
             script.write_text(content)
             script.chmod(0o755)
-        self.env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+        self.env = {
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HOME": str(self.home),
+        }
         self.store = ClaimStore(self.root / "state.sqlite3")
 
     def tick(self) -> None:
@@ -345,6 +412,24 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             timeout=30,
         )
         assert done.returncode == 0, done.stderr
+
+    def cli(self, *args: str) -> str:
+        done = subprocess.run(
+            [sys.executable, "-m", "agent_factory.cli", "--config", str(self.config), *args],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout
+
+    def set_execution(self, execution: str) -> None:
+        text = self.config.read_text()
+        self.config.write_text(
+            text.replace(f'execution = "{self.execution}"', f'execution = "{execution}"', 1)
+        )
+        self.execution = execution
 
     def state(self) -> dict[str, Any]:
         return json.loads(self.board.read_text())
@@ -384,7 +469,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
         deadline = time.monotonic() + 8
         while not (artifact / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        assert (artifact / "started").exists(), "sandbox stub never started"
+        assert (artifact / "started").exists(), "execution stub never started"
         return artifact
 
     def finish(self, artifact: Path, script: str) -> None:
@@ -643,4 +728,180 @@ def test_e2e_002_needs_input_blocks_then_a_writer_comment_relaunches(tmp_path: P
         (artifact / "finish").touch()
         if second is not None:
             (second / "finish").touch()
+        h.store.close()
+
+
+# -- host mode (E2E-002 host journey and mixed-mode recovery) --------------------------------
+
+
+def _assert_host_launch(h: Harness, run: Run, artifact: Path, claim_id: str) -> None:
+    clones = h.root / "clones" / claim_id / str(run.attempt_number)
+    args: list[str] = json.loads((artifact / "runner-args.json").read_text())
+    assert args[:2] == ["run", "factory-fix"]
+    assert args[args.index("--session-dir") + 1] == str(artifact / "agent-runner-session")
+    assert f"artifact_dir={artifact}" in args
+    assert f"branch_name={h.branch_for(claim_id)}" in args or any(
+        a.startswith("branch_name=factory/fix-1-") for a in args
+    )
+    hints = cast(dict[str, Any], run.plan["ownership_hints"])
+    assert hints["sandbox"] == "host" and "image_tag" not in hints
+    assert hints["session_dir"] == str(artifact / "agent-runner-session")
+    assert hints["runner_executable"] == str(h.tmp / "bin" / "agent-runner")
+    assert hints["runner_version"] == "stub-runner 1.0"
+    assert FIX_TOKEN not in json.dumps(run.plan)
+    assert run.plan["argv"] == ["/bin/bash", str(h.root / "private" / run.id / "host-run.sh")]
+    names: list[str] = json.loads((artifact / "env-names.json").read_text())
+    for name in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_ASKPASS",
+        "AGENT_RUNNER_NO_TUI",
+    ):
+        assert name in names, name
+    assert (artifact / "cwd.txt").read_text() == str(clones / "repo")
+    assert (artifact / "git-user.txt").read_text().strip() == "fixbot"
+    assert (artifact / "host-provenance.json").exists()
+    assert (artifact / "agent-runner-session" / "state.json").exists()
+    assert not (artifact / "agent-runner" / "workflows").exists(), (
+        "host mode must not stage into evidence"
+    )
+    catalog = clones / "repo" / ".agent-runner" / "workflows"
+    assert (catalog / "factory-fix-v1.0.yaml").read_text().splitlines()[
+        0
+    ] == "# factory-contract: factory-fix/1"
+    exclude = (clones / "repo" / ".git" / "info" / "exclude").read_text().splitlines()
+    assert "/.agent-runner/workflows/" in exclude and "/.agent-runner/config.yaml" in exclude
+    assert _git(clones / "repo", "status", "--porcelain") == ""
+    for path in artifact.rglob("*"):
+        if path.is_file():
+            assert FIX_TOKEN not in path.read_text(errors="replace"), path
+
+
+def test_e2e_002_host_fix_journey_reports_cleans_up_and_prunes(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_factory import retention
+    from agent_factory.config import LocalConfig
+    from agent_factory.work_kinds.fix.launch import HOST_NOTE
+
+    h = Harness(tmp_path, execution="host")
+    h.tick()
+    run = h.active_run()
+    artifact = h.wait_started(run)
+    try:
+        claim = h.store.get_claim(run.claim_id)
+        assert claim is not None
+        _assert_host_launch(h, run, artifact, claim.id)
+        assert h.status() == "running"
+        assert any("Fix inputs frozen" in body and HOST_NOTE not in body for body in h.comments())
+        h.finish(artifact, _pr_outcome(h.branch_for(claim.id)))
+        h.tick()
+        claim = h.store.get_claim(claim.id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert h.status() == "review"
+        pr_comment = next(
+            b for b in h.comments() if f"https://github.com/{REPOSITORY}/pull/214" in b
+        )
+        assert HOST_NOTE in pr_comment
+        finished = h.store.get_run(run.id)
+        assert finished is not None
+        assert finished.result["sandbox"] == "host"
+        assert finished.result["session_dir"] == str(artifact / "agent-runner-session")
+        assert "image_tag" not in finished.result
+        assert f"{REPOSITORY}#1" in h.cli("status")
+        merged_sha = _commit(tmp_path / "work", "the fix")
+        _git(tmp_path / "work", "push", "-q", "origin", "main")
+        h.update(pr_states={"214": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"}})
+        h.tick()
+        assert _git(h.working, "merge-base", "--is-ancestor", merged_sha, "HEAD") == ""
+        h.set_status("done")
+        h.tick()
+        clones = h.root / "clones" / claim.id / "0"
+        assert not clones.exists()
+        assert not (h.root / "private" / run.id).exists()
+        assert not (tmp_path / "docker-rmi.log").exists(), (
+            "a host-only claim must not remove images"
+        )
+        claim = h.store.get_claim(claim.id)
+        assert claim is not None and claim.cleanup["complete"] is True
+        assert claim.cleanup.get("done_observed_at")
+        hidden = h.cli("status")
+        assert f"{REPOSITORY}#1" not in hidden and "hidden: 1" in hidden
+        assert f"{REPOSITORY}#1" in h.cli("status", "--all")
+        # Retention: the same reconcile the runtime runs each poll, 15 days later.
+        local = LocalConfig.from_toml(h.config.read_text())
+        later = datetime.now(UTC) + timedelta(days=15)
+        retention.reconcile(h.store, local, claim, "Done", later)
+        assert not (artifact / "logs").exists()
+        assert not (artifact / "agent-runner-session").exists()
+        assert (artifact / "fix-outcome.json").exists()
+        assert (artifact / "input" / "issue.json").exists()
+        assert (artifact / "host-provenance.json").exists()
+        claim = h.store.get_claim(claim.id)
+        assert claim is not None
+        assert cast(dict[str, Any], claim.cleanup["retention"])["pruned_at"]
+    finally:
+        (artifact / "finish").touch()
+        h.store.close()
+
+
+@pytest.mark.parametrize(("first", "second"), [("docker", "host"), ("host", "docker")])
+def test_e2e_002_recovery_launches_in_the_currently_configured_mode(
+    tmp_path: Path, first: str, second: str
+) -> None:
+    from agent_factory.work_kinds.fix.launch import HOST_NOTE
+
+    h = Harness(tmp_path, execution=first)
+    h.tick()
+    run1 = h.active_run()
+    artifact1 = h.wait_started(run1)
+    artifact2: Path | None = None
+    try:
+        claim_id = run1.claim_id
+        h.finish(artifact1, "crash")
+        # The operator switches modes before the recovery retry is admitted.
+        h.set_execution(second)
+        h.tick()
+        run2 = h.active_run()
+        assert run2.reason == "recovery" and run2.id != run1.id
+        artifact2 = h.wait_started(run2)
+        hints1 = cast(dict[str, Any], run1.plan["ownership_hints"])
+        hints2 = cast(dict[str, Any], run2.plan["ownership_hints"])
+        assert hints1["sandbox"] == first and hints2["sandbox"] == second
+        assert ("image_tag" in hints1) is (first == "docker")
+        assert ("image_tag" in hints2) is (second == "docker")
+        if second == "host":
+            _assert_host_launch(h, run2, artifact2, claim_id)
+        else:
+            assert (artifact2 / "sandbox-args.json").exists()
+        h.finish(artifact2, _pr_outcome(h.branch_for(claim_id)))
+        h.tick()
+        pr_comment = next(
+            b for b in h.comments() if f"https://github.com/{REPOSITORY}/pull/214" in b
+        )
+        assert (HOST_NOTE in pr_comment) is (second == "host")
+        retry_comment = next(b for b in h.comments() if "recovery attempt" in b)
+        assert (HOST_NOTE in retry_comment) is False or first == "host"
+        h.update(pr_states={"214": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"}})
+        h.tick()
+        h.set_status("done")
+        h.tick()
+        rmi = (
+            (tmp_path / "docker-rmi.log").read_text()
+            if (tmp_path / "docker-rmi.log").exists()
+            else ""
+        )
+        docker_runs = [r for r, mode in ((run1, first), (run2, second)) if mode == "docker"]
+        for run in (run1, run2):
+            tag = f"agent-runner-factory:{run.id}"
+            assert (tag in rmi) is (run in docker_runs), (tag, rmi)
+        assert not (h.root / "private" / run1.id).exists()
+        assert not (h.root / "private" / run2.id).exists()
+        assert not (h.root / "clones" / claim_id / "0").exists()
+        assert not (h.root / "clones" / claim_id / "1").exists()
+    finally:
+        (artifact1 / "finish").touch()
+        if artifact2 is not None:
+            (artifact2 / "finish").touch()
         h.store.close()

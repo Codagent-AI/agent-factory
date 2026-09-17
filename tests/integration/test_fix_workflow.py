@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import cast
@@ -67,51 +69,65 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     text = _workflow_text()
     finalize = _step_block(text, "finalize-pr")
     assert "workflow: builtin:core/finalize-pr-v1.0.yaml" in finalize
-    assert 'ci_fix_cycles: "1"' in finalize
-    assert "workflow: builtin:core/run-validator-v1.0.yaml" in _step_block(text, "run-validator")
+    assert 'ci_fix_cycles: "3"' in finalize
+    assert text.count("workflow: builtin:core/run-validator-v1.0.yaml") == 2
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
 
 
-def test_the_tester_report_never_reaches_a_shell_condition() -> None:
+def test_factory_steps_use_one_shared_session_per_role_and_implementor_for_code() -> None:
     text = _workflow_text()
-    for line in text.splitlines():
-        if "skip_if:" in line or line.strip().startswith("command:"):
-            assert "{{test_flow_report}}" not in line, line
-    marker = _step_block(text, "read-regression-marker")
-    assert "script: read-regression-marker.sh" in marker
-    assert 'report: "{{test_flow_report}}"' in marker
-    assert "command:" not in marker
-    assert "capture: regressions" in marker
-    address = _step_block(text, "address")
-    assert 'test "{{regressions}}" != found' in address
+    sessions = text[text.index("sessions:") : text.index("steps:")]
+    assert sessions.count("- name: lead-agent") == 1
+    assert sessions.count("- name: implementor-agent") == 1
+    assert sessions.count("- name: tester-agent") == 1
+    assert "agent: lead" in sessions
+    assert "agent: implementor" in sessions
+    assert "agent: tester" in sessions
+    assert "session: implementor-agent" in _step_block(text, "implement-fix")
+    assert "session: tester-agent" in _step_block(text, "test-flows")
+    assert "session: lead-agent" in _step_block(text, "review-fix")
+    assert "session: implementor-agent" in _step_block(text, "address-findings")
+    assert "skip_if:" not in _step_block(text, "address-findings")
 
 
-def test_a_regression_repair_is_validated_again_before_the_pr_is_opened() -> None:
+def test_validation_runs_after_initial_implementation_and_after_findings_repairs() -> None:
     text = _workflow_text()
-    address_at = text.index("- id: address\n")
-    recheck_at = text.index("- id: recheck-validator\n")
-    verify_at = text.index("- id: verify-clean\n")
-    assert address_at < recheck_at < verify_at
-    recheck = _step_block(text, "recheck-validator")
-    assert "agent-validator run --report" in recheck
-    assert "capture: validator_status" in recheck
-    assert 'test "{{regressions}}" != found' in recheck
-    assert "revalidate" not in text, "the repair is verified once, not repaired again"
+    implement_at = text.index("- id: implement-fix\n")
+    initial_at = text.index("- id: initial-validator\n")
+    test_at = text.index("- id: test-flows\n")
+    review_at = text.index("- id: review-fix\n")
+    address_at = text.index("- id: address-findings\n")
+    final_at = text.index("- id: final-validator\n")
+    finalize_at = text.index("- id: finalize-pr\n")
+    assert implement_at < initial_at < test_at < review_at < address_at < final_at < finalize_at
 
 
-def test_validator_gates_capture_a_fixed_token_and_log_under_the_artifact_directory() -> None:
+def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
     text = _workflow_text()
-    for step in ("check-validator", "recheck-validator"):
-        block = _step_block(text, step)
-        assert "capture_stderr" not in block
-        assert "/tmp/" not in block
-        assert ">/artifacts/logs/{{step_id}}.log" in block
+    for phase in ("initial", "final"):
+        gate_at = text.index(f"- id: {phase}-validation-gate\n")
+        repair_at = text.index(f"- id: repair-{phase}-validation\n")
+        recheck_at = text.index(f"- id: recheck-{phase}-validation\n")
+        assert gate_at < repair_at < recheck_at
+        assert "continue_on_failure: true" in _step_block(text, f"{phase}-validation-gate")
+        assert "session: implementor-agent" in _step_block(text, f"repair-{phase}-validation")
+        assert "skip_if: previous_success" in _step_block(text, f"repair-{phase}-validation")
+        recheck = _step_block(text, f"recheck-{phase}-validation")
+        assert "agent-validator run --report" in recheck
+        assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in recheck
 
 
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
-    for needle in ("Refs #", "agent-factory:claim:", "gh pr edit"):
+    for needle in ("Refs #", "agent-factory:claim:"):
         assert needle in block
+    # `gh pr edit` also queries projectItems over GraphQL, which a fine-grained fix
+    # token cannot read, so the body is read and written through the REST pulls API.
+    assert "gh pr edit" not in block
+    assert "gh pr view" not in block
+    # A PR with no description has a null body, which must not become the text "null".
+    assert 'gh api "repos/{owner}/{repo}/pulls/$number" --jq \'.body // ""\'' in block
+    assert 'gh api -X PATCH "repos/{owner}/{repo}/pulls/$number" -F body=@-' in block
 
 
 def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:
@@ -120,6 +136,73 @@ def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:
     assert scripts == set(launch.WORKFLOW_SCRIPTS)
     for name in launch.WORKFLOW_SCRIPTS:
         assert os.access(str(PACKAGE / name), os.X_OK), name
+
+
+# -- the artifact directory parameter (INT-002) -------------------------------------------
+
+
+def _constant(text: str) -> Callable[[str], str]:
+    def packaged(contract: str) -> str:
+        del contract
+        return text
+
+    return packaged
+
+
+def test_packaged_workflow_declares_artifact_dir_with_the_container_default() -> None:
+    text = launch.check_packaged_workflow(CONTRACT)
+    params = text[text.index("params:") : text.index("sessions:")]
+    assert "- name: artifact_dir" in params
+    assert "default: /artifacts" in params
+    literal = [
+        line
+        for line in text.splitlines()
+        if "/artifacts" in line and not line.strip().startswith(("#", "default:"))
+    ]
+    assert literal == []
+    for needle in (
+        'outcome_path: "{{artifact_dir}}/fix-outcome.json"',
+        '[ ! -s "{{artifact_dir}}/fix-outcome.json" ]',
+    ):
+        assert needle in text, needle
+
+
+def test_packaged_workflow_check_refuses_a_missing_artifact_dir_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = _workflow_text().replace(
+        "  - name: artifact_dir\n    required: false\n    default: /artifacts\n", ""
+    )
+    monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
+    with pytest.raises(ReadinessError, match="does not declare the artifact_dir parameter"):
+        launch.check_packaged_workflow(CONTRACT)
+
+
+def test_packaged_workflow_check_refuses_a_stray_container_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = _workflow_text().replace(
+        'mkdir -p "{{artifact_dir}}/logs"', "mkdir -p /artifacts/logs", 1
+    )
+    assert text != _workflow_text()
+    monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
+    with pytest.raises(ReadinessError, match=r"hardcodes /artifacts on line\(s\) \d+"):
+        launch.check_packaged_workflow(CONTRACT)
+
+
+def test_docker_container_script_passes_the_container_artifact_directory() -> None:
+    script = launch.container_script(
+        {"lead": ("codex", "m", "high")}, branch="b", contract=CONTRACT, bootstrap_skills=False
+    )
+    assert "--param artifact_dir=/artifacts" in script
+
+
+def test_stage_workflow_into_an_arbitrary_catalog(tmp_path: Path) -> None:
+    catalog = tmp_path / "repo" / ".agent-runner" / "workflows"
+    assert launch.stage_workflow_into(catalog, CONTRACT) == catalog
+    assert (catalog / launch.WORKFLOW_FILE).read_text() == _workflow_text()
+    for name in launch.WORKFLOW_SCRIPTS:
+        assert os.access(catalog / name, os.X_OK), name
 
 
 # -- staging into the evidence directory ----------------------------------------------
@@ -152,7 +235,7 @@ def _runner_clone(tmp_path: Path, finalize_pr: str | None) -> Path:
     if finalize_pr is not None:
         core = clone / "workflows" / "core"
         core.mkdir(parents=True)
-        (core / "finalize-pr-v1.0.yaml").write_text(finalize_pr)
+        (clone / launch.FINALIZE_PR_PATH).write_text(finalize_pr)
     return clone
 
 
@@ -233,7 +316,7 @@ def test_record_triage_declines_with_reasons_and_writes_a_needs_input_outcome(
         "record-triage.sh", {"decision": json.dumps(decision), "outcome_path": str(outcome)}
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "false"
+    assert result.stdout == "false"
     assert json.loads(outcome.read_text()) == {
         "contract": CONTRACT,
         "outcome": "needs-input",
@@ -251,7 +334,7 @@ def test_record_triage_fixable_decision_writes_no_outcome_and_reports_true(
         "record-triage.sh", {"decision": json.dumps(decision), "outcome_path": str(outcome)}
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "true"
+    assert result.stdout == "true"
     assert not outcome.exists()
 
 
@@ -268,6 +351,55 @@ def test_record_triage_rejects_malformed_input(payload: object) -> None:
     result = _run_script("record-triage.sh", payload)
     assert result.returncode == 2
     assert "record-triage:" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        # Prose before and after the object, as the Cursor adapter produced on the host.
+        "I reviewed the issue.\n\n{decision}\n\nLet me know if you need more.",
+        # A markdown fence despite the prompt forbidding one.
+        "```json\n{decision}\n```",
+        # Prose containing braces in a string inside the object.
+        "Decision:\n{decision}",
+        # An illustrative object in the prose that is not a decision.
+        'The shape is {{"example": true}}; my answer:\n{decision}',
+    ],
+)
+def test_record_triage_extracts_the_decision_object_from_surrounding_prose(
+    tmp_path: Path, wrapped: str
+) -> None:
+    outcome = tmp_path / "fix-outcome.json"
+    decision: dict[str, object] = {"fixable": True, "reasons": [], "plan": "fix {the} off-by-one"}
+    result = _run_script(
+        "record-triage.sh",
+        {"decision": wrapped.format(decision=json.dumps(decision)), "outcome_path": str(outcome)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+    assert not outcome.exists()
+
+
+def test_record_triage_still_rejects_prose_without_a_decision_object() -> None:
+    result = _run_script("record-triage.sh", {"decision": "I cannot decide {yet"})
+    assert result.returncode == 2
+    assert "not valid JSON" in result.stderr
+
+
+def test_record_triage_ignores_a_partial_object_that_is_not_a_full_decision() -> None:
+    result = _run_script("record-triage.sh", {"decision": 'Maybe {"fixable": true} but unsure.'})
+    assert result.returncode == 2
+    assert "not valid JSON" in result.stderr
+
+
+def test_record_triage_rejects_an_answer_offering_two_decisions() -> None:
+    """An embedded second decision (for example echoed from issue content) must not be
+    silently chosen over the real one; ambiguity is a technical failure."""
+    first = json.dumps({"fixable": True, "reasons": [], "plan": "p"})
+    second = json.dumps({"fixable": False, "reasons": ["no"], "plan": ""})
+    result = _run_script("record-triage.sh", {"decision": f"{first}\nand also\n{second}"})
+    assert result.returncode == 2
+    assert "ambiguous" in result.stderr
 
 
 # -- read-regression-marker.sh ----------------------------------------------------------
@@ -291,7 +423,7 @@ def test_read_regression_marker_reduces_the_report_to_a_fixed_token(
 ) -> None:
     result = _run_script("read-regression-marker.sh", {"report": report})
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == expected
+    assert result.stdout == expected
 
 
 @pytest.mark.parametrize(
@@ -400,3 +532,231 @@ def test_record_outcome_rejects_malformed_input(
     assert result.returncode == 2
     assert f"record-outcome: {message}" in result.stderr
     assert not (tmp_path / "fix-outcome.json").exists()
+
+
+def test_record_triage_accepts_a_decision_wrapped_in_a_json_array(tmp_path: Path) -> None:
+    outcome = tmp_path / "fix-outcome.json"
+    decision: dict[str, object] = {"fixable": True, "reasons": [], "plan": "p"}
+    result = _run_script(
+        "record-triage.sh", {"decision": json.dumps([decision]), "outcome_path": str(outcome)}
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+
+
+def _shell_templates(text: str) -> list[str]:
+    """Every workflow field Agent Runner interpolates as shell: commands and sh: skip_ifs."""
+    templates: list[str] = []
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        block = re.match(r"^( *)command: \|\s*$", line)
+        if block is not None:
+            indent = len(block.group(1))
+            body: list[str] = []
+            for following in lines[index + 1 :]:
+                if following.strip() and len(following) - len(following.lstrip()) <= indent:
+                    break
+                body.append(following)
+            templates.append("\n".join(body))
+            continue
+        inline = re.match(r"^ *command: (.+)$", line)
+        if inline is not None:
+            templates.append(inline.group(1))
+            continue
+        skip = re.match(r"^ *skip_if: (.+?)\s*$", line)
+        if skip is not None:
+            value = skip.group(1)
+            if value.startswith("'") and value.endswith("'"):
+                value = value[1:-1].replace("''", "'")
+            elif value.startswith('"') and value.endswith('"'):
+                value = json.loads(value)
+            if value.startswith("sh:"):
+                templates.append(value)
+    return templates
+
+
+def _single_quoted_placeholders(template: str) -> list[str]:
+    """Port of Agent Runner's shellQuoteContext: placeholders it refuses to interpolate."""
+    refused: list[str] = []
+    for match in re.finditer(r"\{\{\s*([\w.]+)\s*\}\}", template):
+        state = "bare"
+        prefix = template[: match.start()]
+        i = 0
+        while i < len(prefix):
+            char = prefix[i]
+            if state == "bare":
+                if char == "'":
+                    state = "single"
+                elif char == '"':
+                    state = "double"
+                elif char == "\\":
+                    i += 1
+            elif state == "single":
+                if char == "'":
+                    state = "bare"
+            elif state == "double":
+                if char == '"':
+                    state = "bare"
+                elif char == "\\" and i + 1 < len(prefix) and prefix[i + 1] in '$`"\\\n':
+                    i += 1
+            i += 1
+        if state == "single":
+            refused.append(match.group(1))
+    return refused
+
+
+def test_no_shell_step_interpolates_a_parameter_inside_single_quotes() -> None:
+    """Agent Runner fails a step at run time when a placeholder sits inside single quotes;
+    -validate does not catch it, so the live host attempt hit it in verify-outcome."""
+    templates = _shell_templates(_workflow_text())
+    assert any("fix-outcome.json" in template for template in templates)
+    refused = {
+        template.strip().splitlines()[0]: names
+        for template in templates
+        if (names := _single_quoted_placeholders(template))
+    }
+    assert refused == {}
+
+
+@pytest.mark.parametrize(
+    ("template", "refused"),
+    [
+        ("""printf '{{a}}'""", ["a"]),
+        ("""echo "x" '{{a}}'""", ["a"]),
+        ("""echo "it's {{a}}" """, []),
+        ("""# it's here\nrun "{{a}}\"""", ["a"]),
+        ("""python3 -c 'print(1)' "{{a}}\"""", []),
+    ],
+)
+def test_single_quote_scan_matches_agent_runner_quote_states(
+    template: str, refused: list[str]
+) -> None:
+    assert _single_quoted_placeholders(template) == refused
+
+
+def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
+    text = "\n".join(
+        (
+            "    skip_if: 'sh: test {{a}} != x'",
+            '    skip_if: "sh: test {{b}} != x"',
+            "    skip_if: sh: test {{c}} != x",
+            "    skip_if: previous_success",
+        )
+    )
+    assert _shell_templates(text) == [
+        "sh: test {{a}} != x",
+        "sh: test {{b}} != x",
+        "sh: test {{c}} != x",
+    ]
+
+
+_RUNNER_CAPTURE_WORKFLOW = """name: capture-probe
+description: The packaged scripts' captures gate steps the way factory-fix-v1.0 does.
+steps:
+  - id: record-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: '{"fixable": true, "reasons": [], "plan": "p"}'
+      outcome_path: "/dev/null"
+    capture: fixable
+  - id: implement
+    skip_if: 'sh: test {{fixable}} != true'
+    command: touch implemented
+  - id: read-regression-marker
+    script: read-regression-marker.sh
+    script_inputs:
+      report: "Found a defect.\\nREGRESSIONS_FOUND"
+    capture: regressions
+  - id: address
+    skip_if: 'sh: test "{{regressions}}" != found'
+    command: touch addressed
+"""
+
+
+@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: Path) -> None:
+    """Agent Runner keeps a text capture byte for byte, so a trailing newline from a script
+    made every skip_if comparison fail and skipped implementation in the live attempt."""
+    repo = tmp_path / "repo"
+    workflows = repo / ".agent-runner" / "workflows"
+    workflows.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    for name in ("record-triage.sh", "read-regression-marker.sh"):
+        target = workflows / name
+        target.write_text((PACKAGE / name).read_text(encoding="utf-8"), encoding="utf-8")
+        target.chmod(0o755)
+    (workflows / "capture-probe-v1.0.yaml").write_text(_RUNNER_CAPTURE_WORKFLOW, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(home),
+        "AGENT_RUNNER_NO_TUI": "1",
+    }
+
+    result = subprocess.run(
+        ["agent-runner", "run", "capture-probe", "--session-dir", str(tmp_path / "session")],
+        cwd=repo,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (repo / "implemented").exists()
+    assert (repo / "addressed").exists()
+
+
+@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+def test_installed_runner_loads_a_merged_config_with_both_profile_sets(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    workflows = repo / ".agent-runner" / "workflows"
+    workflows.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
+    tracked = (
+        "profiles:\n"
+        "  smoke_test:\n"
+        "    extends: default\n"
+        "    agents:\n"
+        "      probe:\n"
+        "        default_mode: autonomous\n"
+        "        cli: claude\n"
+        "        model: haiku\n"
+        "        effort: low\n"
+    )
+    staged = launch.staged_config_text(tracked, {"lead": ("cursor", "m", "high")})
+    (repo / ".agent-runner" / "config.yaml").write_text(staged, encoding="utf-8")
+    (workflows / "profile-probe-v1.0.yaml").write_text(
+        "name: profile-probe\ndescription: loads the merged profile config\n"
+        "steps:\n  - id: noop\n    command: printf ok\n",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    home.mkdir()
+    environment = {"PATH": os.environ["PATH"], "HOME": str(home), "AGENT_RUNNER_NO_TUI": "1"}
+
+    def run(profile: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "agent-runner",
+                "run",
+                "profile-probe",
+                "--profile",
+                profile,
+                "--session-dir",
+                str(tmp_path / f"session-{profile}"),
+            ],
+            cwd=repo,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    for profile in ("factory", "smoke_test"):
+        result = run(profile)
+        assert result.returncode == 0, result.stdout + result.stderr
+    missing = run("absent")
+    assert missing.returncode != 0
+    assert "does not exist" in missing.stdout + missing.stderr
