@@ -270,6 +270,18 @@ class GitHubClient:
         permission = payload.get("permission")
         return permission if isinstance(permission, str) else None
 
+    def get_role(self, repository: str, login: str) -> str | None:
+        """The collaborator's role name, which distinguishes maintain from write."""
+        try:
+            response = self._request(
+                ["api", f"repos/{repository}/collaborators/{login}/permission", "--method", "GET"],
+                None,
+            )
+        except GitHubApiError:
+            return None
+        role = _json_object(response).get("role_name")
+        return role if isinstance(role, str) else None
+
     def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
         """Return branch info, or None if it does not exist. Raises on any other lookup failure."""
         encoded_branch = urllib.parse.quote(branch, safe="")
