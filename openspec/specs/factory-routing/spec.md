@@ -5,7 +5,7 @@ TBD - created by archiving change pickup-and-fix-bugs. Update Purpose after arch
 ## Requirements
 ### Requirement: Route requests through shared configuration
 
-Routing rules and their implementation SHALL be maintained in `agent-factory` and invoked through a reusable GitHub Actions workflow. Source repositories SHALL use small caller workflows. Rules SHALL configure source repositories, request markers and native issue types per work kind, bypass markers, destination Projects, and initial Project fields. The eval rule SHALL route `agent-evals` evaluation requests to the shared Codagent Project; the bug rule SHALL route Bug-typed issues from every configured source repository. Adding a source repository or routing another work kind SHALL reuse this routing behavior through configuration.
+Routing rules and their implementation SHALL be maintained in `agent-factory` and invoked through a reusable GitHub Actions workflow. Source repositories SHALL use small caller workflows that subscribe to issue creation, reopening, editing, closure, label changes, and native issue type changes, so a type set after an issue is created is routed when it is set. Rules SHALL configure source repositories, request markers and native issue types per work kind, bypass markers, destination Projects, and initial Project fields. The eval rule SHALL route `agent-evals` evaluation requests to the shared Codagent Project; the bug rule SHALL route Bug-typed issues from every configured source repository. Adding a source repository or routing another work kind SHALL reuse this routing behavior through configuration.
 
 Routing SHALL add an issue to its destination Project if absent and initialize fields once. For an authorized explicitly marked eval request, routing SHALL set the native issue Type to the configured eval type before initializing its factory fields. Repeated delivery SHALL NOT reset work in progress or overwrite subsequent human field changes. Routing SHALL recognize explicit request markers and native issue types without requiring a valid eval block or inferring assignment from arbitrary issue prose. Routing SHALL act only on delivered issue events; it SHALL NOT retroactively route issues that existed before a rule was deployed.
 
@@ -41,7 +41,7 @@ Routing SHALL add an issue to its destination Project if absent and initialize f
 
 ### Requirement: Restrict factory assignment to repository writers
 
-Routing SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository before assigning factory ownership. Organization membership, the presence of a request label, or a native issue type alone SHALL NOT satisfy this check. A request from an author without sufficient access SHALL enter Backlog without factory assignment. Failure to establish the author's permission SHALL NOT be treated as authorization. Each work kind's intake SHALL re-verify this permission at execution admission.
+Routing SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository before assigning factory ownership to an eval request, and that a bug's author holds the maintain or admin repository role before assigning factory ownership to a bug. Organization membership, the presence of a request label, or a native issue type alone SHALL NOT satisfy this check. A request from an author without sufficient access SHALL enter Backlog without factory assignment. Failure to establish the author's permission SHALL NOT be treated as authorization. Each work kind's intake SHALL re-verify this permission at execution admission.
 
 #### Scenario: Receive an outside contributor's request
 
@@ -56,12 +56,22 @@ Routing SHALL verify that the issue author has effective write, maintain, or adm
 
 ### Requirement: Route bug reports to the factory
 
-For an open issue whose native Type is the configured bug type in a configured source repository, routing SHALL initialize `Owner=factory` and `Status=Ready` when the author has the required repository access and the issue carries no bypass marker. When the configured bypass marker (`factory-hold` in the Codagent deployment) is present at routing time, routing SHALL initialize `Owner=human` and `Status=Backlog` so the bug is tracked without factory work. Pull requests SHALL NOT be routed as bugs. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence. Bug routing SHALL NOT require a template or fenced configuration block. Because the bypass marker must be present when the creation event is delivered, each configured source repository SHALL provide a "Bug (tracking only)" issue template that sets the bug type and pre-applies the bypass label.
+For an open issue whose native Type is the configured bug type in a configured source repository, routing SHALL initialize `Owner=factory` and `Status=Ready` when the author holds the maintain or admin repository role and the issue carries no bypass marker. A bug from an author with only write access SHALL enter Backlog without factory ownership. When the bug type is set after the issue was first routed, the type-change event SHALL apply this rule, replacing only the Project values routing itself initialized. When the configured bypass marker (`factory-hold` in the Codagent deployment) is present at routing time, routing SHALL initialize `Owner=human` and `Status=Backlog` so the bug is tracked without factory work. Pull requests SHALL NOT be routed as bugs. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence. Bug routing SHALL NOT require a template or fenced configuration block. Because the bypass marker must be present when the creation event is delivered, each configured source repository SHALL provide a "Bug (tracking only)" issue template that sets the bug type and pre-applies the bypass label.
+
+#### Scenario: File a bug as a repository maintainer or admin
+
+- **WHEN** a user with the maintain or admin role creates an issue with native Type Bug in a configured source repository
+- **THEN** routing adds it to the Project with `Owner=factory` and `Status=Ready` without another human action
 
 #### Scenario: File a bug as a repository writer
 
-- **WHEN** a user with write, maintain, or admin access creates an issue with native Type Bug in a configured source repository
-- **THEN** routing adds it to the Project with `Owner=factory` and `Status=Ready` without another human action
+- **WHEN** a user whose role is write creates an issue with native Type Bug in a configured source repository
+- **THEN** routing adds it to the Project in Backlog without factory ownership
+
+#### Scenario: Set the bug type after creation
+
+- **WHEN** a maintainer or admin creates an issue without a native type, routing places it in Backlog, and the Bug type is set afterwards while its Owner and Status still hold routing's initial values
+- **THEN** the type-change event routes it to `Owner=factory` and `Status=Ready`
 
 #### Scenario: File a bug for tracking only
 

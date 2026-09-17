@@ -72,6 +72,28 @@ def test_client_interprets_missing_collaborator_permission_as_untrusted() -> Non
     ]
 
 
+def test_client_reads_the_collaborator_role_name() -> None:
+    gh = RecordingGh([json.dumps({"permission": "write", "role_name": "maintain"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    role = client.get_role("example/repository", "maintainer")
+
+    assert role == "maintain"
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/collaborators/maintainer/permission",
+        "--method",
+        "GET",
+    ]
+
+
+def test_client_interprets_missing_collaborator_role_as_untrusted() -> None:
+    gh = RecordingGh([json.dumps({"message": "Not Found"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.get_role("example/repository", "outside-contributor") is None
+
+
 def test_client_assigns_native_issue_type_with_the_repository_api() -> None:
     gh = RecordingGh([json.dumps({"type": {"name": "Eval"}})])
     client = GitHubClient(gh, lambda: "installation-token")

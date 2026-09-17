@@ -23,6 +23,10 @@ def _permissions() -> dict[tuple[str, str], str | None]:
     return {}
 
 
+def _roles() -> dict[tuple[str, str], str | None]:
+    return {}
+
+
 def _comments() -> dict[str, list[IssueComment]]:
     return {}
 
@@ -90,12 +94,16 @@ repetitions = 3
 class MemoryGitHub:
     items: dict[str, ProjectItem] = field(default_factory=_items)
     permissions: dict[tuple[str, str], str | None] = field(default_factory=_permissions)
+    roles: dict[tuple[str, str], str | None] = field(default_factory=_roles)
     comments: dict[str, list[IssueComment]] = field(default_factory=_comments)
     issue_types: dict[str, str] = field(default_factory=_issue_types)
     added: int = 0
 
     def get_permission(self, repository: str, login: str) -> str | None:
         return self.permissions.get((repository, login))
+
+    def get_role(self, repository: str, login: str) -> str | None:
+        return self.roles.get((repository, login))
 
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self.issue_types[f"{repository}#{number}"] = issue_type
@@ -148,6 +156,7 @@ def bug_item(
     author: str = "writer",
     labels: set[str] | None = None,
     pull_request: bool = False,
+    issue_type: str | None = "Bug",
 ) -> SourceItem:
     return SourceItem(
         id=id,
@@ -155,7 +164,7 @@ def bug_item(
         number=number,
         author=author,
         labels=frozenset(labels or set()),
-        issue_type="Bug",
+        issue_type=issue_type,
         state="open",
         pull_request=pull_request,
     )
@@ -313,9 +322,14 @@ def test_eval_source_must_be_an_explicit_configured_source() -> None:
         SharedConfig.from_toml(text)
 
 
-def test_writer_bug_routes_to_ready_with_factory_owner_and_writes_receipt() -> None:
+@pytest.mark.parametrize("role", ["maintain", "admin"])
+def test_maintainer_or_admin_bug_routes_to_ready_with_factory_owner_and_writes_receipt(
+    role: str,
+) -> None:
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    github = MemoryGitHub(
+        permissions={("example/work", "writer"): "write"}, roles={("example/work", "writer"): role}
+    )
 
     result = Router(config, github).route(RouteEvent(bug_item()))
 
@@ -325,6 +339,34 @@ def test_writer_bug_routes_to_ready_with_factory_owner_and_writes_receipt() -> N
         "status-field": "ready-option",
     }
     assert github.comments["example/work#99"]
+
+
+def test_write_role_bug_enters_backlog_without_ownership() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(
+        permissions={("example/work", "writer"): "write"},
+        roles={("example/work", "writer"): "write"},
+    )
+
+    result = Router(config, github).route(RouteEvent(bug_item()))
+
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+
+
+def test_bug_typed_after_creation_routes_to_factory_on_the_type_event() -> None:
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(issue_type=None)))
+
+    result = router.route(RouteEvent(bug_item()))
+
+    assert result.destination == "ready"
+    assert github.items["ISSUE-BUG-1"].fields == {
+        "owner-field": "factory-option",
+        "status-field": "ready-option",
+    }
 
 
 def test_non_writer_bug_enters_backlog_without_ownership() -> None:
@@ -465,7 +507,7 @@ def test_eval_labelled_bug_in_eval_source_applies_eval_rule_not_bug_rule() -> No
 
 def test_human_hold_on_a_routed_bug_survives_re_delivery() -> None:
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
     router = Router(config, github)
     router.route(RouteEvent(bug_item()))
     github.items["ISSUE-BUG-1"].fields["owner-field"] = "human-option"
@@ -484,7 +526,7 @@ def test_forged_receipt_from_another_author_is_ignored() -> None:
     from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
 
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
+    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
     forged = {
         "project": "PVT_example",
         "item": "item-ISSUE-BUG-1",

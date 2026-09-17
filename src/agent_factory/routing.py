@@ -52,6 +52,8 @@ class RouteResult:
 class GitHubRoutingClient(Protocol):
     def get_permission(self, repository: str, login: str) -> str | None: ...
 
+    def get_role(self, repository: str, login: str) -> str | None: ...
+
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None: ...
 
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None: ...
@@ -102,8 +104,10 @@ class Router:
                 )
                 return RouteResult("backlog", project_item.id)
             if not hold_bypassed:
-                permission = self._github.get_permission(source.repository, source.author)
-                if permission in {"write", "maintain", "admin"}:
+                # Bugs are admitted without review of a request block, so only maintainers
+                # and admins hand them to the factory automatically.
+                role = self._github.get_role(source.repository, source.author)
+                if role in {"maintain", "admin"}:
                     self._initialize(
                         project_item, source, (("owner", "factory"), ("status", "ready"))
                     )
