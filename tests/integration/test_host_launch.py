@@ -369,6 +369,34 @@ def test_host_plan_refuses_staging_through_a_symlink_the_target_committed(
     assert victim.read_text() == "keep\n"
 
 
+@pytest.mark.parametrize("name", [launch.WORKFLOW_FILE, *launch.WORKFLOW_SCRIPTS])
+def test_host_plan_refuses_to_overwrite_a_workflow_file_the_target_tracks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Staging over a tracked catalog file would dirty the clone and fail the workflow's
+    clean-tree gate, so planning refuses before copying anything."""
+    built = Built(tmp_path, monkeypatch)
+    shutil.rmtree(built.clone / ".agent-runner")
+    catalog = built.clone / ".agent-runner" / "workflows"
+    catalog.mkdir(parents=True)
+    (catalog / name).write_text("theirs\n")
+    _git(built.clone, "add", "-f", f".agent-runner/workflows/{name}")
+    _git(
+        built.clone, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit", "-qm", "t"
+    )
+    with pytest.raises(ReadinessError, match=name):
+        launch.build_host_plan(
+            evidence=built.evidence,
+            repo_clone=built.clone,
+            credential_copy=built.credential,
+            roles=ROLES,
+            branch="factory/fix-7-claim",
+            contract=CONTRACT,
+        )
+    assert (catalog / name).read_text() == "theirs\n"
+    assert _git(built.clone, "status", "--porcelain") == ""
+
+
 def test_host_plan_reports_a_failed_skip_worktree_update_as_readiness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

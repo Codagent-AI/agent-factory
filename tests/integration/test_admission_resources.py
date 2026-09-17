@@ -68,3 +68,33 @@ def test_no_running_containers_uses_zero_usage(tmp_path: Path, stats_lines: list
     result = check_memory_headroom(3, docker=str(docker))
 
     assert result.available is True
+
+
+def test_eval_admission_ignores_failed_fix_diagnostics() -> None:
+    """A failed fix-host or fix-sandbox line (the LaunchAgent PATH under host execution)
+    must never hold Docker evaluations; only shared and eval-sandbox groups can."""
+    from typing import cast
+
+    from agent_factory.config import LocalConfig, SharedConfig
+    from agent_factory.operations import Diagnostic
+    from agent_factory.runtime import _kind_failures  # pyright: ignore[reportPrivateUsage]
+    from agent_factory.work_kinds.base import WorkKindHandler
+
+    class EvalHandler:
+        kind = "eval"
+
+    shared_failure = Diagnostic("shared configuration", False, "bad", "fix", group="shared")
+    sandbox_failure = Diagnostic("Docker", False, "down", "start", group="eval-sandbox")
+    host_failure = Diagnostic("LaunchAgent PATH", False, "missing", "add", group="fix-host")
+    fix_sandbox_failure = Diagnostic("fix mirror", False, "missing", "add", group="fix-sandbox")
+    memory = Diagnostic("sandbox memory", True, "ok", "", group="eval-sandbox")
+
+    failures = _kind_failures(
+        cast(WorkKindHandler, EvalHandler()),
+        cast(LocalConfig, None),
+        cast(SharedConfig, None),
+        [shared_failure, sandbox_failure, host_failure, fix_sandbox_failure],
+        lambda: memory,
+    )
+
+    assert failures == [shared_failure, sandbox_failure]

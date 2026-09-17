@@ -68,8 +68,11 @@ def sync_state(claim: Claim) -> Mapping[str, object]:
 
 
 def pending_sync(store: ClaimStore, claim: Claim) -> bool:
-    """Whether a fix claim with a PR still awaits its post-merge sync."""
-    if claim.kind != "fix" or _find_pr(store, claim) is None:
+    """Whether a settled fix claim with a PR still awaits its post-merge sync.
+
+    Only settled claims are ever synced, so a cancelled or superseded claim that recorded a
+    PR never waits on one."""
+    if claim.kind != "fix" or claim.lifecycle != "settled" or _find_pr(store, claim) is None:
         return False
     return not sync_state(claim).get("completed")
 

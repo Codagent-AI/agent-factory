@@ -237,6 +237,13 @@ def test_local_config_rejects_negative_fix_minimum_free_gib() -> None:
         LocalConfig.from_toml(text)
 
 
+@pytest.mark.parametrize("value", ["nan", "inf", "+inf"])
+def test_local_config_rejects_non_finite_fix_minimum_free_gib(value: str) -> None:
+    text = _LOCAL_BASE + f"\n[fix]\nminimum_free_gib = {value}\n"
+    with pytest.raises(ConfigurationError, match="fix.minimum_free_gib"):
+        LocalConfig.from_toml(text)
+
+
 def test_local_config_accepts_eval_execution_docker() -> None:
     text = _LOCAL_BASE + '\n[eval]\nexecution = "docker"\n'
     local = LocalConfig.from_toml(text)

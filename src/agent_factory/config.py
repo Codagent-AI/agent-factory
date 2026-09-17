@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import tomllib
 from collections.abc import Mapping
@@ -469,7 +470,12 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
     floor = fix.get("minimum_free_gib")
     minimum_free_gib: float | None = None
     if floor is not None:
-        if isinstance(floor, bool) or not isinstance(floor, (int, float)) or floor < 0:
+        if (
+            isinstance(floor, bool)
+            or not isinstance(floor, (int, float))
+            or not math.isfinite(floor)
+            or floor < 0
+        ):
             raise ConfigurationError("fix.minimum_free_gib must be a non-negative number")
         minimum_free_gib = float(floor)
     return FixLocalConfig(

@@ -141,6 +141,11 @@ In `host` mode the factory SHALL run the packaged fix workflow through the opera
 - **THEN** the packaged workflow and its scripts are present only in the attempt's clone, ignored by git there, and the Runner resolves `factory-fix` from that project scope
 - **AND** removing the clone at Done leaves no copy of the workflow behind
 
+#### Scenario: Refuse to stage over a committed workflow file
+
+- **WHEN** the target repository commits a file at the path of the packaged workflow or one of its scripts in the project-local Runner workflow directory
+- **THEN** the attempt is not launched, the reason names the tracked file, and the committed file is left unchanged
+
 #### Scenario: Launch without touching the operator's configuration
 
 - **WHEN** a host-mode attempt launches and finishes

@@ -407,7 +407,9 @@ def _kind_failures(
 ) -> list[Diagnostic]:
     """Only the groups applicable to this kind under its configured mode can hold it."""
     if handler.kind == "eval":
-        failures = [d for d in diagnostics if not d.available]
+        failures = [
+            d for d in diagnostics if d.group in {"shared", "eval-sandbox"} and not d.available
+        ]
         memory = sandbox_memory()
         return failures + ([memory] if not memory.available else [])
     failures = [d for d in diagnostics if d.group == "shared" and not d.available]

@@ -318,6 +318,11 @@ The factory SHALL prune attempt evidence of settled claims after a configurable 
 - **WHEN** a fix claim's card is Done but its post-merge sync has not completed
 - **THEN** its evidence is not pruned however old the claim is
 
+#### Scenario: Prune a cancelled claim that recorded a PR
+
+- **WHEN** a cancelled fix claim recorded a PR and its card has been observed Done for the retention period
+- **THEN** its evidence is pruned without waiting on a post-merge sync, which only settled claims receive
+
 #### Scenario: Reach Done after a long time
 
 - **WHEN** a claim that has existed for months is moved to Done today

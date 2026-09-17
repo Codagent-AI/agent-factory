@@ -698,6 +698,29 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
             )
 
 
+def _refuse_tracked_workflow_files(repo_clone: Path) -> None:
+    """Staging over a catalog file the target commits would leave a modified tracked file,
+    which the workflow's clean-tree gate rejects and finalize-pr could commit."""
+    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS)]
+    listed = subprocess.run(
+        ["git", "-C", str(repo_clone), "ls-files", "--", *names],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listed.returncode != 0:
+        raise ReadinessError(
+            f"could not list tracked workflow files in {repo_clone}: "
+            f"{listed.stderr.strip() or f'git exited {listed.returncode}'}"
+        )
+    tracked = listed.stdout.split()
+    if tracked:
+        raise ReadinessError(
+            f"the target repository tracks {', '.join(tracked)}; "
+            "the factory will not stage its workflow over a committed file"
+        )
+
+
 def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
     exclude = repo_clone / ".git" / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
@@ -783,6 +806,7 @@ def _assemble_host_plan(
     repo_clone = repo_clone.resolve()
     (evidence / "logs").mkdir(parents=True, exist_ok=True)
     _refuse_symlinked_staging(repo_clone)
+    _refuse_tracked_workflow_files(repo_clone)
     stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract)
     config_path = repo_clone / PROJECT_CONFIG
     config_path.parent.mkdir(parents=True, exist_ok=True)

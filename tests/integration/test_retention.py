@@ -564,3 +564,26 @@ def test_prunes_the_claim_level_suite_log_of_a_fix_claim(tmp_path: Path) -> None
     retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
 
     assert not (evidence / "factory-suite.log").exists()
+
+
+def test_cancelled_claim_with_a_recorded_pr_prunes_without_a_sync(tmp_path: Path) -> None:
+    """Post-merge sync only ever runs for settled claims, so a cancelled claim that recorded
+    a PR must not wait on a sync that can never complete."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.finish_run(
+        run.id,
+        execution_status="cancelled",
+        result={"pr": {"url": "https://github.com/example/work/pull/1", "number": 1}},
+    )
+    store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+
+    for path in _removed_paths(evidence, kind="fix"):
+        assert not path.exists()
