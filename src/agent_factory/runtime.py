@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from collections.abc import Mapping
@@ -22,6 +23,7 @@ from agent_factory.controller import (
 from agent_factory.github import (
     WRITER_PERMISSIONS,
     AppCredentials,
+    GitHubApiError,
     GitHubClient,
     InstallationTokenProvider,
     ProjectQueueItem,
@@ -41,6 +43,8 @@ from agent_factory.work_kinds.eval import ParsedRequest
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.sync import sync_claim
+
+logger = logging.getLogger(__name__)
 
 
 def cycle(state: Path, config_path: Path) -> None:
@@ -68,8 +72,9 @@ def cycle(state: Path, config_path: Path) -> None:
         )
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
+        permission_cache: dict[tuple[str, str], str | None] = {}
         for card in cards:
-            _assign_ready_bug(client, shared, card)
+            _assign_ready_bug(client, shared, card, permission_cache)
         _consume_results(store, controller)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
@@ -385,7 +390,12 @@ def _repair_unclaimed(
         store.set_setting("status-repair", card.id, {"complete": True})
 
 
-def _assign_ready_bug(client: GitHubClient, shared: SharedConfig, card: ProjectQueueItem) -> None:
+def _assign_ready_bug(
+    client: GitHubClient,
+    shared: SharedConfig,
+    card: ProjectQueueItem,
+    permission_cache: dict[tuple[str, str], str | None],
+) -> None:
     """Treat placing an eligible Bug in Ready as an explicit handoff to Factory."""
     source = card.source
     targets = {target.repository for target in shared.fix.targets}
@@ -399,7 +409,22 @@ def _assign_ready_bug(client: GitHubClient, shared: SharedConfig, card: ProjectQ
         or card.fields.get(shared.project.owner.id) == factory
     ):
         return
-    if client.get_permission(source.repository, source.author) not in WRITER_PERMISSIONS:
+    permission_key = (source.repository, source.author)
+    try:
+        if permission_key not in permission_cache:
+            permission_cache[permission_key] = client.get_permission(*permission_key)
+    except GitHubApiError as error:
+        permission_cache[permission_key] = None
+        logger.warning(
+            "Cannot verify Ready Bug author permission; retrying next cycle "
+            "(repository=%s author=%s card=%s): %s",
+            source.repository,
+            source.author,
+            card.id,
+            error,
+        )
+        return
+    if permission_cache[permission_key] not in WRITER_PERMISSIONS:
         return
     client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
     card.fields[shared.project.owner.id] = factory

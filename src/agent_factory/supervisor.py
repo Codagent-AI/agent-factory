@@ -416,7 +416,14 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
 def _discovers_container(plan: ExecutionPlan) -> bool:
     """Plans that run inside the Docker sandbox are owned through their container too."""
     hints = plan.ownership_hints
-    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
+    if hints.get("sandbox") == "docker":
+        return True
+    # Plans persisted before the sandbox hint was introduced still need safe
+    # container reconciliation after an upgrade. Real and-scene plans launch
+    # their repository run.sh; controlled non-Docker plans do not.
+    return (
+        hints.get("suite") == "and-scene" and bool(plan.argv) and plan.argv[0].endswith("/run.sh")
+    )
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:

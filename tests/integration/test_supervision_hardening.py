@@ -152,7 +152,7 @@ def test_late_container_is_discovered_when_wrapper_exits(
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(artifact))
     store.mark_running(run.id, {"pid": 123, "start": "x"})
-    plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"suite": "and-scene"}, False)
+    plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"sandbox": "docker"}, False)
     identity_states = iter(["alive", "missing", "missing"])
 
     def identity_status(_identity: object) -> str:
@@ -343,7 +343,7 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
         _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
     )
     plan = _plan(tmp_path, "raise SystemExit(2)\n")
-    plan = replace(plan, ownership_hints={**plan.ownership_hints, "suite": "and-scene"})
+    plan = replace(plan, ownership_hints={**plan.ownership_hints, "sandbox": "docker"})
 
     with (
         patch.object(supervisor, "_process_identity", side_effect=_wait_for_child_exit),
