@@ -56,7 +56,7 @@ The factory SHALL execute at most one attempt per work kind at a time across the
 
 ### Requirement: Correct status edits that contradict factory execution
 
-For factory-owned requests, the factory SHALL reconcile Project Status against saved lifecycle state, verified execution, and available results on each successful GitHub poll. Moving an idle request to Running SHALL NOT establish that execution exists or bypass normal admission; the factory SHALL restore the appropriate queued or handoff status according to its lifecycle. A blocked fix claim SHALL be an exception: its card remains in Running with the `needs-input` label without execution and SHALL NOT be moved to a queued status; a blocked card moved to Review or Done SHALL be restored to Running, while a blocked card moved to Ready SHALL be treated as the fix handler's unblock gesture. Moving a request with verified active execution to Ready, Review, or Done SHALL restore Running and continue that same execution without restarting it or admitting overlapping work. Such status changes SHALL NOT cancel execution. Issue closure SHALL retain its defined cancellation behavior and take precedence over restoring Running. A drag that the request's work-kind handler recognizes as a fresh-attempt gesture SHALL be honored rather than corrected.
+For factory-owned requests, the factory SHALL reconcile Project Status against saved lifecycle state, verified execution, and available results on each successful GitHub poll. Moving an idle request to Running SHALL NOT establish that execution exists or bypass normal admission; the factory SHALL restore the appropriate queued or handoff status according to its lifecycle. A fix claim blocked by bug triage SHALL be an exception: its card remains in Running with the `needs-input` label without execution and SHALL NOT be moved to a queued status; such a blocked card moved to Review or Done SHALL be restored to Running, while a blocked card moved to Ready SHALL be treated as the fix handler's unblock gesture. A fix claim blocked by a review round's `needs-input` SHALL instead remain in Review with the `needs-input` label; moved to Running or Done it SHALL be restored to Review, and moved to Ready it SHALL be treated as the fresh-claim gesture. Moving a request with verified active execution to Ready, Review, or Done SHALL restore Running and continue that same execution without restarting it or admitting overlapping work. Such status changes SHALL NOT cancel execution. Issue closure SHALL retain its defined cancellation behavior and take precedence over restoring Running. A drag that the request's work-kind handler recognizes as a fresh-attempt gesture SHALL be honored rather than corrected.
 
 The factory SHALL leave status edits on cards without factory ownership alone. Corrective updates SHALL include a brief issue comment explaining the actual state and correction, using durable reporting to avoid repeating the same correction comment on each poll. The default correction interval SHALL be the normal five-minute poll; unavailable GitHub access SHALL delay the correction rather than change execution state based on an unverified board observation.
 
@@ -103,6 +103,11 @@ The factory SHALL leave status edits on cards without factory ownership alone. C
 
 - **WHEN** a human moves a blocked fix card from Running to Review or Done while its issue remains open
 - **THEN** the next successful poll restores Running with the label intact and explains the correction once
+
+#### Scenario: Move a fix blocked by a review round
+
+- **WHEN** a human moves a fix card blocked by a review round's `needs-input` from Review to Running or Done while its issue remains open
+- **THEN** the factory restores Review, keeps the `needs-input` label, and comments once on the correction
 
 ### Requirement: Preserve running evaluations across controller restarts
 

@@ -40,12 +40,12 @@ The factory SHALL leave status edits on cards without factory ownership alone. C
 - **THEN** the factory reconciles current execution and board state before retrying delivery
 - **AND** it does not duplicate a correction comment already delivered
 
-#### Scenario: Leave a fix blocked by triage in Running
+#### Scenario: Leave a blocked fix in Running
 
 - **WHEN** a fix claim is blocked awaiting input and its card sits in Running with the `needs-input` label
 - **THEN** the poll does not move the card or post a correction
 
-#### Scenario: Move a fix blocked by triage to Review
+#### Scenario: Move a blocked fix to Review
 
 - **WHEN** a human moves a blocked fix card from Running to Review or Done while its issue remains open
 - **THEN** the next successful poll restores Running with the label intact and explains the correction once
