@@ -676,3 +676,149 @@ eval_handler.plan_attempt = fail_plan
             assert "planning failed before launch" in board.read_text()
     finally:
         store.close()
+
+
+def _add_bug_card(board: Path, shared: SharedConfig, *, repository: str, item_id: str) -> None:
+    data: Any = json.loads(board.read_text())
+    item: dict[str, Any] = {
+        "id": item_id,
+        "content": {
+            "__typename": "Issue",
+            "id": item_id + "-issue",
+            "number": 99,
+            "body": "a real bug",
+            "state": "OPEN",
+            "author": {"login": "writer"},
+            "repository": {"nameWithOwner": repository},
+            "labels": {"nodes": []},
+            "issueType": {"name": shared.routing.bug_type},
+        },
+        "fieldValues": {
+            "nodes": [
+                {
+                    "field": {"id": shared.project.status.id},
+                    "optionId": shared.project.status.option("ready"),
+                },
+                {
+                    "field": {"id": shared.project.owner.id},
+                    "optionId": shared.project.owner.option("factory"),
+                },
+            ]
+        },
+    }
+    data["items"].append(item)
+    board.write_text(json.dumps(data))
+
+
+def _make_docker_fail(config: Path) -> None:
+    bin_dir = config.parent / "bin"
+    docker = bin_dir / "docker"
+    docker.write_text("#!/bin/sh\nexit 1\n")
+    docker.chmod(0o755)
+
+
+def _make_docker_memory_scarce(config: Path) -> None:
+    """Docker itself is up (`docker info`/`docker system` succeed) but reports too little RAM."""
+    bin_dir = config.parent / "bin"
+    docker = bin_dir / "docker"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "system" ]; then echo "{}"\n'
+        'elif [ "$1" = "info" ]; then echo 1073741824\n'
+        'elif [ "$1" = "stats" ]; then printf ""\n'
+        "fi\n"
+        "exit 0\n"
+    )
+    docker.chmod(0o755)
+
+
+def _set_fix_execution(config: Path, *, execution: str) -> None:
+    text = config.read_text()
+    text += f'\n[fix]\nexecution = "{execution}"\n'
+    config.write_text(text)
+
+
+def test_docker_outage_holds_eval_only_when_fixes_run_on_the_host(tmp_path: Path) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    fix_repository = shared.fix.targets[0].repository
+    _add_bug_card(board, shared, repository=fix_repository, item_id="P2")
+    _set_fix_execution(config, execution="host")
+    _make_docker_fail(config)
+
+    _cli(config, env, "tick")
+
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        eval_reason = store.get_setting("runtime", "readiness:eval")
+        fix_reason = store.get_setting("runtime", "readiness:fix")
+        assert eval_reason is not None and "Docker" in str(eval_reason.get("reason", ""))
+        if fix_reason is not None:
+            assert "Docker" not in str(fix_reason.get("reason", ""))
+    finally:
+        store.close()
+
+
+def test_switching_fix_to_host_clears_its_docker_hold_next_poll(tmp_path: Path) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    fix_repository = shared.fix.targets[0].repository
+    _add_bug_card(board, shared, repository=fix_repository, item_id="P2")
+    _make_docker_fail(config)
+
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        eval_reason = store.get_setting("runtime", "readiness:eval")
+        fix_reason = store.get_setting("runtime", "readiness:fix")
+        assert eval_reason is not None and "Docker" in str(eval_reason.get("reason", ""))
+        assert fix_reason is not None and "Docker" in str(fix_reason.get("reason", ""))
+
+        _set_fix_execution(config, execution="host")
+        _cli(config, env, "tick")
+
+        eval_reason_after = store.get_setting("runtime", "readiness:eval")
+        fix_reason_after = store.get_setting("runtime", "readiness:fix")
+        assert eval_reason_after is not None and "Docker" in str(
+            eval_reason_after.get("reason", "")
+        )
+        if fix_reason_after is not None:
+            assert "Docker" not in str(fix_reason_after.get("reason", ""))
+    finally:
+        store.close()
+
+
+def test_fix_disk_floor_lower_than_eval_floor_holds_eval_only(tmp_path: Path) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    fix_repository = shared.fix.targets[0].repository
+    _add_bug_card(board, shared, repository=fix_repository, item_id="P2")
+    text = config.read_text().replace("minimum_free_gib = 0", "minimum_free_gib = 999999999")
+    text += "\n[fix]\nminimum_free_gib = 0\n"
+    config.write_text(text)
+
+    _cli(config, env, "tick")
+
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        eval_reason = store.get_setting("runtime", "readiness:eval")
+        fix_reason = store.get_setting("runtime", "readiness:fix")
+        assert eval_reason is not None and "free storage" in str(eval_reason.get("reason", ""))
+        if fix_reason is not None:
+            assert "free storage" not in str(fix_reason.get("reason", ""))
+    finally:
+        store.close()
+
+
+def test_eval_admission_is_held_when_docker_memory_is_scarce(tmp_path: Path) -> None:
+    config, _board, env, _shared = _setup(tmp_path)
+    _make_docker_memory_scarce(config)
+
+    _cli(config, env, "tick")
+
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        eval_reason = store.get_setting("runtime", "readiness:eval")
+        assert eval_reason is not None
+        reason_text = str(eval_reason.get("reason", ""))
+        assert "memory" in reason_text.lower() or "headroom" in reason_text.lower()
+        assert not store.nonterminal_runs()
+    finally:
+        store.close()

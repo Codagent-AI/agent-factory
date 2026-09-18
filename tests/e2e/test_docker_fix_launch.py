@@ -30,17 +30,22 @@ params:
     required: true
   - name: contract_version
     required: true
+  - name: artifact_dir
+    required: false
+    default: /artifacts
 
 steps:
   - id: record
     command: |
-      env | cut -d= -f1 | sort > /artifacts/env-names.txt
-      printf '%s\\n' "${AGENT_RUNNER_SOURCE_COMMIT:-}" > /artifacts/source-commit.txt
-      if touch /workspace/repo/.factory-writable 2>/dev/null; then echo writable; else echo readonly; fi > /artifacts/repo-mode.txt
-      if touch /workspace/skills/.factory-writable 2>/dev/null; then echo writable; else echo readonly; fi > /artifacts/skills-mode.txt
-      cp "{{issue_file}}" /artifacts/issue-copy.json
-      printf '%s\\n' "{{branch_name}}" > /artifacts/branch.txt
-      printf '{"contract":"factory-fix/1","outcome":"failed","reasons":["model-free test workflow"],"validator":{"status":"skipped"}}' > /artifacts/fix-outcome.json
+      mkdir -p "{{artifact_dir}}"
+      git status --porcelain > "{{artifact_dir}}/git-status.txt"
+      env | cut -d= -f1 | sort > "{{artifact_dir}}/env-names.txt"
+      printf '%s\\n' "${AGENT_RUNNER_SOURCE_COMMIT:-}" > "{{artifact_dir}}/source-commit.txt"
+      if touch /workspace/repo/.factory-writable 2>/dev/null; then echo writable; else echo readonly; fi > "{{artifact_dir}}/repo-mode.txt"
+      if touch /workspace/skills/.factory-writable 2>/dev/null; then echo writable; else echo readonly; fi > "{{artifact_dir}}/skills-mode.txt"
+      cp "{{issue_file}}" "{{artifact_dir}}/issue-copy.json"
+      printf '%s\\n' "{{branch_name}}" > "{{artifact_dir}}/branch.txt"
+      printf '{"contract":"factory-fix/1","outcome":"failed","reasons":["model-free test workflow"],"validator":{"status":"skipped"}}' > "{{artifact_dir}}/fix-outcome.json"
 """
 
 
@@ -87,7 +92,10 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
     target.mkdir()
     _git(target, "init", "-q", "-b", "main")
     (target / "README.md").write_text("fixture\n")
-    _git(target, "add", "README.md")
+    # Like Codagent-AI/agent-runner, the target commits its own Runner config.
+    (target / ".agent-runner").mkdir()
+    (target / ".agent-runner" / "config.yaml").write_text("active_profile: theirs\n")
+    _git(target, "add", "README.md", ".agent-runner/config.yaml")
     _git(target, "commit", "-q", "-m", "fixture")
     target_sha = _git(target, "rev-parse", "HEAD")
     storage = tmp_path / "storage"
@@ -170,6 +178,9 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
             assert outcome["outcome"] == "failed"
             assert (evidence / "source-commit.txt").read_text().strip() == runner_sha
             assert (evidence / "repo-mode.txt").read_text().strip() == "writable"
+            assert (evidence / "git-status.txt").read_text().strip() == "", (
+                "the launcher left the target's tracked Runner config modified"
+            )
             assert (evidence / "skills-mode.txt").read_text().strip() == "readonly"
             names = (evidence / "env-names.txt").read_text().split()
             assert "GH_TOKEN" in names
@@ -200,3 +211,17 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
             subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode != 0
             for tag in tags
         )
+
+
+def test_stand_in_workflow_declares_every_parameter_the_container_script_passes() -> None:
+    """The sandboxed Runner rejects undeclared parameters, so the model-free stand-in must
+    accept exactly what the real launch passes or the Docker flow fails before any step."""
+    import re
+
+    script = launch.container_script(
+        {"lead": ("codex", "m", "high")}, branch="b", contract="factory-fix/1"
+    )
+    passed = set(re.findall(r"--param ([a-z_]+)=", script))
+    declared = set(re.findall(r"^  - name: ([a-z_]+)$", TEST_WORKFLOW, re.MULTILINE))
+    assert passed, "container script passes no parameters"
+    assert passed <= declared, f"stand-in workflow lacks {sorted(passed - declared)}"

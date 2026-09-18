@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from agent_factory.suites.and_scene import PreparedWorktrees
     from agent_factory.supervisor import SupervisionLimits
 
-Gesture = Literal["fresh", "unblock"]
+Gesture = Literal["fresh", "unblock", "review"]
 ClassificationKind = Literal["technical", "settled", "blocked", "quota"]
 
 

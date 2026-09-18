@@ -8,10 +8,11 @@ from typing import cast
 
 import pytest
 
-from agent_factory.config import LocalConfig, RepositoryConfig
+from agent_factory.config import LocalConfig, RepositoryConfig, SharedConfig
 from agent_factory.github import IssueComment
-from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.work_kinds.fix import sync
+from agent_factory.store import ClaimDraft, ClaimStore, Run
+from agent_factory.work_kinds.fix import launch, sync
+from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.sync import sync_claim
 
 _LOCAL_BASE = """\
@@ -252,3 +253,84 @@ def test_successful_merge_closes_issue_and_records_completion(tmp_path: Path) ->
         card_done=False,
     )
     assert client.closed == []
+
+
+# -- the host note on outcome comments (INT-008) ---------------------------------------------
+
+
+def _handler(tmp_path: Path) -> tuple[FixHandler, ClaimStore]:
+    shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
+    handler = FixHandler(shared, _local())
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    handler.attach_store(store)
+    return handler, store
+
+
+def _finished_run(store: ClaimStore, claim_id: str, result: dict[str, object]) -> Run:
+    run = store.reserve_run(claim_id, "fix", reason="initial", evidence_path="/tmp/ev")
+    store.finish_run(run.id, execution_status="completed", result=result)
+    finished = store.get_run(run.id)
+    assert finished is not None
+    return finished
+
+
+@pytest.mark.parametrize("sandbox", ["host", "docker"])
+def test_pull_request_and_failed_outcomes_carry_the_host_note_only_for_host_runs(
+    tmp_path: Path, sandbox: str
+) -> None:
+    handler, store = _handler(tmp_path)
+    url = "https://github.com/example/work/pull/9"
+    pr: dict[str, object] = {"url": url, "number": 9}
+    for outcome, verdict in (("pull-request", "pending-human-review"), ("failed", "failed")):
+        claim = store.create_claim(
+            ClaimDraft("example/work", 1, "I1", "P1", "fix", f"fp-{outcome}-{sandbox}", {})
+        )
+        run = _finished_run(
+            store,
+            claim.id,
+            {"outcome": outcome, "reasons": ["r"], "pr": pr, "sandbox": sandbox},
+        )
+        settled = handler.settle(store.get_claim(claim.id), [run])  # type: ignore[arg-type]
+        assert settled is not None and settled.verdict == verdict
+        body = settled.event_body or ""
+        assert url in body
+        assert (launch.HOST_NOTE in body) is (sandbox == "host"), body
+
+
+@pytest.mark.parametrize("sandbox", ["host", "docker"])
+def test_needs_input_event_and_exhausted_message_carry_the_host_note_only_for_host_runs(
+    tmp_path: Path, sandbox: str
+) -> None:
+    handler, store = _handler(tmp_path)
+    claim = store.create_claim(
+        ClaimDraft("example/work", 1, "I1", "P1", "fix", f"fp-{sandbox}", {})
+    )
+    run = _finished_run(
+        store, claim.id, {"outcome": "needs-input", "reasons": ["which API?"], "sandbox": sandbox}
+    )
+    assert handler.settle(store.get_claim(claim.id), [run]) is None  # type: ignore[arg-type]
+    events = store.pending_events(claim.id)
+    assert len(events) == 1 and "which API?" in events[0].body
+    assert (launch.HOST_NOTE in events[0].body) is (sandbox == "host")
+    exhausted = handler.attempt_message(
+        run, {"reason": "boom", "sandbox": sandbox}, stage="exhausted"
+    )
+    assert "infra-error" in exhausted
+    assert (launch.HOST_NOTE in exhausted) is (sandbox == "host")
+
+
+def test_admission_comment_is_identical_across_execution_modes(tmp_path: Path) -> None:
+    handler, store = _handler(tmp_path)
+    frozen = {
+        "target": {"repository": "example/work", "branch": "main"},
+        "branches": {"runner": "main", "skills": "main"},
+        "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
+        "roles": {"lead": "cursor:m:high"},
+    }
+    first = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp1", frozen))
+    second = store.create_claim(ClaimDraft("example/work", 2, "I2", "P2", "fix", "fp2", frozen))
+    texts = [handler.frozen_inputs_event(c) or "" for c in (first, second)]
+    # Only the per-claim fix branch line differs; nothing about the execution mode appears.
+    stripped = {"\n".join(x for x in t.splitlines() if "fix branch" not in x) for t in texts}
+    assert len(stripped) == 1
+    assert all(launch.HOST_NOTE not in t and "host" not in t for t in texts)

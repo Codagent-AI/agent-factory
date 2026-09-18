@@ -69,6 +69,22 @@ def sync_claim(
     _report_success(store, client, claim, bot_login=bot_login)
 
 
+def sync_state(claim: Claim) -> Mapping[str, object]:
+    """The claim's recorded post-merge sync state, empty when none was recorded."""
+    sync = claim.reporting.get("sync")
+    return cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
+
+
+def pending_sync(store: ClaimStore, claim: Claim) -> bool:
+    """Whether a settled fix claim with a PR still awaits its post-merge sync.
+
+    Only settled claims are ever synced, so a cancelled or superseded claim that recorded a
+    PR never waits on one."""
+    if claim.kind != "fix" or claim.lifecycle != "settled" or _find_pr(store, claim) is None:
+        return False
+    return not sync_state(claim).get("completed")
+
+
 def _find_pr(store: ClaimStore, claim: Claim) -> tuple[int, str] | None:
     candidates: list[object] = [claim.outcome.get("pr")]
     candidates.extend(

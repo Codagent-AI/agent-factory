@@ -260,3 +260,19 @@ def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path)
     assert controller.reserve_next(claim.id, readiness=lambda: None) is None
     assert len(store.runs_for_claim(claim.id)) == 2
     store.close()
+
+
+def test_equal_start_and_stop_hours_keep_the_eval_window_always_open() -> None:
+    local = LocalConfig.from_toml(_LOCAL.replace("stop_hour = 15", "stop_hour = 0"))
+    for hour in (0, 12, 23):
+        assert local.schedule.allows_admission(datetime(2026, 1, 1, hour, 30, tzinfo=UTC)) is True
+
+
+def test_equal_fix_schedule_hours_keep_the_fix_window_always_open() -> None:
+    local = LocalConfig.from_toml(
+        _LOCAL + '\n[fix.schedule]\ntimezone = "UTC"\nstart_hour = 9\nstop_hour = 9\n'
+    )
+    handler = FixHandler(_shared(), local)
+    for hour in (0, 9, 23):
+        moment = datetime(2026, 1, 1, hour, 30, tzinfo=UTC)
+        assert handler.window(local).allows_admission(moment) is True

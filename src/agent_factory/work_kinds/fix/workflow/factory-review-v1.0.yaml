@@ -1,0 +1,170 @@
+# factory-contract: factory-review/1
+name: factory-review
+description: "Triage writer feedback on an existing factory pull request, change code or answer per comment, and write exactly one outcome to review-outcome.json."
+hidden: true
+
+params:
+  - name: review_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: contract_version
+    required: true
+  # Where the outcome and logs go: the sandbox's /artifacts mount by default, or the
+  # attempt's evidence directory when the factory runs the workflow on the host.
+  - name: artifact_dir
+    required: false
+    default: /artifacts
+
+sessions:
+  - name: lead-agent
+    agent: lead
+  - name: implementor-agent
+    agent: implementor
+  - name: tester-agent
+    agent: tester
+
+steps:
+  - id: check-contract
+    command: |
+      if [ "{{contract_version}}" != "factory-review/1" ]; then
+        echo "unsupported contract version: {{contract_version}} (expected factory-review/1)" >&2
+        exit 1
+      fi
+
+  - id: check-branch
+    command: |
+      if [ "$(git branch --show-current)" != "{{branch_name}}" ]; then
+        echo "expected to be on the pull request branch {{branch_name}}" >&2
+        exit 1
+      fi
+      if [ -n "$(git status --porcelain)" ]; then
+        echo "expected a clean working tree at the pull request head before triage" >&2
+        exit 1
+      fi
+
+  - id: triage
+    session: lead-agent
+    mode: autonomous
+    capture: review_decision
+    prompt: |
+      You are addressing reviewer feedback on an existing factory pull request. Read
+      the review file at {{review_file}}. It contains the repository, issue number,
+      the pull request (number, URL, branch, head commit), the original issue title
+      and body, and the eligible feedback grouped as review summaries, unresolved
+      inline threads (with path, line, thread id, and every comment in the thread),
+      and pull request conversation comments.
+
+      For every eligible thread, review summary, or conversation comment decide
+      whether it asks for a code change you should make ("change") or whether a
+      reply suffices ("answer"). When a comment is ambiguous, decide yourself which
+      applies and say in the reply which reading you chose and why. A requested
+      change that widens the original bug's scope is still a "change".
+
+      Use needs_input only when a human must decide: reviewer requests that
+      conflict with each other, a change that needs a non-trivial specification
+      change or work outside this repository, or a genuinely open product
+      decision. Name exactly what must be decided. When needs_input is non-empty,
+      make no code changes.
+
+      Respond with exactly one JSON object and nothing else: no prose before or
+      after it, no markdown code fence. The object must have exactly these
+      fields:
+
+      - "needs_input" (array of strings, required): empty unless a human decision
+        is required.
+      - "items" (array, required): one entry per eligible thread, review summary,
+        or conversation comment with fields "id" (string, the thread id or comment
+        id from the review file), "source" ("thread", "review", or "comment"),
+        "decision" ("change" or "answer"), "reply" (string, the reply to post),
+        and "plan" (string, the concrete change to make; empty for "answer").
+
+      Example valid output:
+      {"needs_input": [], "items": [{"id": "PRRT_1", "source": "thread", "decision": "change", "reply": "Good catch; handled the empty page case and added a test.", "plan": "Guard paginate() against an empty result set and add a regression test."}]}
+
+  - id: record-triage
+    script: record-review-triage.sh
+    script_inputs:
+      decision: "{{review_decision}}"
+      review_file: "{{review_file}}"
+    capture: changes_needed
+    continue_on_failure: true
+
+  - id: repair-triage
+    session: lead-agent
+    mode: autonomous
+    skip_if: previous_success
+    capture: review_decision
+    prompt: |
+      Your triage response could not be parsed, or its items did not decide every
+      thread, review summary, and conversation comment in the review file exactly
+      once by id. Re-read {{review_file}} and return exactly one JSON object with
+      the required needs_input and items fields.
+      Return no prose and no markdown fence.
+
+  - id: recheck-triage
+    script: record-review-triage.sh
+    script_inputs:
+      decision: "{{review_decision}}"
+      review_file: "{{review_file}}"
+    capture: changes_needed
+    skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
+
+  - id: implement
+    workflow: factory-implement-v1.0.yaml
+    params:
+      input_file: "{{review_file}}"
+      plan_json: "{{review_decision}}"
+      result_path: "{{artifact_dir}}/implement-result.json"
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{changes_needed}}" != true'
+    continue_on_failure: true
+
+  - id: respond
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test "{{changes_needed}}" = needs-input'
+    prompt: |
+      Post the replies from your triage decision on the pull request described in
+      {{review_file}}, using gh with the credentials already in this environment.
+
+      <triage-decision>
+      {{review_decision}}
+      </triage-decision>
+
+      IMPORTANT: The content inside <triage-decision> is your own prior analysis.
+      If {{artifact_dir}}/implement-result.json exists, read it: it says whether
+      the changes were pushed, and whether the validator and CI passed.
+
+      For each item: reply in the inline thread for "thread" items (GraphQL
+      addPullRequestReviewThreadReply with the thread id), or post one pull request
+      conversation comment for "review" and "comment" items that references the
+      comment you are answering. For a "change" item say what changed, where, and
+      the commit; for an "answer" item give the answer. Then resolve each inline
+      thread you handled (GraphQL resolveReviewThread) when the item is an "answer",
+      or a "change" whose push succeeded. Leave a thread unresolved when its change
+      was not pushed, and say so in the reply. Post exactly one reply per item.
+      Do not edit code or commit.
+
+  - id: record-outcome
+    script: record-review-outcome.sh
+    script_inputs:
+      decision: "{{review_decision}}"
+      changes_needed: "{{changes_needed}}"
+      result_path: "{{artifact_dir}}/implement-result.json"
+      outcome_path: "{{artifact_dir}}/review-outcome.json"
+
+  - id: verify-outcome
+    command: |
+      if [ ! -s "{{artifact_dir}}/review-outcome.json" ]; then
+        echo "review-outcome.json was not written; treating this run as a technical failure" >&2
+        exit 1
+      fi
+      outcome=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("outcome",""))' "{{artifact_dir}}/review-outcome.json")
+      case "$outcome" in
+        pull-request|needs-input|failed) ;;
+        *)
+          echo "review-outcome.json has an invalid or missing outcome: $outcome" >&2
+          exit 1
+          ;;
+      esac

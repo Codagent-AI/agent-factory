@@ -83,6 +83,6 @@ repository = "Codagent-AI/agent-plugin"
 repository = "Codagent-AI/agent-evals"
 
 [fix.defaults]
-lead = "cursor:cursor-grok-4.6-high:high"
-implementor = "cursor:cursor-grok-4.6-high:high"
-tester = "cursor:composer-2.5:high"
+lead = "claude:fable:medium"
+implementor = "codex:gpt-5.6-terra:medium"
+tester = "codex:gpt-5.6-luna:medium"

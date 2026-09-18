@@ -72,6 +72,28 @@ def test_client_interprets_missing_collaborator_permission_as_untrusted() -> Non
     ]
 
 
+def test_client_reads_the_collaborator_role_name() -> None:
+    gh = RecordingGh([json.dumps({"permission": "write", "role_name": "maintain"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    role = client.get_role("example/repository", "maintainer")
+
+    assert role == "maintain"
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/collaborators/maintainer/permission",
+        "--method",
+        "GET",
+    ]
+
+
+def test_client_interprets_missing_collaborator_role_as_untrusted() -> None:
+    gh = RecordingGh([json.dumps({"message": "Not Found"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.get_role("example/repository", "outside-contributor") is None
+
+
 def test_client_assigns_native_issue_type_with_the_repository_api() -> None:
     gh = RecordingGh([json.dumps({"type": {"name": "Eval"}})])
     client = GitHubClient(gh, lambda: "installation-token")
@@ -334,3 +356,67 @@ def test_close_issue_patches_state_closed() -> None:
         "-",
     ]
     assert gh.calls[0].body == {"state": "closed"}
+
+
+def _review_node(identifier: str) -> dict[str, object]:
+    return {
+        "id": identifier,
+        "body": f"body {identifier}",
+        "submittedAt": "2026-09-18T10:00:00Z",
+        "createdAt": "2026-09-18T10:00:00Z",
+        "author": {"login": "writer"},
+    }
+
+
+def _connection(nodes: list[dict[str, object]], cursor: str | None = None) -> dict[str, object]:
+    return {"nodes": nodes, "pageInfo": {"hasNextPage": cursor is not None, "endCursor": cursor}}
+
+
+def test_list_review_activity_follows_every_connection_past_the_first_page() -> None:
+    def thread(identifier: str, comments: dict[str, object]) -> dict[str, object]:
+        return {
+            "id": identifier,
+            "isResolved": False,
+            "path": "a.py",
+            "line": 3,
+            "comments": comments,
+        }
+
+    def page(reviews: dict[str, object], threads: dict[str, object]) -> str:
+        pull = {"reviews": reviews, "reviewThreads": threads}
+        return json.dumps({"data": {"repository": {"pullRequest": pull}}})
+
+    gh = RecordingGh(
+        [
+            page(
+                _connection([_review_node("R1")], "reviews-1"),
+                _connection([thread("T1", _connection([_review_node("C1")], "c-1"))], "threads-1"),
+            ),
+            json.dumps({"data": {"node": {"comments": _connection([_review_node("C2")])}}}),
+            page(
+                _connection([_review_node("R2")]),
+                _connection([thread("T2", _connection([_review_node("C3")]))]),
+            ),
+            json.dumps([]),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    activity = client.list_review_activity("example/repository", 7)
+
+    assert [r.id for r in activity.reviews] == ["R1", "R2"]
+    assert [t.id for t in activity.threads] == ["T1", "T2"]
+    assert [c.id for c in activity.threads[0].comments] == ["C1", "C2"]
+    assert [c.id for c in activity.threads[1].comments] == ["C3"]
+    bodies = [call.body for call in gh.calls[:3]]
+    for body in bodies:
+        assert body is not None
+        parse(str(body["query"]))
+    assert bodies[1] is not None and bodies[1]["variables"] == {"thread": "T1", "cursor": "c-1"}
+    assert bodies[2] is not None and bodies[2]["variables"] == {
+        "owner": "example",
+        "name": "repository",
+        "number": 7,
+        "reviews": "reviews-1",
+        "threads": "threads-1",
+    }

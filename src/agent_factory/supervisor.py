@@ -263,7 +263,7 @@ def _observe(
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
-        if _discovers_container(plan) and (
+        if _needs_container_discovery(plan, identity) and (
             now - last_container_probe >= 5 or process_status == "missing"
         ):
             try:
@@ -414,16 +414,31 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
 
 
 def _discovers_container(plan: ExecutionPlan) -> bool:
-    """Plans that run inside the Docker sandbox are owned through their container too."""
+    """Plans that run inside the Docker sandbox are owned through their container too.
+
+    A host-mode plan (``sandbox == "host"``) is owned through its process identity alone:
+    no container is discovered, inspected, or stopped for it, and termination is the
+    process-group kill that also covers the Runner's agent children.
+    """
     hints = plan.ownership_hints
-    if hints.get("sandbox") == "docker":
+    if hints.get("sandbox") == "host":
+        return False
+    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
+
+
+def _needs_container_discovery(plan: ExecutionPlan, identity: Mapping[str, object]) -> bool:
+    """Avoid probing Docker for an explicitly launched local replacement process.
+
+    A processless observation still needs the conservative discovery path: the wrapper
+    may already have exited after starting its owned container.
+    """
+    if not _discovers_container(plan):
+        return False
+    # A Docker sandbox launcher always owns a container; only an and-scene wrapper can be
+    # swapped for a local process.
+    if plan.ownership_hints.get("sandbox") == "docker":
         return True
-    # Plans persisted before the sandbox hint was introduced still need safe
-    # container reconciliation after an upgrade. Real and-scene plans launch
-    # their repository run.sh; controlled non-Docker plans do not.
-    return (
-        hints.get("suite") == "and-scene" and bool(plan.argv) and plan.argv[0].endswith("/run.sh")
-    )
+    return not plan.argv or Path(plan.argv[0]).name == "run.sh" or not identity
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:
