@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import work_kinds
+from agent_factory import retention, work_kinds
 from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
@@ -26,7 +27,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.operations import check_memory_headroom, doctor
+from agent_factory.operations import Diagnostic, check_memory_headroom, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     ReadinessError,
@@ -72,14 +73,24 @@ def cycle(state: Path, config_path: Path) -> None:
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
-        memory = check_memory_headroom(local.limits.memory_reservation_gib)
-        memory_setting = {} if memory.available else {"reason": memory.detail}
-        store.set_setting("runtime", "memory", memory_setting)
+
+        # The Docker memory probe only runs when a sandbox kind is actually a candidate
+        # for admission this tick, and its result is cached so it runs at most once.
+        @functools.cache
+        def sandbox_memory() -> Diagnostic:
+            probed = check_memory_headroom(local.limits.memory_reservation_gib)
+            store.set_setting(
+                "runtime", "memory", {} if probed.available else {"reason": probed.detail}
+            )
+            return probed
+
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
             for claim in claims:
+                retention.reconcile(store, local, claim, card_status(shared, card), now)
+                claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "superseded":
                     continue
                 handler = controller.handler(claim.kind)
@@ -87,6 +98,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     controller.cancel(claim.id)
                     claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
+                    fix_memory_available = (
+                        True if local.fix.execution == "host" else sandbox_memory().available
+                    )
                     admitted = process_blocked_claim(
                         store,
                         client,
@@ -98,7 +112,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
-                        memory_available=memory.available,
+                        memory_available=fix_memory_available,
                     )
                     claim = store.get_claim(claim.id) or claim
                     if admitted is not None:
@@ -141,7 +155,9 @@ def cycle(state: Path, config_path: Path) -> None:
                         artifact_root=artifact_root,
                         now=now,
                         local=local,
-                        memory_available=memory.available,
+                        memory_available=(
+                            True if local.fix.execution == "host" else sandbox_memory().available
+                        ),
                     )
                     if admitted is not None:
                         run, preparation = admitted
@@ -151,7 +167,9 @@ def cycle(state: Path, config_path: Path) -> None:
                         )
                         continue
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
-                if not (gesture == "fresh" and claim.lifecycle == "settled"):
+                if not (gesture == "fresh" and claim.lifecycle == "settled") and _presents_card(
+                    claim, issue_state=card.source.state
+                ):
                     _report(store, controller, client, shared, card, claim.id, handler)
                 if handler is not None:
                     handler.cleanup(claim, board_status=card_status(shared, card))
@@ -159,8 +177,20 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
-        prerequisites: str | None = None
-        kind_readiness: dict[str, str] = {}
+
+        @functools.cache
+        def shared_eval_diagnostics() -> list[Diagnostic]:
+            return doctor(local, include_fix=False, include_informational=False)
+
+        kind_failure_cache: dict[str, list[Diagnostic]] = {}
+
+        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
+            if candidate_handler.kind not in kind_failure_cache:
+                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
+                )
+            return kind_failure_cache[candidate_handler.kind]
+
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
         for card in cards:
@@ -190,22 +220,10 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             if not ready:
                 continue
-            if not memory.available:
-                continue
-            if prerequisites is None:
-                failures = [d for d in doctor(local, include_fix=False) if not d.available]
-                prerequisites = "; ".join(f"{d.name}: {d.detail}" for d in failures)
-            if prerequisites:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": prerequisites})
-                break
-            if handler.kind not in kind_readiness:
-                kind_failures = [d for d in handler.readiness(local, shared) if not d.available]
-                kind_readiness[handler.kind] = "; ".join(
-                    f"{d.name}: {d.detail}" for d in kind_failures
-                )
-            kind_reason = kind_readiness[handler.kind]
-            if kind_reason:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": kind_reason})
+            failures = kind_failures(handler)
+            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
+            if reason:
+                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": reason})
                 continue
             store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:
@@ -402,9 +420,41 @@ def _repair_unclaimed(
         store.set_setting("status-repair", card.id, {"complete": True})
 
 
+def _kind_failures(
+    handler: WorkKindHandler,
+    local: LocalConfig,
+    shared: SharedConfig,
+    diagnostics: list[Diagnostic],
+    sandbox_memory: Callable[[], Diagnostic],
+) -> list[Diagnostic]:
+    """Only the groups applicable to this kind under its configured mode can hold it."""
+    if handler.kind == "eval":
+        failures = [
+            d for d in diagnostics if d.group in {"shared", "eval-sandbox"} and not d.available
+        ]
+        memory = sandbox_memory()
+        return failures + ([memory] if not memory.available else [])
+    failures = [d for d in diagnostics if d.group == "shared" and not d.available]
+    if not (isinstance(handler, FixHandler) and local.fix.execution == "docker"):
+        return failures + [d for d in handler.readiness(local, shared) if not d.available]
+    docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
+    if docker_diagnostic is not None and not docker_diagnostic.available:
+        failures.append(docker_diagnostic)
+    memory = sandbox_memory()
+    if not memory.available:
+        failures.append(memory)
+    readiness = handler.readiness(local, shared, docker_diagnostic=docker_diagnostic)
+    return failures + [d for d in readiness if not d.available]
+
+
 def _should_cancel(claim: Claim) -> bool:
     """Closure cancels only unfinished execution; a settled claim keeps its recorded outcome."""
     return claim.lifecycle != "settled"
+
+
+def _presents_card(claim: Claim, *, issue_state: str) -> bool:
+    """A claim cancelled by closure stops owning the card once its issue is reopened."""
+    return not (claim.lifecycle == "cancelled" and issue_state.lower() != "closed")
 
 
 def _consume_results(store: ClaimStore, controller: Controller) -> None:

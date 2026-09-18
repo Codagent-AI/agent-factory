@@ -17,7 +17,7 @@ done
 
 ## Bug routing and the tracking-only template
 
-Any open issue whose native Type is `Bug` in a configured source repository routes to `Owner=factory` / Ready when its author has write, maintain, or admin access, unless `factory-hold` is already applied when the creation event is delivered — the label must be present at delivery time, since routing does not retroactively rescan existing issues. Add `.github/ISSUE_TEMPLATE/bug-tracking-only.md` (copied from this repository) to each configured source repository so a writer can file a tracking-only bug in one step; it pre-sets the Bug type and the `factory-hold` label. A bug filed without that template and without the label is picked up by the factory like any other authorized Bug-typed issue.
+Any open issue whose native Type is `Bug` in a configured source repository routes to `Owner=factory` / Ready when its author holds the maintain or admin repository role (a write-only author's bug enters Backlog), unless `factory-hold` is already applied when the creation event is delivered — the label must be present at delivery time, since routing does not retroactively rescan existing issues. Add `.github/ISSUE_TEMPLATE/bug-tracking-only.md` (copied from this repository) to each configured source repository so a writer can file a tracking-only bug in one step; it pre-sets the Bug type and the `factory-hold` label. A bug filed without that template and without the label is picked up by the factory like any other authorized Bug-typed issue.
 
 ```sh
 for repo in Codagent-AI/agent-runner Codagent-AI/agent-skills \
@@ -52,13 +52,23 @@ done
 
 ## Bumping the caller revision
 
+Each caller subscribes to issue `typed` events as well as creation, edits, closure, and label changes, so a Bug type set after an issue is created still routes it:
+
+```yaml
+on:
+  issues:
+    types: [opened, reopened, edited, closed, labeled, unlabeled, typed]
+  pull_request:
+    types: [opened, reopened, edited, closed, labeled, unlabeled]
+```
+
 After publishing a change to the shared routing workflow (including the bug rule, `bug_type`, and `hold_label`), replace `FACTORY_REVISION` in each of the five caller workflows with the new published commit SHA and deploy it on each caller's default branch, exactly as for any other shared-workflow change (see below).
 
 Publish `agent-factory` first. Then replace each caller workflow's `FACTORY_REVISION` with that published, immutable full commit SHA and deploy it on the caller's default branch. Only then issue and pull-request events invoke the trusted reusable workflow and its matching configuration. Update the installed local factory and caller pins together; neither automatically follows `main`.
 
-The configured `agent-evals` harness SHA is a real immutable execution pin, not a local `HEAD` or branch. Routing does not establish suite readiness. Before changing it, verify the selected revision contains the score-failure contract, calibration-gate removal, and linked-worktree metadata mounts described in [suite integration](suite-integration.md); then deploy the same explicit revision before unpausing admission.
+The configured `agent-evals` harness is a branch name (`eval.harness_ref`, default `main`), not a commit SHA; Factory resolves it to a commit at each claim's admission, and that resolved commit — not the branch name — is the comparability key across nights. Routing does not establish suite readiness. Before changing the branch, verify the revision it currently resolves to contains the score-failure contract, calibration-gate removal, and linked-worktree metadata mounts described in [suite integration](suite-integration.md); then deploy with that branch pointed at a ready revision before unpausing admission.
 
-The reusable workflow mints a short-lived App installation token and passes it only through `GH_TOKEN` to `gh api`. It never checks out contributor pull-request code and reads the current source item from the base-repository event context. Routing checks the author's effective collaborator permission; only `write`, `maintain`, and `admin` receive factory ownership and Ready. Unknown or denied permission is Backlog without ownership. A stable issue/PR receipt records one-time initialization, so retries preserve later human changes. A Bug routed with the `factory-hold` bypass label carries `"hold_bypassed": true` in that receipt; the flag is sticky across receipt rewrites, so a tracking-only bug is never auto-assigned to the factory later even if the label is removed. Hand it to the factory by setting `Owner=factory` and moving it to Ready. Closing a tracked issue or PR moves its card to Done.
+The reusable workflow mints a short-lived App installation token and passes it only through `GH_TOKEN` to `gh api`. It never checks out contributor pull-request code and reads the current source item from the base-repository event context. Routing checks the author's effective collaborator permission; for eval requests only `write`, `maintain`, and `admin` receive factory ownership and Ready, and for bugs only the `maintain` and `admin` roles do. Unknown or denied permission is Backlog without ownership. A stable issue/PR receipt records one-time initialization, so retries preserve later human changes. A Bug routed with the `factory-hold` bypass label carries `"hold_bypassed": true` in that receipt; the flag is sticky across receipt rewrites, so a tracking-only bug is never auto-assigned to the factory later even if the label is removed. Hand it to the factory by setting `Owner=factory` and moving it to Ready. Closing a tracked issue or PR moves its card to Done.
 
 The shared `[github].bot_login` identifies the installed App's comment author
 (for example, `codagent-factory[bot]`). Set it for your own App so lost-response

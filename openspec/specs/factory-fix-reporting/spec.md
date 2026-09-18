@@ -5,7 +5,7 @@ TBD - created by archiving change pickup-and-fix-bugs. Update Purpose after arch
 ## Requirements
 ### Requirement: Comment on fix activity
 
-The factory SHALL comment on the issue when it admits a bug (including the resolved refs and attempt number), when it admits a review round (naming the PR and the comments it will address), when an attempt is declined, fails, is retried, is cancelled, or produces a PR, when a review round completes (linking the PR and summarizing what was changed and answered), and when a post-merge sync succeeds or is blocked. Comments SHALL carry stable markers and SHALL NOT repeat for unchanged state.
+The factory SHALL comment on the issue when it admits a bug (including the resolved refs and attempt number), when it admits a review round (naming the PR and the comments it will address), when an attempt is declined, fails, is retried, is cancelled, or produces a PR, when a review round completes (linking the PR and summarizing what was changed and answered), and when a post-merge sync succeeds or is blocked. Comments SHALL carry stable markers and SHALL NOT repeat for unchanged state. When the attempt being reported ran in host mode, the comment reporting its outcome (`pull-request`, `needs-input`, `failed`, or exhausted recovery) SHALL state that the attempt ran on the host and that the recorded Runner and Skills commits were not the versions that executed. The admission comment SHALL be unchanged.
 
 #### Scenario: Admit a bug
 
@@ -16,6 +16,16 @@ The factory SHALL comment on the issue when it admits a bug (including the resol
 
 - **WHEN** a review attempt returns `pull-request`
 - **THEN** the issue receives one comment linking the PR and listing what was changed and what was answered
+
+#### Scenario: Report a host-mode PR
+
+- **WHEN** a host-mode attempt returns `pull-request`
+- **THEN** the PR comment links the PR and states that the attempt ran on the host with the operator's installed Runner and Skills rather than the recorded commits
+
+#### Scenario: Report a Docker-mode outcome
+
+- **WHEN** a Docker-mode attempt returns any outcome
+- **THEN** its outcome comment carries no host note
 
 ### Requirement: Map fix outcomes to the board
 

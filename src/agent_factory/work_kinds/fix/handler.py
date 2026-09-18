@@ -213,7 +213,13 @@ class FixHandler:
             frozen,
         )
 
-    def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    def readiness(
+        self,
+        local: LocalConfig,
+        shared: SharedConfig,
+        *,
+        docker_diagnostic: Diagnostic | None = None,
+    ) -> list[Diagnostic]:
         token: str | None = None
         minting_failure: Diagnostic | None = None
         if self._installation_token is not None:
@@ -230,7 +236,9 @@ class FixHandler:
                     f"{error}",
                     "Repair the GitHub App key or installation, then rerun doctor.",
                 )
-        diagnostics = check_readiness(local, shared, installation_token=token)
+        diagnostics = check_readiness(
+            local, shared, installation_token=token, docker_diagnostic=docker_diagnostic
+        )
         if minting_failure is not None:
             diagnostics = [
                 minting_failure if d.name == "fix credential" else d for d in diagnostics
@@ -309,7 +317,12 @@ class FixHandler:
         clones = self._workspace.prepare_clones(
             claim.id, attempt, repository, mapping(claim.frozen_spec.get("revisions"))
         )
-        launch.check_runner_contract(Path(clones["runner"]), self._contract)
+        if self._local.fix.execution == "host":
+            # The recorded Runner commit does not execute on the host, so only the packaged
+            # workflow is checked here; the installed Runner is checked by host readiness.
+            launch.check_packaged_workflow(self._contract)
+        else:
+            launch.check_runner_contract(Path(clones["runner"]), self._contract)
         launch.check_target_catalog(Path(clones["repo"]))
         recorded = dict(mapping(claim.preparation.get("clones")))
         recorded[f"attempt-{attempt}"] = str(self._workspace.attempt_directory(claim.id, attempt))
@@ -344,7 +357,10 @@ class FixHandler:
             branch=branch,
             head_sha=head_sha,
         )
-        launch.check_runner_contract(Path(clones["runner"]), self._contract)
+        if self._local.fix.execution == "host":
+            launch.check_packaged_workflow(launch.REVIEW_CONTRACT)
+        else:
+            launch.check_runner_contract(Path(clones["runner"]), self._contract)
         launch.check_target_catalog(Path(clones["repo"]))
         return Preparation(payload={"clones": clones, "attempt": attempt, "review": dict(review)})
 
@@ -429,7 +445,7 @@ class FixHandler:
             review = dict(mapping(preparation.payload.get("review")))
             review["attempt"] = run.attempt_number + 1
             launch.write_review_input(evidence, review)
-            workflow_contract = "factory-review/1"
+            workflow_contract = launch.REVIEW_CONTRACT
             branch = review.get("branch")
             if not isinstance(branch, str):
                 raise ReadinessError("review input lacks PR branch")
@@ -440,10 +456,20 @@ class FixHandler:
             issue["attempt"] = run.attempt_number + 1
             issue["reason"] = run.reason
             launch.write_issue_input(evidence, issue)
-        launch.stage_workflow(evidence, workflow_contract)
         credential = launch.validated_credential_copy(
             self._local, self._local.storage_root.expanduser() / "private" / run.id / "fix.env"
         )
+        if self._local.fix.execution == "host":
+            return launch.build_host_plan(
+                evidence=evidence,
+                repo_clone=Path(str(clones["repo"])),
+                credential_copy=credential,
+                roles=mapping(claim.frozen_spec.get("roles")),
+                branch=branch,
+                contract=workflow_contract,
+                recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
+            )
+        launch.stage_workflow(evidence, workflow_contract)
         return launch.build_plan(
             run_id=run.id,
             evidence=evidence,
@@ -460,7 +486,14 @@ class FixHandler:
         hints = mapping(run.plan.get("ownership_hints"))
         extra = {
             key: hints[key]
-            for key in ("image_tag", "branch_name")
+            for key in (
+                "image_tag",
+                "branch_name",
+                "sandbox",
+                "runner_executable",
+                "runner_version",
+                "session_dir",
+            )
             if isinstance(hints.get(key), str)
         }
         base = AttemptResult(
@@ -471,7 +504,8 @@ class FixHandler:
         if run.status == "timed_out":
             return base
         payload = read_outcome(
-            attempt_evidence(run), "factory-review/1" if run.reason == "review" else self._contract
+            attempt_evidence(run),
+            launch.REVIEW_CONTRACT if run.reason == "review" else self._contract,
         )
         if payload is None:
             return base
@@ -515,8 +549,9 @@ class FixHandler:
                         }
                     )
                 self._store.set_claim_lifecycle(claim.id, "blocked", blocked)
+                body = f"Needs input.\n\n{reasons}"
                 self._store.record_event(
-                    claim.id, f"{latest.id}:needs-input", f"Needs input.\n\n{reasons}"
+                    claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
                 )
             return None
         if outcome == "pull-request":
@@ -589,9 +624,10 @@ class FixHandler:
                 "from fresh clones at the recorded commits follows."
             )
         if stage == "exhausted":
-            return (
+            return _with_host_note(
                 f"Fix attempt {attempt} failed technically ({reason}); the recovery attempt is "
-                "used up, so this bug is handed back with `infra-error`."
+                "used up, so this bug is handed back with `infra-error`.",
+                stored_result,
             )
         return f"Fix attempt {attempt} settled."
 
@@ -668,10 +704,18 @@ def _reasons_text(result: Mapping[str, object]) -> str:
     return ""
 
 
+def _with_host_note(body: str, result: Mapping[str, object]) -> str:
+    """Outcome comments for host-mode runs say so; Docker-mode comments are unchanged."""
+    if result.get("sandbox") == "host":
+        return f"{body}\n\n{launch.HOST_NOTE}"
+    return body
+
+
 def _pr_message(result: Mapping[str, object]) -> str:
     pr = mapping(result.get("pr"))
     url = pr.get("url")
-    return f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
+    body = f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
+    return _with_host_note(body, result)
 
 
 def _failed_message(result: Mapping[str, object]) -> str:
@@ -683,4 +727,4 @@ def _failed_message(result: Mapping[str, object]) -> str:
         lines.append(reasons)
     if isinstance(url, str):
         lines.append(f"Pull request: {url}")
-    return "\n\n".join(lines)
+    return _with_host_note("\n\n".join(lines), result)

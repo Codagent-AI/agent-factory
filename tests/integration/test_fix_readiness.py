@@ -1,3 +1,5 @@
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import dataclasses
@@ -5,7 +7,11 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
+from agent_factory.operations import Diagnostic
+from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.readiness import check_readiness
 
 _SHARED_BASE = """\
@@ -339,3 +345,338 @@ def test_handler_readiness_fails_closed_on_unexpected_provider_errors(tmp_path: 
     credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
     assert credential.available is False
     assert "transport wrapper exploded" in credential.detail
+
+
+def _check_plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bool:
+    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+        _plugin_installed,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return _plugin_installed(output, plugin_name, json_format=json_format)
+
+
+def _check_role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
+    from agent_factory.operations import configured_adapters  # noqa: PLC0415
+    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+        _role_cli_diagnostic,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return [_role_cli_diagnostic(adapter) for adapter in configured_adapters(shared)]
+
+
+def test_plugin_installed_rejects_a_bare_substring_match_in_text_output() -> None:
+    # "codagent-extra" contains "codagent" as a substring but is a different plugin.
+    assert _check_plugin_installed("codagent-extra 1.0.0\n", "codagent", json_format=False) is False
+    # Marketplace/help text mentioning the plugin name is not an installed-plugin record.
+    assert (
+        _check_plugin_installed(
+            "Run `agent plugin install codagent@codagent` to add it.\n",
+            "codagent",
+            json_format=False,
+        )
+        is False
+    )
+
+
+def test_plugin_installed_accepts_an_exact_line_entry() -> None:
+    assert _check_plugin_installed("codagent\n", "codagent", json_format=False) is True
+    assert (
+        _check_plugin_installed("- codagent@codagent  1.2.0\n", "codagent", json_format=False)
+        is True
+    )
+    assert (
+        _check_plugin_installed("other-plugin\ncodagent\n", "codagent", json_format=False) is True
+    )
+
+
+def test_plugin_installed_json_requires_exact_name_or_id() -> None:
+    assert (
+        _check_plugin_installed('[{"name": "codagent-extra"}]', "codagent", json_format=True)
+        is False
+    )
+    assert _check_plugin_installed('[{"name": "codagent"}]', "codagent", json_format=True) is True
+    assert (
+        _check_plugin_installed(
+            '{"plugins": [{"id": "codagent@codagent"}]}', "codagent", json_format=True
+        )
+        is True
+    )
+    assert _check_plugin_installed("not json", "codagent", json_format=True) is False
+
+
+def test_role_cli_diagnostics_fails_when_plugin_only_mentioned_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = dataclasses.replace(
+        _shared(), fix=dataclasses.replace(_shared().fix, defaults={"lead": "claude:profile:high"})
+    )
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name == "claude" else None
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, text: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command[:2]) == ["claude", "auth"]:
+            return subprocess.CompletedProcess(command, 0, "logged in", "")
+        if list(command[:2]) == ["claude", "plugin"]:
+            return subprocess.CompletedProcess(
+                command, 0, "Install codagent-extra or codagent-pro.\n", ""
+            )
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+
+    diagnostics = _check_role_cli_diagnostics(shared)
+    claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
+    assert claude.available is False
+    assert "not list an installed codagent plugin" in claude.detail
+
+
+def test_role_cli_diagnostics_passes_with_authenticated_installed_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = dataclasses.replace(
+        _shared(), fix=dataclasses.replace(_shared().fix, defaults={"lead": "claude:profile:high"})
+    )
+
+    def fake_which(name: str) -> str | None:
+        return f"/usr/bin/{name}" if name == "claude" else None
+
+    def fake_run(
+        command: list[str], *, capture_output: bool, text: bool, check: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if list(command[:2]) == ["claude", "auth"]:
+            return subprocess.CompletedProcess(command, 0, "logged in", "")
+        if list(command[:2]) == ["claude", "plugin"]:
+            return subprocess.CompletedProcess(command, 0, "codagent\n", "")
+        raise AssertionError(f"unexpected command: {command}")
+
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+
+    diagnostics = _check_role_cli_diagnostics(shared)
+    claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
+    assert claude.available is True
+
+
+# -- host mode (INT-003, fix-host group) --------------------------------------------------
+
+_RUNNER_OK = """#!/bin/sh
+case "$1" in
+  -version) echo "stub-runner 1.2.3" ;;
+  -validate) exit 0 ;;
+  run) echo "Usage: agent-runner run <workflow> [--session-dir <path>]" ;;
+  *) exit 1 ;;
+esac
+"""
+_RUNNER_NO_SESSION_DIR = _RUNNER_OK.replace(" [--session-dir <path>]", "")
+_RUNNER_REJECTS_WORKFLOW = _RUNNER_OK.replace(
+    "-validate) exit 0", "-validate) echo bad >&2; exit 1"
+)
+_GH_OK = (
+    '#!/bin/sh\nif [ "$1 $2" = "auth status" ] && [ -n "${GH_TOKEN:-}" ]; then exit 0; fi\nexit 1\n'
+)
+_GH_AUTH_FAILS = "#!/bin/sh\nexit 1\n"
+_AGENT_OK = """#!/bin/sh
+case "$1 $2 $3" in
+  "status  ") echo "Logged in as paul" ;;
+  "plugin marketplace list") printf 'cursor-public  global\\ncodagent  user  https://github.com/Codagent-AI/agent-skills\\n' ;;
+  *) exit 1 ;;
+esac
+"""
+_AGENT_NOT_LOGGED_IN = _AGENT_OK.replace(
+    '"status  ") echo "Logged in as paul"', '"status  ") echo "Not logged in" >&2; exit 1'
+)
+_AGENT_NO_CODAGENT = _AGENT_OK.replace(
+    "codagent  user  https://github.com/Codagent-AI/agent-skills",
+    "and-scene  user  https://example.invalid/and-scene",
+)
+_SETTINGS_OK = "theme: light\nautonomous_backend: headless\nsetup:\n    completed_at: 2026-05-24T13:56:56Z\nautonomous_permission_mode: yolo\n"
+_SETTINGS_NOT_YOLO = _SETTINGS_OK.replace("yolo", "ask")
+_TRIVIAL = "#!/bin/sh\nexit 0\n"
+
+
+def _host_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    executables: dict[str, str | None] | None = None,
+    settings: str | None = _SETTINGS_OK,
+) -> None:
+    """A PATH holding only stub executables and a HOME holding only Runner settings."""
+    bin_dir = tmp_path / "host-bin"
+    bin_dir.mkdir(exist_ok=True)
+    scripts: dict[str, str | None] = {
+        "agent-runner": _RUNNER_OK,
+        "gh": _GH_OK,
+        "agent": _AGENT_OK,
+        "git": _TRIVIAL,
+        "jq": _TRIVIAL,
+        "python3": _TRIVIAL,
+        "agent-validator": _TRIVIAL,
+        **(executables or {}),
+    }
+    for name, text in scripts.items():
+        path = bin_dir / name
+        if text is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.write_text(text)
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    home = tmp_path / "host-home"
+    home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HOME", str(home))
+    settings_path = home / ".agent-runner" / "settings.yaml"
+    settings_path.unlink(missing_ok=True)
+    if settings is not None:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_text(settings)
+
+
+def _host_local(tmp_path: Path, *, fix_environment: Path | None) -> LocalConfig:
+    # The recorded Runner checkout path does not exist: host readiness must never consult it.
+    base = _local(tmp_path, tmp_path / "no-such-runner-checkout", fix_environment=fix_environment)
+    (tmp_path / "storage").mkdir(exist_ok=True)
+    return dataclasses.replace(base, fix=dataclasses.replace(base.fix, execution="host"))
+
+
+def _host_shared() -> SharedConfig:
+    shared = _shared()
+    return dataclasses.replace(
+        shared,
+        fix=dataclasses.replace(
+            shared.fix, defaults={"lead": "cursor:m:high", "tester": "cursor:m:low"}
+        ),
+    )
+
+
+def _host_credential(tmp_path: Path) -> Path:
+    credential = tmp_path / "fix.env"
+    credential.write_text("GH_TOKEN=fix-token-value\n")
+    credential.chmod(0o600)
+    return credential
+
+
+def test_host_readiness_passes_with_every_prerequisite_and_never_reads_the_runner_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host_environment(tmp_path, monkeypatch)
+    diagnostics = check_readiness(
+        _host_local(tmp_path, fix_environment=_host_credential(tmp_path)),
+        _host_shared(),
+        installation_token="app-token",
+    )
+    failures = [(d.name, d.detail) for d in diagnostics if not d.available]
+    assert failures == []
+    assert {d.group for d in diagnostics} == {"fix-host"}
+    names = {d.name for d in diagnostics}
+    assert "fix sandbox launch" not in names
+    assert "fix workflow contract" in names
+    assert "fix host cursor CLI" in names
+
+
+@pytest.mark.parametrize(
+    ("executables", "settings", "failing", "detail"),
+    [
+        ({"agent-runner": None}, _SETTINGS_OK, "fix host agent-runner on PATH", "not on PATH"),
+        (
+            {"agent-runner": _RUNNER_NO_SESSION_DIR},
+            _SETTINGS_OK,
+            "fix host agent-runner --session-dir support",
+            "--session-dir",
+        ),
+        (
+            {"agent-runner": _RUNNER_REJECTS_WORKFLOW},
+            _SETTINGS_OK,
+            "fix host workflow validation",
+            "rejected the packaged workflow",
+        ),
+        (
+            {"gh": _GH_AUTH_FAILS},
+            _SETTINGS_OK,
+            "fix host gh auth status",
+            "failed with the configured fix credential",
+        ),
+        ({"jq": None}, _SETTINGS_OK, "fix host jq on PATH", "jq is not on PATH"),
+        ({"agent": None}, _SETTINGS_OK, "fix host cursor CLI", "agent is not on PATH"),
+        (
+            {"agent": _AGENT_NOT_LOGGED_IN},
+            _SETTINGS_OK,
+            "fix host cursor CLI",
+            "agent status failed",
+        ),
+        (
+            {"agent": _AGENT_NO_CODAGENT},
+            _SETTINGS_OK,
+            "fix host cursor CLI",
+            "does not list an installed codagent",
+        ),
+        (
+            {},
+            _SETTINGS_NOT_YOLO,
+            "fix host Runner user settings",
+            "autonomous_permission_mode='ask'",
+        ),
+        ({}, None, "fix host Runner user settings", "settings are unavailable"),
+    ],
+)
+def test_host_readiness_fails_closed_on_each_missing_prerequisite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executables: dict[str, str | None],
+    settings: str | None,
+    failing: str,
+    detail: str,
+) -> None:
+    _host_environment(tmp_path, monkeypatch, executables=executables, settings=settings)
+    diagnostics = check_readiness(
+        _host_local(tmp_path, fix_environment=_host_credential(tmp_path)),
+        _host_shared(),
+        installation_token="app-token",
+    )
+    failed = [d for d in diagnostics if not d.available]
+    assert any(d.name == failing for d in failed), [(d.name, d.detail) for d in failed]
+    diagnostic = next(d for d in failed if d.name == failing)
+    assert detail in diagnostic.detail
+    assert diagnostic.action
+    assert diagnostic.group == "fix-host"
+
+
+def test_host_readiness_rejects_a_fix_credential_equal_to_the_installation_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host_environment(tmp_path, monkeypatch)
+    diagnostics = check_readiness(
+        _host_local(tmp_path, fix_environment=_host_credential(tmp_path)),
+        _host_shared(),
+        installation_token="fix-token-value",
+    )
+    credential = next(d for d in diagnostics if d.name == "fix credential")
+    assert credential.available is False
+    assert credential.group == "fix-host"
+
+
+def test_host_readiness_holds_admission_in_the_runtime_without_launching(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _host_environment(tmp_path, monkeypatch, executables={"agent-runner": _RUNNER_NO_SESSION_DIR})
+    handler = FixHandler(
+        _host_shared(), _host_local(tmp_path, fix_environment=_host_credential(tmp_path))
+    )
+    diagnostics = handler.readiness(handler._local, handler._shared)  # pyright: ignore[reportPrivateUsage]
+    assert any(not d.available and "--session-dir" in d.detail for d in diagnostics)
+
+
+def test_runner_user_settings_parses_top_level_scalars_only() -> None:
+    from agent_factory.work_kinds.fix.readiness import runner_user_settings
+
+    parsed = runner_user_settings(
+        _SETTINGS_OK + "onboarding:\n    dismissed: 2026-05-29\n# comment\nquoted: 'x'\n"
+    )
+    assert parsed["autonomous_backend"] == "headless"
+    assert parsed["autonomous_permission_mode"] == "yolo"
+    assert parsed["quoted"] == "x"
+    assert "completed_at" not in parsed and "dismissed" not in parsed

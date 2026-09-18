@@ -414,8 +414,15 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
 
 
 def _discovers_container(plan: ExecutionPlan) -> bool:
-    """Plans that run inside the Docker sandbox are owned through their container too."""
+    """Plans that run inside the Docker sandbox are owned through their container too.
+
+    A host-mode plan (``sandbox == "host"``) is owned through its process identity alone:
+    no container is discovered, inspected, or stopped for it, and termination is the
+    process-group kill that also covers the Runner's agent children.
+    """
     hints = plan.ownership_hints
+    if hints.get("sandbox") == "host":
+        return False
     return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
 
 
