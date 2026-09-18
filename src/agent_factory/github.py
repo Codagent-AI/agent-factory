@@ -572,12 +572,15 @@ class GitHubClient:
             if not all(isinstance(v, str) for v in (identifier, body, author)):
                 return None
             return IssueComment(
-                cast(str, identifier), cast(str, body), cast(str, author),
+                cast(str, identifier),
+                cast(str, body),
+                cast(str, author),
                 created if isinstance(created, str) else "",
             )
 
         reviews = tuple(
-            entry for raw in _list(_object(pull.get("reviews")).get("nodes"))
+            entry
+            for raw in _list(_object(pull.get("reviews")).get("nodes"))
             if (entry := comment(_object(raw), "submittedAt")) is not None
         )
         threads: list[ReviewThread] = []
@@ -594,12 +597,16 @@ class GitHubClient:
             line = thread.get("line")
             threads.append(
                 ReviewThread(
-                    identifier, thread.get("isResolved") is True, path,
+                    identifier,
+                    thread.get("isResolved") is True,
+                    path,
                     line if isinstance(line, int) else None,
                     cast(tuple[IssueComment, ...], thread_comments),
                 )
             )
-        return ReviewActivity(reviews, tuple(threads), tuple(self.list_comment_records(repository, number)))
+        return ReviewActivity(
+            reviews, tuple(threads), tuple(self.list_comment_records(repository, number))
+        )
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None:
         response = self._request(

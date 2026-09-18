@@ -133,14 +133,22 @@ def cycle(state: Path, config_path: Path) -> None:
                     claim = store.get_claim(claim.id) or claim
                 if isinstance(handler, FixHandler):
                     admitted = process_review_claim(
-                        store, client, handler, claim, bot_login=shared.bot_login,
-                        artifact_root=artifact_root, now=now, local=local,
+                        store,
+                        client,
+                        handler,
+                        claim,
+                        bot_login=shared.bot_login,
+                        artifact_root=artifact_root,
+                        now=now,
+                        local=local,
                         memory_available=memory.available,
                     )
                     if admitted is not None:
                         run, preparation = admitted
                         claim = store.get_claim(claim.id) or claim
-                        _launch(state, config_path, controller, handler, local, claim, run, preparation)
+                        _launch(
+                            state, config_path, controller, handler, local, claim, run, preparation
+                        )
                         continue
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
                 if not (gesture == "fresh" and claim.lifecycle == "settled"):

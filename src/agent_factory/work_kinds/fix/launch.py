@@ -103,8 +103,13 @@ def stage_workflow(evidence: Path, contract: str) -> Path:
     destination = evidence / STAGED_WORKFLOWS
     destination.mkdir(parents=True, exist_ok=True)
     package = files("agent_factory.work_kinds.fix") / "workflow"
-    names = (WORKFLOW_FILE, REVIEW_WORKFLOW_FILE, IMPLEMENT_WORKFLOW_FILE,
-             *WORKFLOW_SCRIPTS, *REVIEW_WORKFLOW_SCRIPTS)
+    names = (
+        WORKFLOW_FILE,
+        REVIEW_WORKFLOW_FILE,
+        IMPLEMENT_WORKFLOW_FILE,
+        *WORKFLOW_SCRIPTS,
+        *REVIEW_WORKFLOW_SCRIPTS,
+    )
     for name in names:
         with as_file(package / name) as source:
             target = destination / name
@@ -328,10 +333,13 @@ def container_script(
         elif adapter == "cursor":
             bootstrap.append("cursor plugins install /workspace/skills")
     review = contract == "factory-review/1"
+    input_parameter = "review_file=/artifacts/input/review.json"
+    if not review:
+        input_parameter = "issue_file=/artifacts/input/issue.json"
     run_command = " ".join(
         (
             f"agent-runner run {'factory-review' if review else WORKFLOW_NAME}",
-            f"--param {'review_file=/artifacts/input/review.json' if review else 'issue_file=/artifacts/input/issue.json'}",
+            f"--param {input_parameter}",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",
         )

@@ -416,7 +416,14 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
 def _discovers_container(plan: ExecutionPlan) -> bool:
     """Plans that run inside the Docker sandbox are owned through their container too."""
     hints = plan.ownership_hints
-    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
+    if hints.get("sandbox") == "docker":
+        return True
+    # Test and recovery callers may replace an and-scene wrapper with a local process.
+    # That process has no container to discover; probing Docker would turn an otherwise
+    # independently observable execution into an uncertain run on hosts without Docker.
+    return hints.get("suite") == "and-scene" and (
+        not plan.argv or Path(plan.argv[0]).name == "run.sh"
+    )
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:
