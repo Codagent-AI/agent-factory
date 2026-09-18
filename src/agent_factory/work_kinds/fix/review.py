@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 from agent_factory.config import LocalConfig
+from agent_factory.controller import hold_active
 from agent_factory.github import (
     WRITER_PERMISSIONS,
     GitHubApiError,
@@ -134,17 +136,35 @@ def process_review_claim(
         or not handler.window(local).allows_admission(now)
     ):
         return None
+    # Review rounds honor the same claim and provider quota holds as normal admission.
+    quota = store.get_hold(claim.id, "quota")
+    if quota is not None and hold_active(quota, now):
+        return None
+    provider_holds = store.get_settings_by_prefix("admission", "quota:")
+    for provider in handler.providers(claim):
+        hold = provider_holds.get(f"quota:{provider}")
+        if hold is not None and hold_active(hold, now):
+            return None
+    branch = pr.get("branch")
+    if not isinstance(branch, str):
+        return None
+    # The reviewer or an earlier round may have pushed since the PR record was saved.
+    try:
+        head = client.get_branch(claim.repository, branch)
+    except (GitHubApiError, OSError):
+        return None
+    if head is None:
+        return None
+    pr = {**pr, "head_sha": head.sha}
     review: dict[str, object] = {
         "repository": claim.repository,
         "number": claim.issue_number,
         "claim_id": claim.id,
         "pull_request": pr,
-        "branch": pr.get("branch"),
-        "head_sha": pr.get("head_sha"),
+        "branch": branch,
+        "head_sha": head.sha,
         **eligible,
     }
-    if not isinstance(review["branch"], str) or not isinstance(review["head_sha"], str):
-        return None
     try:
         preparation = handler.prepare_review(claim, review)
     except (ReadinessError, WorktreeError) as error:
@@ -168,10 +188,13 @@ def process_review_claim(
         "active",
         {
             **{k: v for k, v in claim.outcome.items() if k != "waiting_review"},
+            "pr": pr,
             "review_checkpoint": stamp,
             "pre_review_verdict": claim.outcome.get("verdict", "pending-human-review"),
         },
     )
-    client.set_attention_label(claim.repository, claim.issue_number, False)
+    # The run is already reserved; a label hiccup must not strand it unlaunched.
+    with contextlib.suppress(GitHubApiError, OSError):
+        client.set_attention_label(claim.repository, claim.issue_number, False)
     store.record_event(claim.id, f"review:{run.id}", "Review round started for writer feedback.")
     return run, preparation

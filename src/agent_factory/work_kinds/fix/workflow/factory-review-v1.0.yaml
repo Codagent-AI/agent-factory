@@ -86,6 +86,7 @@ steps:
     script: record-review-triage.sh
     script_inputs:
       decision: "{{review_decision}}"
+      review_file: "{{review_file}}"
     capture: changes_needed
     continue_on_failure: true
 
@@ -95,14 +96,17 @@ steps:
     skip_if: previous_success
     capture: review_decision
     prompt: |
-      Your triage response could not be parsed. Re-read {{review_file}} and return
-      exactly one JSON object with the required needs_input and items fields.
+      Your triage response could not be parsed, or its items did not decide every
+      thread, review summary, and conversation comment in the review file exactly
+      once by id. Re-read {{review_file}} and return exactly one JSON object with
+      the required needs_input and items fields.
       Return no prose and no markdown fence.
 
   - id: recheck-triage
     script: record-review-triage.sh
     script_inputs:
       decision: "{{review_decision}}"
+      review_file: "{{review_file}}"
     capture: changes_needed
     skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
 

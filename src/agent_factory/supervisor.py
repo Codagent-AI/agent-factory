@@ -434,6 +434,10 @@ def _needs_container_discovery(plan: ExecutionPlan, identity: Mapping[str, objec
     """
     if not _discovers_container(plan):
         return False
+    # A Docker sandbox launcher always owns a container; only an and-scene wrapper can be
+    # swapped for a local process.
+    if plan.ownership_hints.get("sandbox") == "docker":
+        return True
     return not plan.argv or Path(plan.argv[0]).name == "run.sh" or not identity
 
 

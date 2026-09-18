@@ -568,15 +568,6 @@ class GitHubClient:
     def list_review_activity(self, repository: str, number: int) -> ReviewActivity:
         """Read review summaries, inline threads, and PR conversation comments."""
         owner, name = repository.split("/", 1)
-        data = self._graphql(
-            "query ReviewActivity($owner: String!, $name: String!, $number: Int!) { "
-            "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
-            "reviews(first: 100) { nodes { id body submittedAt author { login } } } "
-            "reviewThreads(first: 100) { nodes { id isResolved path line comments(first: 100) "
-            "{ nodes { id body createdAt author { login } } } } } } } }",
-            {"owner": owner, "name": name, "number": number},
-        )
-        pull = _object(_object(data.get("repository")).get("pullRequest"))
 
         def comment(value: Mapping[str, object], timestamp: str) -> IssueComment | None:
             author = _object(value.get("author")).get("login")
@@ -590,34 +581,77 @@ class GitHubClient:
                 created if isinstance(created, str) else "",
             )
 
-        reviews = tuple(
-            entry
-            for raw in _list(_object(pull.get("reviews")).get("nodes"))
-            if (entry := comment(_object(raw), "submittedAt")) is not None
-        )
-        threads: list[ReviewThread] = []
-        for raw in _list(_object(pull.get("reviewThreads")).get("nodes")):
-            thread = _object(raw)
-            identifier, path = thread.get("id"), thread.get("path")
-            if not isinstance(identifier, str) or not isinstance(path, str):
-                continue
-            thread_comments = tuple(
-                entry
-                for value in _list(_object(thread.get("comments")).get("nodes"))
-                if (entry := comment(_object(value), "createdAt")) is not None
-            )
-            line = thread.get("line")
-            threads.append(
-                ReviewThread(
-                    identifier,
-                    thread.get("isResolved") is True,
-                    path,
-                    line if isinstance(line, int) else None,
-                    cast(tuple[IssueComment, ...], thread_comments),
+        def thread_comments(identifier: str, first: Mapping[str, object]) -> list[IssueComment]:
+            found: list[IssueComment] = []
+            connection = first
+            while True:
+                for value in _list(connection.get("nodes")):
+                    if (entry := comment(_object(value), "createdAt")) is not None:
+                        found.append(entry)
+                page = _object(connection.get("pageInfo"))
+                if page.get("hasNextPage") is not True:
+                    return found
+                data = self._graphql(
+                    "query ThreadComments($thread: ID!, $cursor: String) { node(id: $thread) { "
+                    "... on PullRequestReviewThread { comments(first: 100, after: $cursor) { "
+                    "nodes { id body createdAt author { login } } "
+                    "pageInfo { hasNextPage endCursor } } } } }",
+                    {"thread": identifier, "cursor": _required_string(page, "endCursor")},
                 )
+                connection = _object(_object(data.get("node")).get("comments"))
+
+        reviews: list[IssueComment] = []
+        threads: list[ReviewThread] = []
+        cursors: dict[str, str | None] = {"reviews": None, "threads": None}
+        pending = {"reviews", "threads"}
+        while pending:
+            data = self._graphql(
+                "query ReviewActivity($owner: String!, $name: String!, $number: Int!, "
+                "$reviews: String, $threads: String) { "
+                "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
+                "reviews(first: 100, after: $reviews) { "
+                "nodes { id body submittedAt author { login } } "
+                "pageInfo { hasNextPage endCursor } } "
+                "reviewThreads(first: 100, after: $threads) { "
+                "nodes { id isResolved path line comments(first: 100) "
+                "{ nodes { id body createdAt author { login } } "
+                "pageInfo { hasNextPage endCursor } } } "
+                "pageInfo { hasNextPage endCursor } } } } }",
+                {"owner": owner, "name": name, "number": number, **cursors},
             )
+            pull = _object(_object(data.get("repository")).get("pullRequest"))
+            connections = {
+                "reviews": _object(pull.get("reviews")),
+                "threads": _object(pull.get("reviewThreads")),
+            }
+            if "reviews" in pending:
+                for raw in _list(connections["reviews"].get("nodes")):
+                    if (entry := comment(_object(raw), "submittedAt")) is not None:
+                        reviews.append(entry)
+            if "threads" in pending:
+                for raw in _list(connections["threads"].get("nodes")):
+                    thread = _object(raw)
+                    identifier, path = thread.get("id"), thread.get("path")
+                    if not isinstance(identifier, str) or not isinstance(path, str):
+                        continue
+                    line = thread.get("line")
+                    threads.append(
+                        ReviewThread(
+                            identifier,
+                            thread.get("isResolved") is True,
+                            path,
+                            line if isinstance(line, int) else None,
+                            tuple(thread_comments(identifier, _object(thread.get("comments")))),
+                        )
+                    )
+            for key in tuple(pending):
+                page = _object(connections[key].get("pageInfo"))
+                if page.get("hasNextPage") is True:
+                    cursors[key] = _required_string(page, "endCursor")
+                else:
+                    pending.discard(key)
         return ReviewActivity(
-            reviews, tuple(threads), tuple(self.list_comment_records(repository, number))
+            tuple(reviews), tuple(threads), tuple(self.list_comment_records(repository, number))
         )
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None:

@@ -183,6 +183,48 @@ def test_record_review_triage_rejects_a_missing_decision() -> None:
     assert done.returncode == 2
 
 
+def _review_file(tmp_path: Path) -> Path:
+    path = tmp_path / "review.json"
+    path.write_text(
+        json.dumps(
+            {
+                "reviews": [{"id": "r1"}],
+                "threads": [{"id": "t1", "comments": [{"id": "tc1"}]}],
+                "comments": [{"id": "c1"}],
+            }
+        )
+    )
+    return path
+
+
+def _triage(tmp_path: Path, ids: list[str], needs_input: list[str] | None = None) -> int:
+    decision = {
+        "needs_input": needs_input or [],
+        "items": [{"id": identifier, "decision": "answer"} for identifier in ids],
+    }
+    payload: dict[str, object] = {
+        "decision": json.dumps(decision),
+        "review_file": str(_review_file(tmp_path)),
+    }
+    return _script("record-review-triage.sh", payload).returncode
+
+
+def test_record_review_triage_requires_one_decision_per_review_item(tmp_path: Path) -> None:
+    assert _triage(tmp_path, ["r1", "t1", "c1"]) == 0
+    assert _triage(tmp_path, []) == 2
+    assert _triage(tmp_path, ["r1", "t1"]) == 2
+    assert _triage(tmp_path, ["r1", "t1", "c1", "c1"]) == 2
+    assert _triage(tmp_path, ["r1", "t1", "c1", "tc1"]) == 2
+    # A needs-input decline posts no replies, so it need not decide every item.
+    assert _triage(tmp_path, [], needs_input=["pick A or B"]) == 0
+
+
+def test_review_workflow_passes_the_review_file_to_both_triage_gates() -> None:
+    text = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+
+    assert text.count('review_file: "{{review_file}}"') == 2
+
+
 def test_record_review_outcome_maps_answers_changes_and_needs_input(tmp_path: Path) -> None:
     outcome_path = tmp_path / "review-outcome.json"
     result_path = tmp_path / "implement-result.json"

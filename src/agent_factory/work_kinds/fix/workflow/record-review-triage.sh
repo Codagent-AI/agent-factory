@@ -64,6 +64,31 @@ if not all(isinstance(item, dict) and item.get("decision") in {"change", "answer
     print("record-review-triage: every item needs a decision of change or answer", file=sys.stderr)
     sys.exit(2)
 
+# Every admitted item needs exactly one decision, or feedback would go unanswered while
+# the review checkpoint moves past it. A needs-input decline posts no replies.
+review_file = parsed.get("review_file")
+if review_file and not decision["needs_input"]:
+    try:
+        with open(review_file, encoding="utf-8") as handle:
+            review = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"record-review-triage: cannot read the review file: {exc}", file=sys.stderr)
+        sys.exit(2)
+    expected = sorted(
+        str(entry.get("id"))
+        for group in ("reviews", "threads", "comments")
+        for entry in (review.get(group) or [] if isinstance(review, dict) else [])
+        if isinstance(entry, dict)
+    )
+    decided = sorted(str(item.get("id")) for item in items)
+    if decided != expected:
+        print(
+            "record-review-triage: items must decide every review item exactly once; "
+            f"expected ids {expected}, got {decided}",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
 if decision["needs_input"]:
     sys.stdout.write("needs-input")
 elif any(item["decision"] == "change" for item in items):
