@@ -20,6 +20,7 @@ from agent_factory.controller import (
     quota_deadline,
 )
 from agent_factory.github import (
+    WRITER_PERMISSIONS,
     AppCredentials,
     GitHubClient,
     InstallationTokenProvider,
@@ -67,6 +68,8 @@ def cycle(state: Path, config_path: Path) -> None:
         )
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
+        for card in cards:
+            _assign_ready_bug(client, shared, card)
         _consume_results(store, controller)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
@@ -380,6 +383,26 @@ def _repair_unclaimed(
                 marker + "\nStatus restored to Ready because no evaluation is running.",
             )
         store.set_setting("status-repair", card.id, {"complete": True})
+
+
+def _assign_ready_bug(client: GitHubClient, shared: SharedConfig, card: ProjectQueueItem) -> None:
+    """Treat placing an eligible Bug in Ready as an explicit handoff to Factory."""
+    source = card.source
+    targets = {target.repository for target in shared.fix.targets}
+    factory = shared.project.owner.option("factory")
+    if (
+        source.repository not in targets
+        or source.pull_request
+        or source.state.lower() == "closed"
+        or source.issue_type != shared.routing.bug_type
+        or card_status(shared, card) != "Ready"
+        or card.fields.get(shared.project.owner.id) == factory
+    ):
+        return
+    if client.get_permission(source.repository, source.author) not in WRITER_PERMISSIONS:
+        return
+    client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
+    card.fields[shared.project.owner.id] = factory
 
 
 def _should_cancel(claim: Claim) -> bool:

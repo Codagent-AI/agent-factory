@@ -152,7 +152,7 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 
 
 class Harness:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, factory_owner: bool = True) -> None:
         self.tmp = tmp_path
         self.root = tmp_path / "factory"
         self.target_sha = _repo(
@@ -256,6 +256,19 @@ fix_environment = "{tmp_path / "fix.env"}"
                 }
             )
         fields.append({"id": self.shared.project.refs.id, "dataType": "TEXT"})
+        field_values = [
+            {
+                "field": {"id": self.shared.project.status.id},
+                "optionId": self.shared.project.status.option("ready"),
+            }
+        ]
+        if factory_owner:
+            field_values.append(
+                {
+                    "field": {"id": self.shared.project.owner.id},
+                    "optionId": self.shared.project.owner.option("factory"),
+                }
+            )
         item: dict[str, Any] = {
             "id": "P1",
             "content": {
@@ -269,18 +282,7 @@ fix_environment = "{tmp_path / "fix.env"}"
                 "labels": {"nodes": []},
                 "issueType": {"name": "Bug"},
             },
-            "fieldValues": {
-                "nodes": [
-                    {
-                        "field": {"id": self.shared.project.status.id},
-                        "optionId": self.shared.project.status.option("ready"),
-                    },
-                    {
-                        "field": {"id": self.shared.project.owner.id},
-                        "optionId": self.shared.project.owner.option("factory"),
-                    },
-                ]
-            },
+            "fieldValues": {"nodes": field_values},
         }
         self.board.write_text(
             json.dumps(
@@ -414,6 +416,23 @@ def _pr_outcome(branch: str, number: int = 214) -> str:
             "ci": {"status": "passed"},
         }
     )
+
+
+def test_e2e_002_ready_bug_without_owner_is_assigned_to_factory_and_launched(
+    tmp_path: Path,
+) -> None:
+    h = Harness(tmp_path, factory_owner=False)
+
+    h.tick()
+
+    assert h.field(h.shared.project.owner.id) == h.shared.project.owner.option("factory")
+    run = h.active_run()
+    artifact = h.wait_started(run)
+    try:
+        h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))
+    finally:
+        (artifact / "finish").touch()
+        h.store.close()
 
 
 def test_e2e_002_fix_journey_launches_reports_syncs_and_cleans_up(tmp_path: Path) -> None:
