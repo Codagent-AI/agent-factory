@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -10,12 +12,20 @@ from unittest import mock
 import pytest
 
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
-from agent_factory.github import GitHubApiError, IssueComment, ProjectQueueItem
+from agent_factory.github import (
+    GitHubApiError,
+    IssueComment,
+    ProjectQueueItem,
+    PullRequestState,
+    ReviewActivity,
+    ReviewThread,
+)
 from agent_factory.routing import SourceItem
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.fix.blocked import eligible_comments, process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.fix.review import process_review_claim
 
 _SHARED_BASE = """\
 [github]
@@ -755,3 +765,97 @@ def test_clone_removal_failure_after_a_lost_slot_race_is_reported(tmp_path: Path
     events = {event.key: event.body for event in store.pending_events(claim_id)}
     assert str(clone) in events["unblock-clone-cleanup"]
     assert "busy" in events["unblock-clone-cleanup"]
+
+
+# --- review intake: PR record lives on the run result, not the settled outcome ---
+
+
+class FakeReviewGitHub:
+    def __init__(self, activity: ReviewActivity, permissions: dict[str, str | None]) -> None:
+        self._activity = activity
+        self._permissions = permissions
+        self.labels: list[bool] = []
+
+    def get_permission(self, repository: str, login: str) -> str | None:
+        return self._permissions.get(login)
+
+    def get_pull_request(self, repository: str, number: int) -> PullRequestState:
+        return PullRequestState("OPEN", None)
+
+    def list_review_activity(self, repository: str, number: int) -> ReviewActivity:
+        return self._activity
+
+    def set_attention_label(self, repository: str, number: int, needed: bool) -> None:
+        self.labels.append(needed)
+
+
+class _ReviewPreparedHandler(FixHandler):
+    def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
+        return Preparation(payload={"review": dict(review)})
+
+
+def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_it(
+    tmp_path: Path,
+) -> None:
+    """A claim settled by the controller carries only a verdict; the PR is on the run."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 64, "I64", "P64", "fix", "fp", {"contract": "factory-fix/1"})
+    )
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    store.mark_running(run.id, {"pid": 1})
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={
+            "outcome": "pull-request",
+            "pr": {
+                "url": "https://example/pr/113",
+                "number": 113,
+                "branch": "factory/fix-64",
+                "head_sha": "abc",
+            },
+        },
+    )
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+    activity = ReviewActivity(
+        reviews=(),
+        threads=(
+            ReviewThread(
+                "T1",
+                False,
+                "a.go",
+                3,
+                (IssueComment("c1", "remove test changes", "writer", "2099-01-01T00:00:00+00:00"),),
+            ),
+        ),
+        comments=(),
+    )
+    client = FakeReviewGitHub(activity, {"writer": "write"})
+    handler = _ReviewPreparedHandler(_shared(), _local())
+    handler.attach_store(store)
+    settled = store.get_claim(claim.id)
+    assert settled is not None
+
+    admitted = process_review_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        settled,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
+        local=_local(),
+    )
+
+    assert admitted is not None
+    review_run, preparation = admitted
+    assert review_run.reason == "review"
+    review = cast(dict[str, object], preparation.payload["review"])
+    assert review["branch"] == "factory/fix-64"
+    assert cast(dict[str, object], review["pull_request"])["number"] == 113
+    assert client.labels == [False]
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None
+    assert reloaded.lifecycle == "active"
+    assert reloaded.outcome["pre_review_verdict"] == "pending-human-review"

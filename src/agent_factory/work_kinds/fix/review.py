@@ -88,6 +88,10 @@ def process_review_claim(
         return None
     raw_pr = claim.outcome.get("pr")
     if not isinstance(raw_pr, dict):
+        # Claims settled before the PR record was kept on the outcome still
+        # carry it on their latest run result.
+        raw_pr = handler._prior_pull_request(claim)  # pyright: ignore[reportPrivateUsage]
+    if not isinstance(raw_pr, dict):
         return None
     pr = cast(dict[str, object], raw_pr)
     number = pr.get("number")
