@@ -349,6 +349,9 @@ class FixHandler:
         repository = target.get("repository")
         if not isinstance(repository, str):
             raise ReadinessError("claim has no recorded target repository")
+        # The PR head was pushed after the mirror was last fetched for this claim.
+        token = self._installation_token() if self._installation_token is not None else None
+        self._workspace.fetch_mirror(repository, token)
         clones = self._workspace.prepare_review_clones(
             claim.id,
             attempt,

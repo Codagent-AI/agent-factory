@@ -22,6 +22,7 @@ from agent_factory.github import (
 )
 from agent_factory.routing import SourceItem
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
+from agent_factory.suites.and_scene import WorktreeError
 from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.fix.blocked import eligible_comments, process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
@@ -859,3 +860,139 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     assert reloaded is not None
     assert reloaded.lifecycle == "active"
     assert reloaded.outcome["pre_review_verdict"] == "pending-human-review"
+
+
+def _settled_claim_with_pr(store: ClaimStore) -> Claim:
+    claim = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            64,
+            "I64",
+            "P64",
+            "fix",
+            "fp",
+            {
+                "contract": "factory-fix/1",
+                "target": {"repository": "example/work"},
+                "revisions": {"target": "t", "runner": "r", "skills": "s"},
+            },
+        )
+    )
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/e")
+    store.mark_running(run.id, {"pid": 1})
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={
+            "outcome": "pull-request",
+            "pr": {
+                "url": "https://x/113",
+                "number": 113,
+                "branch": "factory/fix-64",
+                "head_sha": "abc",
+            },
+        },
+    )
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+    settled = store.get_claim(claim.id)
+    assert settled is not None
+    return settled
+
+
+_ACTIVITY = ReviewActivity(
+    reviews=(),
+    threads=(
+        ReviewThread(
+            "T1",
+            False,
+            "a.go",
+            3,
+            (IssueComment("c1", "remove test changes", "writer", "2099-01-01T00:00:00+00:00"),),
+        ),
+    ),
+    comments=(),
+)
+
+
+class _UnreadyReviewHandler(FixHandler):
+    def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
+        raise WorktreeError("recorded commit abc is unavailable in the mirror")
+
+
+def test_review_round_readiness_failure_holds_the_claim_in_review(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = _settled_claim_with_pr(store)
+    client = FakeReviewGitHub(_ACTIVITY, {"writer": "write"})
+    handler = _UnreadyReviewHandler(_shared(), _local())
+    handler.attach_store(store)
+
+    admitted = process_review_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        handler,
+        claim,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path / "artifacts",
+        now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
+        local=_local(),
+    )
+
+    assert admitted is None
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None
+    assert reloaded.lifecycle == "settled"
+    assert cast(dict[str, object], reloaded.outcome["pr"])["number"] == 113
+    assert reloaded.outcome["waiting_review"]
+    assert [run.reason for run in store.runs_for_claim(claim.id)] == ["initial"]
+    assert any(
+        "Cannot start the review round yet" in event.body
+        for event in store.pending_events(claim.id)
+    )
+    assert client.labels == []
+
+
+class _RecordingWorkspace:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.calls: list[str] = []
+
+    def fetch_mirror(self, repository: str, token: str | None) -> None:
+        self.calls.append(f"fetch:{repository}:{token}")
+
+    def prepare_review_clones(
+        self,
+        claim_id: str,
+        attempt: int,
+        repository: str,
+        revisions: Mapping[str, object],
+        *,
+        branch: str,
+        head_sha: str,
+    ) -> dict[str, str]:
+        self.calls.append(f"clone:{branch}@{head_sha}")
+        return {"repo": str(self.root), "runner": str(self.root), "skills": str(self.root)}
+
+
+def test_prepare_review_fetches_the_mirror_before_cutting_clones(tmp_path: Path) -> None:
+    """The PR head was pushed after the mirror was last fetched for the claim."""
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = _settled_claim_with_pr(store)
+    workspace = _RecordingWorkspace(tmp_path)
+    handler = FixHandler(
+        _shared(),
+        _local(),
+        workspace=workspace,  # pyright: ignore[reportArgumentType]
+    )
+    handler.attach_store(store)
+    handler.attach_installation_token(lambda: "tok")
+    review = {"branch": "factory/fix-64", "head_sha": "abc"}
+
+    with (
+        mock.patch("agent_factory.work_kinds.fix.launch.check_runner_contract"),
+        mock.patch("agent_factory.work_kinds.fix.launch.check_packaged_workflow"),
+        mock.patch("agent_factory.work_kinds.fix.launch.check_target_catalog"),
+    ):
+        preparation = handler.prepare_review(claim, review)
+
+    assert workspace.calls == ["fetch:example/work:tok", "clone:factory/fix-64@abc"]
+    assert preparation.payload["attempt"] == 1

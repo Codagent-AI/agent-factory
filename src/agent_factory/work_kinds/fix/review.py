@@ -16,6 +16,7 @@ from agent_factory.github import (
     ReviewActivity,
 )
 from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
+from agent_factory.suites.and_scene import ReadinessError, WorktreeError
 from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.fix.handler import FixHandler
 
@@ -123,8 +124,9 @@ def process_review_claim(
     if not has_eligible_review(eligible):
         return None
     store.set_claim_lifecycle(
-        claim.id, claim.lifecycle, {**claim.outcome, "waiting_review": eligible}
+        claim.id, claim.lifecycle, {**claim.outcome, "pr": pr, "waiting_review": eligible}
     )
+    claim = store.get_claim(claim.id) or claim
     if (
         store.is_paused()
         or store.nonterminal_runs(kind="fix")
@@ -145,6 +147,13 @@ def process_review_claim(
         return None
     try:
         preparation = handler.prepare_review(claim, review)
+    except (ReadinessError, WorktreeError) as error:
+        # A launch problem leaves the claim in Review for the next poll, as unblock does.
+        store.record_event(
+            claim.id, f"review-readiness:{error}", f"Cannot start the review round yet: {error}"
+        )
+        return None
+    try:
         run = store.reserve_run(
             claim.id,
             "fix",
