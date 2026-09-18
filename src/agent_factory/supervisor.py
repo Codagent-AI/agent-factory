@@ -263,7 +263,7 @@ def _observe(
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
-        if _discovers_container(plan) and (
+        if _needs_container_discovery(plan, identity) and (
             now - last_container_probe >= 5 or process_status == "missing"
         ):
             try:
@@ -416,14 +416,18 @@ def _inspection_entries(output: str) -> list[dict[str, object]]:
 def _discovers_container(plan: ExecutionPlan) -> bool:
     """Plans that run inside the Docker sandbox are owned through their container too."""
     hints = plan.ownership_hints
-    if hints.get("sandbox") == "docker":
-        return True
-    # Test and recovery callers may replace an and-scene wrapper with a local process.
-    # That process has no container to discover; probing Docker would turn an otherwise
-    # independently observable execution into an uncertain run on hosts without Docker.
-    return hints.get("suite") == "and-scene" and (
-        not plan.argv or Path(plan.argv[0]).name == "run.sh"
-    )
+    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
+
+
+def _needs_container_discovery(plan: ExecutionPlan, identity: Mapping[str, object]) -> bool:
+    """Avoid probing Docker for an explicitly launched local replacement process.
+
+    A processless observation still needs the conservative discovery path: the wrapper
+    may already have exited after starting its owned container.
+    """
+    if not _discovers_container(plan):
+        return False
+    return not plan.argv or Path(plan.argv[0]).name == "run.sh" or not identity
 
 
 def discover_container(artifact: str) -> dict[str, object] | None:
