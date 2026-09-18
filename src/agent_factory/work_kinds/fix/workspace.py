@@ -119,6 +119,18 @@ class FixWorkspace:
             raise
         return clones
 
+    def prepare_review_clones(
+        self, claim_id: str, attempt: int, repository: str, revisions: Mapping[str, object],
+        *, branch: str, head_sha: str,
+    ) -> dict[str, str]:
+        """Cut review clones with the target on the existing PR branch and its observed head."""
+        updated = dict(revisions)
+        updated["target"] = head_sha
+        clones = self.prepare_clones(claim_id, attempt, repository, updated)
+        _require(_git(["-C", clones["repo"], "checkout", "--quiet", "-B", branch, head_sha]),
+                 f"cannot check out PR branch {branch}")
+        return clones
+
     def _authenticated_git(self, token: str | None, arguments: list[str], prefix: str) -> None:
         environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
         with tempfile.TemporaryDirectory(prefix="agent-factory-askpass-") as directory:

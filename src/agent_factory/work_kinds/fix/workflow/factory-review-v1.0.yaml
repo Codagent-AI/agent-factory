@@ -1,0 +1,52 @@
+# factory-contract: factory-review/1
+name: factory-review
+description: "Triage and address writer feedback on an existing factory pull request."
+hidden: true
+params:
+  - name: review_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: contract_version
+    required: true
+steps:
+  - id: check-contract
+    command: test "{{contract_version}}" = factory-review/1
+  - id: check-branch
+    command: test "$(git branch --show-current)" = "{{branch_name}}" && test -z "$(git status --porcelain)"
+  - id: triage
+    session: lead-agent
+    mode: autonomous
+    capture: review_decision
+    prompt: |
+      Read {{review_file}}. For every eligible review comment or thread decide autonomously whether
+      it needs a code change or an answer. Return exactly JSON with needs_input (array) and items
+      (id, source, decision, reply, plan). Use needs_input only for conflicting requests, a genuine
+      product decision, a non-trivial specification change, or cross-repository work.
+  - id: record-triage
+    script: record-review-triage.sh
+    script_inputs:
+      decision: "{{review_decision}}"
+      outcome_path: /artifacts/review-outcome.json
+    capture: changes_needed
+  - id: implement
+    workflow: factory-implement-v1.0.yaml
+    params:
+      input_file: "{{review_file}}"
+      plan_json: "{{review_decision}}"
+      result_path: /artifacts/implement-result.json
+    skip_if: 'sh: test "{{changes_needed}}" != true'
+  - id: respond
+    session: lead-agent
+    mode: autonomous
+    prompt: |
+      Read {{review_file}}, the triage decision, and /artifacts/implement-result.json if present.
+      Reply once to every comment, resolving successfully handled inline threads. State what changed
+      and the commit for changes, or directly answer questions.
+  - id: record-outcome
+    script: record-review-outcome.sh
+    script_inputs:
+      decision: "{{review_decision}}"
+      outcome_path: /artifacts/review-outcome.json
+  - id: verify-outcome
+    command: test -s /artifacts/review-outcome.json

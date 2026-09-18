@@ -159,6 +159,10 @@ def status(store: ClaimStore, config: LocalConfig | None = None) -> str:
             lines.extend(_progress_lines(run))
         else:
             lines.append(f"claim: {claim.repository}#{claim.issue_number} ({claim.lifecycle})")
+        if claim.outcome.get("waiting_review"):
+            pr = claim.outcome.get("pr")
+            number = cast(Mapping[str, object], pr).get("number") if isinstance(pr, Mapping) else "?"
+            lines.append(f"waiting review: PR #{number} awaits the fix slot")
         lines.extend(_blocked_lines(store, claim))
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))

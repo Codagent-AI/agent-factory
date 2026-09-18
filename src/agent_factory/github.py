@@ -64,6 +64,26 @@ class IssueComment:
 
 
 @dataclass(frozen=True)
+class ReviewThread:
+    """One PR review thread, including comments needed for review-round input."""
+
+    id: str
+    is_resolved: bool
+    path: str
+    line: int | None
+    comments: tuple[IssueComment, ...]
+
+
+@dataclass(frozen=True)
+class ReviewActivity:
+    """PR-side review input grouped by GitHub surface."""
+
+    reviews: tuple[IssueComment, ...]
+    threads: tuple[ReviewThread, ...]
+    comments: tuple[IssueComment, ...]
+
+
+@dataclass(frozen=True)
 class PullRequestState:
     state: str
     merged_at: str | None
@@ -532,6 +552,54 @@ class GitHubClient:
             if len(values) < 100:
                 return comments
             page += 1
+
+    def list_review_activity(self, repository: str, number: int) -> ReviewActivity:
+        """Read review summaries, inline threads, and PR conversation comments."""
+        owner, name = repository.split("/", 1)
+        data = self._graphql(
+            "query ReviewActivity($owner: String!, $name: String!, $number: Int!) { "
+            "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
+            "reviews(first: 100) { nodes { id body submittedAt author { login } } } "
+            "reviewThreads(first: 100) { nodes { id isResolved path line comments(first: 100) "
+            "{ nodes { id body createdAt author { login } } } } } } } }",
+            {"owner": owner, "name": name, "number": number},
+        )
+        pull = _object(_object(data.get("repository")).get("pullRequest"))
+
+        def comment(value: Mapping[str, object], timestamp: str) -> IssueComment | None:
+            author = _object(value.get("author")).get("login")
+            identifier, body, created = value.get("id"), value.get("body"), value.get(timestamp)
+            if not all(isinstance(v, str) for v in (identifier, body, author)):
+                return None
+            return IssueComment(
+                cast(str, identifier), cast(str, body), cast(str, author),
+                created if isinstance(created, str) else "",
+            )
+
+        reviews = tuple(
+            entry for raw in _list(_object(pull.get("reviews")).get("nodes"))
+            if (entry := comment(_object(raw), "submittedAt")) is not None
+        )
+        threads: list[ReviewThread] = []
+        for raw in _list(_object(pull.get("reviewThreads")).get("nodes")):
+            thread = _object(raw)
+            identifier, path = thread.get("id"), thread.get("path")
+            if not isinstance(identifier, str) or not isinstance(path, str):
+                continue
+            thread_comments = tuple(
+                entry
+                for value in _list(_object(thread.get("comments")).get("nodes"))
+                if (entry := comment(_object(value), "createdAt")) is not None
+            )
+            line = thread.get("line")
+            threads.append(
+                ReviewThread(
+                    identifier, thread.get("isResolved") is True, path,
+                    line if isinstance(line, int) else None,
+                    cast(tuple[IssueComment, ...], thread_comments),
+                )
+            )
+        return ReviewActivity(reviews, tuple(threads), tuple(self.list_comment_records(repository, number)))
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None:
         response = self._request(

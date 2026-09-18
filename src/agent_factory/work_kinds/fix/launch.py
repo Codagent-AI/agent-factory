@@ -17,6 +17,9 @@ from agent_factory.suites.and_scene import ReadinessError
 WORKFLOW_NAME = "factory-fix"
 WORKFLOW_FILE = "factory-fix-v1.0.yaml"
 WORKFLOW_SCRIPTS = ("record-triage.sh", "read-regression-marker.sh", "record-outcome.sh")
+REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
+IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
+REVIEW_WORKFLOW_SCRIPTS = ("record-review-triage.sh", "record-review-outcome.sh")
 # The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
 # links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
 # directory publishes the workflow without another mount.
@@ -61,11 +64,19 @@ def validated_credential_copy(local: LocalConfig, destination: Path) -> Path:
     return destination
 
 
-def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
-    path = evidence / "input" / "issue.json"
+def write_input(evidence: Path, filename: str, payload: Mapping[str, object]) -> Path:
+    path = evidence / "input" / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
+    return write_input(evidence, "issue.json", payload)
+
+
+def write_review_input(evidence: Path, payload: Mapping[str, object]) -> Path:
+    return write_input(evidence, "review.json", payload)
 
 
 def contract_marker(contract: str) -> str:
@@ -74,7 +85,8 @@ def contract_marker(contract: str) -> str:
 
 def packaged_workflow_text(contract: str) -> str:
     """The fix workflow shipped with this package; it must declare ``contract`` first."""
-    resource = files("agent_factory.work_kinds.fix") / "workflow" / WORKFLOW_FILE
+    filename = REVIEW_WORKFLOW_FILE if contract == "factory-review/1" else WORKFLOW_FILE
+    resource = files("agent_factory.work_kinds.fix") / "workflow" / filename
     try:
         text = resource.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -91,7 +103,9 @@ def stage_workflow(evidence: Path, contract: str) -> Path:
     destination = evidence / STAGED_WORKFLOWS
     destination.mkdir(parents=True, exist_ok=True)
     package = files("agent_factory.work_kinds.fix") / "workflow"
-    for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS):
+    names = (WORKFLOW_FILE, REVIEW_WORKFLOW_FILE, IMPLEMENT_WORKFLOW_FILE,
+             *WORKFLOW_SCRIPTS, *REVIEW_WORKFLOW_SCRIPTS)
+    for name in names:
         with as_file(package / name) as source:
             target = destination / name
             shutil.copyfile(source, target)
@@ -313,10 +327,11 @@ def container_script(
             )
         elif adapter == "cursor":
             bootstrap.append("cursor plugins install /workspace/skills")
+    review = contract == "factory-review/1"
     run_command = " ".join(
         (
-            f"agent-runner run {WORKFLOW_NAME}",
-            "--param issue_file=/artifacts/input/issue.json",
+            f"agent-runner run {'factory-review' if review else WORKFLOW_NAME}",
+            f"--param {'review_file=/artifacts/input/review.json' if review else 'issue_file=/artifacts/input/issue.json'}",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",
         )

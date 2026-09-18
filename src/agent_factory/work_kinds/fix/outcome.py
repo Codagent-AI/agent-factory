@@ -11,8 +11,8 @@ _VALID_OUTCOMES = frozenset({"pull-request", "needs-input", "failed"})
 
 
 def read_outcome(evidence_path: Path, contract: str) -> Mapping[str, object] | None:
-    """Read and validate `fix-outcome.json`; return None for any technical-failure case."""
-    path = evidence_path / "fix-outcome.json"
+    """Read the versioned outcome; return None for any technical-failure case."""
+    path = evidence_path / ("review-outcome.json" if contract == "factory-review/1" else "fix-outcome.json")
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
