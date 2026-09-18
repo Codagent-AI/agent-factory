@@ -40,6 +40,7 @@ from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler
 from agent_factory.work_kinds.eval import ParsedRequest
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.fix.review import process_review_claim
 from agent_factory.work_kinds.fix.sync import sync_claim
 
 
@@ -144,6 +145,27 @@ def cycle(state: Path, config_path: Path) -> None:
                         card_done=card_status(shared, card) == "Done",
                     )
                     claim = store.get_claim(claim.id) or claim
+                if isinstance(handler, FixHandler):
+                    admitted = process_review_claim(
+                        store,
+                        client,
+                        handler,
+                        claim,
+                        bot_login=shared.bot_login,
+                        artifact_root=artifact_root,
+                        now=now,
+                        local=local,
+                        memory_available=(
+                            True if local.fix.execution == "host" else sandbox_memory().available
+                        ),
+                    )
+                    if admitted is not None:
+                        run, preparation = admitted
+                        claim = store.get_claim(claim.id) or claim
+                        _launch(
+                            state, config_path, controller, handler, local, claim, run, preparation
+                        )
+                        continue
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
                 if not (gesture == "fresh" and claim.lifecycle == "settled") and _presents_card(
                     claim, issue_state=card.source.state

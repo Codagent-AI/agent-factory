@@ -367,6 +367,28 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
     store.close()
 
 
+def test_docker_sandbox_launcher_keeps_container_discovery_with_a_live_process(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from agent_factory import supervisor
+
+    plan = _plan(tmp_path, "")
+    docker = replace(
+        plan,
+        argv=(str(tmp_path / "scripts" / "sandbox-run.sh"),),
+        ownership_hints={"sandbox": "docker"},
+    )
+    local = replace(plan, ownership_hints={"suite": "and-scene"})
+    identity = {"pid": 1, "start_time": "now"}
+
+    needs = supervisor._needs_container_discovery  # pyright: ignore[reportPrivateUsage]
+    assert needs(docker, identity)
+    assert not needs(local, identity)
+    assert needs(local, {})
+
+
 # -- host-mode attempts are owned by process only (INT-004) --------------------------------
 
 _HOST_ATTEMPT = """#!/bin/bash

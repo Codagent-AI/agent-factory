@@ -90,7 +90,7 @@ The service SHALL poll GitHub every five minutes while independently supervising
 
 ### Requirement: Diagnose readiness with doctor
 
-`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval-sandbox, fix-sandbox, or fix-host and label each so the operator can see which kind a failure holds. Docker availability, memory allowance against one reservation, and sandbox launcher checks SHALL be reported under the kinds that use the sandbox; when the fix kind runs on the host they SHALL hold only evals. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, and the packaged fix workflow declares a compatible contract version. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt or attempt to repair credentials or configuration.
+`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval-sandbox, fix-sandbox, or fix-host and label each so the operator can see which kind a failure holds. Docker availability, memory allowance against one reservation, and sandbox launcher checks SHALL be reported under the kinds that use the sandbox; when the fix kind runs on the host they SHALL hold only evals. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, and the packaged fix and review workflows each declare a compatible contract version. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt or attempt to repair credentials or configuration.
 
 Shared diagnostics SHALL remain distinct from checks supplied by each work kind and suite.
 
@@ -106,7 +106,7 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 
 #### Scenario: Diagnose fix readiness
 
-- **WHEN** the fix credential is missing, contains additional variables, or the packaged workflow lacks a compatible contract
+- **WHEN** the fix credential is missing, contains additional variables, or the packaged fix or review workflow lacks a compatible contract
 - **THEN** doctor reports the fix-specific problem and shows eval readiness independently
 
 #### Scenario: Diagnose Docker with fixes on the host
@@ -136,7 +136,7 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 
 ### Requirement: Expose current operational status
 
-`agent-factory status` SHALL show, per work kind, the slot holder and progress, waiting work and why it waits, blocked fix claims, pending merge syncs and their last failure reason, pause state, blocking conditions, and the next permitted start time when it can be determined. It SHALL list only claims that are running, waiting, blocked, held, in Review, pending a merge sync, or holding a recorded cleanup failure; claims whose card is Done with nothing pending, and superseded claims, SHALL be omitted unless `--all` is given, which lists every saved claim. It SHALL expose enough saved state to distinguish active execution, an admission-window wait, a usage hold, a memory or disk hold, an unavailable prerequisite, a blocked claim, and unfinished reporting. Status SHALL remain usable while execution is active and SHALL NOT start work or change execution controls.
+`agent-factory status` SHALL show, per work kind, the slot holder and progress, waiting work and why it waits, blocked fix claims, settled fix claims with eligible review comments waiting for the slot, pending merge syncs and their last failure reason, pause state, blocking conditions, and the next permitted start time when it can be determined. It SHALL list only claims that are running, waiting, blocked, held, in Review, pending a merge sync, or holding a recorded cleanup failure; claims whose card is Done with nothing pending, and superseded claims, SHALL be omitted unless `--all` is given, which lists every saved claim. It SHALL expose enough saved state to distinguish active execution, an admission-window wait, a usage hold, a memory or disk hold, an unavailable prerequisite, a blocked claim, a waiting review round, and unfinished reporting. Status SHALL remain usable while execution is active and SHALL NOT start work or change execution controls.
 
 #### Scenario: Inspect an active evaluation
 
@@ -153,6 +153,11 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 
 - **WHEN** an eval is running and a fix is blocked awaiting input with the `needs-input` label
 - **THEN** status shows the eval slot's holder, the fix slot as free, and the blocked bug with its decline reason
+
+#### Scenario: Inspect a waiting review round
+
+- **WHEN** a settled claim has eligible review comments but the fix slot is busy
+- **THEN** status names the claim, the PR, and that it waits for the slot
 
 #### Scenario: Inspect an installation with history
 

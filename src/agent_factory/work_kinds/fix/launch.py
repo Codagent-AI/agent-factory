@@ -20,6 +20,20 @@ from agent_factory.suites.and_scene import ReadinessError
 WORKFLOW_NAME = "factory-fix"
 WORKFLOW_FILE = "factory-fix-v1.0.yaml"
 WORKFLOW_SCRIPTS = ("record-triage.sh", "record-outcome.sh")
+REVIEW_CONTRACT = "factory-review/1"
+REVIEW_WORKFLOW_NAME = "factory-review"
+REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
+IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
+REVIEW_WORKFLOW_SCRIPTS = ("record-review-triage.sh", "record-review-outcome.sh")
+# Every file the factory publishes into a Runner catalog: the fix and review workflows,
+# their shared implementation sub-workflow, and the scripts each references by bare name.
+STAGED_FILES = (
+    WORKFLOW_FILE,
+    REVIEW_WORKFLOW_FILE,
+    IMPLEMENT_WORKFLOW_FILE,
+    *WORKFLOW_SCRIPTS,
+    *REVIEW_WORKFLOW_SCRIPTS,
+)
 # The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
 # links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
 # directory publishes the workflow without another mount.
@@ -84,11 +98,19 @@ def _private_file(path: Path, text: str, mode: int) -> Path:
     return path
 
 
-def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
-    path = evidence / "input" / "issue.json"
+def write_input(evidence: Path, filename: str, payload: Mapping[str, object]) -> Path:
+    path = evidence / "input" / filename
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def write_issue_input(evidence: Path, payload: Mapping[str, object]) -> Path:
+    return write_input(evidence, "issue.json", payload)
+
+
+def write_review_input(evidence: Path, payload: Mapping[str, object]) -> Path:
+    return write_input(evidence, "review.json", payload)
 
 
 def contract_marker(contract: str) -> str:
@@ -97,7 +119,8 @@ def contract_marker(contract: str) -> str:
 
 def packaged_workflow_text(contract: str) -> str:
     """The fix workflow shipped with this package; it must declare ``contract`` first."""
-    resource = files("agent_factory.work_kinds.fix") / "workflow" / WORKFLOW_FILE
+    filename = REVIEW_WORKFLOW_FILE if contract == REVIEW_CONTRACT else WORKFLOW_FILE
+    resource = files("agent_factory.work_kinds.fix") / "workflow" / filename
     try:
         text = resource.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -152,7 +175,7 @@ def stage_workflow_into(destination: Path, contract: str) -> Path:
     packaged_workflow_text(contract)
     destination.mkdir(parents=True, exist_ok=True)
     package = files("agent_factory.work_kinds.fix") / "workflow"
-    for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS):
+    for name in STAGED_FILES:
         with as_file(package / name) as source:
             target = destination / name
             shutil.copyfile(source, target)
@@ -196,6 +219,17 @@ def finalize_pr_accepts_fix_cycles(text: str) -> bool:
     return any(_PARAM_NAME.search(line) for line in block)
 
 
+def workflow_name(contract: str) -> str:
+    return REVIEW_WORKFLOW_NAME if contract == REVIEW_CONTRACT else WORKFLOW_NAME
+
+
+def input_parameter(contract: str, evidence: str) -> str:
+    """The ``--param`` naming the attempt's input file under ``evidence``."""
+    if contract == REVIEW_CONTRACT:
+        return f"review_file={evidence}/input/review.json"
+    return f"issue_file={evidence}/input/issue.json"
+
+
 def check_target_catalog(repo_clone: Path) -> None:
     """The target repository must not shadow the staged workflow with its own ``factory-fix``.
 
@@ -206,7 +240,8 @@ def check_target_catalog(repo_clone: Path) -> None:
     catalog = repo_clone / ".agent-runner" / "workflows"
     shadows = sorted(
         path.name
-        for path in catalog.glob(f"{WORKFLOW_NAME}-v*")
+        for name in (WORKFLOW_NAME, REVIEW_WORKFLOW_NAME, "factory-implement")
+        for path in catalog.glob(f"{name}-v*")
         if path.is_file() and path.suffix in {".yaml", ".yml"}
     )
     if shadows:
@@ -374,9 +409,9 @@ def container_script(
             bootstrap.append("cursor plugins install /workspace/skills")
     run_command = " ".join(
         (
-            f"agent-runner run {WORKFLOW_NAME}",
+            f"agent-runner run {workflow_name(contract)}",
             f"--profile {FACTORY_PROFILE}",
-            "--param issue_file=/artifacts/input/issue.json",
+            f"--param {input_parameter(contract, CONTAINER_ARTIFACTS)}",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",
             f"--param {ARTIFACT_DIR_PARAM}={CONTAINER_ARTIFACTS}",
@@ -599,10 +634,10 @@ def host_script(
     session_dir = evidence / SESSION_DIR_NAME
     run_command = " ".join(
         (
-            f"{shlex.quote(runner)} run {WORKFLOW_NAME}",
+            f"{shlex.quote(runner)} run {workflow_name(contract)}",
             f"--profile {FACTORY_PROFILE}",
             f"--session-dir {shlex.quote(str(session_dir))}",
-            f"--param issue_file={shlex.quote(str(evidence / 'input' / 'issue.json'))}",
+            f"--param {input_parameter(contract, shlex.quote(str(evidence)))}",
             f"--param branch_name={shlex.quote(branch)}",
             f"--param contract_version={shlex.quote(contract)}",
             f"--param {ARTIFACT_DIR_PARAM}={shlex.quote(str(evidence))}",
@@ -688,7 +723,7 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
         workflows.parent,
         workflows,
         PROJECT_CONFIG,
-        *(workflows / name for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS)),
+        *(workflows / name for name in STAGED_FILES),
     )
     for relative in candidates:
         if (repo_clone / relative).is_symlink():
@@ -701,7 +736,7 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
 def _refuse_tracked_workflow_files(repo_clone: Path) -> None:
     """Staging over a catalog file the target commits would leave a modified tracked file,
     which the workflow's clean-tree gate rejects and finalize-pr could commit."""
-    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in (WORKFLOW_FILE, *WORKFLOW_SCRIPTS)]
+    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in STAGED_FILES]
     listed = subprocess.run(
         ["git", "-C", str(repo_clone), "ls-files", "--", *names],
         capture_output=True,

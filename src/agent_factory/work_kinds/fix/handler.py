@@ -337,6 +337,36 @@ class FixHandler:
         )
         return Preparation(payload={"clones": clones, "attempt": attempt, "issue": issue})
 
+    def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
+        """Prepare fresh clones at the observed PR head for a review round."""
+        if self._store is None or self._workspace is None:
+            raise ReadinessError("fix handler is not wired for review launch")
+        branch, head_sha = review.get("branch"), review.get("head_sha")
+        if not isinstance(branch, str) or not isinstance(head_sha, str):
+            raise ReadinessError("review input lacks the PR branch or head commit")
+        attempt = len([r for r in self._store.runs_for_claim(claim.id) if r.unit_key == "fix"])
+        target = mapping(claim.frozen_spec.get("target"))
+        repository = target.get("repository")
+        if not isinstance(repository, str):
+            raise ReadinessError("claim has no recorded target repository")
+        # The PR head was pushed after the mirror was last fetched for this claim.
+        token = self._installation_token() if self._installation_token is not None else None
+        self._workspace.fetch_mirror(repository, token)
+        clones = self._workspace.prepare_review_clones(
+            claim.id,
+            attempt,
+            repository,
+            mapping(claim.frozen_spec.get("revisions")),
+            branch=branch,
+            head_sha=head_sha,
+        )
+        if self._local.fix.execution == "host":
+            launch.check_packaged_workflow(launch.REVIEW_CONTRACT)
+        else:
+            launch.check_runner_contract(Path(clones["runner"]), self._contract)
+        launch.check_target_catalog(Path(clones["repo"]))
+        return Preparation(payload={"clones": clones, "attempt": attempt, "review": dict(review)})
+
     def _issue_input(self, claim: Claim) -> dict[str, object]:
         """Current issue fields plus the writer comments a new attempt may rely on."""
         assert self._github is not None
@@ -411,11 +441,24 @@ class FixHandler:
         # outcome or log from an earlier attempt must never be read as this one's.
         evidence = attempt_evidence(run)
         evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "fix-outcome.json").unlink(missing_ok=True)
-        issue = dict(mapping(preparation.payload.get("issue")))
-        issue["attempt"] = run.attempt_number + 1
-        issue["reason"] = run.reason
-        launch.write_issue_input(evidence, issue)
+        (
+            evidence / ("review-outcome.json" if run.reason == "review" else "fix-outcome.json")
+        ).unlink(missing_ok=True)
+        if run.reason == "review":
+            review = dict(mapping(preparation.payload.get("review")))
+            review["attempt"] = run.attempt_number + 1
+            launch.write_review_input(evidence, review)
+            workflow_contract = launch.REVIEW_CONTRACT
+            branch = review.get("branch")
+            if not isinstance(branch, str):
+                raise ReadinessError("review input lacks PR branch")
+        else:
+            workflow_contract = self._contract
+            branch = self.branch_name(claim)
+            issue = dict(mapping(preparation.payload.get("issue")))
+            issue["attempt"] = run.attempt_number + 1
+            issue["reason"] = run.reason
+            launch.write_issue_input(evidence, issue)
         credential = launch.validated_credential_copy(
             self._local, self._local.storage_root.expanduser() / "private" / run.id / "fix.env"
         )
@@ -425,19 +468,19 @@ class FixHandler:
                 repo_clone=Path(str(clones["repo"])),
                 credential_copy=credential,
                 roles=mapping(claim.frozen_spec.get("roles")),
-                branch=self.branch_name(claim),
-                contract=self._contract,
+                branch=branch,
+                contract=workflow_contract,
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
             )
-        launch.stage_workflow(evidence, self._contract)
+        launch.stage_workflow(evidence, workflow_contract)
         return launch.build_plan(
             run_id=run.id,
             evidence=evidence,
             clones={name: str(clones[name]) for name in ("repo", "runner", "skills")},
             credential_copy=credential,
             roles=mapping(claim.frozen_spec.get("roles")),
-            branch=self.branch_name(claim),
-            contract=self._contract,
+            branch=branch,
+            contract=workflow_contract,
         )
 
     # -- results ----------------------------------------------------------------
@@ -463,7 +506,10 @@ class FixHandler:
         )
         if run.status == "timed_out":
             return base
-        payload = read_outcome(attempt_evidence(run), self._contract)
+        payload = read_outcome(
+            attempt_evidence(run),
+            launch.REVIEW_CONTRACT if run.reason == "review" else self._contract,
+        )
         if payload is None:
             return base
         outcome = payload.get("outcome")
@@ -493,9 +539,19 @@ class FixHandler:
         if outcome == "needs-input":
             if self._store is not None:
                 reasons = _reasons_text(latest.result)
-                self._store.set_claim_lifecycle(
-                    claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()}
-                )
+                declined = datetime.now(UTC).isoformat()
+                blocked: dict[str, object] = {"declined_at": declined}
+                if latest.reason == "review":
+                    blocked.update(
+                        {
+                            "blocked_by": "review",
+                            "review_checkpoint": declined,
+                            "pre_review_verdict": claim.outcome.get(
+                                "pre_review_verdict", "pending-human-review"
+                            ),
+                        }
+                    )
+                self._store.set_claim_lifecycle(claim.id, "blocked", blocked)
                 body = f"Needs input.\n\n{reasons}"
                 self._store.record_event(
                     claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
@@ -513,6 +569,13 @@ class FixHandler:
             verdict = claim.outcome.get("verdict")
             return ClaimPresentation("Review", verdict if isinstance(verdict, str) else None, ())
         if claim.lifecycle == "blocked":
+            if claim.outcome.get("blocked_by") == "review":
+                return ClaimPresentation(
+                    "Review",
+                    str(claim.outcome.get("pre_review_verdict") or "pending-human-review"),
+                    (),
+                    labels={"needs-input": True},
+                )
             return ClaimPresentation("Running", None, (), labels={"needs-input": True})
         if claim.lifecycle == "waiting":
             verdict = claim.outcome.get("verdict")

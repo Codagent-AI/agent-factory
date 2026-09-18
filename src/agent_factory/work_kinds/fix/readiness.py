@@ -170,24 +170,30 @@ def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic
     because that commit does not execute on the host."""
     name = "fix workflow contract"
     group = fix_group(local)
-    marker = launch.contract_marker(shared.fix.contract)
-    try:
-        launch.check_packaged_workflow(shared.fix.contract)
-    except ReadinessError as error:
-        return Diagnostic(
-            name,
-            False,
-            str(error),
-            f"Reinstall the factory; its packaged {launch.WORKFLOW_FILE} must start with "
-            f"{marker!r} and take its artifact directory as the {launch.ARTIFACT_DIR_PARAM} "
-            "parameter.",
-            group=group,
-        )
+    # The review workflow ships beside the fix workflow and is checked the same way.
+    for contract, filename in (
+        (shared.fix.contract, launch.WORKFLOW_FILE),
+        (launch.REVIEW_CONTRACT, launch.REVIEW_WORKFLOW_FILE),
+    ):
+        marker = launch.contract_marker(contract)
+        try:
+            launch.check_packaged_workflow(contract)
+        except ReadinessError as error:
+            return Diagnostic(
+                name,
+                False,
+                str(error),
+                f"Reinstall the factory; its packaged {filename} must start with "
+                f"{marker!r} and take its artifact directory as the "
+                f"{launch.ARTIFACT_DIR_PARAM} parameter.",
+                group=group,
+            )
     if local.fix.execution == "host":
         return Diagnostic(
             name,
             True,
-            f"workflow contract {shared.fix.contract} is packaged with {launch.ARTIFACT_DIR_PARAM}",
+            f"workflow contracts {shared.fix.contract} and {launch.REVIEW_CONTRACT} are packaged "
+            f"with {launch.ARTIFACT_DIR_PARAM}",
             "",
             group=group,
         )
