@@ -167,7 +167,7 @@ def process_review_claim(
         claim.id,
         "active",
         {
-            **claim.outcome,
+            **{k: v for k, v in claim.outcome.items() if k != "waiting_review"},
             "review_checkpoint": stamp,
             "pre_review_verdict": claim.outcome.get("verdict", "pending-human-review"),
         },

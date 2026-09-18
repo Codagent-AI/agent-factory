@@ -860,6 +860,7 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     assert reloaded is not None
     assert reloaded.lifecycle == "active"
     assert reloaded.outcome["pre_review_verdict"] == "pending-human-review"
+    assert "waiting_review" not in reloaded.outcome
 
 
 def _settled_claim_with_pr(store: ClaimStore) -> Claim:
