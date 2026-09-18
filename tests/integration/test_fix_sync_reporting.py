@@ -6,9 +6,12 @@ import dataclasses
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from agent_factory.config import LocalConfig, RepositoryConfig
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.work_kinds.fix import sync
 from agent_factory.work_kinds.fix.sync import sync_claim
 
 _LOCAL_BASE = """\
@@ -83,8 +86,10 @@ def _local(working_clones: dict[str, Path] | None = None) -> LocalConfig:
     )
 
 
-def _settled_claim_with_pr(store: ClaimStore, *, pr_number: int = 214) -> str:
-    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
+def _settled_claim_with_pr(
+    store: ClaimStore, *, pr_number: int = 214, repository: str = "example/work"
+) -> str:
+    claim = store.create_claim(ClaimDraft(repository, 212, "I212", "P212", "fix", "fp", {}))
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
     url = f"https://github.com/example/work/pull/{pr_number}"
     store.finish_run(
@@ -106,6 +111,35 @@ def test_no_pr_recorded_is_a_no_op(tmp_path: Path) -> None:
 
     assert client.closed == []
     assert client.labels == []
+
+
+def test_agent_runner_sync_requests_a_rebuild(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    repository = "codagent-ai/agent-runner"
+    claim_id = _settled_claim_with_pr(store, repository=repository)
+    client = FakeClient(PullRequestState("MERGED", "2026-01-01T00:00:00Z"))
+    rebuild_values: list[bool] = []
+
+    def record_merge(_clone: Path, *, rebuild: bool = False) -> None:
+        rebuild_values.append(rebuild)
+        return None
+
+    monkeypatch.setattr(sync, "_merge_working_clone", record_merge)
+
+    sync_claim(
+        store,
+        client,
+        _local({repository: clone}),
+        store.get_claim(claim_id),  # type: ignore[arg-type]
+        bot_login="bot",
+        card_done=False,
+    )
+
+    assert rebuild_values == [True]
 
 
 def test_unmerged_pr_is_a_no_op(tmp_path: Path) -> None:

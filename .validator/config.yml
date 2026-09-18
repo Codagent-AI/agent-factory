@@ -1,37 +1,20 @@
 # Ordered list of CLI agents to try for reviews
 cli:
   default_preference:
-    - claude
     - codex
-    - cursor
-    - gemini
-    - github-copilot
-    - opencode
-  # Recommended settings (see docs/eval-results.md)
   adapters:
-    claude:
-      allow_tool_use: false
-      thinking_budget: high
     codex:
-      allow_tool_use: false
-      thinking_budget: medium
-    cursor:
-      allow_tool_use: false
-      thinking_budget: low
-      model: codex
-    gemini:
-      allow_tool_use: false
-      thinking_budget: low
-    github-copilot:
-      allow_tool_use: false
-      thinking_budget: low
-    opencode:
+      model: gpt-5.6-sol
       allow_tool_use: false
       thinking_budget: low
 
 # entry_points configured by /validator-setup
 entry_points:
   - path: .
+    exclude:
+      - .claude
+      - .validator
+      - openspec
     checks:
       - build:
           command: uv build
@@ -42,18 +25,11 @@ entry_points:
       - test:
           command: uv run pytest || test $? -eq 5
     reviews:
-      - code-quality:
-          builtin: code-quality
-          num_reviews: 6
-          cli_preference:
-            - github-copilot
-          model: gpt-5.3-codex
-      - security-and-errors:
-          builtin: security-and-errors
-          num_reviews: 6
-          cli_preference:
-            - github-copilot
-          model: gpt-5.3-codex
+      - all-reviewers:
+          builtin: all-reviewers
+      - task-compliance:
+          builtin: task-compliance
+          enabled: false
 
 # -------------------------------------------------------------------
 # All settings below are optional. Uncomment and change as needed.

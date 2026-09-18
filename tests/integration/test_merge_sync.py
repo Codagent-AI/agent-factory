@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import signal
 import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, cast
 
@@ -73,6 +77,120 @@ def test_clean_dev_merges_main_and_succeeds(tmp_path: Path) -> None:
     assert local_main == origin_main
     log = _git(clone, "log", "--oneline", "dev").stdout
     assert "factory fix merged to main" in log
+
+
+def test_agent_runner_merge_runs_make_build_after_merging_main(tmp_path: Path) -> None:
+    _origin, clone = _setup_origin_and_clone(tmp_path)
+    (clone / "Makefile").write_text("build:\n\t@printf 'rebuilt\\n' > local-binary\n")
+    _git(clone, "add", "Makefile")
+    _git(
+        clone,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "add build target",
+    )
+
+    reason = _merge_working_clone(clone, rebuild=True)
+
+    assert reason is None
+    assert (clone / "local-binary").read_text() == "rebuilt\n"
+
+
+def test_timed_out_build_terminates_its_process_group(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "Makefile").write_text(
+        "build:\n\t@sleep 60 & echo $$! > child.pid; wait\n",
+        encoding="utf-8",
+    )
+
+    build_working_clone = getattr(sync, "_build_working_clone", None)
+    assert build_working_clone is not None
+    reason = build_working_clone(clone, timeout=0.2)
+
+    assert reason is not None
+    assert reason.startswith("cannot rebuild agent-runner:")
+    child_pid = int((clone / "child.pid").read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(child_pid, 0)
+
+
+def test_build_does_not_hang_when_background_child_holds_output_open(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "Makefile").write_text(
+        "build:\n\t@sleep 60 & echo $$! > child.pid\n",
+        encoding="utf-8",
+    )
+    build_working_clone = getattr(sync, "_build_working_clone", None)
+    assert build_working_clone is not None
+    result: list[str | None] = []
+    worker = threading.Thread(target=lambda: result.append(build_working_clone(clone)), daemon=True)
+
+    worker.start()
+    worker.join(timeout=1)
+    hung = worker.is_alive()
+    if hung:
+        for _ in range(100):
+            if (clone / "child.pid").exists():
+                os.kill(int((clone / "child.pid").read_text()), signal.SIGKILL)
+                break
+            time.sleep(0.01)
+        worker.join(timeout=2)
+
+    assert not hung
+    assert result == [None]
+
+
+def test_failed_build_streams_output_and_reports_only_a_bounded_tail(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "Makefile").write_text(
+        "build:\n\t@dd if=/dev/zero bs=10000 count=1 2>/dev/null >&2; "
+        "printf 'tail-marker\\n' >&2; false\n",
+        encoding="utf-8",
+    )
+
+    build_working_clone = getattr(sync, "_build_working_clone", None)
+    assert build_working_clone is not None
+    reason = build_working_clone(clone)
+
+    assert reason is not None
+    assert "tail-marker" in reason
+    assert len(reason) < 5000
+
+
+def test_build_output_tail_discards_older_bytes() -> None:
+    bounded_output = getattr(sync, "_BoundedOutput", None)
+    assert bounded_output is not None
+    output = bounded_output(limit=8)
+
+    output.append(b"12345")
+    output.append(b"67890")
+
+    assert output.text() == "34567890"
+
+
+def test_build_process_start_failure_returns_a_block_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+
+    def fail_popen(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("too many open files")
+
+    monkeypatch.setattr(sync.subprocess, "Popen", fail_popen)
+    build_working_clone = getattr(sync, "_build_working_clone", None)
+    assert build_working_clone is not None
+
+    reason = build_working_clone(clone)
+
+    assert reason == "cannot rebuild agent-runner: too many open files"
 
 
 def test_tracked_modification_blocks_before_any_fetch(tmp_path: Path) -> None:

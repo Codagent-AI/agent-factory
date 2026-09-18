@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import os
+import selectors
+import signal
 import subprocess
+import time
 from collections.abc import Mapping
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import LocalConfig
 from agent_factory.github import IssueComment
 from agent_factory.store import Claim, ClaimStore
+
+AGENT_RUNNER_REPOSITORY = "Codagent-AI/agent-runner"
 
 
 class SyncClient(Protocol):
@@ -51,7 +57,9 @@ def sync_claim(
         return
     clone = local.repositories.working_clones.get(claim.repository)
     reason = (
-        _merge_working_clone(clone)
+        _merge_working_clone(
+            clone, rebuild=claim.repository.casefold() == AGENT_RUNNER_REPOSITORY.casefold()
+        )
         if clone is not None
         else "the operator's working clone is not configured"
     )
@@ -90,14 +98,89 @@ def _run(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _merge_working_clone(clone: Path) -> str | None:
+def _merge_working_clone(clone: Path, *, rebuild: bool = False) -> str | None:
     """Run the exact fetch/merge sequence the design mandates; return a block reason, if any."""
     if not clone.is_dir():
         return "the operator's working clone is not configured"
     try:
-        return _merge_sequence(clone)
+        reason = _merge_sequence(clone)
     except (subprocess.TimeoutExpired, OSError) as error:
         return f"git command did not complete: {error}"
+    if reason is not None or not rebuild:
+        return reason
+    return _build_working_clone(clone)
+
+
+def _build_working_clone(clone: Path, *, timeout: float = 300) -> str | None:
+    """Build Agent Runner, terminating the complete build process group on timeout."""
+    try:
+        build = subprocess.Popen(
+            ["make", "build"],
+            cwd=clone,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        return f"cannot rebuild agent-runner: {error}"
+    assert build.stdout is not None and build.stderr is not None
+    stdout = _BoundedOutput()
+    stderr = _BoundedOutput()
+    output_selector = selectors.DefaultSelector()
+    for stream, output in ((build.stdout, stdout), (build.stderr, stderr)):
+        os.set_blocking(stream.fileno(), False)
+        output_selector.register(stream.fileno(), selectors.EVENT_READ, output)
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while build.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        _drain_ready_output(output_selector, timeout=min(0.1, remaining))
+    with suppress(ProcessLookupError):
+        os.killpg(build.pid, signal.SIGKILL)
+    if timed_out:
+        build.wait()
+    drain_deadline = min(deadline, time.monotonic() + 1)
+    while output_selector.get_map() and time.monotonic() < drain_deadline:
+        _drain_ready_output(output_selector, timeout=min(0.1, drain_deadline - time.monotonic()))
+    output_selector.close()
+    build.stdout.close()
+    build.stderr.close()
+    if timed_out:
+        return f"cannot rebuild agent-runner: make build timed out after {timeout:g} seconds"
+    if build.returncode != 0:
+        detail = stderr.text() or stdout.text() or "make build failed"
+        return f"cannot rebuild agent-runner: {detail}"
+    return None
+
+
+class _BoundedOutput:
+    def __init__(self, *, limit: int = 4096) -> None:
+        self._limit = limit
+        self._data = bytearray()
+
+    def append(self, chunk: bytes) -> None:
+        self._data.extend(chunk)
+        if len(self._data) > self._limit:
+            del self._data[: -self._limit]
+
+    def text(self) -> str:
+        return self._data.decode(errors="replace").strip()
+
+
+def _drain_ready_output(output_selector: selectors.BaseSelector, *, timeout: float) -> None:
+    for key, _events in output_selector.select(timeout=max(0, timeout)):
+        try:
+            chunk = os.read(key.fd, 8192)
+        except BlockingIOError:
+            continue
+        if chunk:
+            cast(_BoundedOutput, key.data).append(chunk)
+        else:
+            output_selector.unregister(key.fd)
 
 
 def _merge_sequence(clone: Path) -> str | None:
