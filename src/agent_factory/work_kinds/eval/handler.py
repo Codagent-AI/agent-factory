@@ -437,6 +437,9 @@ def plan_attempt(
         claim_id=claim.id,
         run_id=run.id,
         unit_key=run.unit_key,
+        expect_checkpoint=(
+            run.reason != "initial" and Path(run.evidence_path, "run-state.json").is_file()
+        ),
     )
     if plan.ownership_hints.get("backend") == "fly-machine":
         return plan

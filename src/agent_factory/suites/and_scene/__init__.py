@@ -14,6 +14,7 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -217,6 +218,9 @@ class AndSceneAdapter:
                 return "Fly settings are unavailable"
             if shutil.which("agent-factory-fly-launcher") is None:
                 return "factory Fly launcher is not executable on the service PATH"
+            reason = self._fly_dry_run(worktrees)
+            if reason is not None:
+                return reason
         else:
             runner_script = worktrees.runner / "scripts/sandbox-run.sh"
             if not runner_script.is_file() or "--docker-run-arg" not in runner_script.read_text(
@@ -235,6 +239,79 @@ class AndSceneAdapter:
             return str(error)
         return None
 
+    def _fly_dry_run(self, worktrees: PreparedWorktrees) -> str | None:
+        """Exercise the exact harness-to-launcher seam without contacting Fly."""
+        launcher = shutil.which("agent-factory-fly-launcher")
+        if launcher is None:
+            return "factory Fly launcher is not executable on the service PATH"
+        run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
+        harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+        with tempfile.TemporaryDirectory(prefix="factory-fly-readiness-") as temporary:
+            artifact = Path(temporary) / "artifact"
+            manifest = artifact / ".factory" / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "artifact_dir": str(artifact),
+                        "worktrees": {
+                            "runner": str(worktrees.runner),
+                            "skills": str(worktrees.skills),
+                        },
+                        "git_common_dirs": [
+                            _git_common_dir(worktrees.runner),
+                            _git_common_dir(worktrees.skills),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            environment = {
+                **os.environ,
+                "SANDBOX_RUNNER": launcher,
+                "AGENT_FACTORY_FLY_MANIFEST": str(manifest),
+            }
+            command = (
+                str(run_script),
+                "--run-agent",
+                "--dry-run",
+                "--agent-runner-dir",
+                str(worktrees.runner),
+                "--agent-skills-dir",
+                str(worktrees.skills),
+                "--artifact-dir",
+                str(artifact),
+                "--env-file",
+                str(self._environment_file),
+                "--lead-cli",
+                "codex",
+                "--lead-model",
+                "default",
+                "--lead-effort",
+                "medium",
+                "--implementor-cli",
+                "codex",
+                "--implementor-model",
+                "default",
+                "--implementor-effort",
+                "medium",
+                "--tester-cli",
+                "codex",
+                "--tester-model",
+                "default",
+                "--tester-effort",
+                "medium",
+            )
+            completed = subprocess.run(
+                command, text=True, capture_output=True, env=environment, check=False
+            )
+        if completed.returncode == 0:
+            return None
+        detail = (
+            completed.stderr.strip() or completed.stdout.strip() or "launcher rejected arguments"
+        )
+        return f"Fly launcher compatibility failed at harness {harness_commit}: {detail}"
+
     def plan(
         self,
         frozen: Mapping[str, object],
@@ -243,6 +320,7 @@ class AndSceneAdapter:
         *,
         recovery: bool,
         pre_checkpoint_proven: bool = False,
+        expect_checkpoint: bool = False,
         claim_id: str = "",
         run_id: str = "",
         unit_key: str = "",
@@ -290,7 +368,7 @@ class AndSceneAdapter:
                         unit_key,
                         self._fly,
                         self._total_seconds,
-                        recovery and resume,
+                        expect_checkpoint,
                     ),
                     sort_keys=True,
                 ),
@@ -554,6 +632,10 @@ def _fly_manifest(
             "skills": str(worktrees.skills),
             "evals": str(worktrees.evals),
         },
+        "git_common_dirs": [
+            _git_common_dir(worktrees.runner),
+            _git_common_dir(worktrees.skills),
+        ],
         "repositories": {
             name: _remote_url(path)
             for name, path in (
@@ -566,6 +648,7 @@ def _fly_manifest(
         "image": fly.image,
         "fly": {
             "app": fly.app,
+            "token_file": str(fly.token_file),
             "region": fly.region,
             "cpu_kind": fly.cpu_kind,
             "cpus": fly.cpus,
@@ -585,6 +668,13 @@ def _remote_url(path: Path) -> str:
     value = _git(path, "remote", "get-url", "origin", allow_failure=True)
     if not value:
         raise ReadinessError(f"pinned worktree has no origin URL: {path}")
+    return value
+
+
+def _git_common_dir(path: Path) -> str:
+    value = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not value:
+        raise ReadinessError(f"pinned worktree has no Git common directory: {path}")
     return value
 
 

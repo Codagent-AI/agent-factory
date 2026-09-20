@@ -105,7 +105,7 @@ def _launch(parsed: LaunchArguments, manifest: Mapping[str, object], factory: Pa
     with (factory / "launcher.log").open("a", encoding="utf-8") as log:
         log.write("validated Fly launch manifest; lifecycle transport is starting\n")
     transport = FlyTransport.from_manifest(manifest)
-    return transport.launch(parsed, manifest)
+    return transport.launch(parsed, manifest, factory)
 
 
 def _manifest(path: Path) -> Mapping[str, object]:
@@ -145,7 +145,14 @@ def _required_pair(values: list[str], first: str, second: str) -> None:
 
 
 def _validate_mount(mount: str, manifest: Mapping[str, object]) -> None:
-    parts = dict(item.split("=", 1) for item in mount.split(",") if "=" in item)
+    fields = mount.split(",")
+    if len(fields) != 4 or fields[-1] != "readonly":
+        raise ArgumentError(mount)
+    if any("=" not in item for item in fields[:3]):
+        raise ArgumentError(mount)
+    parts = dict(item.split("=", 1) for item in fields[:3])
+    if len(parts) != 3 or set(parts) != {"type", "source", "target"}:
+        raise ArgumentError(mount)
     source = parts.get("source")
     target = parts.get("target")
     if parts.get("type") != "bind" or parts.get("readonly") is not None or not source or not target:
@@ -157,6 +164,10 @@ def _validate_mount(mount: str, manifest: Mapping[str, object]) -> None:
     allowed = [
         Path(value).resolve() for value in worktree_values.values() if isinstance(value, str)
     ]
+    common_dirs = manifest.get("git_common_dirs", ())
+    if isinstance(common_dirs, list):
+        common_values = cast(list[object], common_dirs)
+        allowed.extend(Path(value).resolve() for value in common_values if isinstance(value, str))
     candidate = Path(source).resolve()
     if not any(candidate == root or root in candidate.parents for root in allowed):
         raise ArgumentError(mount)

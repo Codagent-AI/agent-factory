@@ -30,10 +30,23 @@ deadline() {
   printf '%s\n' "$value"
 }
 
+# Deadline enforcement cannot wait for the suite job to return.  The process
+# group kill also stops descendants the suite might have started.
+watchdog() {
+  while :; do
+    current="$(deadline)" now="$(date +%s)"
+    if [ "$current" -gt 0 ] && [ "$now" -ge "$current" ]; then
+      kill -- -$$ 2>/dev/null || kill -TERM $$
+      exit 1
+    fi
+    sleep "$WATCHDOG_SECONDS"
+  done
+}
+watchdog &
+watchdog_pid=$!
+trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
+
 while :; do
-  now="$(date +%s)"
-  current="$(deadline)"
-  if [ "$current" -gt 0 ] && [ "$now" -ge "$current" ]; then exit 1; fi
   job=1
   while [ -e "$ARTIFACTS/.factory/job/$job/DONE" ]; do job=$((job + 1)); done
   directory="$ARTIFACTS/.factory/job/$job"
@@ -74,9 +87,6 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "git -C /agent-runner-source checkout --detach " + shlex.quote(runner_commit),
             "git clone " + shlex.quote(skills_url) + " /agent-skills-source",
             "git -C /agent-skills-source checkout --detach " + shlex.quote(skills_commit),
-            "cp -a /agent-runner-source /tmp/agent-runner-local",
-            "go -C /tmp/agent-runner-local build -tags dev_audit "
-            "-ldflags '-X main.version=factory' -o /usr/local/bin/agent-runner ./cmd/agent-runner",
             "/agent-runner-source/scripts/sandbox-sync-home.sh",
             "export CI=1 HOME=/workspace/home AGENT_RUNNER_SOURCE_COMMIT="
             + shlex.quote(runner_commit)
@@ -84,6 +94,22 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
                 " AGENT_RUNNER_SOURCE_DIRTY=false AGENT_RUNNER_DEV_AUDIT=1"
                 " AGENT_RUNNER_AUDIT_SMOKE=0"
             ),
+            "mkdir -p /workspace/bin /tmp/agent-runner-local",
+            "tar --exclude ./.git --exclude ./bin --exclude ./artifacts "
+            "--exclude ./worktrees -C /agent-runner-source -cf - . | "
+            "tar -C /tmp/agent-runner-local -xf -",
+            "cd /tmp/agent-runner-local",
+            "dev_audit_root_encoded=$(printf '%s' /agent-runner-source | base64 | tr -d '\\n')",
+            'dev_audit_ldflags="-X main.version=local-dev '
+            "-X github.com/codagent/agent-runner/internal/devaudit."
+            "BuildRootEncoded=${dev_audit_root_encoded} "
+            "-X github.com/codagent/agent-runner/internal/devaudit."
+            "BuildRevision=${AGENT_RUNNER_SOURCE_COMMIT} "
+            "-X github.com/codagent/agent-runner/internal/devaudit."
+            'BuildDirty=${AGENT_RUNNER_SOURCE_DIRTY}"',
+            'go build -tags dev_audit -ldflags "$dev_audit_ldflags" '
+            "-o /workspace/bin/agent-runner ./cmd/agent-runner",
+            "cd /workspace",
             "set -a; . /run/factory/env; set +a",
             "trap 'rm -rf /host-home /workspace/home/.codex "
             "/workspace/home/.claude /run/factory/env' EXIT",
