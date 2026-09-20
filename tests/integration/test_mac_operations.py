@@ -539,9 +539,7 @@ def test_doctor_reports_per_kind_free_space_floors(tmp_path: Path) -> None:
     config = LocalConfig.from_file(local_config_path)
 
     diagnostics = operations.doctor(config)
-    eval_floor = next(
-        d for d in diagnostics if d.name == "free storage" and d.group == "eval"
-    )
+    eval_floor = next(d for d in diagnostics if d.name == "free storage" and d.group == "eval")
     fix_floor = next(
         d for d in diagnostics if d.name == "free storage" and d.group == "fix-sandbox"
     )
@@ -556,9 +554,9 @@ def test_doctor_shared_group_never_depends_on_eval_only_prerequisites(tmp_path: 
 
     diagnostics = operations.doctor(config)
     eval_only_names = {
-            "eval repository",
-            "shared configuration",
-            "suite candidate credentials",
+        "eval repository",
+        "shared configuration",
+        "suite candidate credentials",
     }
     for diagnostic in diagnostics:
         if diagnostic.name in eval_only_names:

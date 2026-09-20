@@ -72,12 +72,13 @@ src/agent_factory/
 
 ```python
 class ExecutionBackend(Protocol):
-    name: str                                   # "fly-machine"
-    def readiness(self, local, shared) -> list[Diagnostic]: ...   # group "eval-fly"
+    name: str  # "fly-machine"
+
+    def readiness(self, local, shared) -> list[Diagnostic]: ...  # group "eval-fly"
     def identity_from_plan(self, plan, run) -> Mapping | None: ...  # reads .factory/machine.json
-    def probe(self, identity) -> Probe: ...     # alive | stopped | gone | mismatch | unknown
+    def probe(self, identity) -> Probe: ...  # alive | stopped | gone | mismatch | unknown
     def terminate(self, identity) -> bool: ...  # stop the owned job, keep the Machine
-    def dispose(self, identity, decision) -> None: ...   # "destroy" | "stop" | "keep"
+    def dispose(self, identity, decision) -> None: ...  # "destroy" | "stop" | "keep"
     def attach_argv(self, plan, run) -> tuple[str, ...]: ...  # re-spawn transport after restart
     def reconcile(self, store) -> list[str]: ...  # stale-Machine pass, returns report lines
     def provenance(self, identity) -> Mapping: ...  # image digest, size, region

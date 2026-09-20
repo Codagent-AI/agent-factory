@@ -109,12 +109,12 @@ def doctor(
                 "name, not a commit SHA.",
             )
         )
-    diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
-    diagnostics.extend(_repository_checks(config))
-    diagnostics.append(_suite_environment(config.credentials.suite_environment))
     needs_docker = config.eval_execution == "docker" or (
         include_fix and config.fix.execution == "docker"
     )
+    diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
+    diagnostics.extend(_repository_checks(config, include_sandbox=needs_docker))
+    diagnostics.append(_suite_environment(config.credentials.suite_environment))
     docker: Diagnostic | None = None
     if needs_docker:
         docker = _command_check(
@@ -235,12 +235,28 @@ def status(
             lines.append(f"{key}: {saved['reason']}")
     for key in ("fly:unknown", "fly:cleanup-failed"):
         saved = store.get_setting("runtime", key)
-        if isinstance(saved, Mapping):
-            for machine in cast(list[Mapping[str, object]], saved.get("machines", [])):
-                lines.append(
-                    f"blocking condition: Machine {machine.get('machine_id', 'unknown')}: "
-                    f"{machine.get('reason', key)}"
-                )
+        saved_values: Mapping[str, object] = (
+            cast(Mapping[str, object], saved)
+            if isinstance(saved, Mapping)
+            else cast(Mapping[str, object], {})
+        )
+        raw_machines: object = saved_values.get("machines", [])
+        if not isinstance(raw_machines, list):
+            lines.append(f"blocking condition: malformed {key} state")
+        machines: list[object] = (
+            cast(list[object], raw_machines) if isinstance(raw_machines, list) else []
+        )
+        for machine in machines:
+            if not isinstance(machine, Mapping):
+                lines.append(f"blocking condition: malformed {key} machine state")
+                continue
+            values = cast(Mapping[str, object], machine)
+            remedy = values.get("remedy")
+            lines.append(
+                f"blocking condition: Machine {values.get('machine_id', 'unknown')}: "
+                f"{values.get('reason', key)}"
+                + (f"; remedy: {remedy}" if isinstance(remedy, str) else "")
+            )
     mismatch = store.get_setting("runtime", "fly:mismatch")
     if isinstance(mismatch, Mapping):
         lines.append(
@@ -388,7 +404,7 @@ def _private_file(name: str, path: Path) -> Diagnostic:
     return Diagnostic(name, True, f"private file is readable: {path}", "No action required.")
 
 
-def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
+def _repository_checks(config: LocalConfig, *, include_sandbox: bool = True) -> list[Diagnostic]:
     """Runner and Skills are shared (both kinds clone them); evals is eval-only."""
     shared_checks: list[tuple[str, Path, str]] = [
         ("Agent Runner repository", config.repositories.agent_runner, "sandbox launcher"),
@@ -419,19 +435,21 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
                     group=group,
                 )
             )
-    runner = config.repositories.agent_runner / "scripts" / "sandbox-run.sh"
-    eval_entry = config.repositories.agent_evals / "evals/agent-runner/and-scene/run.sh"
-    result.append(
-        Diagnostic(
-            "selected suite entry point and launcher",
-            runner.is_file() and eval_entry.is_file(),
-            "selected and-scene entry point and Runner launcher are present"
-            if runner.is_file() and eval_entry.is_file()
-            else "selected suite entry point or Runner launcher is unavailable",
-            "Install the pinned suite and Runner revisions with their required launcher support.",
-            group="eval-sandbox",
+    if include_sandbox:
+        runner = config.repositories.agent_runner / "scripts" / "sandbox-run.sh"
+        eval_entry = config.repositories.agent_evals / "evals/agent-runner/and-scene/run.sh"
+        launcher_action = "Install the pinned suite and Runner revisions with launcher support."
+        result.append(
+            Diagnostic(
+                "selected suite entry point and launcher",
+                runner.is_file() and eval_entry.is_file(),
+                "selected and-scene entry point and Runner launcher are present"
+                if runner.is_file() and eval_entry.is_file()
+                else "selected suite entry point or Runner launcher is unavailable",
+                launcher_action,
+                group="eval-sandbox",
+            )
         )
-    )
     return result
 
 
@@ -685,7 +703,7 @@ def _suite_environment(path: Path) -> Diagnostic:
             False,
             "token environment file is empty",
             "Add suite credentials.",
-            group="eval-sandbox",
+            group="eval",
         )
     return Diagnostic(
         "suite candidate credentials",

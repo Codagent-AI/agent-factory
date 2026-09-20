@@ -23,11 +23,17 @@ class FlyApiError(RuntimeError):
 
 class FlyMachinesClient:
     def __init__(
-        self, app: str, token_file: Path, *, base_url: str = "https://api.machines.dev"
+        self,
+        app: str,
+        token_file: Path,
+        *,
+        base_url: str = "https://api.machines.dev",
+        registry_base_url: str = "https://registry.fly.io",
     ) -> None:
         self.app = app
         self.token_file = token_file
         self.base_url = base_url.rstrip("/")
+        self.registry_base_url = registry_base_url.rstrip("/")
 
     def _token(self) -> str:
         try:
@@ -60,7 +66,7 @@ class FlyMachinesClient:
                 )
         except HTTPError as error:
             raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
-        except (URLError, OSError, json.JSONDecodeError) as error:
+        except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise FlyApiError(path, detail="request could not be completed") from error
 
     def create_machine(
@@ -71,24 +77,41 @@ class FlyMachinesClient:
         cpus: int,
         memory_mb: int,
         region: str,
-        metadata: Mapping[str, str],
-        env: Mapping[str, str],
+        factory_owner: str,
+        run_id: str,
+        claim_id: str,
+        nonce: str,
+        deadline_epoch: str,
+        unit_key: str,
         guest_init: str,
     ) -> Mapping[str, object]:
         body: dict[str, object] = {
-            "image": image,
-            "guest": {
-                "cpu_kind": cpu_kind,
-                "cpus": cpus,
-                "memory_mb": memory_mb,
-                "persist_rootfs": "always",
-            },
-            "auto_destroy": True,
-            "restart": {"policy": "no"},
             "region": region,
-            "metadata": dict(metadata),
-            "env": dict(env),
-            "init": {"exec": ["bash", "-c", guest_init]},
+            "config": {
+                "image": image,
+                "guest": {
+                    "cpu_kind": cpu_kind,
+                    "cpus": cpus,
+                    "memory_mb": memory_mb,
+                    "persist_rootfs": "always",
+                },
+                "auto_destroy": True,
+                "restart": {"policy": "no"},
+                "metadata": {
+                    "factory-owner": factory_owner,
+                    "run_id": run_id,
+                    "claim_id": claim_id,
+                    "nonce": nonce,
+                    "deadline_epoch": deadline_epoch,
+                    "unit_key": unit_key,
+                },
+                "env": {
+                    "FACTORY_DEADLINE_EPOCH": deadline_epoch,
+                    "FACTORY_RUN_ID": run_id,
+                    "FACTORY_NONCE": nonce,
+                },
+                "init": {"exec": ["bash", "-c", guest_init]},
+            },
         }
         result = self._request(f"/v1/apps/{self.app}/machines", method="POST", body=body)
         return _mapping(result)
@@ -140,7 +163,7 @@ class FlyMachinesClient:
         )
         repo = repository.removeprefix("registry.fly.io/")
         path = f"/v2/{repo}/manifests/{tag}"
-        request = Request(f"https://registry.fly.io{path}", method="HEAD")
+        request = Request(f"{self.registry_base_url}{path}", method="HEAD")
         request.add_header("Authorization", f"Bearer {self._token()}")
         try:
             with urlopen(request, timeout=20) as response:  # noqa: S310
