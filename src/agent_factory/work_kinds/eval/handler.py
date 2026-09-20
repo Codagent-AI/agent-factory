@@ -281,10 +281,7 @@ class EvalHandler:
             )
             if deadline is not None:
                 result = replace(result, quota_until=deadline)
-        if (
-            result.result.get("reason") == "machine lost"
-            or result.result.get("collection") == "failed"
-        ):
+        if result.result.get("reason") == "machine lost":
             result = replace(
                 result,
                 result={
@@ -292,22 +289,14 @@ class EvalHandler:
                     "failure": {"owner": "factory", "code": "machine-lost"},
                 },
             )
-        machine = run.progress.get("machine")
-        if isinstance(machine, Mapping):
-            machine_values = cast(Mapping[str, object], machine)
-            provenance = {
-                key: machine_values[key]
-                for key in (
-                    "id",
-                    "image_digest",
-                    "image_ref",
-                    "cpu_kind",
-                    "cpus",
-                    "memory_mb",
-                    "region",
-                )
-                if machine_values.get(key) is not None
-            }
+        machine = run.progress.get("machine_provenance")
+        fly_plan = isinstance(run.plan.get("ownership_hints"), Mapping) and (
+            cast(Mapping[str, object], run.plan["ownership_hints"]).get("backend") == "fly-machine"
+        )
+        if isinstance(machine, Mapping) or fly_plan:
+            provenance = (
+                dict(cast(Mapping[str, object], machine)) if isinstance(machine, Mapping) else {}
+            )
             result = replace(
                 result,
                 result={
@@ -474,6 +463,7 @@ def plan_attempt(
             or (
                 latest.progress.get("checkpoint_seen") is not True
                 and not Path(latest.evidence_path, "run-state.json").is_file()
+                and not Path(latest.evidence_path, "candidate.json").exists()
             )
         )
     )
@@ -556,14 +546,10 @@ def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | No
 
 def _machine_lost(result: Mapping[str, object]) -> bool:
     failure = result.get("failure")
-    return (
-        result.get("reason") == "machine lost"
-        or result.get("collection") == "failed"
-        or (
-            isinstance(failure, Mapping)
-            and cast(Mapping[str, object], failure).get("owner") == "factory"
-            and cast(Mapping[str, object], failure).get("code") == "machine-lost"
-        )
+    return result.get("reason") == "machine lost" or (
+        isinstance(failure, Mapping)
+        and cast(Mapping[str, object], failure).get("owner") == "factory"
+        and cast(Mapping[str, object], failure).get("code") == "machine-lost"
     )
 
 

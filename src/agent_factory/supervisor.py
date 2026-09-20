@@ -11,6 +11,7 @@ import argparse
 import glob
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -174,8 +175,20 @@ def _launch_and_observe(
     environment.update({str(key): str(value) for key, value in plan.allowed_environment.items()})
     try:
         with output.open("ab", buffering=0) as stream:
+            argv = list(plan.argv)
+            if plan.ownership_hints.get("backend") == "fly-machine":
+                status_file = Path(run.evidence_path) / ".factory" / "launcher-exit-code"
+                status_file.parent.mkdir(parents=True, exist_ok=True)
+                command = shlex.join(argv)
+                status_path = shlex.quote(str(status_file))
+                argv = [
+                    "/bin/sh",
+                    "-c",
+                    f"{command}; status=$?; "
+                    f"printf '%s\\n' \"$status\" > {status_path}; exit \"$status\"",
+                ]
             child = subprocess.Popen(
-                list(plan.argv),
+                argv,
                 cwd=plan.working_directory,
                 env=environment,
                 stdin=subprocess.DEVNULL,
@@ -232,16 +245,34 @@ def _supervise_fly(
     if identity is None:
         if run.status == "reserved":
             _launch_and_observe(store, run, plan, limits)
+        elif _identity_status(run.process) == "alive":
+            # Machine creation is deliberately persisted by the launcher before
+            # credentials arrive.  Its absence during that short window is normal.
+            deadline = time.monotonic() + min(60, limits.inactivity_seconds)
+            while time.monotonic() < deadline and _identity_status(run.process) == "alive":
+                time.sleep(_POLL_SECONDS)
+                identity = backend.identity_from_plan(plan, _required_run(store, run.id))
+                if identity is not None:
+                    _supervise_fly(store, _required_run(store, run.id), plan, limits)
+                    return
+            store.report_uncertainty(run.id, "Fly Machine identity was not recorded by launcher")
         else:
-            store.report_uncertainty(run.id, "Fly Machine identity has not been recorded")
+            _finish_fly_launcher_exit(store, run, plan)
         return
     progress = dict(run.progress)
     progress["machine"] = {key: value for key, value in identity.items() if key != "token_file"}
     _copy_fly_heartbeat(plan, progress)
+    progress["machine_provenance"] = dict(backend.provenance(identity))
     store.update_progress(run.id, progress)
     probe = backend.probe(identity)
     if probe.state == "gone":
-        store.set_setting("runtime", "fly:mismatch", {})
+        mismatch = store.get_setting("runtime", "fly:mismatch")
+        if (
+            mismatch
+            and mismatch.get("run_id") == run.id
+            and mismatch.get("machine_id") == identity.get("id")
+        ):
+            store.set_setting("runtime", "fly:mismatch", {})
         store.finish_run(run.id, execution_status="interrupted", result={"reason": "machine lost"})
         return
     if probe.state == "mismatch":
@@ -262,6 +293,8 @@ def _supervise_fly(
         store.report_uncertainty(run.id, f"Fly Machine ownership is unknown: {probe.detail}")
         return
     if probe.state == "stopped":
+        if _number(progress.get("quota_until"), 0) > time.time():
+            return
         store.finish_run(
             run.id, execution_status="interrupted", result={"reason": "Fly Machine stopped"}
         )
@@ -277,6 +310,30 @@ def _supervise_fly(
         supervisor["process"] = launcher
         store.update_supervisor(run.id, supervisor)
     _observe_fly(store, run.id, plan, limits, identity, backend, launcher)
+
+
+def _finish_fly_launcher_exit(store: ClaimStore, run: Run, plan: ExecutionPlan) -> None:
+    code = _launcher_exit_code(plan, run.evidence_path)
+    if code in {71, 72}:
+        store.finish_run(run.id, execution_status="interrupted", result={"reason": "machine lost"})
+    elif code == 73:
+        store.report_uncertainty(run.id, "Fly launcher reported ownership mismatch")
+    elif code == 70:
+        store.finish_run(
+            run.id, execution_status="failed", result={"reason": "Fly launcher failed"}
+        )
+    else:
+        store.finish_run(
+            run.id, execution_status="interrupted", result={"reason": "Fly launcher exited"}
+        )
+
+
+def _launcher_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
+    path = Path(_artifact_root(plan, evidence_path)) / ".factory" / "launcher-exit-code"
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
 
 
 def _spawn_plan_process(
@@ -330,11 +387,37 @@ def _observe_fly(
     from agent_factory.fly.backend import FlyMachineBackend
 
     machine_backend = cast(FlyMachineBackend, backend)
-    started = time.monotonic()
+    run = _required_run(store, run_id)
+    progress = dict(run.progress)
+    wall_anchor = time.time()
+    monotonic_anchor = time.monotonic()
+    started = _number(progress.get("started_at"), wall_anchor)
+    last_progress = _number(progress.get("last_progress_at"), started)
+    sources = _saved_source_versions(progress.get("sources")) or _source_versions(
+        plan.progress_sources
+    )
+    if "elapsed_seconds" in progress:
+        gap = max(0.0, wall_anchor - _number(progress.get("persisted_at"), wall_anchor))
+        started = wall_anchor - _number(progress.get("elapsed_seconds"), 0) - gap
+        last_progress = wall_anchor - _number(progress.get("idle_seconds"), 0) - gap
     while True:
         run = _required_run(store, run_id)
         progress = dict(run.progress)
+        now = wall_anchor + (time.monotonic() - monotonic_anchor)
         _copy_fly_heartbeat(plan, progress)
+        changed, sources = _progress_changed(plan.progress_sources, sources)
+        if changed:
+            last_progress = now
+        progress.update(
+            {
+                "started_at": started,
+                "last_progress_at": last_progress,
+                "sources": sources,
+                "persisted_at": time.time(),
+                "elapsed_seconds": now - started,
+                "idle_seconds": now - last_progress,
+            }
+        )
         store.update_progress(run_id, progress)
         result = _load_result(_artifact_root(plan, run.evidence_path))
         state = machine_backend.probe(identity)
@@ -352,10 +435,25 @@ def _observe_fly(
                     run_id, execution_status="interrupted", result={"reason": "machine lost"}
                 )
             return
+        if state.state == "stopped":
+            if result.result is not None:
+                store.finish_run(
+                    run_id, execution_status=_result_status(result.result), result=result.result
+                )
+            elif _number(progress.get("quota_until"), 0) <= now:
+                store.finish_run(
+                    run_id,
+                    execution_status="interrupted",
+                    result={"reason": "Fly Machine stopped"},
+                )
+            return
         if state.state in {"mismatch", "unknown"}:
             _supervise_fly(store, run, plan, limits)
             return
-        timeout = _timeout(time.monotonic(), started, started, limits)
+        if _identity_status(launcher) == "missing" and result.result is None:
+            _finish_fly_launcher_exit(store, run, plan)
+            return
+        timeout = _timeout(now, started, last_progress, limits)
         cancelling = run.cancellation_requested
         if cancelling or timeout is not None:
             if not machine_backend.terminate(identity):
@@ -363,14 +461,19 @@ def _observe_fly(
                     run_id, "Fly Machine termination ownership could not be verified"
                 )
                 return
-            deadline = time.monotonic() + 900
+            deadline = time.monotonic() + _collection_grace(plan)
             while _identity_status(launcher) == "alive" and time.monotonic() < deadline:
                 time.sleep(_POLL_SECONDS)
             if _identity_status(launcher) == "alive":
                 _terminate(launcher)
                 result_value: dict[str, object] = {"collection": "failed", "reason": "machine lost"}
             else:
-                result_value = {"reason": "cancelled"} if cancelling else {"timeout": timeout}
+                collected = _load_result(_artifact_root(plan, run.evidence_path)).result
+                result_value = (
+                    dict(collected)
+                    if collected is not None
+                    else ({"reason": "cancelled"} if cancelling else {"timeout": timeout})
+                )
             if cancelling:
                 machine_backend.dispose(identity, "destroy")
                 store.finish_run(run_id, execution_status="cancelled", result=result_value)
@@ -378,6 +481,23 @@ def _observe_fly(
                 store.finish_run(run_id, execution_status="timed_out", result=result_value)
             return
         time.sleep(_POLL_SECONDS)
+
+
+def _collection_grace(plan: ExecutionPlan) -> float:
+    manifest = Path(_artifact_root(plan, "")) / ".factory" / "manifest.json"
+    try:
+        value = json.loads(manifest.read_text(encoding="utf-8"))
+        document: Mapping[str, object] = (
+            cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+        )
+        deadline = document.get("deadline")
+        if isinstance(deadline, Mapping):
+            return _number(
+                cast(Mapping[str, object], deadline).get("collection_grace_seconds"), 900
+            )
+    except (OSError, json.JSONDecodeError):
+        pass
+    return 900
 
 
 def _observe(
