@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 from collections.abc import Mapping
@@ -19,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
 from agent_factory.store import ClaimStore
 
@@ -175,9 +177,20 @@ class GitWorktreeManager:
 class AndSceneAdapter:
     """Readiness, argv construction, recovery, and result adaptation for and-scene."""
 
-    def __init__(self, *, environment_file: Path, mac_name: str = "the factory Mac") -> None:
+    def __init__(
+        self,
+        *,
+        environment_file: Path,
+        mac_name: str = "the factory Mac",
+        execution: str = "docker",
+        fly: FlyLocalConfig | None = None,
+        total_seconds: int = 18000,
+    ) -> None:
         self._environment_file = environment_file.resolve()
         self._mac_name = mac_name
+        self._execution = execution
+        self._fly = fly
+        self._total_seconds = total_seconds
 
     @staticmethod
     def authentication_commands(roles: Mapping[str, str]) -> list[tuple[str, ...]]:
@@ -199,11 +212,19 @@ class AndSceneAdapter:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
-        runner_script = worktrees.runner / "scripts/sandbox-run.sh"
-        if not runner_script.is_file() or "--docker-run-arg" not in runner_script.read_text(
-            encoding="utf-8"
-        ):
-            return "selected Agent Runner sandbox launcher lacks repeated --docker-run-arg support"
+        if self._execution == "fly":
+            if self._fly is None:
+                return "Fly settings are unavailable"
+            if shutil.which("agent-factory-fly-launcher") is None:
+                return "factory Fly launcher is not executable on the service PATH"
+        else:
+            runner_script = worktrees.runner / "scripts/sandbox-run.sh"
+            if not runner_script.is_file() or "--docker-run-arg" not in runner_script.read_text(
+                encoding="utf-8"
+            ):
+                return (
+                    "selected Agent Runner sandbox launcher lacks repeated --docker-run-arg support"
+                )
         if not (worktrees.runner / "workflows/core/implement-change-v1.0.yaml").is_file():
             return "selected Agent Runner revision lacks the and-scene implementation workflow"
         if not self._environment_file.is_file():
@@ -222,6 +243,9 @@ class AndSceneAdapter:
         *,
         recovery: bool,
         pre_checkpoint_proven: bool = False,
+        claim_id: str = "",
+        run_id: str = "",
+        unit_key: str = "",
     ) -> ExecutionPlan:
         readiness = self.readiness(worktrees)
         if readiness is not None:
@@ -252,6 +276,39 @@ class AndSceneAdapter:
             arguments.append("--skip-validator")
         if resume:
             arguments.append("--resume")
+        if self._execution == "fly":
+            manifest_path = artifact / ".factory" / "manifest.json"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps(
+                    _fly_manifest(
+                        frozen,
+                        worktrees,
+                        artifact,
+                        claim_id,
+                        run_id,
+                        unit_key,
+                        self._fly,
+                        self._total_seconds,
+                        recovery and resume,
+                    ),
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            launcher = shutil.which("agent-factory-fly-launcher") or "agent-factory-fly-launcher"
+            return ExecutionPlan(
+                tuple(arguments),
+                str(worktrees.evals),
+                {"SANDBOX_RUNNER": launcher, "AGENT_FACTORY_FLY_MANIFEST": str(manifest_path)},
+                (str(self._environment_file),),
+                (
+                    str(artifact / "factory-suite.log"),
+                    str(artifact / ".factory" / "heartbeat.json"),
+                ),
+                {"artifact_path": str(artifact), "suite": "and-scene", "backend": "fly-machine"},
+                resume,
+            )
         return ExecutionPlan(
             tuple(arguments),
             str(worktrees.evals),
@@ -465,6 +522,70 @@ def _revisions(value: Mapping[str, object]) -> dict[str, str]:
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
     return result
+
+
+def _fly_manifest(
+    frozen: Mapping[str, object],
+    worktrees: PreparedWorktrees,
+    artifact: Path,
+    claim_id: str,
+    run_id: str,
+    unit_key: str,
+    fly: FlyLocalConfig | None,
+    total_seconds: int,
+    expect_checkpoint: bool,
+) -> dict[str, object]:
+    if fly is None:
+        raise ReadinessError("Fly settings are unavailable")
+    revisions = _revisions(cast(Mapping[str, object], frozen.get("revisions")))
+    return {
+        "run_id": run_id,
+        "claim_id": claim_id,
+        "unit_key": unit_key,
+        "nonce": os.urandom(16).hex(),
+        "artifact_dir": str(artifact),
+        "deadline": {
+            "total_seconds": total_seconds,
+            "collection_grace_seconds": fly.collection_grace_seconds,
+        },
+        "expect_checkpoint": expect_checkpoint,
+        "worktrees": {
+            "runner": str(worktrees.runner),
+            "skills": str(worktrees.skills),
+            "evals": str(worktrees.evals),
+        },
+        "repositories": {
+            name: _remote_url(path)
+            for name, path in (
+                ("runner", worktrees.runner),
+                ("skills", worktrees.skills),
+                ("evals", worktrees.evals),
+            )
+        },
+        "commits": revisions,
+        "image": fly.image,
+        "fly": {
+            "app": fly.app,
+            "region": fly.region,
+            "cpu_kind": fly.cpu_kind,
+            "cpus": fly.cpus,
+            "memory_mb": fly.memory_mb,
+            "heartbeat_seconds": fly.heartbeat_seconds,
+        },
+        "guest_paths": {
+            "runner": "/agent-runner-source",
+            "skills": "/agent-skills-source",
+            "input": "/eval-input",
+            "artifacts": "/artifacts",
+        },
+    }
+
+
+def _remote_url(path: Path) -> str:
+    value = _git(path, "remote", "get-url", "origin", allow_failure=True)
+    if not value:
+        raise ReadinessError(f"pinned worktree has no origin URL: {path}")
+    return value
 
 
 def _settings(frozen: Mapping[str, object]) -> Mapping[str, object]:

@@ -16,6 +16,7 @@ dependencies = []
 
 [project.scripts]
 agent-factory = "agent_factory.cli:main"
+agent-factory-fly-launcher = "agent_factory.fly.launcher:main"
 
 [dependency-groups]
 dev = [

@@ -96,7 +96,12 @@ class EvalHandler:
             shared=shared,
             local=local,
             sources=sources,
-            adapter=AndSceneAdapter(environment_file=local.credentials.suite_environment),
+            adapter=AndSceneAdapter(
+                environment_file=local.credentials.suite_environment,
+                execution=local.eval_execution,
+                fly=local.fly,
+                total_seconds=local.limits.total_seconds,
+            ),
             manager=GitWorktreeManager(local.storage_root, sources),
             fallback_seconds=local.limits.codex_reset_fallback_seconds,
         )
@@ -429,7 +434,12 @@ def plan_attempt(
         Path(run.evidence_path),
         recovery=run.reason != "initial",
         pre_checkpoint_proven=stopped_before_checkpoint,
+        claim_id=claim.id,
+        run_id=run.id,
+        unit_key=run.unit_key,
     )
+    if plan.ownership_hints.get("backend") == "fly-machine":
+        return plan
     # Build under a per-run tag so a concurrent fix build cannot retag this image.
     tag = f"agent-runner-factory:{run.id}"
     return replace(
