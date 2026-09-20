@@ -23,6 +23,7 @@ from agent_factory.fly.transport import (
     EXIT_COLLECTION_FAILED,
     EXIT_MACHINE_LOST,
     EXIT_MISMATCH,
+    EXIT_TRANSPORT,
     JobRequest,
     Lifecycle,
 )
@@ -340,3 +341,31 @@ def test_stand_in_mode_runs_the_same_path_and_destroys_its_machine(
     create = next(r for r in env.api.requests if str(r["path"]).endswith("/machines"))
     deadline = int(create["body"]["config"]["metadata"]["deadline_epoch"])  # type: ignore[index]
     assert 290 <= deadline - int(time.time()) <= 300
+
+
+def test_corrupt_machine_record_is_an_error_not_a_reason_to_create_another(
+    env: Environment,
+) -> None:
+    (env.factory / "machine.json").write_text('{"id": "machine-1", "run', encoding="utf-8")
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == EXIT_TRANSPORT
+    assert not any(r["method"] == "POST" for r in env.api.requests)
+    assert "record is invalid" in (env.factory / "launcher.log").read_text()
+
+
+def test_untrusted_job_cannot_plant_links_or_overwrite_host_state(env: Environment) -> None:
+    hostile = (
+        "ln -s /etc/hosts /artifacts/leak; "
+        "mkdir -p /artifacts/logs; ln -s /etc /artifacts/logs/etc; "
+        'echo \'{"id": "attacker"}\' > /artifacts/.factory/machine.json; '
+        "echo '{}' > /artifacts/.factory/manifest.json; "
+        "echo kept > /artifacts/logs/real.txt"
+    )
+    assert env.lifecycle(env.manifest()).run(env.request(hostile, auth=False)) == 0
+
+    assert (env.artifact / "logs/real.txt").read_text().strip() == "kept"
+    assert not (env.artifact / "leak").exists() and not (env.artifact / "leak").is_symlink()
+    assert not (env.artifact / "logs/etc").exists()
+    assert not any(path.is_symlink() for path in env.artifact.rglob("*"))
+    # Host-managed state is untouched by what the guest wrote under .factory.
+    assert json.loads((env.factory / "machine.json").read_text())["id"] == "machine-1"
+    assert not (env.factory / "manifest.json").exists()

@@ -10,6 +10,7 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -204,16 +205,22 @@ class FlyTransport:
                 if pulled.returncode:
                     raise CollectionError("artifact transfer was interrupted")
                 spool.seek(0)
-                extracted = subprocess.run(
-                    ("tar", "-C", str(destination), "-xf", "-"),
-                    stdin=spool,
-                    capture_output=True,
-                    check=False,
-                )
-        except (OSError, subprocess.TimeoutExpired) as error:
+                with tarfile.open(fileobj=spool, mode="r:") as archive:
+                    archive.extractall(destination, filter=_regular_members_only)
+        except (OSError, subprocess.TimeoutExpired, tarfile.TarError) as error:
             raise CollectionError(f"artifact transfer failed: {type(error).__name__}") from error
-        if extracted.returncode:
-            raise CollectionError("artifact archive was incomplete")
+
+
+def _regular_members_only(member: tarfile.TarInfo, destination: str) -> tarfile.TarInfo | None:
+    """Extraction filter for an archive produced by an untrusted job.
+
+    Links and special files are never placed, so they are skipped rather than
+    extracted; a real eval tree may hold harmless ones. Everything kept still
+    passes the stdlib data filter, which refuses absolute paths and traversal.
+    """
+    if not (member.isreg() or member.isdir()):
+        return None
+    return tarfile.data_filter(member, destination)
 
 
 def _log(factory: Path, message: str) -> None:
@@ -511,7 +518,10 @@ class Lifecycle:
         except (OSError, ValueError):
             offset = 0
         heartbeat_path = self.factory / "heartbeat.json"
-        heartbeat = read_record(heartbeat_path)
+        try:
+            heartbeat = read_record(heartbeat_path)
+        except ValueError:
+            heartbeat = {}  # only a progress hint; it is rewritten below
         failures = 0
         while True:
             try:
@@ -563,46 +573,79 @@ class Lifecycle:
         code_path = job_directory / "exit-code"
         if not listing.is_file() or not code_path.is_file():
             raise CollectionError("guest manifest or exit code is missing")
-        for line in listing.read_text(encoding="utf-8").splitlines():
-            fields = line.split("\t")
-            if len(fields) < 2 or not fields[1].isdigit():
-                raise CollectionError("guest manifest is malformed")
-            name = fields[0]
-            if name.startswith(f".factory/job/{job}/"):
-                continue  # still being written when the manifest was taken
-            collected = staging / name
-            if not collected.is_file() or collected.stat().st_size != int(fields[1]):
-                raise CollectionError(f"collected file does not match the manifest: {name}")
+        declared = _declared_files(listing, staging, job)
         try:
             value = int(code_path.read_text(encoding="utf-8").strip())
         except ValueError as error:
             raise CollectionError("guest exit code is unreadable") from error
-        _place(staging, artifact_dir)
+        placed = _place(staging, artifact_dir, declared)
         shutil.rmtree(staging, ignore_errors=True)
         (artifact_dir / "guest-exit-code").write_text(f"{value}\n", encoding="utf-8")
-        _log(self.factory, f"collected job {job} with exit code {value}")
+        _log(self.factory, f"collected job {job}: {placed} files, exit code {value}")
         return value
 
 
-def _place(staging: Path, artifact_dir: Path) -> None:
-    """Move a verified tree into place, the result file last.
+def _is_regular(path: Path) -> bool:
+    """True only for a real file; a symlink to one does not count."""
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
 
-    The supervisor finishes an attempt when ``result.json`` appears, so it must
-    never appear before the evidence it summarizes.
+
+def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
+    """Relative paths the guest declared and the collection really contains.
+
+    The guest job is untrusted. Only regular files it listed, with the size it
+    listed, are eligible; the guest's ``.factory`` tree is host-managed state and
+    is accepted only for job evidence, so a job cannot overwrite the Machine
+    record or manifest. The current job's own evidence files were still being
+    written when the listing was taken, so they are checked for type only.
     """
-    last: list[tuple[Path, Path]] = []
-    for source in sorted(path for path in staging.rglob("*") if path.is_file()):
-        relative = source.relative_to(staging)
+    job_prefix = (".factory", "job", str(job))
+    declared: list[Path] = []
+    for line in listing.read_text(encoding="utf-8").splitlines():
+        fields = line.split("\t")
+        if len(fields) < 2 or not fields[1].isdigit():
+            raise CollectionError("guest manifest is malformed")
+        relative = Path(fields[0])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise CollectionError(f"guest manifest names an unsafe path: {fields[0]}")
+        if relative.parts[:1] == (".factory",) and relative.parts[:2] != (".factory", "job"):
+            continue
+        collected = staging / relative
+        current_job = relative.parts[:3] == job_prefix
+        if not _is_regular(collected) or (
+            not current_job and collected.lstat().st_size != int(fields[1])
+        ):
+            raise CollectionError(f"collected file does not match the manifest: {fields[0]}")
+        declared.append(relative)
+    for late in ("DONE", "files.txt", "exit-code"):
+        relative = Path(*job_prefix, late)
+        if relative not in declared and _is_regular(staging / relative):
+            declared.append(relative)
+    return declared
+
+
+def _place(staging: Path, artifact_dir: Path, declared: Sequence[Path]) -> int:
+    """Move the declared files into place, the result file last.
+
+    Anything the archive held beyond the declared files, including every
+    symlink, is left in staging and discarded. The supervisor finishes an
+    attempt when ``result.json`` appears, so it must never appear before the
+    evidence it summarizes.
+    """
+    result = Path("result.json")
+    ordered = sorted(path for path in declared if path != result)
+    if result in declared:
+        ordered.append(result)
+    for relative in ordered:
         target = artifact_dir / relative
-        if relative.parts[:2] == (".factory", "staging"):
-            continue
-        if relative == Path("result.json"):
-            last.append((source, target))
-            continue
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(source, target)
-    for source, target in last:
-        os.replace(source, target)
+        if target.is_symlink():
+            target.unlink()
+        os.replace(staging / relative, target)
+    return len(ordered)
 
 
 def mapping_field(value: Mapping[str, object], key: str) -> Mapping[str, object]:
@@ -651,10 +694,14 @@ def _owned(machine: Mapping[str, object], expected: Mapping[str, str]) -> bool:
 def read_record(path: Path) -> dict[str, object]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as error:
+        # An unreadable record must never read as "no Machine": that would create
+        # a second billed Machine while the first keeps running.
+        raise ValueError(f"record is invalid: {path}") from error
     if not isinstance(raw, dict):
-        raise ValueError("machine record is invalid")
+        raise ValueError(f"record is invalid: {path}")
     return cast(dict[str, object], raw)
 
 
