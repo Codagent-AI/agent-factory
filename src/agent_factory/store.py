@@ -567,6 +567,22 @@ class ClaimStore:
                 (namespace, key, _dump(value), _now()),
             )
 
+    def compare_and_set_setting(
+        self,
+        namespace: str,
+        key: str,
+        expected: Mapping[str, object],
+        value: Mapping[str, object],
+    ) -> bool:
+        """Atomically replace a setting only when its durable value still matches."""
+        with self._transaction():
+            cursor = self._connection.execute(
+                "UPDATE settings SET value_json = ?, updated_at = ? "
+                "WHERE namespace = ? AND key = ? AND value_json = ?",
+                (_dump(value), _now(), namespace, key, _dump(expected)),
+            )
+            return cursor.rowcount == 1
+
     def get_setting(self, namespace: str, key: str) -> dict[str, object] | None:
         row = self._connection.execute(
             "SELECT value_json FROM settings WHERE namespace = ? AND key = ?", (namespace, key)

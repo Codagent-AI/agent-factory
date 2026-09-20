@@ -185,7 +185,7 @@ def _launch_and_observe(
                     "/bin/sh",
                     "-c",
                     f"{command}; status=$?; "
-                    f"printf '%s\\n' \"$status\" > {status_path}; exit \"$status\"",
+                    f'printf \'%s\\n\' "$status" > {status_path}; exit "$status"',
                 ]
             child = subprocess.Popen(
                 argv,
@@ -272,7 +272,7 @@ def _supervise_fly(
             and mismatch.get("run_id") == run.id
             and mismatch.get("machine_id") == identity.get("id")
         ):
-            store.set_setting("runtime", "fly:mismatch", {})
+            store.compare_and_set_setting("runtime", "fly:mismatch", mismatch, {})
         store.finish_run(run.id, execution_status="interrupted", result={"reason": "machine lost"})
         return
     if probe.state == "mismatch":
