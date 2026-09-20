@@ -1,7 +1,7 @@
-- [ ] [Fly execution mode — configuration, Machines API client, intake, readiness, doctor, and status](tasks/01-fly-config-readiness-operations.md)
-- [ ] [Fly launcher, guest scripts, and the and-scene plan under `fly`](tasks/02-fly-launcher-and-guest.md)
-- [ ] [Supervise Fly attempts through Machine ownership](tasks/03-fly-supervision-and-ownership.md)
-- [ ] [Dispose, hold, reconcile, and report Fly attempts end to end](tasks/04-fly-disposal-reconciliation-reporting.md)
+- [x] [Fly execution mode — configuration, Machines API client, intake, readiness, doctor, and status](tasks/01-fly-config-readiness-operations.md)
+- [x] [Fly launcher, guest scripts, and the and-scene plan under `fly`](tasks/02-fly-launcher-and-guest.md)
+- [x] [Supervise Fly attempts through Machine ownership](tasks/03-fly-supervision-and-ownership.md)
+- [x] [Dispose, hold, reconcile, and report Fly attempts end to end](tasks/04-fly-disposal-reconciliation-reporting.md)
 
 ## Operator gates (not implementor tasks)
 
