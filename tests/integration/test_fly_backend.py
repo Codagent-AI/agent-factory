@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from agent_factory.controller import AttemptResult, ExecutionPlan
+from agent_factory.fly.api import FlyApiError
 from agent_factory.fly.backend import FlyMachineBackend
 from agent_factory.store import Claim, ClaimStore, Run
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
@@ -21,6 +22,8 @@ class FakeClient:
 
     def get_machine(self, machine_id: str) -> dict[str, object]:
         assert machine_id == "machine-1"
+        if self.destroyed:
+            raise FlyApiError("machine", 404)
         return self.machine
 
     def destroy(self, machine_id: str) -> None:
@@ -31,6 +34,10 @@ class FakeClient:
         assert machine_id == "machine-1"
         self.stopped = True
         self.machine["state"] = "stopped"
+
+    def set_metadata(self, machine_id: str, key: str, value: str) -> None:
+        assert machine_id == "machine-1"
+        self.machine["config"]["metadata"][key] = value  # type: ignore[index]
 
     def list_machines(self, metadata_key: str, metadata_value: str) -> list[dict[str, object]]:
         assert (metadata_key, metadata_value) == ("factory-owner", "agent-factory")
@@ -144,8 +151,10 @@ def test_fly_disposal_stops_only_a_verified_machine_and_records_quota_hold(tmp_p
     try:
         backend.dispose(identity, "stop", store)
         assert client.stopped
-        assert store.get_setting("runtime", "fly:machine:claim-1") == {
+        assert store.get_setting("runtime", "fly:machine:run-1") == {
             "machine_id": "machine-1",
+            "run_id": "run-1",
+            "claim_id": "claim-1",
             "decision": "stop",
             "deadline_epoch": 9999999999,
             "state": "stopped",

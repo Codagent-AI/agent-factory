@@ -206,6 +206,23 @@ builder after upgrading Agent Runner to the revision whose Dockerfile discovers
 `chrome-linux64/chrome`, and use its `.dockerignore` so the remote build does
 not send the working tree.
 
+```sh
+fly auth login
+fly orgs create <organization>
+fly apps create factory-evals --org <organization>
+fly tokens create deploy --app factory-evals > /private/credentials/fly-deploy-token
+chmod 600 /private/credentials/fly-deploy-token
+git -C /path/to/agent-runner rev-parse HEAD  # must include chrome-linux64/chrome discovery
+fly deploy --remote-only --app factory-evals --image-label runner-base
+```
+
+Build from the Agent Runner revision that contains the `chrome-linux64/chrome`
+Dockerfile discovery change and its `.dockerignore`; record that immutable
+commit alongside the pushed image tag. The remote build must target amd64 (the
+Factory Fly image), not a local arm64-only image. `fly tokens create deploy`
+is run with the app selected, so its token is scoped to that app rather than
+being a personal controller or candidate credential.
+
 Configure every Fly setting in the local TOML:
 
 ```toml

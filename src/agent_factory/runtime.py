@@ -85,7 +85,7 @@ def cycle(state: Path, config_path: Path) -> None:
         permission_cache: dict[tuple[str, str], str | None] = {}
         for card in cards:
             _assign_ready_bug(client, shared, card, permission_cache)
-        _consume_results(store, controller)
+        _consume_results(store, controller, local)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
@@ -560,7 +560,9 @@ def _presents_card(claim: Claim, *, issue_state: str) -> bool:
     return not (claim.lifecycle == "cancelled" and issue_state.lower() != "closed")
 
 
-def _consume_results(store: ClaimStore, controller: Controller) -> None:
+def _consume_results(
+    store: ClaimStore, controller: Controller, local: LocalConfig | None = None
+) -> None:
     """Record every finished-but-unconsumed attempt through its kind's handler."""
     for claim in store.all_claims():
         if claim.lifecycle in {"cancelled", "superseded"}:
@@ -585,14 +587,18 @@ def _consume_results(store: ClaimStore, controller: Controller) -> None:
                     },
                 )
             controller.record_result(run.id, result)
-            _dispose_fly_result(store, handler, run, result)
+            _dispose_fly_result(store, handler, run, result, local)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
 
 
 def _dispose_fly_result(
-    store: ClaimStore, handler: WorkKindHandler, run: Run, result: AttemptResult
+    store: ClaimStore,
+    handler: WorkKindHandler,
+    run: Run,
+    result: AttemptResult,
+    local: LocalConfig | None,
 ) -> None:
     """Dispose after classification; collection/result normalization has already completed."""
     hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
@@ -601,11 +607,13 @@ def _dispose_fly_result(
         return
     from agent_factory.fly.backend import FlyMachineBackend
 
-    backend = FlyMachineBackend()
+    backend = FlyMachineBackend(local=local)
     identity = backend.identity_from_plan(run.plan, run)
     if identity is None:
         return
     classification = handler.classify(run, result).kind
+    if result.execution_status == "cancelled" or run.status == "cancelled":
+        return
     if result.quota_until is not None or classification == "quota":
         decision = "stop"
     elif classification == "technical" and run.reason != "recovery":

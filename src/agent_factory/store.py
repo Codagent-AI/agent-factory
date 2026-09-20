@@ -567,6 +567,13 @@ class ClaimStore:
                 (namespace, key, _dump(value), _now()),
             )
 
+    def clear_setting(self, namespace: str, key: str) -> None:
+        """Remove resolved operational state rather than leaving an empty marker."""
+        with self._transaction():
+            self._connection.execute(
+                "DELETE FROM settings WHERE namespace = ? AND key = ?", (namespace, key)
+            )
+
     def compare_and_set_setting(
         self,
         namespace: str,
