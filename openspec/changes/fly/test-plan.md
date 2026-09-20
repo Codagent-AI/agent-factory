@@ -191,7 +191,9 @@ copied. Evidence is the captured CLI output and the collected artifact directory
   inspect the Machine over ssh; wait for the deadline. Then launch again normally; kill the
   launcher while the job runs; run attach; wait for `DONE`.
 - Expected: the abandoned Machine holds no credential files, its metadata carries the run id and
-  deadline, and it is gone after the deadline without factory action. The second Machine's
+  deadline, and it has stopped itself within about two minutes of the deadline without factory
+  action (Machines are created without auto-destroy, see design); one controller tick then
+  destroys it. The second Machine's
   provenance file has the image digest and id; attach resumes the stream; the collected directory
   contains the marker and the job log; no credential file remains in the guest at `DONE`; the
   Machine is destroyed after collection and `flyctl machines list` shows none for the run.
@@ -237,6 +239,9 @@ copied. Evidence is the captured CLI output and the collected artifact directory
 
 ### AT-004: Credential token-refresh gate
 - Classification: Conditional: the operator's Codex and Claude logins are current at the start.
+  The login that matters is the credential file the launcher delivers (`~/.codex/auth.json`,
+  `~/.claude/.credentials.json`), not the CLI's own session: on macOS the Claude CLI keeps its
+  live login in the Keychain, so the local CLI can work while the delivered file is expired.
 - Covers: proposal production gate (subscription credentials survive one refresh interval in a
   Machine without invalidating the Mac's session).
 - Actor and surface: operator at the factory CLI, using a stand-in job that invokes each CLI for a

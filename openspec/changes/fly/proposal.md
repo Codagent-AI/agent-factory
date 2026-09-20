@@ -34,7 +34,7 @@ Docker on the Mac.
   narrow execution-backend ownership interface implemented for Fly. A restarted controller or
   launcher reattaches to the recorded Machine instead of reporting uncertainty.
 - Establish billing containment at Machine creation, before any secret is delivered: factory
-  metadata (run identity, launch nonce, ownership marker, absolute deadline) and destroy-on-exit
+  metadata (run identity, launch nonce, ownership marker, absolute deadline) and no platform restart
   are part of the create request, and the Machine's initial process, set in that same request,
   enforces the deadline. A
   reconciliation pass each cycle inspects every factory-tagged Machine, including Machines the
@@ -113,7 +113,7 @@ The controller, queue, SQLite store, and supervisor stay on the Mac. Only the sa
 ```
 supervisor ──spawns──> run.sh (SANDBOX_RUNNER = factory Fly launcher, + typed manifest)
                           └─> Fly launcher (replaceable transport; may be restarted)
-                                 1. create Machine: metadata + deadline + destroy-on-exit
+                                 1. create Machine: metadata + deadline, no restart     
                                  2. persist and verify Machine ownership
                                  3. deliver credentials, env file, suite input
                                  4. Machine: clone pinned inputs, build Runner, run suite script

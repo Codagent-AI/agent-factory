@@ -23,6 +23,12 @@ collected artifact directory, not against a Fly Machine. For diagnosis the
 launcher supports `stand-in` and `attach` modes; neither is a normal execution
 path.
 
+A Machine is created without Fly's auto-destroy, because on Fly that setting also
+destroys a Machine on an API stop, which a quota hold relies on. At its deadline a
+Machine stops itself, which ends compute billing; the controller's next cycle
+destroys it. A stopped Machine keeps only its disk, billed as storage, so if the
+controller is off for a long time, check `flyctl machine list -a <app>`.
+
 `stand-in` runs a script of yours through the same create, verify, deliver,
 observe, collect, and destroy path an eval uses, without touching the claim
 store. It creates a real, billed Machine and destroys it on exit unless `--keep`

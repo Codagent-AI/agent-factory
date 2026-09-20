@@ -60,6 +60,11 @@ watchdog() {
     sleep "$WATCHDOG_SECONDS"
   done
 }
+# The disk outlives a stop, and with it a marker from an earlier deadline. A boot
+# whose current deadline is still ahead was restarted by the factory on purpose.
+boot_deadline="$(deadline)"
+if [ "$boot_deadline" -gt "$(date +%s)" ]; then rm -f "$ARTIFACTS/.factory/deadline-expired"; fi
+
 watchdog &
 watchdog_pid=$!
 trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT

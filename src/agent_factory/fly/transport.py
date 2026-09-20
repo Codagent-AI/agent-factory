@@ -405,6 +405,10 @@ class Lifecycle:
             # The deadline is in the config before boot, so the guest can never
             # start against the expired one it was stopped with.
             self.client.update_stopped_deadline(machine_id, deadline, {"run_id": run_id})
+            # A config update leaves the Machine "replacing" for a moment, and Fly
+            # answers a start in that state with HTTP 412.
+            if not self.client.wait_state(machine_id, "stopped", timeout_seconds=60):
+                raise FlyTransportError(f"Machine {machine_id} did not settle after its update")
             self.client.start(machine_id)
         else:
             self.client.set_metadata(machine_id, "deadline_epoch", str(deadline))

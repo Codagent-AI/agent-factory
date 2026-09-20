@@ -21,8 +21,9 @@ Machines API is called with `urllib`. The Runner sandbox image is `docker/dev/Do
 
 Fly semantics this design relies on (Machines API docs, verified 2026-09-20):
 
-- `auto_destroy: true` destroys the Machine only when its main process exits; a manual stop leaves
-  it stopped.
+- `auto_destroy: true` destroys the Machine when its main process exits **and also on an API stop**
+  (observed in acceptance: event `exit ... requested_stop=true` followed by `destroy`). The earlier
+  reading of the documentation, that a manual stop leaves it stopped, was wrong.
 - `restart: {policy: "no"}` prevents Fly restarting the process.
 - Metadata is set per key with `POST /v1/apps/{app}/machines/{id}/metadata/{key}` without a config
   update or restart.
@@ -127,7 +128,7 @@ runtime._launch ─► supervisor watcher ─► run.sh (SANDBOX_RUNNER=<launche
         it and skip step 2 (no secret was ever delivered); anything else → destroy it, record
         the disposal in machine.json history, and continue with step 2
    2  POST create Machine {image, guest{cpu_kind,cpus,memory_mb,persist_rootfs:"always"},
-        auto_destroy:true, restart:{policy:"no"}, region,
+        auto_destroy:false, restart:{policy:"no"}, region,
         metadata{factory-owner, run_id, claim_id, nonce, deadline_epoch, unit_key},
         env{FACTORY_DEADLINE_EPOCH, FACTORY_RUN_ID, FACTORY_NONCE},
         init{exec:["bash","-c",<guest init script>]}}
@@ -199,7 +200,7 @@ Guest init (bash, embedded in `fly/guest.py`, passed via `init.exec`):
 
 1. `deadline = max(FACTORY_DEADLINE_EPOCH, $(cat /var/lib/factory/deadline))`; a background
    loop re-reads the file every 30 s and `kill -TERM 1`-equivalent exits the init when
-   `now >= deadline` (init exit → `auto_destroy`). `/var/lib/factory` is on the persisted rootfs,
+   `now >= deadline` (init exit → the Machine stops; the reconciler destroys it). `/var/lib/factory` is on the persisted rootfs,
    so a file deadline survives stop/start; the env deadline is refreshed by config update before
    any start of a stopped Machine (above), so the larger of the two is always current.
 2. Loop: wait for `/artifacts/.factory/job/<n>/start`; run `/artifacts/.factory/job/<n>/job.sh`
@@ -355,10 +356,14 @@ At step 4 the launcher records `image_ref` (with digest) from the Machine respon
   argument and commit; the accepted follow-up is a provider-neutral request in `agent-evals`.
 - **Stopped-Machine disk wiped by Fly.** Mitigation: checkpoint verification before resume; loss
   settles the repetition, remaining repetitions continue.
-- **`auto_destroy` firing on an API stop.** The quota-hold path depends on a stopped Machine
-  surviving. AT-002's `stopped` observation gates the design; the recorded fallback is to create
-  with `auto_destroy: false`, keep the guest watchdog ending the process at the deadline, and let
-  the reconciler perform every destroy.
+- **`auto_destroy` fires on an API stop (confirmed on real Fly).** The recorded fallback is now
+  the design: Machines are created with `auto_destroy: false`, the guest watchdog still ends the
+  process at the deadline, which stops the Machine and its compute billing, and the reconciler
+  performs every destroy. A Machine that stopped itself keeps only its root filesystem, billed as
+  storage, until the next controller cycle destroys it. Because the disk now outlives a deadline
+  stop, the guest clears a stale expiry marker at boot when its current deadline is still ahead.
+  A config update leaves a Machine `replacing` briefly, so the launcher waits for `stopped` before
+  it starts one.
 - **Token rotation over long runs.** Mitigation: production gate (one refresh interval, Mac logins
   rechecked) before `fly` is the live setting; in-Machine auth failure is a plain technical failure.
 - **Unproven eval workload in a Machine** (Chrome, validator, Codex user namespaces under

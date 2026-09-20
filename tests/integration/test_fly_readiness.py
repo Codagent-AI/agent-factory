@@ -137,3 +137,36 @@ def test_rate_limited_request_is_retried_until_fly_accepts_it(tmp_path: Path) ->
         with pytest.raises(FlyApiError) as raised:
             client.set_metadata("machine-1", "run_id", "run-3")
         assert raised.value.status == 429
+
+
+def test_created_machine_survives_a_stop_so_a_quota_hold_can_restart_it(tmp_path: Path) -> None:
+    """On real Fly, ``auto_destroy`` also fires on an API stop (requested_stop=true).
+
+    A Machine stopped for a quota hold must survive to be started again, so
+    Machines are created without it. The guest still ends its own process at the
+    deadline, and the reconciler performs every destroy.
+    """
+    from agent_factory.fly.api import FlyMachinesClient
+    from tests.fixtures.fly.api import FakeMachinesApi
+
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    with FakeMachinesApi() as api:
+        FlyMachinesClient("app", token, base_url=api.base_url).create_machine(
+            image="registry.fly.io/app:base",
+            cpu_kind="shared",
+            cpus=4,
+            memory_mb=8192,
+            region="ewr",
+            factory_owner="agent-factory",
+            run_id="run-1",
+            claim_id="claim-1",
+            nonce="nonce",
+            deadline_epoch="1900000000",
+            unit_key="rep-1",
+            guest_init="true",
+        )
+        body = cast(dict[str, dict[str, object]], api.requests[-1]["body"])
+    assert body["config"]["auto_destroy"] is False
+    assert body["config"]["restart"] == {"policy": "no"}
+    assert cast(dict[str, str], body["config"]["guest"])["persist_rootfs"] == "always"

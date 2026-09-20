@@ -17,12 +17,12 @@ When the eval kind is configured for `fly` execution, the factory SHALL run each
 
 ### Requirement: Establish containment before delivering anything
 
-The Machine create request SHALL carry the factory's ownership marker, the run identity, a launch nonce, the attempt's absolute deadline, and destroy-on-exit. The Machine's initial process, set in that same request, SHALL enforce the absolute deadline independently of the factory. The factory SHALL persist the Machine identity, launch nonce, and deadline and verify that the created Machine carries them before delivering any secret. A fresh launch that finds a Machine already recorded for the attempt SHALL adopt it when it is verified and never received a secret, or destroy it before creating another, and SHALL record which. No credential, candidate-delivery token, or other secret SHALL be delivered to a Machine whose ownership has not been persisted and verified.
+The Machine create request SHALL carry the factory's ownership marker, the run identity, a launch nonce, and the attempt's absolute deadline, and SHALL NOT let the platform restart the Machine's process. The Machine's initial process, set in that same request, SHALL enforce the absolute deadline independently of the factory. The factory SHALL persist the Machine identity, launch nonce, and deadline and verify that the created Machine carries them before delivering any secret. A fresh launch that finds a Machine already recorded for the attempt SHALL adopt it when it is verified and never received a secret, or destroy it before creating another, and SHALL record which. No credential, candidate-delivery token, or other secret SHALL be delivered to a Machine whose ownership has not been persisted and verified.
 
 #### Scenario: Lose the controller between creation and recording
 
 - **WHEN** the factory creates a Machine and stops before recording its identity
-- **THEN** the Machine still destroys itself no later than its deadline
+- **THEN** the Machine still stops itself, ending compute billing, no later than its deadline, and reconciliation destroys it
 - **AND** no secret was delivered to it
 
 #### Scenario: Lose the controller before delivery
@@ -37,7 +37,7 @@ Each attempt SHALL have one absolute deadline equal to its launch time plus the 
 #### Scenario: Reach the total limit with the controller offline
 
 - **WHEN** an attempt's total elapsed-time limit passes while the factory is offline
-- **THEN** the Machine is destroyed no later than the collection grace period after that limit without factory involvement
+- **THEN** the Machine stops itself no later than the collection grace period after that limit without factory involvement, and reconciliation destroys it once the factory runs again
 
 #### Scenario: Start a recovery attempt
 
@@ -47,7 +47,7 @@ Each attempt SHALL have one absolute deadline equal to its launch time plus the 
 #### Scenario: Start a stopped Machine whose old deadline has passed
 
 - **WHEN** a stopped Machine is started after its previous deadline has passed
-- **THEN** the in-Machine enforcement already holds the new deadline at boot and the Machine does not destroy itself
+- **THEN** the in-Machine enforcement already holds the new deadline at boot and the Machine does not stop itself
 
 ### Requirement: Make the Machine the durable execution identity
 
@@ -103,7 +103,7 @@ When the Machine writes its completion marker, the factory SHALL collect the rep
 #### Scenario: Miss the collection grace period
 
 - **WHEN** the factory does not complete collection within the grace period after the completion marker
-- **THEN** the Machine destroys itself and the attempt is settled as a lost Machine with whatever evidence was streamed
+- **THEN** the Machine stops itself and the attempt is settled as a lost Machine with whatever evidence was streamed
 
 #### Scenario: Collect a partial tree
 

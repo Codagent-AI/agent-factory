@@ -147,7 +147,10 @@ class FlyMachinesClient:
                     "memory_mb": memory_mb,
                     "persist_rootfs": "always",
                 },
-                "auto_destroy": True,
+                # On real Fly this also fires on an API stop, which would destroy a
+                # Machine held for a quota reset. The guest ends its own process at
+                # the deadline and the reconciler performs every destroy.
+                "auto_destroy": False,
                 "restart": {"policy": "no"},
                 "metadata": {
                     "factory-owner": factory_owner,

@@ -82,3 +82,60 @@ def test_job_cleanup_empties_what_the_job_user_owns_without_unlinking_it(tmp_pat
     assert done.stdout == "ran\n" and done.stderr == ""
     assert [p for p in (root / "host-home").rglob("*") if p.is_file()] == []
     assert (root / "run/factory/env").read_text() == ""
+
+
+def test_restarted_guest_with_a_fresh_deadline_ignores_an_old_expiry_marker(
+    tmp_path: Path,
+) -> None:
+    """Without auto-destroy a Machine that hit its deadline only stops.
+
+    Its disk persists, including the expiry marker. When the factory restarts it
+    with a later deadline for a recovery attempt, the guest must serve jobs again
+    rather than exit at once on the stale marker.
+    """
+    from agent_factory.fly.guest import guest_init_script
+
+    root = tmp_path / "guest"
+    job = root / "artifacts/.factory/job/1"
+    job.mkdir(parents=True)
+    (job / "job.sh").write_text("#!/bin/bash\nexit 0\n")
+    (job / "job.sh").chmod(0o700)
+    (job / "start").touch()
+    marker = root / "artifacts/.factory/deadline-expired"
+    marker.touch()
+    environment = {
+        **os.environ,
+        "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 60),
+        "FACTORY_ROOT": str(root),
+        "FACTORY_WATCHDOG_SECONDS": "1",
+    }
+    process = subprocess.Popen(["bash", "-c", guest_init_script()], env=environment)
+    try:
+        for _ in range(60):
+            if (job / "DONE").exists():
+                break
+            time.sleep(0.05)
+        assert (job / "DONE").exists()
+        assert not marker.exists()
+        assert process.poll() is None
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+def test_guest_with_an_expired_deadline_still_exits_at_once(tmp_path: Path) -> None:
+    from agent_factory.fly.guest import guest_init_script
+
+    root = tmp_path / "guest"
+    (root / "artifacts/.factory").mkdir(parents=True)
+    (root / "artifacts/.factory/deadline-expired").touch()
+    environment = {
+        **os.environ,
+        "FACTORY_DEADLINE_EPOCH": str(int(time.time()) - 5),
+        "FACTORY_ROOT": str(root),
+        "FACTORY_WATCHDOG_SECONDS": "1",
+    }
+    done = subprocess.run(
+        ["bash", "-c", guest_init_script()], env=environment, timeout=20, check=False
+    )
+    assert done.returncode == 1

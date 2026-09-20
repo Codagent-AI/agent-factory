@@ -99,8 +99,14 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                 elif parsed.path.endswith("/wait") and fake.wait_failures:
                     self._send(fake.wait_failures.pop(0))
                 elif parsed.path.endswith("/wait"):
-                    known = _machine_id(parsed.path) in fake.machines
-                    self._send(200, {"ok": True}) if known else self._send(404)
+                    waited = fake.machines.get(_machine_id(parsed.path))
+                    wanted = parse_qs(parsed.query).get("state", [""])[0]
+                    if waited is None:
+                        self._send(404)
+                        return
+                    if waited["state"] == "replacing" and wanted == "stopped":
+                        waited["state"] = "stopped"  # the update has settled
+                    self._send(200, {"ok": True})
                 elif "/machines/" in parsed.path:
                     value = fake.machines.get(parsed.path.rsplit("/", 1)[-1])
                     self._send(200, value) if value else self._send(404)
@@ -135,6 +141,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     existing["state"] = "stopped"
                     self._send(200, existing)
                 elif path.endswith("/start"):
+                    if existing["state"] == "replacing":
+                        self._send(412)  # Fly refuses a start while an update settles
+                        return
                     existing["state"] = "started"
                     self._send(200, existing)
                 elif "/metadata/" in path:
@@ -146,6 +155,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     config = body.get("config") if body else None
                     if isinstance(config, Mapping):
                         _config(existing).update(cast(Mapping[str, object], config))
+                    if existing["state"] == "stopped":
+                        existing["state"] = "replacing"
                     self._send(200, existing)
 
             def do_DELETE(self) -> None:  # noqa: N802
