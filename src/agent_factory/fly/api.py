@@ -5,7 +5,8 @@ from __future__ import annotations
 import base64
 import json
 import os
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
@@ -29,6 +30,16 @@ _MANIFEST_MEDIA_TYPES = (
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 )
+
+_RATE_LIMIT_ATTEMPTS = 6
+
+
+def _retry_after(header: str | None, attempt: int) -> float:
+    """Honour the server's hint when it gives one, else back off 1, 2, 4... seconds."""
+    if header and header.strip().isdigit():
+        return min(float(header.strip()), 30.0) + attempt
+    return float(min(2**attempt, 30))
+
 
 GONE_STATES = frozenset({"destroyed", "destroying"})
 
@@ -57,7 +68,9 @@ class FlyMachinesClient:
         *,
         base_url: str | None = None,
         registry_base_url: str = "https://registry.fly.io",
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
+        self._sleep = sleep
         self.app = app
         self.token_file = token_file
         # An explicit URL wins. The environment override exists so the launcher,
@@ -89,16 +102,24 @@ class FlyMachinesClient:
         request.add_header("Accept", "application/json")
         if payload is not None:
             request.add_header("Content-Type", "application/json")
-        try:
-            with urlopen(request, timeout=timeout) as response:  # noqa: S310 -- configured API endpoint
-                raw = response.read()
-                return cast(
-                    Mapping[str, object] | list[object] | None, json.loads(raw) if raw else None
-                )
-        except HTTPError as error:
-            raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
-        except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise FlyApiError(path, detail="request could not be completed") from error
+        # Fly limits requests per Machine and per action, so consecutive writes to one
+        # Machine can draw HTTP 429. Those are retried with a growing pause; any
+        # other failure is reported at once.
+        for attempt in range(_RATE_LIMIT_ATTEMPTS):
+            try:
+                with urlopen(request, timeout=timeout) as response:  # noqa: S310 -- configured API endpoint
+                    raw = response.read()
+                    return cast(
+                        Mapping[str, object] | list[object] | None,
+                        json.loads(raw) if raw else None,
+                    )
+            except HTTPError as error:
+                if error.code != 429 or attempt == _RATE_LIMIT_ATTEMPTS - 1:
+                    raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
+                self._sleep(_retry_after(error.headers.get("Retry-After"), attempt))
+            except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise FlyApiError(path, detail="request could not be completed") from error
+        raise FlyApiError(path, 429, "HTTP 429")  # unreachable; keeps the return type total
 
     def create_machine(
         self,

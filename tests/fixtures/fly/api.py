@@ -18,6 +18,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.machines: dict[str, dict[str, object]] = {}
         self.requests: list[dict[str, object]] = []
         self.manifest_digest = manifest_digest
+        # Statuses to answer the next POSTs with, before normal handling resumes.
+        self.post_failures: list[int] = []
+        # Statuses to answer the next state waits with (408 is Fly's wait timeout).
+        self.wait_failures: list[int] = []
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -92,6 +96,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                                 if _metadata(machine).get(metadata_key) == wanted
                             ]
                     self._send(200, machines)
+                elif parsed.path.endswith("/wait") and fake.wait_failures:
+                    self._send(fake.wait_failures.pop(0))
                 elif parsed.path.endswith("/wait"):
                     known = _machine_id(parsed.path) in fake.machines
                     self._send(200, {"ok": True}) if known else self._send(404)
@@ -107,6 +113,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                 body = self._body()
                 self._record(body)
                 path = urlsplit(self.path).path
+                if fake.post_failures:
+                    self._send(fake.post_failures.pop(0))
+                    return
                 if path.endswith("/machines"):
                     machine_id = f"machine-{len(fake.machines) + 1}"
                     config = cast(dict[str, object], body.get("config", {}) if body else {})

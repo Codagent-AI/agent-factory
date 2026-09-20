@@ -40,3 +40,45 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+def test_job_cleanup_empties_what_the_job_user_owns_without_unlinking_it(tmp_path: Path) -> None:
+    """The credential directories and env file sit in root-owned parents.
+
+    The job's user owns them but cannot unlink them, so the trap deletes the
+    directories' contents and truncates the env file. Nothing secret may remain
+    when the job ends, and the cleanup must not print errors into the job output.
+    """
+    import subprocess
+
+    from agent_factory.fly.guest import job_script, stand_in_script
+
+    manifest: dict[str, object] = {
+        "repositories": {"runner": "https://example.test/r", "skills": "https://example.test/s"},
+        "commits": {"runner": "a" * 40, "skills": "b" * 40},
+    }
+    for script in (stand_in_script("true"), job_script(manifest, "true")):
+        trap = next(line for line in script.splitlines() if line.startswith("trap "))
+        assert "rm -rf /host-home" not in trap and "rm -rf /run/factory/env" not in trap
+
+    root = tmp_path / "guest"
+    for name in ("host-home/codex", "host-home/claude/nested", "run/factory"):
+        (root / name).mkdir(parents=True)
+    (root / "host-home/codex/auth.json").write_text("secret")
+    (root / "host-home/claude/.credentials.json").write_text("secret")
+    (root / "host-home/claude/nested/settings.json").write_text("secret")
+    (root / "run/factory/env").write_text("TOKEN=secret\n")
+    # Parents the job's user cannot modify, as in a real Machine.
+    for parent in (root / "host-home", root / "run/factory"):
+        parent.chmod(0o555)
+    try:
+        script = stand_in_script("echo ran")
+        for path in ("/host-home", "/run/factory"):
+            script = script.replace(path, f"{root}{path}")
+        done = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    finally:
+        for parent in (root / "host-home", root / "run/factory"):
+            parent.chmod(0o755)
+    assert done.stdout == "ran\n" and done.stderr == ""
+    assert [p for p in (root / "host-home").rglob("*") if p.is_file()] == []
+    assert (root / "run/factory/env").read_text() == ""

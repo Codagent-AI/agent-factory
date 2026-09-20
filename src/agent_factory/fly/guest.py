@@ -7,6 +7,14 @@ from collections.abc import Mapping
 
 from agent_factory.fly.transport import mapping_field, string_field
 
+# The job's user owns the credential directories and the env file but not their
+# root-owned parents, so it cannot unlink them. It deletes the directories' contents
+# and truncates the env file; the launcher removes the empty shells as root.
+_CREDENTIAL_CLEANUP = (
+    "find /host-home/codex /host-home/claude -mindepth 1 -delete 2>/dev/null; "
+    "[ -e /run/factory/env ] && : > /run/factory/env"
+)
+
 
 def guest_init_script() -> str:
     """Return the bash init program.
@@ -106,8 +114,8 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "#!/usr/bin/env bash",
             "set -euo pipefail",
             # Armed first: a failed clone or build must not leave credentials behind.
-            "trap 'rm -rf /host-home /workspace/home/.codex "
-            "/workspace/home/.claude /run/factory/env' EXIT",
+            f"trap '{_CREDENTIAL_CLEANUP}; "
+            "rm -rf /workspace/home/.codex /workspace/home/.claude' EXIT",
             # A recovery job runs in the same Machine, where the clones already exist.
             "[ -d /agent-runner-source/.git ] || git clone "
             + shlex.quote(runner_url)
@@ -152,7 +160,7 @@ def stand_in_script(script: str) -> str:
     return "\n".join(
         (
             "#!/usr/bin/env bash",
-            "trap 'rm -rf /host-home /run/factory/env' EXIT",
+            f"trap '{_CREDENTIAL_CLEANUP}' EXIT",
             "set -a; [ -r /run/factory/env ] && . /run/factory/env; set +a",
             script,
             "",

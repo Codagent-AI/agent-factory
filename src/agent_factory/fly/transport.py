@@ -29,6 +29,7 @@ EXIT_COLLECTION_FAILED = 72
 EXIT_MISMATCH = 73
 
 OWNER = "agent-factory"
+_START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
@@ -385,8 +386,7 @@ class Lifecycle:
         expected = {**self._stable_metadata(read_record(self.record_path)), "run_id": run_id}
         if not _owned(verified, expected):
             raise OwnershipMismatchError(machine_id)
-        if not self.client.wait_state(machine_id, "started", timeout_seconds=60):
-            raise FlyTransportError("Machine did not start")
+        self._wait_started(machine_id)
         started = self.client.get_machine(machine_id)
         self._update_record(
             {
@@ -409,12 +409,18 @@ class Lifecycle:
         else:
             self.client.set_metadata(machine_id, "deadline_epoch", str(deadline))
             self.client.set_metadata(machine_id, "run_id", run_id)
-        if not self.client.wait_state(machine_id, "started", timeout_seconds=60):
-            raise FlyTransportError("Machine did not start")
+        self._wait_started(machine_id)
         self.transport.machine_id = machine_id
         self.transport.command(
             f"mkdir -p /var/lib/factory && printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
+
+    def _wait_started(self, machine_id: str) -> None:
+        """Fly caps one wait at 60 s; a first image pull on a host can take minutes."""
+        for _ in range(_START_WAIT_WINDOWS):
+            if self.client.wait_state(machine_id, "started", timeout_seconds=60):
+                return
+        raise FlyTransportError(f"Machine {machine_id} did not start")
 
     def _stable_metadata(self, record: Mapping[str, object]) -> dict[str, str]:
         """Keys that identify the repetition's Machine across attempts."""
@@ -468,7 +474,7 @@ class Lifecycle:
         self.transport.command(
             "rm -rf /eval-input /host-home /run/factory/env && "
             f"mkdir -p /run/factory /var/lib/factory /host-home/codex /host-home/claude "
-            f"{directory} && chmod 700 /run/factory /host-home && rm -f {directory}/job.sh && "
+            f"{directory} && chmod 711 /run/factory /host-home && rm -f {directory}/job.sh && "
             f"printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
         if request.input_dir is not None:
@@ -484,7 +490,19 @@ class Lifecycle:
             script = Path(scratch) / "job.sh"
             script.write_text(request.script, encoding="utf-8")
             self.transport.put_file(script, f"{directory}/job.sh", mode="0700", prepare=False)
-        self.transport.command(f"touch {directory}/start")
+        # ssh delivers as root, but the image runs the guest init, and so the job,
+        # as its own user. Only the job's own children are handed to the owner of a
+        # directory the init created. Their parents stay root-owned (traversable,
+        # not listable), so a job cannot swap them for links that a later root
+        # delivery would follow; the change itself never follows a link either.
+        handed_over = [directory, "/host-home/codex", "/host-home/claude", "/run/factory/env"]
+        if request.input_dir is not None:
+            handed_over.append("/eval-input")
+        self.transport.command(
+            'owner="$(stat -c %u:%g /artifacts/.factory/job 2>/dev/null '
+            '|| stat -f %u:%g /artifacts/.factory/job)" && '
+            f'chown -R -h -P "$owner" {" ".join(handed_over)} && touch {directory}/start'
+        )
         _log(self.factory, f"delivered job {job}")
 
     @staticmethod
@@ -565,6 +583,8 @@ class Lifecycle:
             self.sleep(interval)
 
     def _collect(self, artifact_dir: Path, job: int) -> int:
+        # The job already emptied these before DONE; root removes the shells.
+        self.transport.command("rm -rf /host-home /run/factory/env")
         staging = self.factory / "staging"
         shutil.rmtree(staging, ignore_errors=True)
         self.transport.tar_get("/artifacts", staging)

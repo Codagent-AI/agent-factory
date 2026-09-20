@@ -113,3 +113,27 @@ def test_image_manifest_resolves_with_the_registry_basic_auth_scheme(tmp_path: P
     # Without manifest media types the registry cannot resolve an OCI image.
     assert "application/vnd.oci.image.index.v1+json" in headers["accept"]
     assert request["path"] == "/v2/app/manifests/base"
+
+
+def test_rate_limited_request_is_retried_until_fly_accepts_it(tmp_path: Path) -> None:
+    """Fly limits requests per Machine; back-to-back metadata writes draw HTTP 429."""
+    from agent_factory.fly.api import FlyApiError, FlyMachinesClient
+    from tests.fixtures.fly.api import FakeMachinesApi
+
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    waits: list[float] = []
+    with FakeMachinesApi() as api:
+        client = FlyMachinesClient("app", token, base_url=api.base_url, sleep=waits.append)
+        api.machines["machine-1"] = {"id": "machine-1", "state": "started", "config": {}}
+        api.post_failures.extend([429, 429])
+        client.set_metadata("machine-1", "run_id", "run-2")
+        config = cast(dict[str, dict[str, str]], api.machines["machine-1"]["config"])
+        assert config["metadata"]["run_id"] == "run-2"
+        assert len(waits) == 2 and waits[1] > waits[0] > 0
+
+        # A limit that never lifts is still reported, with its status, not retried forever.
+        api.post_failures.extend([429] * 10)
+        with pytest.raises(FlyApiError) as raised:
+            client.set_metadata("machine-1", "run_id", "run-3")
+        assert raised.value.status == 429

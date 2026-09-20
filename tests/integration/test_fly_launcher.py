@@ -161,7 +161,10 @@ def test_fresh_launch_records_ownership_then_delivers_runs_and_collects(
     seen = (env.artifact / "seen-credentials.txt").read_text()
     assert "auth.json" in seen and ".credentials.json" in seen
     assert (env.artifact / "seen-input.txt").read_text() == "// suite"
-    assert not (env.guest_root / "host-home").exists()
+    # The job's user cannot remove the root-owned directory itself, only what is in
+    # it; no credential file may remain and the cleanup must not complain.
+    assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []
+    assert "cannot remove" not in (env.artifact / ".factory/job/1/job.log").read_text()
     assert not (env.guest_root / "run/factory/env").exists()
     collected = {str(p.relative_to(env.artifact)) for p in env.artifact.rglob("*") if p.is_file()}
     assert not any("host-home" in name or name.endswith("/env") for name in collected)
@@ -369,3 +372,46 @@ def test_untrusted_job_cannot_plant_links_or_overwrite_host_state(env: Environme
     # Host-managed state is untouched by what the guest wrote under .factory.
     assert json.loads((env.factory / "machine.json").read_text())["id"] == "machine-1"
     assert not (env.factory / "manifest.json").exists()
+
+
+def test_delivery_hands_the_job_to_the_user_the_guest_init_runs_as(env: Environment) -> None:
+    """The image runs its init as a non-root user, while ssh delivers as root.
+
+    A root-owned 0700 job script is not executable by that user, so the job would
+    never start. Ownership must move to the init's user before ``start`` appears.
+    """
+    assert env.lifecycle(env.manifest()).run(env.request("true")) == 0
+    commands = [c["argv"][-1] for c in env.flyctl_calls() if c["argv"][:2] == ["ssh", "console"]]
+    start = next(
+        i for i, command in enumerate(commands) if "job/1/start" in command and "touch" in command
+    )
+    handover = commands[start]
+    assert "chown -R -h -P" in handover and handover.index("chown") < handover.index("touch")
+    owned = handover.split("chown -R -h -P", 1)[1].split("&&", 1)[0].split()[1:]
+    # Only the job's own children change hands. The parents stay root-owned, so a
+    # job cannot replace them with links that a later root delivery would follow.
+    assert sorted(owned) == [
+        "/artifacts/.factory/job/1",
+        "/eval-input",
+        "/host-home/claude",
+        "/host-home/codex",
+        "/run/factory/env",
+    ]
+    setup = next(command for command in commands if "mkdir -p /run/factory" in command)
+    assert "chmod 711 /run/factory /host-home" in setup  # traversable, not listable
+    # The owner is read from a directory the init itself created, never assumed.
+    assert "stat -c %u:%g /artifacts/.factory/job" in handover
+
+
+def test_slow_machine_start_is_waited_for_beyond_one_fly_wait_window(env: Environment) -> None:
+    """Fly caps one wait at 60 s, but a first image pull on a host can take longer."""
+    env.api.wait_failures.extend([408, 408])
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == 0
+    waits = [r for r in env.api.requests if "/wait" in str(r["path"])]
+    assert len(waits) == 3
+
+
+def test_machine_that_never_starts_is_a_transport_failure(env: Environment) -> None:
+    env.api.wait_failures.extend([408] * 20)
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == EXIT_TRANSPORT
+    assert "did not start" in (env.factory / "launcher.log").read_text()
