@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 from collections.abc import Mapping
@@ -21,6 +22,13 @@ class FlyApiError(RuntimeError):
         self.status = status
         super().__init__(f"Fly API request failed for {path}: {detail}")
 
+
+_MANIFEST_MEDIA_TYPES = (
+    "application/vnd.oci.image.index.v1+json",
+    "application/vnd.oci.image.manifest.v1+json",
+    "application/vnd.docker.distribution.manifest.list.v2+json",
+    "application/vnd.docker.distribution.manifest.v2+json",
+)
 
 GONE_STATES = frozenset({"destroyed", "destroying"})
 
@@ -227,7 +235,11 @@ class FlyMachinesClient:
         repo = repository.removeprefix("registry.fly.io/")
         path = f"/v2/{repo}/manifests/{tag}"
         request = Request(f"{self.registry_base_url}{path}", method="HEAD")
-        request.add_header("Authorization", f"Bearer {self._token()}")
+        # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
+        # user name and the token as the password.
+        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
+        request.add_header("Authorization", f"Basic {credentials}")
+        request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
         try:
             with urlopen(request, timeout=20) as response:  # noqa: S310
                 digest = response.headers.get("Docker-Content-Digest")

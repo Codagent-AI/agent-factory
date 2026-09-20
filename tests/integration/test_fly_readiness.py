@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -91,3 +92,24 @@ def test_machine_client_create_shape_and_safe_error(tmp_path: Path) -> None:
         client.get_machine("machine-id")
     assert "machine-id" in str(raised.value)
     assert "token" not in repr(raised.value).lower()
+
+
+def test_image_manifest_resolves_with_the_registry_basic_auth_scheme(tmp_path: Path) -> None:
+    import base64
+
+    from agent_factory.fly.api import FlyMachinesClient
+    from tests.fixtures.fly.api import FakeMachinesApi
+
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    with FakeMachinesApi(manifest_digest="sha256:abc") as api:
+        client = FlyMachinesClient(
+            "app", token, base_url=api.base_url, registry_base_url=api.base_url
+        )
+        assert client.resolve_manifest("registry.fly.io/app:base") == "sha256:abc"
+        request = next(r for r in api.requests if r["method"] == "HEAD")
+    headers = {str(k).lower(): str(v) for k, v in cast(dict[str, str], request["headers"]).items()}
+    assert headers["authorization"] == "Basic " + base64.b64encode(b"x:deploy-token").decode()
+    # Without manifest media types the registry cannot resolve an OCI image.
+    assert "application/vnd.oci.image.index.v1+json" in headers["accept"]
+    assert request["path"] == "/v2/app/manifests/base"

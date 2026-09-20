@@ -65,6 +65,11 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
             def do_HEAD(self) -> None:  # noqa: N802
                 self._record()
                 if urlsplit(self.path).path.startswith("/v2/"):
+                    # registry.fly.io answers 401 to a bearer token; it wants HTTP
+                    # basic auth with the token as the password.
+                    if not self.headers.get("Authorization", "").startswith("Basic "):
+                        self._send(401)
+                        return
                     self.send_response(200)
                     self.send_header("Docker-Content-Digest", fake.manifest_digest)
                     self.end_headers()
