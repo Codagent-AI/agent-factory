@@ -26,6 +26,7 @@ import json, os, shutil, subprocess, sys
 ROOT = {root!r}
 LOG = {log!r}
 PATHS = {paths!r}
+PER_MACHINE = {per_machine!r}
 
 
 def rewrite(text):
@@ -39,6 +40,9 @@ def option(args, name):
 
 
 args = sys.argv[1:]
+if PER_MACHINE:
+    # Each Machine has its own filesystem: one directory per Machine id.
+    ROOT = os.path.join(ROOT, option(args, "--machine") or "no-machine")
 with open(LOG, "a", encoding="utf-8") as stream:
     stream.write(json.dumps({{
         "argv": args,
@@ -84,7 +88,10 @@ def write_flyctl(directory: Path, *, exit_code: int = 0) -> Path:
     return executable
 
 
-def write_guest_flyctl(directory: Path, guest_root: Path, log: Path, record: Path) -> Path:
+def write_guest_flyctl(
+    directory: Path, guest_root: Path, log: Path, record: Path, *, per_machine: bool = False
+) -> Path:
+    """Write the guest double; ``per_machine`` roots each Machine at ``guest_root/<id>``."""
     directory.mkdir(parents=True, exist_ok=True)
     executable = directory / "flyctl"
     executable.write_text(
@@ -94,6 +101,7 @@ def write_guest_flyctl(directory: Path, guest_root: Path, log: Path, record: Pat
             log=str(log),
             paths=_GUEST_PATHS,
             record=str(record),
+            per_machine=per_machine,
         ),
         encoding="utf-8",
     )

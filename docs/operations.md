@@ -1,5 +1,39 @@
 # Operating Agent Factory
 
+## Fly setup
+
+Evals can run in Fly.io Machines instead of Docker. One-time setup:
+
+1. Create a Fly organization and an app for the sandbox Machines, for example
+   `flyctl apps create agent-factory-sandbox -o <org>`. The app runs no service
+   of its own; the factory creates and destroys Machines in it.
+2. Create a deploy token for that app (`flyctl tokens create deploy -a <app>`)
+   and store only the token, on one line, in an owner-readable file such as
+   `~/.agent-factory/credentials/fly-deploy-token`. The same token authenticates
+   the Machines API, the image registry, and `flyctl ssh`.
+3. Build and push the amd64 sandbox image from an Agent Runner checkout that
+   includes commit `8c6cf713c39775b5d8226c9ee5e7b88b80eead44` (accepts Playwright's
+   `chrome-linux64` layout and adds a `.dockerignore`):
+
+   ```sh
+   flyctl deploy --build-only --push --remote-only -a agent-factory-sandbox \
+     --dockerfile docker/dev/Dockerfile --image-label base
+   ```
+
+   Machines are x86-64 only, so build remotely or with `--platform linux/amd64`.
+   `doctor` records the image's immutable digest; retag and rerun `doctor` after
+   each rebuild.
+4. Install `flyctl` where the LaunchAgent's PATH can find it.
+5. In `local.toml` set `[eval] execution = "fly"` and a `[fly]` table (see
+   `config/local.example.toml`). Defaults: region `ewr`, `shared` CPUs, 4 CPUs,
+   8192 MiB, a 900-second collection grace, and a 20-second heartbeat.
+
+Fly execution keeps Docker's isolation and the suite unchanged, but gives up
+Cursor role profiles (the Cursor CLI is not reliable headless) and adds a per
+attempt cost bounded by the deadline: about $0.75 at the default size and
+limits. A lost Machine costs its repetition, which is settled as failed without
+a retry. Human review always runs on the Mac against the collected directory.
+
 ## Fly eval operations
 
 With `eval.execution = "fly"`, `doctor` reports the mode-neutral `eval` group
@@ -22,6 +56,25 @@ checkpoint before resuming. Human review always runs on the Mac against the
 collected artifact directory, not against a Fly Machine. For diagnosis the
 launcher supports `stand-in` and `attach` modes; neither is a normal execution
 path.
+
+Model logins reach a Machine as files: `~/.codex/auth.json` and
+`~/.claude/.credentials.json` (plus the optional Claude settings files), exactly as
+the Docker sandbox mounts them. On macOS the Claude CLI keeps its live login in the
+Keychain and does not maintain that file, so it goes stale while `claude` keeps
+working on the Mac. Before an eval, and whenever a Machine reports "OAuth session
+expired and could not be refreshed", copy the Keychain entry into the file:
+
+```sh
+tmp=$(mktemp ~/.claude/.credentials.json.XXXXXX) && chmod 600 "$tmp" &&
+  security find-generic-password -s "Claude Code-credentials" -w > "$tmp" &&
+  mv "$tmp" ~/.claude/.credentials.json || rm -f "$tmp"
+```
+
+The copy lands in a private temporary file first, so a locked or missing Keychain
+entry leaves the existing file untouched.
+
+A refresh inside a Machine rotates the token; if the Mac CLI then asks you to sign in
+again, run `claude auth login` and copy once more.
 
 A Machine is created without Fly's auto-destroy, because on Fly that setting also
 destroys a Machine on an API stop, which a quota hold relies on. At its deadline a

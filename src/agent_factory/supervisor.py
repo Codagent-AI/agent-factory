@@ -270,11 +270,11 @@ def _supervise_fly(
             _finish_fly_launcher_exit(store, run, plan)
         return
     progress = dict(run.progress)
-    progress["machine"] = {key: value for key, value in identity.items() if key != "token_file"}
+    probe = backend.probe(identity)
+    progress["machine"] = _machine_progress(identity, probe.state)
     _copy_fly_heartbeat(plan, progress)
     progress["machine_provenance"] = dict(backend.provenance(identity))
     store.update_progress(run.id, progress)
-    probe = backend.probe(identity)
     if probe.state == "gone":
         mismatch = store.get_setting("runtime", "fly:mismatch")
         if (
@@ -391,6 +391,15 @@ def _spawn_plan_process(
     return _process_identity(child.pid, plan) or {}
 
 
+def _machine_progress(identity: Mapping[str, object], state: str) -> dict[str, object]:
+    """What status shows for the attempt: the recorded identity, its state, and deadline."""
+    values = {key: value for key, value in identity.items() if key != "token_file"}
+    values["state"] = state
+    # The launcher records the deadline it set; status names it as the Machine does.
+    values.setdefault("deadline_epoch", identity.get("deadline"))
+    return values
+
+
 def _copy_fly_heartbeat(plan: ExecutionPlan, progress: dict[str, object]) -> None:
     artifact = _artifact_root(plan, "")
     path = Path(artifact) / ".factory" / "heartbeat.json"
@@ -437,6 +446,13 @@ def _observe_fly(
         changed, sources = _progress_changed(plan.progress_sources, sources)
         if changed:
             last_progress = now
+        result = _load_result(_artifact_root(plan, run.evidence_path))
+        launcher_missing = _identity_status(launcher) == "missing"
+        # A probe is a REST round trip; like the container probe below it runs on
+        # an interval, and at once when the launcher has gone away.
+        if state is None or now - last_probe >= _FLY_PROBE_SECONDS or launcher_missing:
+            state = machine_backend.probe(identity)
+            last_probe = now
         progress.update(
             {
                 "started_at": started,
@@ -445,16 +461,10 @@ def _observe_fly(
                 "persisted_at": time.time(),
                 "elapsed_seconds": now - started,
                 "idle_seconds": now - last_progress,
+                "machine": _machine_progress(identity, state.state),
             }
         )
         store.update_progress(run_id, progress)
-        result = _load_result(_artifact_root(plan, run.evidence_path))
-        launcher_missing = _identity_status(launcher) == "missing"
-        # A probe is a REST round trip; like the container probe below it runs on
-        # an interval, and at once when the launcher has gone away.
-        if state is None or now - last_probe >= _FLY_PROBE_SECONDS or launcher_missing:
-            state = machine_backend.probe(identity)
-            last_probe = now
         if result.result is not None and (launcher_missing or state.state == "gone"):
             store.finish_run(
                 run_id, execution_status=_result_status(result.result), result=result.result

@@ -5,8 +5,10 @@
 
 ## Operator gates (not implementor tasks)
 
-- Before backend code is relied on: one manual full eval on Fly with the `poc/fly` scripts (design
-  risk "unproven eval workload in a Machine"); it spends the operator's model quota.
+- Before backend code is relied on: the launcher's `stand-in` mode against the real Fly app
+  (acceptance flows AT-001 to AT-003) proves the production path with cheap jobs; HT-001 is the
+  full-eval gate (design risk "unproven eval workload in a Machine"); it spends the operator's
+  model quota.
 - The `agent-runner` companion change (Dockerfile `chrome-linux64` path, `.dockerignore`) and the
   amd64 base image build precede live use.
 - After task 4: AT-001 to AT-004 (agent acceptance against the real Fly app) and HT-001 (one full

@@ -281,9 +281,13 @@ class EvalHandler:
             )
             if deadline is not None:
                 result = replace(result, quota_until=deadline)
-        if result.result.get("reason") == "machine lost":
+        if _machine_lost(result.result):
+            # The supervisor records the loss as an interruption; the repetition
+            # settles as failed, owned by the factory, so aggregation and retry
+            # planning never treat it as unfinished work or a product result.
             result = replace(
                 result,
+                execution_status="failed",
                 result={
                     **result.result,
                     "failure": {"owner": "factory", "code": "machine-lost"},

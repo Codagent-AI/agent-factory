@@ -22,6 +22,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.post_failures: list[int] = []
         # Statuses to answer the next state waits with (408 is Fly's wait timeout).
         self.wait_failures: list[int] = []
+        # Statuses to answer the next DELETEs with, leaving the Machine in place.
+        self.delete_failures: list[int] = []
+        # Machine ids are never reused, as on Fly; a destroyed id stays retired.
+        self._created = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -123,7 +127,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     self._send(fake.post_failures.pop(0))
                     return
                 if path.endswith("/machines"):
-                    machine_id = f"machine-{len(fake.machines) + 1}"
+                    fake._created += 1  # pyright: ignore[reportPrivateUsage]
+                    machine_id = f"machine-{fake._created}"  # pyright: ignore[reportPrivateUsage]
                     config = cast(dict[str, object], body.get("config", {}) if body else {})
                     machine: dict[str, object] = {
                         "id": machine_id,
@@ -162,7 +167,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
             def do_DELETE(self) -> None:  # noqa: N802
                 self._record()
                 machine_id = _machine_id(urlsplit(self.path).path)
-                if machine_id not in fake.machines:
+                if fake.delete_failures:
+                    self._send(fake.delete_failures.pop(0))
+                elif machine_id not in fake.machines:
                     self._send(404)
                 else:
                     self._send(200, fake.machines.pop(machine_id))

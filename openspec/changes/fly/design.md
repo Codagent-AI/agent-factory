@@ -387,7 +387,8 @@ foreground launcher keeps the Docker-shaped contract).
 4. Set `eval.execution = "fly"` and `[fly]`; `doctor` must pass `eval-fly`; run one eval by hand
    through the factory (`tick`) and complete a human review from the collected directory.
 5. Production gate: one attempt spanning a token refresh interval, Mac logins rechecked.
-6. Remove `poc/`.
+6. The proof-of-concept scripts were never committed; the launcher's `stand-in` mode replaces them
+   for diagnosis and acceptance.
 
 Rollback: set `eval.execution` back to `docker` (or unset). Frozen claims are unaffected; a claim
 mid-Machine at rollback time is settled or destroyed by the reconciler at its deadline.
