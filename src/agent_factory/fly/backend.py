@@ -251,7 +251,7 @@ class FlyMachineBackend:
             return []
         records = _settings_by_prefix(store, "fly:machine:")
         failures = _cleanup_failures(store)
-        failures.update(self._refresh_stopped_deadlines(store, client, records))
+        self._refresh_stopped_deadlines(store, client, records, failures)
         known_ids = {
             value.get("machine_id")
             for value in records.values()
@@ -296,11 +296,11 @@ class FlyMachineBackend:
         store: object,
         client: FlyMachinesClient,
         records: Mapping[str, Mapping[str, object]],
-    ) -> dict[str, dict[str, object]]:
+        failures: dict[str, dict[str, object]],
+    ) -> None:
         """Move quota-held deadlines with the provider reset, before they can bill."""
         if self._local is None or self._local.fly is None:
-            return {}
-        failures: dict[str, dict[str, object]] = {}
+            return
         for key, record in records.items():
             if record.get("decision") != "stop":
                 continue
@@ -320,8 +320,8 @@ class FlyMachineBackend:
             except FlyApiError as error:
                 failures[machine_id] = {"machine_id": machine_id, "reason": str(error)}
                 continue
+            failures.pop(machine_id, None)
             _set_setting(store, key, {**record, "deadline_epoch": deadline, "state": "stopped"})
-        return failures
 
     @staticmethod
     def _resolve_gone_mismatch(store: object, client: FlyMachinesClient) -> None:
