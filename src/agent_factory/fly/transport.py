@@ -111,9 +111,9 @@ class FlyTransport:
             app = _string(fly, "app")
             token = Path(_string(fly, "token_file"))
             client = FlyMachinesClient(app, token)
-            deadline = _deadline(manifest)
-            expected = _metadata(manifest, deadline)
             record = _read_record(factory / "machine.json")
+            deadline = _recorded_deadline(record) or _deadline(manifest)
+            expected = _metadata(manifest, deadline)
             recorded_id = record.get("id")
             machine = client.get_machine(recorded_id) if isinstance(recorded_id, str) else None
             if machine is not None and not _owned(machine, expected):
@@ -250,6 +250,11 @@ def _deadline(manifest: Mapping[str, object]) -> int:
         + _integer(values, "total_seconds")
         + _integer(values, "collection_grace_seconds")
     )
+
+
+def _recorded_deadline(record: Mapping[str, object]) -> int | None:
+    value = record.get("deadline")
+    return value if isinstance(value, int) and value > 0 else None
 
 
 def _metadata(manifest: Mapping[str, object], deadline: int) -> dict[str, str]:

@@ -19,6 +19,7 @@ ROOT="${FACTORY_ROOT:-}"
 ARTIFACTS="$ROOT/artifacts"
 DEADLINE_FILE="$ROOT/var/lib/factory/deadline"
 WATCHDOG_SECONDS="${FACTORY_WATCHDOG_SECONDS:-30}"
+KILL_GRACE_SECONDS="${FACTORY_KILL_GRACE_SECONDS:-30}"
 mkdir -p "$ARTIFACTS/.factory/job" "$(dirname "$DEADLINE_FILE")"
 
 deadline() {
@@ -30,13 +31,21 @@ deadline() {
   printf '%s\n' "$value"
 }
 
-# Deadline enforcement cannot wait for the suite job to return.  The process
-# group kill also stops descendants the suite might have started.
+# Deadline enforcement cannot wait for the suite job to return.  Jobs run in
+# their own session; this supervisor remains alive to preserve DONE evidence.
 watchdog() {
   while :; do
     current="$(deadline)" now="$(date +%s)"
     if [ "$current" -gt 0 ] && [ "$now" -ge "$current" ]; then
-      kill -- -$$ 2>/dev/null || kill -TERM $$
+      touch "$ARTIFACTS/.factory/deadline-expired"
+      if [ -r "$ARTIFACTS/.factory/active-job-pgid" ]; then
+        pgid="$(cat "$ARTIFACTS/.factory/active-job-pgid")"
+        case "$pgid" in (*[!0-9]*|'') ;; *)
+          kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null || true
+          sleep "$KILL_GRACE_SECONDS"
+          kill -KILL -- "-$pgid" 2>/dev/null || kill -KILL "$pgid" 2>/dev/null || true
+        ;; esac
+      fi
       exit 1
     fi
     sleep "$WATCHDOG_SECONDS"
@@ -47,12 +56,21 @@ watchdog_pid=$!
 trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
 
 while :; do
+  [ -e "$ARTIFACTS/.factory/deadline-expired" ] && exit 1
   job=1
   while [ -e "$ARTIFACTS/.factory/job/$job/DONE" ]; do job=$((job + 1)); done
   directory="$ARTIFACTS/.factory/job/$job"
   if [ -e "$directory/start" ] && [ -x "$directory/job.sh" ]; then
-    "$directory/job.sh" >"$directory/job.log" 2>&1
+    if command -v setsid >/dev/null 2>&1; then
+      setsid "$directory/job.sh" >"$directory/job.log" 2>&1 &
+    else
+      "$directory/job.sh" >"$directory/job.log" 2>&1 &
+    fi
+    job_pid=$!
+    printf '%s\n' "$job_pid" >"$ARTIFACTS/.factory/active-job-pgid"
+    wait "$job_pid"
     status=$?
+    rm -f "$ARTIFACTS/.factory/active-job-pgid"
     printf '%s\n' "$status" >"$directory/exit-code"
     (cd "$ARTIFACTS" && find . -path './.factory/staging' -prune -o -type f -exec sh -c '
       for file; do
@@ -64,6 +82,7 @@ while :; do
       done
     ' sh {} +) | sed 's|^./||' | sort >"$directory/files.txt"
     touch "$directory/DONE"
+    [ -e "$ARTIFACTS/.factory/deadline-expired" ] && exit 1
     continue
   fi
   sleep "$WATCHDOG_SECONDS"
