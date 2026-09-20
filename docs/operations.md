@@ -23,6 +23,22 @@ collected artifact directory, not against a Fly Machine. For diagnosis the
 launcher supports `stand-in` and `attach` modes; neither is a normal execution
 path.
 
+`stand-in` runs a script of yours through the same create, verify, deliver,
+observe, collect, and destroy path an eval uses, without touching the claim
+store. It creates a real, billed Machine and destroys it on exit unless `--keep`
+is given. Add `--mount-codex-auth` or `--mount-claude-auth` to deliver those
+logins under `/host-home` exactly as an eval would.
+
+```sh
+agent-factory-fly-launcher stand-in --config /absolute/path/to/local.toml \
+  --run-dir /absolute/path/to/scratch-run --script ./check.sh --deadline-seconds 300
+```
+
+The collected files, `launcher.log`, and the Machine record land under the run
+directory. A second `stand-in` against the same directory runs another job in
+the kept Machine. `attach --run-dir DIR` reconnects to a job already running in
+the Machine that directory records.
+
 Use the installed command with its explicit local configuration:
 
 ```sh
