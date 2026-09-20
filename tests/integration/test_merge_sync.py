@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import selectors
 import signal
+import socket
 import subprocess
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
@@ -146,6 +149,30 @@ def test_build_does_not_hang_when_background_child_holds_output_open(tmp_path: P
     assert result == [None]
 
 
+def test_build_does_not_wait_for_detached_child_holding_output_open(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "Makefile").write_text(
+        "build:\n"
+        "\t@python3 -c 'import os, time; os.setsid(); time.sleep(60)' & "
+        "echo $$! > child.pid\n",
+        encoding="utf-8",
+    )
+    build_working_clone = getattr(sync, "_build_working_clone", None)
+    assert build_working_clone is not None
+
+    started = time.monotonic()
+    try:
+        reason = build_working_clone(clone)
+    finally:
+        child_pid = int((clone / "child.pid").read_text())
+        with suppress(ProcessLookupError):
+            os.kill(child_pid, signal.SIGKILL)
+
+    assert reason is None
+    assert time.monotonic() - started < 0.5
+
+
 def test_failed_build_streams_output_and_reports_only_a_bounded_tail(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
     clone.mkdir()
@@ -173,6 +200,31 @@ def test_build_output_tail_discards_older_bytes() -> None:
     output.append(b"67890")
 
     assert output.text() == "34567890"
+
+
+def test_nonblocking_drain_reads_every_immediately_available_chunk() -> None:
+    reader, writer = socket.socketpair()
+    output = sync._BoundedOutput(limit=25_000)  # pyright: ignore[reportPrivateUsage]
+    output_selector = selectors.DefaultSelector()
+    try:
+        reader.setblocking(False)
+        writer.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 131_072)
+        output_selector.register(reader.fileno(), selectors.EVENT_READ, output)
+        payload = b"x" * 20_000 + b"tail-marker"
+        writer.sendall(payload)
+        writer.close()
+
+        processed = sync._drain_ready_output(  # pyright: ignore[reportPrivateUsage]
+            output_selector, timeout=0
+        )
+
+        assert processed is True
+        assert output.text().endswith("tail-marker")
+        assert output_selector.get_map() == {}
+    finally:
+        output_selector.close()
+        reader.close()
+        writer.close()
 
 
 def test_build_process_start_failure_returns_a_block_reason(

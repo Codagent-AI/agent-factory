@@ -471,7 +471,18 @@ def _assign_ready_bug(
         return
     if permission_cache[permission_key] not in WRITER_PERMISSIONS:
         return
-    client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
+    try:
+        client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
+    except GitHubApiError as error:
+        logger.warning(
+            "Cannot assign Ready Bug to Factory; retrying next cycle "
+            "(repository=%s author=%s card=%s): %s",
+            source.repository,
+            source.author,
+            card.id,
+            error,
+        )
+        return
     card.fields[shared.project.owner.id] = factory
 
 

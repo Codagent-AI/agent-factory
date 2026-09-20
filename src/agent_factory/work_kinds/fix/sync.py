@@ -159,9 +159,10 @@ def _build_working_clone(clone: Path, *, timeout: float = 300) -> str | None:
         os.killpg(build.pid, signal.SIGKILL)
     if timed_out:
         build.wait()
-    drain_deadline = min(deadline, time.monotonic() + 1)
-    while output_selector.get_map() and time.monotonic() < drain_deadline:
-        _drain_ready_output(output_selector, timeout=min(0.1, drain_deadline - time.monotonic()))
+    # A detached descendant may retain an inherited output pipe after make exits. Capture only
+    # bytes that are ready now instead of waiting for such a descendant to close the pipe.
+    while _drain_ready_output(output_selector, timeout=0):
+        pass
     output_selector.close()
     build.stdout.close()
     build.stderr.close()
@@ -187,16 +188,21 @@ class _BoundedOutput:
         return self._data.decode(errors="replace").strip()
 
 
-def _drain_ready_output(output_selector: selectors.BaseSelector, *, timeout: float) -> None:
+def _drain_ready_output(output_selector: selectors.BaseSelector, *, timeout: float) -> bool:
+    processed = False
     for key, _events in output_selector.select(timeout=max(0, timeout)):
-        try:
-            chunk = os.read(key.fd, 8192)
-        except BlockingIOError:
-            continue
-        if chunk:
-            cast(_BoundedOutput, key.data).append(chunk)
-        else:
-            output_selector.unregister(key.fd)
+        while True:
+            try:
+                chunk = os.read(key.fd, 8192)
+            except BlockingIOError:
+                break
+            processed = True
+            if chunk:
+                cast(_BoundedOutput, key.data).append(chunk)
+            else:
+                output_selector.unregister(key.fd)
+                break
+    return processed
 
 
 def _merge_sequence(clone: Path) -> str | None:

@@ -12,8 +12,9 @@ from agent_factory.routing import SourceItem
 
 
 class PermissionClient:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, assignment_fail: bool = False) -> None:
         self.fail = fail
+        self.assignment_fail = assignment_fail
         self.permission_calls = 0
         self.assignments: list[str] = []
 
@@ -26,6 +27,8 @@ class PermissionClient:
     def set_single_select_field(
         self, project_id: str, item_id: str, field_id: str, option_id: str
     ) -> None:
+        if self.assignment_fail:
+            raise GitHubApiError("assignment failed")
         self.assignments.append(item_id)
 
 
@@ -72,3 +75,21 @@ def test_ready_bug_permission_failure_is_isolated_and_logged(
     assert client.permission_calls == 1
     assert client.assignments == []
     assert "repository=Codagent-AI/agent-runner author=writer card=card-1" in caplog.text
+
+
+def test_ready_bug_assignment_failure_is_isolated_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    client = PermissionClient(assignment_fail=True)
+    cache: dict[tuple[str, str], str | None] = {}
+    card = _card(shared, "card-1")
+
+    with caplog.at_level(logging.WARNING):
+        runtime._assign_ready_bug(client, shared, card, cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+
+    assert client.permission_calls == 1
+    assert client.assignments == []
+    assert card.fields.get(shared.project.owner.id) is None
+    assert "repository=Codagent-AI/agent-runner author=writer card=card-1" in caplog.text
+    assert "assignment failed" in caplog.text
