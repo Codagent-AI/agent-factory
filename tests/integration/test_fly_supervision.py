@@ -152,3 +152,35 @@ def test_int_005_launcher_exit_code_is_recorded_and_never_inherited(tmp_path: Pa
     assert not status.exists()
     assert subprocess.run(argv, check=False).returncode == 71
     assert _launcher_exit_code(_fly_plan(artifact), str(artifact)) == 71
+
+
+def test_status_shows_each_stopped_quota_machine_of_a_claim(tmp_path: Path) -> None:
+    """The backend keys records by run; status must still find them by claim."""
+    from agent_factory.operations import _hold_lines  # pyright: ignore[reportPrivateUsage]
+    from agent_factory.store import ClaimDraft
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
+        other = store.create_claim(ClaimDraft("example/evals", 2, "I2", "P2", "eval", "x", {}))
+        for run_id, owner, machine in (
+            ("run-1", claim.id, "machine-1"),
+            ("run-2", claim.id, "machine-2"),
+            ("run-9", other.id, "machine-9"),
+        ):
+            store.set_setting(
+                "runtime",
+                f"fly:machine:{run_id}",
+                {
+                    "machine_id": machine,
+                    "claim_id": owner,
+                    "decision": "stop",
+                    "deadline_epoch": 1900000000,
+                },
+            )
+        lines = "\n".join(_hold_lines(store, claim, None))
+        assert "machine-1 stopped (quota hold), deadline 1900000000" in lines
+        assert "machine-2 stopped (quota hold)" in lines
+        assert "machine-9" not in lines
+    finally:
+        store.close()

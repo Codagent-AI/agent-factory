@@ -1061,12 +1061,14 @@ def _hold_lines(store: ClaimStore, claim: Claim, config: LocalConfig | None) -> 
         lines.append(
             f"quota hold: {until if isinstance(until, str) else 'operator action required'}"
         )
-    machine = store.get_setting("runtime", f"fly:machine:{claim.id}")
-    if isinstance(machine, Mapping) and machine.get("decision") == "stop":
-        lines.append(
-            f"Machine: {machine.get('machine_id', 'unknown')} stopped (quota hold), "
-            f"deadline {machine.get('deadline_epoch', 'unknown')}"
-        )
+    # Records are keyed by run so a claim's repetitions never overwrite each other;
+    # a claim's stopped Machines are found by the claim id each record carries.
+    for machine in store.get_settings_by_prefix("runtime", "fly:machine:").values():
+        if machine.get("claim_id") == claim.id and machine.get("decision") == "stop":
+            lines.append(
+                f"Machine: {machine.get('machine_id', 'unknown')} stopped (quota hold), "
+                f"deadline {machine.get('deadline_epoch', 'unknown')}"
+            )
     if claim.lifecycle == "waiting" and readiness is None and quota is None:
         lines.append("blocking condition: waiting; inspect the latest controller report")
     if config is not None and store.is_paused():
