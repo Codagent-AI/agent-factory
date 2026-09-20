@@ -22,30 +22,49 @@ class FlyApiError(RuntimeError):
         super().__init__(f"Fly API request failed for {path}: {detail}")
 
 
+GONE_STATES = frozenset({"destroyed", "destroying"})
+
+
+def is_gone(machine: Mapping[str, object]) -> bool:
+    """Fly keeps answering for a destroyed Machine for a while."""
+    return machine.get("state") in GONE_STATES
+
+
+def read_token(token_file: Path) -> str:
+    """The one reader of the deploy token, shared by REST and flyctl callers."""
+    try:
+        token = token_file.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        raise FlyApiError("token", detail="deploy token file is unreadable") from error
+    if not token or "\n" in token or "\r" in token:
+        raise FlyApiError("token", detail="deploy token file must contain one token")
+    return token
+
+
 class FlyMachinesClient:
     def __init__(
         self,
         app: str,
         token_file: Path,
         *,
-        base_url: str = "https://api.machines.dev",
+        base_url: str | None = None,
         registry_base_url: str = "https://registry.fly.io",
     ) -> None:
         self.app = app
         self.token_file = token_file
-        # The override lets the launcher, which builds its own client from a
-        # manifest, be exercised end to end against a local fake.
-        self.base_url = os.environ.get("AGENT_FACTORY_FLY_API_URL", base_url).rstrip("/")
+        # An explicit URL wins. The environment override exists so the launcher,
+        # which builds its own client from a manifest, can be pointed at a local fake.
+        self.base_url = (
+            base_url or os.environ.get("AGENT_FACTORY_FLY_API_URL") or "https://api.machines.dev"
+        ).rstrip("/")
+        self._cached_token: str | None = None
         self.registry_base_url = registry_base_url.rstrip("/")
 
     def _token(self) -> str:
-        try:
-            token = self.token_file.read_text(encoding="utf-8").strip()
-        except OSError as error:
-            raise FlyApiError("token", detail="deploy token file is unreadable") from error
-        if not token or "\n" in token or "\r" in token:
-            raise FlyApiError("token", detail="deploy token file must contain one token")
-        return token
+        # A deploy token is static for the life of a client; read it once.
+        if self._cached_token is None:
+            self._cached_token = read_token(self.token_file)
+        return self._cached_token
 
     def _request(
         self,

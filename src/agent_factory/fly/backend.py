@@ -16,7 +16,7 @@ from typing import cast
 
 from agent_factory.backends import Disposal, Probe
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.fly.api import FlyApiError, FlyMachinesClient
+from agent_factory.fly.api import FlyApiError, FlyMachinesClient, is_gone, read_token
 from agent_factory.fly.transport import FlyTransport, FlyTransportError
 from agent_factory.operations import Diagnostic
 
@@ -140,8 +140,7 @@ class FlyMachineBackend:
         if mismatches:
             return Probe("mismatch", json.dumps(mismatches, sort_keys=True))
         state = machine.get("state")
-        if state in {"destroyed", "destroying"}:
-            # Fly keeps answering for a destroyed Machine for a while.
+        if is_gone(machine):
             return Probe("gone", f"Machine is {state}")
         if state in {"started", "starting", "restarting", "created", "replacing"}:
             return Probe("alive")
@@ -249,7 +248,7 @@ class FlyMachineBackend:
             observed = client.get_machine(machine_id)
         except FlyApiError as error:
             return error.status == 404
-        return observed.get("state") in {"destroyed", "destroying"}
+        return is_gone(observed)
 
     def attach_argv(self, plan: object, run: object) -> tuple[str, ...]:
         artifact = _artifact_path(plan)
@@ -445,8 +444,8 @@ def _flyctl_diagnostic(app: str, token_file: Path | None = None) -> Diagnostic:
         # which is what ssh transport depends on. No Machine is needed or created.
         environment = dict(os.environ)
         if token_file is not None:
-            with contextlib.suppress(OSError):
-                environment["FLY_ACCESS_TOKEN"] = token_file.read_text(encoding="utf-8").strip()
+            with contextlib.suppress(FlyApiError):
+                environment["FLY_ACCESS_TOKEN"] = read_token(token_file)
         completed = subprocess.run(
             ("flyctl", "machine", "list", "--app", app, "--json"),
             capture_output=True,

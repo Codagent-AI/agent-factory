@@ -20,11 +20,21 @@ from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
+from agent_factory.backends import Probe
 from agent_factory.controller import ExecutionPlan
+from agent_factory.fly.transport import (
+    EXIT_COLLECTION_FAILED,
+    EXIT_MACHINE_LOST,
+    EXIT_MISMATCH,
+    EXIT_TRANSPORT,
+)
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, ClaimStore, Run
 from agent_factory.suites.and_scene import ReadinessError, bounded_quota_deadline
+
+if TYPE_CHECKING:
+    from agent_factory.fly.backend import FlyMachineBackend
 
 _POLL_SECONDS = 0.05
 _PROGRESS_HEARTBEAT_SECONDS = 5.0
@@ -226,6 +236,7 @@ def _launch_and_observe(
 
 
 _IDENTITY_WAIT_SECONDS = 300
+_FLY_PROBE_SECONDS = 5
 
 
 def _supervise_fly(
@@ -333,11 +344,11 @@ def _recording_exit_code(argv: Sequence[str], evidence_path: str) -> list[str]:
 
 def _finish_fly_launcher_exit(store: ClaimStore, run: Run, plan: ExecutionPlan) -> None:
     code = _launcher_exit_code(plan, run.evidence_path)
-    if code in {71, 72}:
+    if code in {EXIT_MACHINE_LOST, EXIT_COLLECTION_FAILED}:
         store.finish_run(run.id, execution_status="interrupted", result={"reason": "machine lost"})
-    elif code == 73:
+    elif code == EXIT_MISMATCH:
         store.report_uncertainty(run.id, "Fly launcher reported ownership mismatch")
-    elif code == 70:
+    elif code == EXIT_TRANSPORT:
         store.finish_run(
             run.id, execution_status="failed", result={"reason": "Fly launcher failed"}
         )
@@ -400,12 +411,9 @@ def _observe_fly(
     plan: ExecutionPlan,
     limits: SupervisionLimits,
     identity: Mapping[str, object],
-    backend: object,
+    machine_backend: FlyMachineBackend,
     launcher: Mapping[str, object],
 ) -> None:
-    from agent_factory.fly.backend import FlyMachineBackend
-
-    machine_backend = cast(FlyMachineBackend, backend)
     run = _required_run(store, run_id)
     progress = dict(run.progress)
     wall_anchor = time.time()
@@ -419,6 +427,8 @@ def _observe_fly(
         gap = max(0.0, wall_anchor - _number(progress.get("persisted_at"), wall_anchor))
         started = wall_anchor - _number(progress.get("elapsed_seconds"), 0) - gap
         last_progress = wall_anchor - _number(progress.get("idle_seconds"), 0) - gap
+    state: Probe | None = None
+    last_probe = float("-inf")
     while True:
         run = _required_run(store, run_id)
         progress = dict(run.progress)
@@ -439,20 +449,21 @@ def _observe_fly(
         )
         store.update_progress(run_id, progress)
         result = _load_result(_artifact_root(plan, run.evidence_path))
-        state = machine_backend.probe(identity)
-        if (
-            state.state == "gone"
-            or result.result is not None
-            and _identity_status(launcher) == "missing"
-        ):
-            if result.result is not None:
-                store.finish_run(
-                    run_id, execution_status=_result_status(result.result), result=result.result
-                )
-            else:
-                store.finish_run(
-                    run_id, execution_status="interrupted", result={"reason": "machine lost"}
-                )
+        launcher_missing = _identity_status(launcher) == "missing"
+        # A probe is a REST round trip; like the container probe below it runs on
+        # an interval, and at once when the launcher has gone away.
+        if state is None or now - last_probe >= _FLY_PROBE_SECONDS or launcher_missing:
+            state = machine_backend.probe(identity)
+            last_probe = now
+        if result.result is not None and (launcher_missing or state.state == "gone"):
+            store.finish_run(
+                run_id, execution_status=_result_status(result.result), result=result.result
+            )
+            return
+        if state.state == "gone":
+            store.finish_run(
+                run_id, execution_status="interrupted", result={"reason": "machine lost"}
+            )
             return
         if state.state == "stopped":
             if result.result is not None:
@@ -469,7 +480,7 @@ def _observe_fly(
         if state.state in {"mismatch", "unknown"}:
             _supervise_fly(store, run, plan, limits)
             return
-        if _identity_status(launcher) == "missing" and result.result is None:
+        if launcher_missing and result.result is None:
             _finish_fly_launcher_exit(store, run, plan)
             return
         timeout = _timeout(now, started, last_progress, limits)

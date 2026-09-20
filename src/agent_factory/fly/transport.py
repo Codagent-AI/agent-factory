@@ -18,12 +18,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
-if TYPE_CHECKING:
-    from agent_factory.fly.api import FlyMachinesClient
+from agent_factory.fly.api import FlyApiError, FlyMachinesClient, is_gone, read_token
 
-EXIT_ARGUMENT = 2
 EXIT_TRANSPORT = 70
 EXIT_MACHINE_LOST = 71
 EXIT_COLLECTION_FAILED = 72
@@ -94,11 +92,9 @@ class FlyTransport:
             # The deploy token reaches flyctl through its environment, never argv,
             # so it cannot appear in a process listing or a log line.
             try:
-                token = self.token_file.read_text(encoding="utf-8").strip()
-            except OSError as error:
-                raise FlyTransportError("deploy token file is unreadable") from error
-            if token:
-                environment["FLY_ACCESS_TOKEN"] = token
+                environment["FLY_ACCESS_TOKEN"] = read_token(self.token_file)
+            except FlyApiError as error:
+                raise FlyTransportError(str(error)) from error
         return environment
 
     def _console(self, command: str) -> tuple[str, ...]:
@@ -135,13 +131,18 @@ class FlyTransport:
             raise FlyTransportError(result.stderr.decode(errors="replace").strip() or "ssh failed")
         return result.stdout
 
-    def put_file(self, local: Path, remote: str, *, mode: str = "0600") -> None:
+    def put_file(
+        self, local: Path, remote: str, *, mode: str = "0600", prepare: bool = True
+    ) -> None:
+        """Upload one file. ``prepare=False`` when the caller already cleared the path."""
         if not self.machine_id:
             raise FlyTransportError("Machine identity is unavailable")
-        # flyctl's sftp put refuses to overwrite, and its flags belong to ``put``.
-        self.command(
-            f"mkdir -p {shlex.quote(os.path.dirname(remote))}; rm -f {shlex.quote(remote)}"
-        )
+        if prepare:
+            # flyctl's sftp put refuses to overwrite and does not create directories.
+            self.command(
+                f"mkdir -p {shlex.quote(os.path.dirname(remote))}; rm -f {shlex.quote(remote)}"
+            )
+        # The flags belong to ``put``, not to ``sftp``.
         try:
             result = subprocess.run(
                 (
@@ -233,14 +234,12 @@ class Lifecycle:
         transport: FlyTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        from agent_factory.fly.api import FlyMachinesClient as Client
-
         self.manifest = manifest
         self.factory = factory
-        self.fly = _mapping(manifest, "fly")
+        self.fly = mapping_field(manifest, "fly")
         self.transport = transport or FlyTransport.from_manifest(manifest)
-        self.client = client or Client(
-            _string(self.fly, "app"), Path(_string(self.fly, "token_file"))
+        self.client = client or FlyMachinesClient(
+            string_field(self.fly, "app"), Path(string_field(self.fly, "token_file"))
         )
         self.sleep = sleep
         self.record_path = factory / "machine.json"
@@ -254,8 +253,6 @@ class Lifecycle:
         return self._guarded(lambda: self._attach(artifact_dir))
 
     def _guarded(self, action: Callable[[], int]) -> int:
-        from agent_factory.fly.api import FlyApiError
-
         try:
             return action()
         except MachineLostError as error:
@@ -312,7 +309,7 @@ class Lifecycle:
     def _claim(self) -> tuple[str, int]:
         """Return a verified Machine for this attempt and its deadline."""
         record = read_record(self.record_path)
-        run_id = _string(self.manifest, "run_id")
+        run_id = string_field(self.manifest, "run_id")
         recorded_id = record.get("id")
         if isinstance(recorded_id, str):
             same_attempt = record.get("run_id") == run_id or "run_id" not in record
@@ -328,14 +325,12 @@ class Lifecycle:
             if not _owned(machine, self._stable_metadata(record)):
                 # Never adopt or terminate a Machine that is not provably ours.
                 raise OwnershipMismatchError(recorded_id)
-            if same_attempt:
-                deadline = _recorded_deadline(record) or self._fresh_deadline()
-                _log(self.factory, f"adopting Machine {recorded_id} for the same attempt")
-                self._ensure_started(recorded_id, machine, deadline, run_id)
-                self._update_record({"run_id": run_id, "deadline": deadline})
-                return recorded_id, deadline
-            deadline = self._fresh_deadline()
-            _log(self.factory, f"resuming in Machine {recorded_id} with deadline {deadline}")
+            # An adopted attempt keeps its deadline; a recovery attempt gets a fresh one.
+            deadline = (_recorded_deadline(record) if same_attempt else None) or (
+                self._fresh_deadline()
+            )
+            action = "adopting" if same_attempt else "resuming in"
+            _log(self.factory, f"{action} Machine {recorded_id} with deadline {deadline}")
             self._ensure_started(recorded_id, machine, deadline, run_id)
             # The supervisor trusts the record only once it names this attempt, so
             # it is rewritten after the Machine carries the new identity.
@@ -347,32 +342,32 @@ class Lifecycle:
         from agent_factory.fly.guest import guest_init_script
 
         deadline = self._fresh_deadline()
-        run_id = _string(self.manifest, "run_id")
-        nonce = _string(self.manifest, "nonce")
+        run_id = string_field(self.manifest, "run_id")
+        nonce = string_field(self.manifest, "nonce")
         machine = self.client.create_machine(
-            image=_string(self.manifest, "image"),
-            cpu_kind=_string(self.fly, "cpu_kind"),
+            image=string_field(self.manifest, "image"),
+            cpu_kind=string_field(self.fly, "cpu_kind"),
             cpus=_integer(self.fly, "cpus"),
             memory_mb=_integer(self.fly, "memory_mb"),
-            region=_string(self.fly, "region"),
+            region=string_field(self.fly, "region"),
             factory_owner=OWNER,
             run_id=run_id,
-            claim_id=_string(self.manifest, "claim_id"),
+            claim_id=string_field(self.manifest, "claim_id"),
             nonce=nonce,
             deadline_epoch=str(deadline),
-            unit_key=_string(self.manifest, "unit_key"),
+            unit_key=string_field(self.manifest, "unit_key"),
             guest_init=guest_init_script(),
         )
-        machine_id = _string(machine, "id")
+        machine_id = string_field(machine, "id")
         # Durable before anything else happens, so a crash here is recoverable.
         _write_record(
             self.record_path,
             {
-                "app": _string(self.fly, "app"),
+                "app": string_field(self.fly, "app"),
                 "id": machine_id,
                 "run_id": run_id,
-                "claim_id": _string(self.manifest, "claim_id"),
-                "unit_key": _string(self.manifest, "unit_key"),
+                "claim_id": string_field(self.manifest, "claim_id"),
+                "unit_key": string_field(self.manifest, "unit_key"),
                 "nonce": nonce,
                 "deadline": deadline,
                 "created_at": datetime.now(UTC).isoformat(),
@@ -419,13 +414,15 @@ class Lifecycle:
         nonce = record.get("nonce")
         return {
             "factory-owner": OWNER,
-            "claim_id": _string(self.manifest, "claim_id"),
-            "unit_key": _string(self.manifest, "unit_key"),
-            "nonce": nonce if isinstance(nonce, str) and nonce else _string(self.manifest, "nonce"),
+            "claim_id": string_field(self.manifest, "claim_id"),
+            "unit_key": string_field(self.manifest, "unit_key"),
+            "nonce": nonce
+            if isinstance(nonce, str) and nonce
+            else string_field(self.manifest, "nonce"),
         }
 
     def _fresh_deadline(self) -> int:
-        values = _mapping(self.manifest, "deadline")
+        values = mapping_field(self.manifest, "deadline")
         return (
             int(time.time())
             + _integer(values, "total_seconds")
@@ -433,17 +430,13 @@ class Lifecycle:
         )
 
     def _get(self, machine_id: str) -> Mapping[str, object] | None:
-        from agent_factory.fly.api import FlyApiError
-
         try:
             machine = self.client.get_machine(machine_id)
         except FlyApiError as error:
             if error.status == 404:
                 return None
             raise
-        if machine.get("state") in {"destroyed", "destroying"}:
-            return None
-        return machine
+        return None if is_gone(machine) else machine
 
     def _update_record(self, values: Mapping[str, object]) -> None:
         _write_record(self.record_path, {**read_record(self.record_path), **values})
@@ -463,37 +456,45 @@ class Lifecycle:
 
     def _deliver(self, request: JobRequest, deadline: int, job: int) -> None:
         directory = f"/artifacts/.factory/job/{job}"
+        credentials = self._credential_files(request)
+        # One ssh round trip prepares every target, so the uploads need none each.
         self.transport.command(
-            f"mkdir -p /run/factory /var/lib/factory {directory} && chmod 700 /run/factory && "
+            "rm -rf /eval-input /host-home /run/factory/env && "
+            f"mkdir -p /run/factory /var/lib/factory /host-home/codex /host-home/claude "
+            f"{directory} && chmod 700 /run/factory /host-home && rm -f {directory}/job.sh && "
             f"printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
         if request.input_dir is not None:
-            self.transport.command("rm -rf /eval-input")
             self.transport.put_directory(request.input_dir, "/eval-input")
-        home = Path.home()
-        selected: list[tuple[str, str, bool]] = []
-        if request.codex_auth:
-            selected.extend(_CODEX_FILES)
-        if request.claude_auth:
-            selected.extend(_CLAUDE_FILES)
-        for source, target, required in selected:
-            path = home / source
-            if not path.is_file():
-                if required:
-                    raise FlyTransportError(f"required credential file is missing: ~/{source}")
-                continue
-            self.transport.put_file(path, f"/host-home/{target}", mode="0600")
+        for path, target in credentials:
+            self.transport.put_file(path, f"/host-home/{target}", prepare=False)
         with tempfile.TemporaryDirectory() as scratch:
             # Secret-bearing files are staged outside the artifact tree.
             environment = Path(scratch) / "env"
             environment.write_text(request.environment, encoding="utf-8")
             environment.chmod(0o600)
-            self.transport.put_file(environment, "/run/factory/env", mode="0600")
+            self.transport.put_file(environment, "/run/factory/env", prepare=False)
             script = Path(scratch) / "job.sh"
             script.write_text(request.script, encoding="utf-8")
-            self.transport.put_file(script, f"{directory}/job.sh", mode="0700")
+            self.transport.put_file(script, f"{directory}/job.sh", mode="0700", prepare=False)
         self.transport.command(f"touch {directory}/start")
         _log(self.factory, f"delivered job {job}")
+
+    @staticmethod
+    def _credential_files(request: JobRequest) -> list[tuple[Path, str]]:
+        """Resolve the allowlist before anything is sent, so a gap fails early."""
+        selected = [
+            *(_CODEX_FILES if request.codex_auth else ()),
+            *(_CLAUDE_FILES if request.claude_auth else ()),
+        ]
+        files: list[tuple[Path, str]] = []
+        for source, target, required in selected:
+            path = Path.home() / source
+            if path.is_file():
+                files.append((path, target))
+            elif required:
+                raise FlyTransportError(f"required credential file is missing: ~/{source}")
+        return files
 
     # -- observation and collection ----------------------------------------
 
@@ -604,14 +605,14 @@ def _place(staging: Path, artifact_dir: Path) -> None:
         os.replace(source, target)
 
 
-def _mapping(value: Mapping[str, object], key: str) -> Mapping[str, object]:
+def mapping_field(value: Mapping[str, object], key: str) -> Mapping[str, object]:
     result = value.get(key)
     if not isinstance(result, Mapping):
         raise ValueError(f"manifest has no {key}")
     return cast(Mapping[str, object], result)
 
 
-def _string(value: Mapping[str, object], key: str) -> str:
+def string_field(value: Mapping[str, object], key: str) -> str:
     result = value.get(key)
     if not isinstance(result, str) or not result:
         raise ValueError(f"manifest has no {key}")

@@ -125,7 +125,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Environment
 
 
 _SUITE = (
-    "echo suite-output; ls /host-home/codex /host-home/claude > /artifacts/seen-credentials.txt; "
+    "echo suite-output; "
+    "ls -A /host-home/codex /host-home/claude > /artifacts/seen-credentials.txt; "
     "cat /eval-input/controller.mjs > /artifacts/seen-input.txt; "
     "echo '{\"schema_version\": 1}' > /artifacts/run-state.json; sleep 2; "
     'echo \'{"evaluation_status": "completed"}\' > /artifacts/result.json; exit 7'
@@ -156,9 +157,8 @@ def test_fresh_launch_records_ownership_then_delivers_runs_and_collects(
     create = next(r for r in env.api.requests if r["method"] == "POST")
     assert "secret" not in json.dumps(create["body"])
     # The job saw its inputs and credentials, and they were gone before DONE.
-    assert (env.artifact / "seen-credentials.txt").read_text().split() == [
-        "auth.json",
-    ] or "auth.json" in (env.artifact / "seen-credentials.txt").read_text()
+    seen = (env.artifact / "seen-credentials.txt").read_text()
+    assert "auth.json" in seen and ".credentials.json" in seen
     assert (env.artifact / "seen-input.txt").read_text() == "// suite"
     assert not (env.guest_root / "host-home").exists()
     assert not (env.guest_root / "run/factory/env").exists()

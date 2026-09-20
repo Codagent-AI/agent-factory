@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Mapping
-from typing import cast
+
+from agent_factory.fly.transport import mapping_field, string_field
 
 
 def guest_init_script() -> str:
@@ -94,12 +95,12 @@ done
 
 def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
     """Build the guest job wrapper from non-secret manifest data and suite text."""
-    repositories = _object(manifest, "repositories")
-    commits = _object(manifest, "commits")
-    runner_url = _anonymous_url(_required(repositories, "runner"))
-    skills_url = _anonymous_url(_required(repositories, "skills"))
-    runner_commit = _required(commits, "runner")
-    skills_commit = _required(commits, "skills")
+    repositories = mapping_field(manifest, "repositories")
+    commits = mapping_field(manifest, "commits")
+    runner_url = _anonymous_url(string_field(repositories, "runner"))
+    skills_url = _anonymous_url(string_field(repositories, "skills"))
+    runner_commit = string_field(commits, "runner")
+    skills_commit = string_field(commits, "skills")
     return "\n".join(
         (
             "#!/usr/bin/env bash",
@@ -165,17 +166,3 @@ def _anonymous_url(url: str) -> str:
     if url.startswith(prefix):
         return "https://github.com/" + url[len(prefix) :]
     return url
-
-
-def _object(value: Mapping[str, object], key: str) -> Mapping[str, object]:
-    item = value.get(key)
-    if not isinstance(item, Mapping):
-        raise ValueError(f"manifest has no {key}")
-    return cast(Mapping[str, object], item)
-
-
-def _required(value: Mapping[str, object], key: str) -> str:
-    item = value.get(key)
-    if not isinstance(item, str) or not item:
-        raise ValueError(f"manifest has no {key}")
-    return item

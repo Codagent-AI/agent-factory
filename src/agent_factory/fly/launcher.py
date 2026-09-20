@@ -273,7 +273,7 @@ def _validate_mount(mount: str, manifest: Mapping[str, object]) -> None:
         raise ArgumentError(mount)
     source = parts.get("source")
     target = parts.get("target")
-    if parts.get("type") != "bind" or parts.get("readonly") is not None or not source or not target:
+    if parts.get("type") != "bind" or not source or not target:
         raise ArgumentError(mount)
     worktrees = manifest.get("worktrees")
     if not isinstance(worktrees, Mapping):
