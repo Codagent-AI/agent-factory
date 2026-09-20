@@ -6,7 +6,9 @@ import json
 import os
 import stat
 import subprocess
+import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -25,9 +27,15 @@ class FlyMachineBackend:
         *,
         client_factory: Callable[[str, Path], object] = FlyMachinesClient,
         transport_factory: Callable[[str, str], FlyTransport] = FlyTransport,
+        app: str | None = None,
+        token_file: Path | None = None,
+        local: LocalConfig | None = None,
     ) -> None:
         self._client_factory = client_factory
         self._transport_factory = transport_factory
+        self._app = app
+        self._token_file = token_file
+        self._local = local
 
     def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
         del shared
@@ -143,15 +151,52 @@ class FlyMachineBackend:
             return False
         return True
 
-    def dispose(self, identity: Mapping[str, object], decision: Disposal) -> None:
-        if decision != "destroy":
+    def dispose(
+        self, identity: Mapping[str, object], decision: Disposal, store: object | None = None
+    ) -> None:
+        """Apply a post-classification decision only after ownership is re-verified."""
+        probe = self.probe(identity)
+        if probe.state == "mismatch":
+            _set_setting(
+                store,
+                "fly:mismatch",
+                {
+                    "machine_id": _machine_id(identity),
+                    "run_id": identity.get("run_id"),
+                    "expected": identity.get("expected_metadata"),
+                    "observed": probe.detail,
+                    "remedy": "destroy the Machine by hand or wait for its deadline",
+                },
+            )
             return
-        if self.probe(identity).state not in {"alive", "stopped"}:
+        if probe.state == "unknown":
+            _cleanup_failure(store, _machine_id(identity), probe.detail)
+            return
+        if probe.state == "gone":
+            _set_machine_record(store, identity, decision, "gone")
             return
         try:
-            self._client(identity).destroy(_machine_id(identity))
-        except FlyApiError:
+            observed = self._client(identity).get_machine(_machine_id(identity))
+            identity = {**identity, "deadline_epoch": _metadata(observed).get("deadline_epoch")}
+        except FlyApiError as error:
+            _cleanup_failure(store, _machine_id(identity), str(error))
             return
+        if decision == "destroy":
+            try:
+                self._client(identity).destroy(_machine_id(identity))
+            except FlyApiError as error:
+                _cleanup_failure(store, _machine_id(identity), str(error))
+                return
+            _set_machine_record(store, identity, decision, "gone")
+            return
+        if decision == "stop" and probe.state == "alive":
+            try:
+                self._client(identity).stop(_machine_id(identity))
+            except FlyApiError as error:
+                _cleanup_failure(store, _machine_id(identity), str(error))
+                return
+            probe = Probe("stopped")
+        _set_machine_record(store, identity, decision, probe.state)
 
     def attach_argv(self, plan: object, run: object) -> tuple[str, ...]:
         artifact = _artifact_path(plan)
@@ -161,7 +206,77 @@ class FlyMachineBackend:
         return (launcher, "attach", "--run-dir", str(artifact))
 
     def reconcile(self, store: object) -> list[str]:
-        raise NotImplementedError
+        """Contain every tagged Machine even when no local attempt knows about it."""
+        try:
+            client = cast(
+                FlyMachinesClient, self._client_factory(self._app or "", self._token_file or Path())
+            )
+            machines = client.list_machines("factory-owner", "agent-factory")
+        except (FlyApiError, OSError, ValueError) as error:
+            _cleanup_failure(store, "list", str(error))
+            return []
+        records = _settings_by_prefix(store, "fly:machine:")
+        self._refresh_stopped_deadlines(store, client, records)
+        known_ids = {
+            value.get("machine_id")
+            for value in records.values()
+            if isinstance(value.get("machine_id"), str)
+        }
+        unknown: list[dict[str, object]] = []
+        destroyed: list[str] = []
+        failures: list[dict[str, object]] = []
+        now = time.time()
+        for machine in machines:
+            machine_id = machine.get("id")
+            if not isinstance(machine_id, str) or not machine_id:
+                continue
+            deadline = _deadline_epoch(_metadata(machine).get("deadline_epoch"))
+            if deadline is not None and now > deadline:
+                try:
+                    client.destroy(machine_id)
+                    destroyed.append(machine_id)
+                except FlyApiError as error:
+                    failures.append({"machine_id": machine_id, "reason": str(error)})
+                continue
+            if machine_id not in known_ids:
+                unknown.append(
+                    {
+                        "machine_id": machine_id,
+                        "deadline_epoch": deadline,
+                        "reason": "not recorded by local store",
+                    }
+                )
+        _set_setting(store, "fly:unknown", {"machines": unknown} if unknown else {})
+        _set_setting(store, "fly:cleanup-failed", {"machines": failures} if failures else {})
+        return destroyed
+
+    def _refresh_stopped_deadlines(
+        self,
+        store: object,
+        client: FlyMachinesClient,
+        records: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        """Move quota-held deadlines with the provider reset, before they can bill."""
+        if self._local is None or self._local.fly is None:
+            return
+        for key, record in records.items():
+            if record.get("decision") != "stop":
+                continue
+            claim_id = key.removeprefix("fly:machine:")
+            hold = _claim_hold(store, claim_id, "quota")
+            deadline = _quota_machine_deadline(hold, self._local)
+            machine_id = record.get("machine_id")
+            if deadline is None or not isinstance(machine_id, str):
+                continue
+            if _deadline_epoch(record.get("deadline_epoch")) == deadline:
+                continue
+            try:
+                client.set_metadata(machine_id, "deadline_epoch", str(deadline))
+                client.update_config(machine_id, {"env": {"FACTORY_DEADLINE_EPOCH": str(deadline)}})
+            except FlyApiError as error:
+                _cleanup_failure(store, machine_id, str(error))
+                continue
+            _set_setting(store, key, {**record, "deadline_epoch": deadline, "state": "stopped"})
 
     def provenance(self, identity: Mapping[str, object]) -> Mapping[str, object]:
         try:
@@ -261,7 +376,10 @@ def _flyctl_diagnostic(app: str) -> Diagnostic:
 
 
 def _artifact_path(plan: object) -> Path | None:
-    hints = getattr(plan, "ownership_hints", None)
+    if isinstance(plan, Mapping):
+        hints = cast(Mapping[str, object], plan).get("ownership_hints")
+    else:
+        hints = getattr(plan, "ownership_hints", None)
     if not isinstance(hints, Mapping):
         return None
     hint_values = cast(Mapping[str, object], hints)
@@ -270,7 +388,10 @@ def _artifact_path(plan: object) -> Path | None:
 
 
 def _allowed_environment(plan: object) -> Mapping[str, str]:
-    value = getattr(plan, "allowed_environment", {})
+    if isinstance(plan, Mapping):
+        value = cast(Mapping[str, object], plan).get("allowed_environment", {})
+    else:
+        value = getattr(plan, "allowed_environment", {})
     return cast(Mapping[str, str], value) if isinstance(value, Mapping) else {}
 
 
@@ -300,6 +421,87 @@ def _token_file(identity: Mapping[str, object]) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError("Fly token file is unavailable")
     return value
+
+
+def _deadline_epoch(value: object) -> int | None:
+    try:
+        deadline = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return deadline if deadline > 0 else None
+
+
+def _set_setting(store: object | None, key: str, value: Mapping[str, object]) -> None:
+    setter = getattr(store, "set_setting", None)
+    if callable(setter):
+        setter("runtime", key, value)
+
+
+def _settings_by_prefix(store: object, prefix: str) -> Mapping[str, Mapping[str, object]]:
+    getter = getattr(store, "get_settings_by_prefix", None)
+    if not callable(getter):
+        return {}
+    values = getter("runtime", prefix)
+    return cast(Mapping[str, Mapping[str, object]], values) if isinstance(values, Mapping) else {}
+
+
+def _set_machine_record(
+    store: object | None, identity: Mapping[str, object], decision: Disposal, state: str
+) -> None:
+    claim_id = identity.get("expected_metadata")
+    expected: Mapping[str, object] = (
+        cast(Mapping[str, object], claim_id) if isinstance(claim_id, Mapping) else {}
+    )
+    claim = expected.get("claim_id", identity.get("claim_id"))
+    if not isinstance(claim, str) or not claim:
+        return
+    _set_setting(
+        store,
+        f"fly:machine:{claim}",
+        {
+            "machine_id": _machine_id(identity),
+            "decision": decision,
+            "deadline_epoch": _deadline_epoch(identity.get("deadline_epoch")),
+            "state": state,
+        },
+    )
+
+
+def _cleanup_failure(store: object | None, machine_id: str, reason: str) -> None:
+    _set_setting(
+        store,
+        "fly:cleanup-failed",
+        {"machines": [{"machine_id": machine_id, "reason": reason}]},
+    )
+
+
+def _claim_hold(store: object, claim_id: str, name: str) -> Mapping[str, object] | None:
+    getter = getattr(store, "get_hold", None)
+    value = getter(claim_id, name) if callable(getter) else None
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
+
+
+def _quota_machine_deadline(hold: Mapping[str, object] | None, local: LocalConfig) -> int | None:
+    if hold is None:
+        return None
+    value = hold.get("until")
+    if not isinstance(value, str):
+        return None
+    try:
+        reset = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if reset.tzinfo is None or reset <= datetime.now(UTC):
+        return None
+    eligible = reset.astimezone(local.schedule.timezone)
+    while not local.schedule.allows_admission(eligible):
+        eligible += timedelta(hours=1)
+        eligible = eligible.replace(minute=0, second=0, microsecond=0)
+    return (
+        int(eligible.timestamp() + local.limits.total_seconds + local.fly.collection_grace_seconds)
+        if local.fly is not None
+        else None
+    )
 
 
 def _expected_metadata(identity: Mapping[str, object]) -> Mapping[str, str]:

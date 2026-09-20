@@ -72,6 +72,14 @@ def cycle(state: Path, config_path: Path) -> None:
             factory_login=shared.bot_login,
             artifact_root=local.storage_root / "artifacts",
         )
+        if local.eval_execution == "fly" and local.fly is not None:
+            # Reconciliation is deliberately before result consumption and admission:
+            # cost containment must continue even when every other controller action fails.
+            from agent_factory.fly.backend import FlyMachineBackend
+
+            FlyMachineBackend(
+                app=local.fly.app, token_file=local.fly.token_file, local=local
+            ).reconcile(store)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
         permission_cache: dict[tuple[str, str], str | None] = {}
@@ -577,9 +585,36 @@ def _consume_results(store: ClaimStore, controller: Controller) -> None:
                     },
                 )
             controller.record_result(run.id, result)
+            _dispose_fly_result(store, handler, run, result)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
+
+
+def _dispose_fly_result(
+    store: ClaimStore, handler: WorkKindHandler, run: Run, result: AttemptResult
+) -> None:
+    """Dispose after classification; collection/result normalization has already completed."""
+    hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
+    hint_values = cast(Mapping[str, object], hints) if isinstance(hints, Mapping) else None
+    if hint_values is None or hint_values.get("backend") != "fly-machine":
+        return
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    backend = FlyMachineBackend()
+    identity = backend.identity_from_plan(run.plan, run)
+    if identity is None:
+        return
+    classification = handler.classify(run, result).kind
+    if result.quota_until is not None or classification == "quota":
+        decision = "stop"
+    elif classification == "technical" and run.reason != "recovery":
+        decision = "keep"
+    else:
+        # Includes a lost Machine: the backend re-probes and only destroys when
+        # it still owns the matching resource.
+        decision = "destroy"
+    backend.dispose(identity, decision, store)
 
 
 def _hold_for_missing_handler(store: ClaimStore, claim: Claim, run: Run) -> None:

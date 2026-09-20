@@ -1,5 +1,16 @@
 # `and-scene` suite integration
 
+## Fly adapter seam
+
+For Fly evals, Factory uses the suite's `SANDBOX_RUNNER` override rather than
+changing suite semantics. The adapter receives a typed, non-secret manifest
+with the pinned Runner, Skills, and harness revisions, attempt identity,
+deadline, and guest/artifact paths. It accepts only the pinned `run.sh`
+argument grammar. A harness update that changes that grammar is an admission
+hold: run the adapter's dry-run readiness check against the new pinned harness
+before deploying it. The adapter collects the completed artifact tree once;
+human review uses that collected host directory.
+
 Agent Factory evaluates only the `and-scene` suite in iteration 1. Its harness
 branch is configured in `config/codagent.toml` as `eval.harness_ref` (default
 `main`). Factory resolves that branch to a commit at each claim's admission and

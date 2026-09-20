@@ -335,11 +335,18 @@ class EvalHandler:
             if _run_needs_recovery(latest):
                 return None
             settled.append(latest)
-        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in settled)
-        verdict = "failed" if failed else "pending-human-review"
+        losses = [run for run in settled if _machine_lost(run.result)]
+        surviving = [run for run in settled if run not in losses]
+        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in surviving)
+        verdict = "infra-error" if not surviving else "failed" if failed else "pending-human-review"
+        loss_text = "".join(
+            f"\n- {run.unit_key} was lost to factory infrastructure: "
+            f"{str(run.result.get('reason', 'machine lost'))}."
+            for run in losses
+        )
         return Outcome(
             verdict,
-            event_body=f"All repetitions settled; aggregate verdict is {verdict}.",
+            event_body=f"All repetitions settled; aggregate verdict is {verdict}." + loss_text,
         )
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
@@ -356,6 +363,8 @@ class EvalHandler:
         )
 
     def report_events(self, claim: Claim, run: Run, result: AttemptResult) -> list[ReportEvent]:
+        if _machine_lost(result.result):
+            return []
         if self.adapter is None:
             return []
         paths = mapping(claim.preparation.get("worktrees", {}))

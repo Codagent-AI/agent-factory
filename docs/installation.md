@@ -188,6 +188,49 @@ revision.
 
 ## Install the LaunchAgent
 
+## Fly Machine execution for evals
+
+Set `eval.execution = "fly"` in the local configuration to run evals in Fly
+Machines instead of Docker. Docker remains the default and is the rollback:
+set the value back to `"docker"`. Fly keeps the Mac controller, SQLite state,
+and collected artifacts local while moving untrusted suite execution into a
+microVM. It gives up Docker's local bind mounts and Cursor role profiles;
+Cursor is not supported for Fly eval roles.
+
+Before enabling it, create a Fly organization and app, then create an
+app-scoped deploy token. Store that single token in a private owner-readable
+file beside the App key and suite environment file; it is separate from the
+candidate-branch, fix-PR, and board credentials. Install `flyctl` on the
+LaunchAgent PATH. Build the amd64 Runner sandbox base image with Fly's remote
+builder after upgrading Agent Runner to the revision whose Dockerfile discovers
+`chrome-linux64/chrome`, and use its `.dockerignore` so the remote build does
+not send the working tree.
+
+Configure every Fly setting in the local TOML:
+
+```toml
+eval.execution = "fly"
+
+[fly]
+app = "factory-evals"
+image = "registry.fly.io/factory-evals:runner"
+token_file = "/private/credentials/fly-deploy-token"
+region = "ewr"                    # default
+cpu_kind = "shared"                # default
+cpus = 4                            # default
+memory_mb = 8192                    # default
+collection_grace_seconds = 900      # default
+heartbeat_seconds = 20              # default
+```
+
+The absolute deadline is the attempt total limit plus collection grace (and,
+when quota-held, the earliest eligible restart). At the defaults its worst-case
+Machine cost is about $0.75 per attempt. Roll out in this order: land the
+Agent Runner image prerequisite; create the app, token, and image; deploy with
+Docker still selected and run `doctor`; switch to Fly and complete one eval and
+human review from collected artifacts; then prove one Codex and Claude token
+refresh interval before treating Fly as production.
+
 Create the root and log directory, then render
 `packaging/launchd/com.codagent.agent-factory.plist` with real absolute paths.
 The template tokens map as follows:

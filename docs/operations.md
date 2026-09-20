@@ -1,5 +1,28 @@
 # Operating Agent Factory
 
+## Fly eval operations
+
+With `eval.execution = "fly"`, `doctor` reports the mode-neutral `eval` group
+and the `eval-fly` group (deploy token, app API, image manifest, and `flyctl`
+transport). `status` shows the backing Machine ID, state, and deadline for an
+active repetition; a quota hold shows `stopped (quota hold)` and its retained
+Machine deadline. It also reports reconciliation findings for unknown Machines,
+cleanup failures, and ownership mismatches.
+
+An ownership mismatch blocks new Fly eval launches. Do not destroy a Machine
+whose identity is uncertain: inspect it, correct the recorded state if the
+cause is understood, or let the deadline reconciler remove it. A lost Machine
+costs that repetition and is never automatically rerun or presented as a
+product result. If every repetition is lost, the claim is `infra-error`.
+
+On a recognized Codex quota hold Factory stops, rather than destroys, the
+Machine and refreshes its deadline from the reset time and admission window.
+When execution becomes eligible it starts the same Machine and verifies the
+checkpoint before resuming. Human review always runs on the Mac against the
+collected artifact directory, not against a Fly Machine. For diagnosis the
+launcher supports `stand-in` and `attach` modes; neither is a normal execution
+path.
+
 Use the installed command with its explicit local configuration:
 
 ```sh
