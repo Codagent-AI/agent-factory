@@ -81,8 +81,9 @@ are retained.
 
 ## The fix work kind
 
-A writer files or drags a Bug-typed issue to `Owner=factory` / `Status=Ready`
-in a configured source repository. Factory admits it in board order, comments
+A writer files a Bug-typed issue, or drags a tracked Bug to `Status=Ready` in a
+configured source repository; the next factory poll sets `Owner=factory`.
+Factory admits it in board order, comments
 the admission notice with `Refs` recording the frozen target/Runner/Skills
 commits, and runs the factory's packaged fix workflow in the same Docker sandbox used
 for evals, under its own slot and limits. The workflow produces one of three

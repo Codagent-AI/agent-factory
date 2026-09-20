@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import re
 import subprocess
 from collections.abc import Callable, Mapping
@@ -21,7 +22,9 @@ from agent_factory.controller import (
     quota_deadline,
 )
 from agent_factory.github import (
+    WRITER_PERMISSIONS,
     AppCredentials,
+    GitHubApiError,
     GitHubClient,
     InstallationTokenProvider,
     ProjectQueueItem,
@@ -42,6 +45,8 @@ from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.review import process_review_claim
 from agent_factory.work_kinds.fix.sync import sync_claim
+
+logger = logging.getLogger(__name__)
 
 
 def cycle(state: Path, config_path: Path) -> None:
@@ -69,6 +74,9 @@ def cycle(state: Path, config_path: Path) -> None:
         )
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
+        permission_cache: dict[tuple[str, str], str | None] = {}
+        for card in cards:
+            _assign_ready_bug(client, shared, card, permission_cache)
         _consume_results(store, controller)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
@@ -83,6 +91,29 @@ def cycle(state: Path, config_path: Path) -> None:
                 "runtime", "memory", {} if probed.available else {"reason": probed.detail}
             )
             return probed
+
+        @functools.cache
+        def shared_eval_diagnostics() -> list[Diagnostic]:
+            return doctor(local, include_fix=False, include_informational=False)
+
+        kind_failure_cache: dict[str, list[Diagnostic]] = {}
+
+        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
+            if candidate_handler.kind not in kind_failure_cache:
+                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
+                )
+            return kind_failure_cache[candidate_handler.kind]
+
+        def kind_ready(candidate_handler: WorkKindHandler) -> bool:
+            failures = kind_failures(candidate_handler)
+            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
+            store.set_setting(
+                "runtime",
+                f"readiness:{candidate_handler.kind}",
+                {"reason": reason} if reason else {},
+            )
+            return not reason
 
         for card in cards:
             claims = store.claims_for_item(card.id)
@@ -158,6 +189,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         memory_available=(
                             True if local.fix.execution == "host" else sandbox_memory().available
                         ),
+                        readiness=lambda selected=handler: kind_ready(selected),
                     )
                     if admitted is not None:
                         run, preparation = admitted
@@ -177,19 +209,6 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
-
-        @functools.cache
-        def shared_eval_diagnostics() -> list[Diagnostic]:
-            return doctor(local, include_fix=False, include_informational=False)
-
-        kind_failure_cache: dict[str, list[Diagnostic]] = {}
-
-        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
-            if candidate_handler.kind not in kind_failure_cache:
-                kind_failure_cache[candidate_handler.kind] = _kind_failures(
-                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
-                )
-            return kind_failure_cache[candidate_handler.kind]
 
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
@@ -220,12 +239,8 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             if not ready:
                 continue
-            failures = kind_failures(handler)
-            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
-            if reason:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": reason})
+            if not kind_ready(handler):
                 continue
-            store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
@@ -418,6 +433,57 @@ def _repair_unclaimed(
                 marker + "\nStatus restored to Ready because no evaluation is running.",
             )
         store.set_setting("status-repair", card.id, {"complete": True})
+
+
+def _assign_ready_bug(
+    client: GitHubClient,
+    shared: SharedConfig,
+    card: ProjectQueueItem,
+    permission_cache: dict[tuple[str, str], str | None],
+) -> None:
+    """Treat placing an eligible Bug in Ready as an explicit handoff to Factory."""
+    source = card.source
+    targets = {target.repository for target in shared.fix.targets}
+    factory = shared.project.owner.option("factory")
+    if (
+        source.repository not in targets
+        or source.pull_request
+        or source.state.lower() == "closed"
+        or source.issue_type != shared.routing.bug_type
+        or card_status(shared, card) != "Ready"
+        or card.fields.get(shared.project.owner.id) == factory
+    ):
+        return
+    permission_key = (source.repository, source.author)
+    try:
+        if permission_key not in permission_cache:
+            permission_cache[permission_key] = client.get_permission(*permission_key)
+    except GitHubApiError as error:
+        permission_cache[permission_key] = None
+        logger.warning(
+            "Cannot verify Ready Bug author permission; retrying next cycle "
+            "(repository=%s author=%s card=%s): %s",
+            source.repository,
+            source.author,
+            card.id,
+            error,
+        )
+        return
+    if permission_cache[permission_key] not in WRITER_PERMISSIONS:
+        return
+    try:
+        client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
+    except GitHubApiError as error:
+        logger.warning(
+            "Cannot assign Ready Bug to Factory; retrying next cycle "
+            "(repository=%s author=%s card=%s): %s",
+            source.repository,
+            source.author,
+            card.id,
+            error,
+        )
+        return
+    card.fields[shared.project.owner.id] = factory
 
 
 def _kind_failures(

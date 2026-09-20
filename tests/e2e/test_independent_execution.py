@@ -70,6 +70,7 @@ def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
             plan,
             argv=(sys.executable, str(program), str(artifact)),
             working_directory=str(tmp_path),
+            ownership_hints={"artifact_path": str(artifact), "suite": "and-scene"},
         )
         watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(2.0, 10, 10))
         watcher.wait(timeout=8)

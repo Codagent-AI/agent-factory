@@ -5,7 +5,13 @@ TBD - created by archiving change pickup-and-fix-bugs. Update Purpose after arch
 ## Requirements
 ### Requirement: Select eligible bugs in board order
 
-The factory SHALL select open issues from configured source repositories with native `Type=Bug`, `Owner=factory`, and `Status=Ready`, whose authors have effective write, maintain, or admin access verified at admission, that carry no `needs-input` label, and that have no applicable admission hold. Selection SHALL follow manual Project order within the Bug horizontal group's Ready column. Priority values, issue age, and repository SHALL NOT override that order. An ineligible bug SHALL NOT prevent selection of a later eligible bug. Eval and bug selection SHALL be independent: each kind fills only its own execution slot. Bugs SHALL carry no per-issue execution overrides; role profiles, branches, limits, and window come from factory configuration.
+On each Project poll, the factory SHALL treat placement of an open issue from a configured fix target with native `Type=Bug` in `Status=Ready` as an explicit handoff and set `Owner=factory` before admission when the issue author has effective write, maintain, or admin access, regardless of the prior or missing Owner value. A GitHub issue assignee SHALL NOT be required. The factory SHALL then select open issues with native `Type=Bug`, `Owner=factory`, and `Status=Ready`, whose authors have effective write, maintain, or admin access verified again at admission, that carry no `needs-input` label, and that have no applicable admission hold. Selection SHALL follow manual Project order within the Bug horizontal group's Ready column. Priority values, issue age, and repository SHALL NOT override that order. An ineligible bug SHALL NOT prevent selection of a later eligible bug. Eval and bug selection SHALL be independent: each kind fills only its own execution slot. Bugs SHALL carry no per-issue execution overrides; role profiles, branches, limits, and window come from factory configuration.
+
+#### Scenario: Ready placement assigns factory ownership
+
+- **WHEN** a human moves an open configured Bug to Ready with Owner unset or set to human
+- **THEN** the next factory poll verifies the author's repository permission and sets `Owner=factory`
+- **AND** admission re-verifies permission before work starts
 
 #### Scenario: Pick the top bug
 
@@ -107,4 +113,3 @@ Before launching any attempt for a bug, including a recovery retry or a fresh cl
 
 - **WHEN** the reconciliation lookup fails
 - **THEN** the factory does not launch and retries reconciliation on a later poll
-

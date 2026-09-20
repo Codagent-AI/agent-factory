@@ -37,7 +37,7 @@ Routing SHALL add an issue to its destination Project if absent and initialize f
 
 - **WHEN** the bug rule is deployed while Bug-typed issues already exist in a configured source repository
 - **THEN** those issues are not routed or re-assigned until a routing event for them is delivered
-- **AND** a human can still hand one to the factory by setting `Owner=factory` and moving it to Ready
+- **AND** a human can still hand one to the factory by moving it to Ready, after which the factory poll sets `Owner=factory`
 
 ### Requirement: Restrict factory assignment to repository writers
 
@@ -82,11 +82,11 @@ For an open issue whose native Type is the configured bug type in a configured s
 
 - **WHEN** a writer creates a Bug-typed issue from the "Bug (tracking only)" template, or otherwise with the configured bypass label already applied
 - **THEN** routing adds it to the Project with `Owner=human` and `Status=Backlog`
-- **AND** the factory does not pick it up unless a human later sets `Owner=factory` and moves it to Ready
+- **AND** the factory does not pick it up unless a human later moves it to Ready, after which the factory poll sets `Owner=factory`
 
 #### Scenario: Hold a routed bug by hand
 
-- **WHEN** a human changes a routed bug's Owner to human or moves it to Backlog before the factory admits it
+- **WHEN** a human moves a routed bug to Backlog before the factory admits it
 - **THEN** repeated routing preserves that change and the factory does not admit the bug
 
 #### Scenario: Receive an issue matching both rules
@@ -94,4 +94,3 @@ For an open issue whose native Type is the configured bug type in a configured s
 - **WHEN** an issue in `agent-evals` carries the eval request marker and has native Type Bug
 - **THEN** routing applies the eval rule, including setting the native eval type
 - **AND** the bug rule does not apply
-
