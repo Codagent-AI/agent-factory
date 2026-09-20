@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import stat
@@ -74,7 +75,7 @@ class FlyMachineBackend:
                     )
                 except FlyApiError as error:
                     result.append(Diagnostic(name, False, str(error), action, "eval-fly"))
-        result.append(_flyctl_diagnostic(fly.app))
+        result.append(_flyctl_diagnostic(fly.app, fly.token_file))
         return result
 
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None:
@@ -108,6 +109,10 @@ class FlyMachineBackend:
         }
         if not all(isinstance(value, str) and value for value in expected.values()):
             return None
+        if record.get("run_id") != manifest.get("run_id"):
+            # The record still names an earlier attempt in this Machine; the
+            # launcher has not yet claimed it for the current one.
+            return None
         return {
             **dict(record),
             "app": app,
@@ -135,7 +140,10 @@ class FlyMachineBackend:
         if mismatches:
             return Probe("mismatch", json.dumps(mismatches, sort_keys=True))
         state = machine.get("state")
-        if state in {"started", "starting", "restarting"}:
+        if state in {"destroyed", "destroying"}:
+            # Fly keeps answering for a destroyed Machine for a while.
+            return Probe("gone", f"Machine is {state}")
+        if state in {"started", "starting", "restarting", "created", "replacing"}:
             return Probe("alive")
         if state in {"stopped", "suspended"}:
             return Probe("stopped")
@@ -147,8 +155,12 @@ class FlyMachineBackend:
         try:
             # Jobs run in their own process group; TERM lets the guest write DONE
             # and collect artifacts before the launcher exits.
-            self._transport_factory(_app(identity), _machine_id(identity)).command(
-                'pkill -TERM -g "$(cat /artifacts/.factory/job/current-pgid 2>/dev/null)" || true'
+            # The guest records the job's session leader here; the job runs under
+            # setsid, so its pid is also its process group.
+            self._transport(identity).command(
+                'pgid="$(cat /artifacts/.factory/active-job-pgid 2>/dev/null)"; '
+                'case "$pgid" in (*[!0-9]*|"") exit 0;; esac; '
+                'kill -TERM -- "-$pgid" 2>/dev/null || kill -TERM "$pgid" 2>/dev/null || true'
             )
         except (FlyTransportError, OSError):
             return False
@@ -211,7 +223,7 @@ class FlyMachineBackend:
                 if _metadata(verified).get("deadline_epoch") != str(deadline):
                     raise FlyApiError("metadata", detail="deadline update was not visible")
                 if self._local is not None:
-                    self._transport_factory(_app(identity), _machine_id(identity)).command(
+                    self._transport(identity).command(
                         f"printf '%s\\n' {deadline} > /var/lib/factory/deadline"
                     )
                 self._client(identity).stop(_machine_id(identity))
@@ -223,14 +235,21 @@ class FlyMachineBackend:
             _clear_cleanup_failure(store, _machine_id(identity))
         _set_machine_record(store, identity, decision, probe.state)
 
+    def _transport(self, identity: Mapping[str, object]) -> FlyTransport:
+        transport = self._transport_factory(_app(identity), _machine_id(identity))
+        # flyctl authenticates with the same deploy token as the REST client.
+        with contextlib.suppress(AttributeError, ValueError):
+            transport.token_file = Path(_token_file(identity))
+        return transport
+
     @staticmethod
     def _destroy_verified(client: FlyMachinesClient, machine_id: str) -> bool:
         try:
             client.destroy(machine_id)
-            client.get_machine(machine_id)
+            observed = client.get_machine(machine_id)
         except FlyApiError as error:
             return error.status == 404
-        return False
+        return observed.get("state") in {"destroyed", "destroying"}
 
     def attach_argv(self, plan: object, run: object) -> tuple[str, ...]:
         artifact = _artifact_path(plan)
@@ -315,8 +334,9 @@ class FlyMachineBackend:
             if _deadline_epoch(record.get("deadline_epoch")) == deadline:
                 continue
             try:
-                client.set_metadata(machine_id, "deadline_epoch", str(deadline))
-                client.update_config(machine_id, {"env": {"FACTORY_DEADLINE_EPOCH": str(deadline)}})
+                # One merged, non-launching update: a bare env config would replace the
+                # Machine's image, init, and ownership metadata, and would boot it.
+                client.update_stopped_deadline(machine_id, deadline)
             except FlyApiError as error:
                 failures[machine_id] = {"machine_id": machine_id, "reason": str(error)}
                 continue
@@ -407,7 +427,7 @@ def _token_diagnostic(path: Path) -> Diagnostic:
     )
 
 
-def _flyctl_diagnostic(app: str) -> Diagnostic:
+def _flyctl_diagnostic(app: str, token_file: Path | None = None) -> Diagnostic:
     executable = os.environ.get("PATH", "")
     if not any(
         os.access(os.path.join(part, "flyctl"), os.X_OK) for part in executable.split(os.pathsep)
@@ -420,8 +440,20 @@ def _flyctl_diagnostic(app: str) -> Diagnostic:
             "eval-fly",
         )
     try:
+        # ``flyctl ssh issue`` takes no app and mints a credential; a read-only
+        # listing proves flyctl runs and can reach this app with the deploy token,
+        # which is what ssh transport depends on. No Machine is needed or created.
+        environment = dict(os.environ)
+        if token_file is not None:
+            with contextlib.suppress(OSError):
+                environment["FLY_ACCESS_TOKEN"] = token_file.read_text(encoding="utf-8").strip()
         completed = subprocess.run(
-            ("flyctl", "ssh", "issue", "--app", app), capture_output=True, timeout=20, check=False
+            ("flyctl", "machine", "list", "--app", app, "--json"),
+            capture_output=True,
+            timeout=30,
+            check=False,
+            env=environment,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return Diagnostic(
@@ -434,9 +466,9 @@ def _flyctl_diagnostic(app: str) -> Diagnostic:
     return Diagnostic(
         "flyctl transport",
         completed.returncode == 0,
-        "ssh transport check succeeded"
+        "flyctl reaches the app with the deploy token"
         if completed.returncode == 0
-        else "flyctl ssh cannot reach the app",
+        else "flyctl cannot reach the app with the deploy token",
         "Restore flyctl SSH access to the Fly app.",
         "eval-fly",
     )

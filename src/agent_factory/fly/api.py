@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
@@ -32,7 +33,9 @@ class FlyMachinesClient:
     ) -> None:
         self.app = app
         self.token_file = token_file
-        self.base_url = base_url.rstrip("/")
+        # The override lets the launcher, which builds its own client from a
+        # manifest, be exercised end to end against a local fake.
+        self.base_url = os.environ.get("AGENT_FACTORY_FLY_API_URL", base_url).rstrip("/")
         self.registry_base_url = registry_base_url.rstrip("/")
 
     def _token(self) -> str:
@@ -51,6 +54,7 @@ class FlyMachinesClient:
         method: str = "GET",
         body: Mapping[str, object] | None = None,
         url: str | None = None,
+        timeout: int = 20,
     ) -> Mapping[str, object] | list[object] | None:
         payload = json.dumps(body).encode() if body is not None else None
         request = Request(url or f"{self.base_url}{path}", data=payload, method=method)
@@ -59,7 +63,7 @@ class FlyMachinesClient:
         if payload is not None:
             request.add_header("Content-Type", "application/json")
         try:
-            with urlopen(request, timeout=20) as response:  # noqa: S310 -- configured API endpoint
+            with urlopen(request, timeout=timeout) as response:  # noqa: S310 -- configured API endpoint
                 raw = response.read()
                 return cast(
                     Mapping[str, object] | list[object] | None, json.loads(raw) if raw else None
@@ -131,14 +135,53 @@ class FlyMachinesClient:
             body={"value": value},
         )
 
-    def update_config(self, machine_id: str, config: Mapping[str, object]) -> Mapping[str, object]:
+    def update_config(
+        self, machine_id: str, config: Mapping[str, object], *, skip_launch: bool = False
+    ) -> Mapping[str, object]:
+        # Fly starts a Machine on update unless told otherwise; a stopped Machine
+        # must receive its new deadline before it boots.
+        body: dict[str, object] = {"config": dict(config)}
+        if skip_launch:
+            body["skip_launch"] = True
         return _mapping(
-            self._request(
-                f"/v1/apps/{self.app}/machines/{machine_id}",
-                method="POST",
-                body={"config": dict(config)},
-            )
+            self._request(f"/v1/apps/{self.app}/machines/{machine_id}", method="POST", body=body)
         )
+
+    def update_stopped_deadline(
+        self, machine_id: str, deadline_epoch: int, metadata: Mapping[str, str] | None = None
+    ) -> Mapping[str, object]:
+        """Give a stopped Machine its next deadline without booting it.
+
+        A config update replaces the whole config, so the observed config is the
+        base; only the deadline env and the named metadata keys change.
+        """
+        observed = self.get_machine(machine_id).get("config")
+        config = dict(cast(Mapping[str, object], observed)) if isinstance(observed, Mapping) else {}
+        env = config.get("env")
+        merged_env = dict(cast(Mapping[str, object], env)) if isinstance(env, Mapping) else {}
+        merged_env["FACTORY_DEADLINE_EPOCH"] = str(deadline_epoch)
+        config["env"] = merged_env
+        existing = config.get("metadata")
+        merged_metadata = (
+            dict(cast(Mapping[str, object], existing)) if isinstance(existing, Mapping) else {}
+        )
+        merged_metadata["deadline_epoch"] = str(deadline_epoch)
+        merged_metadata.update(metadata or {})
+        config["metadata"] = merged_metadata
+        return self.update_config(machine_id, config, skip_launch=True)
+
+    def wait_state(self, machine_id: str, state: str, *, timeout_seconds: int = 60) -> bool:
+        path = (
+            f"/v1/apps/{self.app}/machines/{machine_id}/wait"
+            f"?state={state}&timeout={timeout_seconds}"
+        )
+        try:
+            self._request(path, timeout=timeout_seconds + 10)
+        except FlyApiError as error:
+            if error.status in {408, 504}:
+                return False
+            raise
+        return True
 
     def stop(self, machine_id: str) -> None:
         self._request(f"/v1/apps/{self.app}/machines/{machine_id}/stop", method="POST")
@@ -147,7 +190,8 @@ class FlyMachinesClient:
         self._request(f"/v1/apps/{self.app}/machines/{machine_id}/start", method="POST")
 
     def destroy(self, machine_id: str) -> None:
-        path = f"/v1/apps/{self.app}/machines/{machine_id}"
+        # Fly refuses to delete a started Machine without force.
+        path = f"/v1/apps/{self.app}/machines/{machine_id}?force=true"
         try:
             self._request(path, method="DELETE")
         except FlyApiError as error:

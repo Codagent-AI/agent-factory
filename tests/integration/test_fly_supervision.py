@@ -36,3 +36,119 @@ def _limits():
     from agent_factory.supervisor import SupervisionLimits
 
     return SupervisionLimits(inactivity_seconds=30, execution_seconds=1000, total_seconds=2000)
+
+
+def _fly_plan(artifact: Path):
+    from agent_factory.controller import ExecutionPlan
+
+    return ExecutionPlan(
+        ("true",),
+        str(artifact),
+        {},
+        (),
+        (),
+        {"artifact_path": str(artifact), "backend": "fly-machine"},
+        True,
+    )
+
+
+def _records(artifact: Path, *, record_run: str, manifest_run: str, token: Path) -> None:
+    import json
+
+    factory = artifact / ".factory"
+    factory.mkdir(parents=True, exist_ok=True)
+    (factory / "machine.json").write_text(
+        json.dumps({"app": "app", "id": "machine-1", "run_id": record_run, "nonce": "n"})
+    )
+    (factory / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": manifest_run,
+                "claim_id": "claim-1",
+                "unit_key": "rep-1",
+                "nonce": "other",
+                "fly": {"app": "app", "token_file": str(token)},
+            }
+        )
+    )
+
+
+def test_int_005_record_from_an_earlier_attempt_is_not_this_attempts_identity(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    artifact = tmp_path / "artifact"
+    token = tmp_path / "token"
+    token.write_text("t")
+    _records(artifact, record_run="run-1", manifest_run="run-2", token=token)
+    backend = FlyMachineBackend()
+    assert backend.identity_from_plan(_fly_plan(artifact), None) is None
+
+    # Once the launcher has claimed the Machine for the recovery attempt, the
+    # identity carries the Machine's original nonce and the new run id.
+    _records(artifact, record_run="run-2", manifest_run="run-2", token=token)
+    identity = backend.identity_from_plan(_fly_plan(artifact), None)
+    assert identity is not None
+    assert identity["expected_metadata"] == {
+        "factory-owner": "agent-factory",
+        "run_id": "run-2",
+        "claim_id": "claim-1",
+        "unit_key": "rep-1",
+        "nonce": "n",
+    }
+
+
+def test_int_005_reserved_recovery_attempt_launches_instead_of_attaching(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """A surviving Machine's record must not divert a new attempt into attach mode."""
+    from pytest import MonkeyPatch
+
+    from agent_factory import supervisor
+    from agent_factory.store import ClaimDraft, Run
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    artifact = tmp_path / "artifact"
+    token = tmp_path / "token"
+    token.write_text("t")
+    _records(artifact, record_run="run-1", manifest_run="run-1", token=token)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
+        run = store.reserve_run(claim.id, "rep-1", reason="recovery", evidence_path=str(artifact))
+        launched: list[str] = []
+
+        def launch(_store: object, reserved: Run, _plan: object, _limits: object) -> None:
+            launched.append(reserved.id)
+
+        def attach(*_arguments: object) -> None:
+            raise AssertionError("attach was spawned")
+
+        monkeypatch.setattr(supervisor, "_launch_and_observe", launch)
+        monkeypatch.setattr(supervisor, "_spawn_plan_process", attach)
+        supervisor._supervise_fly(  # pyright: ignore[reportPrivateUsage]
+            store, run, _fly_plan(artifact), _limits()
+        )
+        assert launched == [run.id]
+    finally:
+        store.close()
+
+
+def test_int_005_launcher_exit_code_is_recorded_and_never_inherited(tmp_path: Path) -> None:
+    import subprocess
+
+    from agent_factory.supervisor import (
+        _launcher_exit_code,  # pyright: ignore[reportPrivateUsage]
+        _recording_exit_code,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    artifact = tmp_path / "artifact"
+    status = artifact / ".factory" / "launcher-exit-code"
+    status.parent.mkdir(parents=True)
+    status.write_text("0\n")  # left behind by an earlier attempt's launcher
+
+    argv = _recording_exit_code(["sh", "-c", "exit 71"], str(artifact))
+    assert not status.exists()
+    assert subprocess.run(argv, check=False).returncode == 71
+    assert _launcher_exit_code(_fly_plan(artifact), str(artifact)) == 71

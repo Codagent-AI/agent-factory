@@ -87,6 +87,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                                 if _metadata(machine).get(metadata_key) == wanted
                             ]
                     self._send(200, machines)
+                elif parsed.path.endswith("/wait"):
+                    known = _machine_id(parsed.path) in fake.machines
+                    self._send(200, {"ok": True}) if known else self._send(404)
                 elif "/machines/" in parsed.path:
                     value = fake.machines.get(parsed.path.rsplit("/", 1)[-1])
                     self._send(200, value) if value else self._send(404)

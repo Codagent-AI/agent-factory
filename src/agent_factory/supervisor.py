@@ -16,7 +16,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -177,16 +177,7 @@ def _launch_and_observe(
         with output.open("ab", buffering=0) as stream:
             argv = list(plan.argv)
             if plan.ownership_hints.get("backend") == "fly-machine":
-                status_file = Path(run.evidence_path) / ".factory" / "launcher-exit-code"
-                status_file.parent.mkdir(parents=True, exist_ok=True)
-                command = shlex.join(argv)
-                status_path = shlex.quote(str(status_file))
-                argv = [
-                    "/bin/sh",
-                    "-c",
-                    f"{command}; status=$?; "
-                    f'printf \'%s\\n\' "$status" > {status_path}; exit "$status"',
-                ]
+                argv = _recording_exit_code(argv, run.evidence_path)
             child = subprocess.Popen(
                 argv,
                 cwd=plan.working_directory,
@@ -234,6 +225,9 @@ def _launch_and_observe(
         _observe(store, run.id, plan, limits, identity)
 
 
+_IDENTITY_WAIT_SECONDS = 300
+
+
 def _supervise_fly(
     store: ClaimStore, run: Run, plan: ExecutionPlan, limits: SupervisionLimits
 ) -> None:
@@ -241,14 +235,19 @@ def _supervise_fly(
     from agent_factory.fly.backend import FlyMachineBackend
 
     backend = FlyMachineBackend()
+    if run.status == "reserved":
+        # A reserved attempt always goes through the launcher, which alone decides
+        # whether to create a Machine or resume in the repetition's surviving one.
+        # A record left by an earlier attempt is not this attempt's identity.
+        _launch_and_observe(store, run, plan, limits)
+        return
     identity = backend.identity_from_plan(plan, run)
     if identity is None:
-        if run.status == "reserved":
-            _launch_and_observe(store, run, plan, limits)
-        elif _identity_status(run.process) == "alive":
-            # Machine creation is deliberately persisted by the launcher before
-            # credentials arrive.  Its absence during that short window is normal.
-            deadline = time.monotonic() + min(60, limits.inactivity_seconds)
+        if _identity_status(run.process) == "alive":
+            # The launcher names this attempt in the record only once the Machine
+            # carries its identity, which for a stopped Machine includes a config
+            # update and a boot. Absence during that window is normal.
+            deadline = time.monotonic() + min(_IDENTITY_WAIT_SECONDS, limits.inactivity_seconds)
             while time.monotonic() < deadline and _identity_status(run.process) == "alive":
                 time.sleep(_POLL_SECONDS)
                 identity = backend.identity_from_plan(plan, _required_run(store, run.id))
@@ -302,7 +301,11 @@ def _supervise_fly(
     launcher = run.process
     if _identity_status(launcher) != "alive":
         try:
-            launcher = _spawn_plan_process(plan, backend.attach_argv(plan, run), run.evidence_path)
+            launcher = _spawn_plan_process(
+                plan,
+                tuple(_recording_exit_code(backend.attach_argv(plan, run), run.evidence_path)),
+                run.evidence_path,
+            )
         except OSError as error:
             store.report_uncertainty(run.id, f"Fly Machine attach failed: {error}")
             return
@@ -310,6 +313,22 @@ def _supervise_fly(
         supervisor["process"] = launcher
         store.update_supervisor(run.id, supervisor)
     _observe_fly(store, run.id, plan, limits, identity, backend, launcher)
+
+
+def _recording_exit_code(argv: Sequence[str], evidence_path: str) -> list[str]:
+    """Wrap a launcher so its exit code outlives it, for fresh launch and attach alike."""
+    status_file = Path(evidence_path) / ".factory" / "launcher-exit-code"
+    status_file.parent.mkdir(parents=True, exist_ok=True)
+    # The artifact directory is shared by a repetition's attempts; a code left by
+    # an earlier launcher must never be read as this one's.
+    status_file.unlink(missing_ok=True)
+    status_path = shlex.quote(str(status_file))
+    return [
+        "/bin/sh",
+        "-c",
+        f"{shlex.join(argv)}; status=$?; "
+        f'printf \'%s\\n\' "$status" > {status_path}; exit "$status"',
+    ]
 
 
 def _finish_fly_launcher_exit(store: ClaimStore, run: Run, plan: ExecutionPlan) -> None:

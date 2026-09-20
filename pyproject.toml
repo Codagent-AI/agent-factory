@@ -43,6 +43,8 @@ venv = ".venv"
 # Run them with `pytest -m docker` on a Docker-enabled host.
 addopts = "--strict-config --strict-markers -m 'not docker'"
 testpaths = ["tests"]
+# Shared doubles are imported as `tests.fixtures...`.
+pythonpath = ["."]
 markers = [
   "darwin: requires macOS process-session semantics",
   "docker: requires a Docker-enabled host and test-owned containers",

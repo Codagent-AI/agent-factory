@@ -72,15 +72,17 @@ while :; do
     status=$?
     rm -f "$ARTIFACTS/.factory/active-job-pgid"
     printf '%s\n' "$status" >"$directory/exit-code"
-    (cd "$ARTIFACTS" && find . -path './.factory/staging' -prune -o -type f -exec sh -c '
-      for file; do
-        if stat -c "%n\t%s\t%Y" "$file" >/dev/null 2>&1; then
-          stat -c "%n\t%s\t%Y" "$file"
-        else
-          stat -f "%N\t%z\t%m" "$file"
-        fi
+    # One real tab-separated line per file: path, size, mtime. GNU find does it in
+    # a single process; the loop is the portable fallback. Neither stat flavour
+    # expands "\t" in a format, so tabs come from printf.
+    (cd "$ARTIFACTS" && {
+      find . -path './.factory/staging' -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
+      find . -path './.factory/staging' -prune -o -type f -print | while IFS= read -r file; do
+        size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
+        mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
+        printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
       done
-    ' sh {} +) | sed 's|^./||' | sort >"$directory/files.txt"
+    }) | sort >"$directory/files.txt"
     touch "$directory/DONE"
     [ -e "$ARTIFACTS/.factory/deadline-expired" ] && exit 1
     continue
@@ -94,17 +96,25 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
     """Build the guest job wrapper from non-secret manifest data and suite text."""
     repositories = _object(manifest, "repositories")
     commits = _object(manifest, "commits")
-    runner_url = _required(repositories, "runner")
-    skills_url = _required(repositories, "skills")
+    runner_url = _anonymous_url(_required(repositories, "runner"))
+    skills_url = _anonymous_url(_required(repositories, "skills"))
     runner_commit = _required(commits, "runner")
     skills_commit = _required(commits, "skills")
     return "\n".join(
         (
             "#!/usr/bin/env bash",
             "set -euo pipefail",
-            "git clone " + shlex.quote(runner_url) + " /agent-runner-source",
+            # Armed first: a failed clone or build must not leave credentials behind.
+            "trap 'rm -rf /host-home /workspace/home/.codex "
+            "/workspace/home/.claude /run/factory/env' EXIT",
+            # A recovery job runs in the same Machine, where the clones already exist.
+            "[ -d /agent-runner-source/.git ] || git clone "
+            + shlex.quote(runner_url)
+            + " /agent-runner-source",
             "git -C /agent-runner-source checkout --detach " + shlex.quote(runner_commit),
-            "git clone " + shlex.quote(skills_url) + " /agent-skills-source",
+            "[ -d /agent-skills-source/.git ] || git clone "
+            + shlex.quote(skills_url)
+            + " /agent-skills-source",
             "git -C /agent-skills-source checkout --detach " + shlex.quote(skills_commit),
             "/agent-runner-source/scripts/sandbox-sync-home.sh",
             "export CI=1 HOME=/workspace/home AGENT_RUNNER_SOURCE_COMMIT="
@@ -130,12 +140,31 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "-o /workspace/bin/agent-runner ./cmd/agent-runner",
             "cd /workspace",
             "set -a; . /run/factory/env; set +a",
-            "trap 'rm -rf /host-home /workspace/home/.codex "
-            "/workspace/home/.claude /run/factory/env' EXIT",
             suite_script,
             "",
         )
     )
+
+
+def stand_in_script(script: str) -> str:
+    """Wrap an operator script so delivered credentials never outlive the job."""
+    return "\n".join(
+        (
+            "#!/usr/bin/env bash",
+            "trap 'rm -rf /host-home /run/factory/env' EXIT",
+            "set -a; [ -r /run/factory/env ] && . /run/factory/env; set +a",
+            script,
+            "",
+        )
+    )
+
+
+def _anonymous_url(url: str) -> str:
+    """A Machine holds no SSH key, so an scp-style GitHub remote is read over HTTPS."""
+    prefix = "git@github.com:"
+    if url.startswith(prefix):
+        return "https://github.com/" + url[len(prefix) :]
+    return url
 
 
 def _object(value: Mapping[str, object], key: str) -> Mapping[str, object]:

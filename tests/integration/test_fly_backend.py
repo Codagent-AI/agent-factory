@@ -54,7 +54,13 @@ def _identity(tmp_path: Path, token: Path) -> tuple[ExecutionPlan, dict[str, obj
     factory.mkdir(parents=True)
     (factory / "machine.json").write_text(
         json.dumps(
-            {"app": "factory", "id": "machine-1", "nonce": "nonce", "image_ref": "sha256:old"}
+            {
+                "app": "factory",
+                "id": "machine-1",
+                "run_id": "run-1",
+                "nonce": "nonce",
+                "image_ref": "sha256:old",
+            }
         )
     )
     (factory / "manifest.json").write_text(
