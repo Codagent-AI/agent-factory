@@ -92,6 +92,29 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             return probed
 
+        @functools.cache
+        def shared_eval_diagnostics() -> list[Diagnostic]:
+            return doctor(local, include_fix=False, include_informational=False)
+
+        kind_failure_cache: dict[str, list[Diagnostic]] = {}
+
+        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
+            if candidate_handler.kind not in kind_failure_cache:
+                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
+                )
+            return kind_failure_cache[candidate_handler.kind]
+
+        def kind_ready(candidate_handler: WorkKindHandler) -> bool:
+            failures = kind_failures(candidate_handler)
+            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
+            store.set_setting(
+                "runtime",
+                f"readiness:{candidate_handler.kind}",
+                {"reason": reason} if reason else {},
+            )
+            return not reason
+
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
@@ -166,6 +189,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         memory_available=(
                             True if local.fix.execution == "host" else sandbox_memory().available
                         ),
+                        readiness=lambda selected=handler: kind_ready(selected),
                     )
                     if admitted is not None:
                         run, preparation = admitted
@@ -185,19 +209,6 @@ def cycle(state: Path, config_path: Path) -> None:
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
         store.set_setting("runtime", "quota-error", {"reason": quota_error} if quota_error else {})
-
-        @functools.cache
-        def shared_eval_diagnostics() -> list[Diagnostic]:
-            return doctor(local, include_fix=False, include_informational=False)
-
-        kind_failure_cache: dict[str, list[Diagnostic]] = {}
-
-        def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
-            if candidate_handler.kind not in kind_failure_cache:
-                kind_failure_cache[candidate_handler.kind] = _kind_failures(
-                    candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
-                )
-            return kind_failure_cache[candidate_handler.kind]
 
         # The loop breaks after the first reservation, so slot state cannot change mid-loop.
         slot_free = {kind: not store.nonterminal_runs(kind=kind) for kind in registered}
@@ -228,12 +239,8 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             if not ready:
                 continue
-            failures = kind_failures(handler)
-            reason = "; ".join(f"{d.name}: {d.detail}" for d in failures)
-            if reason:
-                store.set_setting("runtime", f"readiness:{handler.kind}", {"reason": reason})
+            if not kind_ready(handler):
                 continue
-            store.set_setting("runtime", f"readiness:{handler.kind}", {})
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")

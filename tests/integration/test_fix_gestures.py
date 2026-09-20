@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from unittest import mock
@@ -790,6 +790,19 @@ class FakeReviewGitHub:
     def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
         return BranchInfo(branch, "live-head")
 
+    def get_source_item(self, repository: str, number: int) -> SourceItem:
+        return SourceItem(
+            "I64",
+            repository,
+            number,
+            "writer",
+            frozenset(),
+            "Bug",
+            "OPEN",
+            body="Original bug body",
+            title="Original bug title",
+        )
+
     def set_attention_label(self, repository: str, number: int, needed: bool) -> None:
         self.labels.append(needed)
 
@@ -854,6 +867,10 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     client = FakeReviewGitHub(activity, {"writer": "write"})
     handler = _ReviewPreparedHandler(_shared(), _local())
     handler.attach_store(store)
+    store.set_preparation(
+        claim.id,
+        {"issue": {"title": "Frozen original title", "body": "Frozen original body"}},
+    )
     settled = store.get_claim(claim.id)
     assert settled is not None
 
@@ -866,6 +883,7 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
         local=_local(),
+        readiness=lambda: True,
     )
 
     assert admitted is not None
@@ -877,6 +895,8 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     assert review["head_sha"] == "live-head"
     assert cast(dict[str, object], review["pull_request"])["number"] == 113
     assert cast(dict[str, object], review["pull_request"])["head_sha"] == "live-head"
+    assert review["title"] == "Frozen original title"
+    assert review["body"] == "Frozen original body"
     assert client.labels == [False]
     reloaded = store.get_claim(claim.id)
     assert reloaded is not None
@@ -959,6 +979,7 @@ def test_review_round_readiness_failure_holds_the_claim_in_review(tmp_path: Path
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
         local=_local(),
+        readiness=lambda: True,
     )
 
     assert admitted is None
@@ -1023,7 +1044,12 @@ def test_prepare_review_fetches_the_mirror_before_cutting_clones(tmp_path: Path)
 
 
 def _admit_review(
-    store: ClaimStore, client: FakeReviewGitHub, claim: Claim, tmp_path: Path
+    store: ClaimStore,
+    client: FakeReviewGitHub,
+    claim: Claim,
+    tmp_path: Path,
+    *,
+    readiness: Callable[[], bool] = lambda: True,
 ) -> tuple[object, Preparation] | None:
     handler = _ReviewPreparedHandler(_shared(), _local())
     handler.attach_store(store)
@@ -1036,6 +1062,7 @@ def _admit_review(
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
         local=_local(),
+        readiness=readiness,
     )
 
 
@@ -1052,6 +1079,21 @@ def test_review_round_waits_when_the_pr_branch_head_cannot_be_read(tmp_path: Pat
     assert reloaded is not None and reloaded.lifecycle == "settled"
     assert "review_checkpoint" not in reloaded.outcome
     assert store.nonterminal_runs(kind="fix") == []
+
+
+def test_review_round_waits_when_fix_kind_readiness_fails(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = _settled_claim_with_pr(store)
+    client = FakeReviewGitHub(_ACTIVITY, {"writer": "write"})
+
+    admitted = _admit_review(store, client, claim, tmp_path, readiness=lambda: False)
+
+    assert admitted is None
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None and reloaded.lifecycle == "settled"
+    assert reloaded.outcome["waiting_review"]
+    assert [run.reason for run in store.runs_for_claim(claim.id)] == ["initial"]
+    assert client.labels == []
 
 
 def test_claim_quota_hold_blocks_a_review_round(tmp_path: Path) -> None:

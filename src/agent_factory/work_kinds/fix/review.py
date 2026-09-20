@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -81,6 +81,7 @@ def process_review_claim(
     artifact_root: Path,
     now: datetime,
     local: LocalConfig,
+    readiness: Callable[[], bool],
     memory_available: bool = True,
 ) -> tuple[Run, Preparation] | None:
     if (
@@ -134,6 +135,7 @@ def process_review_claim(
         or store.nonterminal_runs(kind="fix")
         or not memory_available
         or not handler.window(local).allows_admission(now)
+        or not readiness()
     ):
         return None
     # Review rounds honor the same claim and provider quota holds as normal admission.
@@ -156,9 +158,22 @@ def process_review_claim(
     if head is None:
         return None
     pr = {**pr, "head_sha": head.sha}
+    stored_issue = claim.preparation.get("issue")
+    issue: Mapping[str, object] = (
+        cast(Mapping[str, object], stored_issue) if isinstance(stored_issue, Mapping) else {}
+    )
+    title, body = issue.get("title"), issue.get("body")
+    if not isinstance(title, str) or not isinstance(body, str):
+        try:
+            source = client.get_source_item(claim.repository, claim.issue_number)
+        except (GitHubApiError, OSError):
+            return None
+        title, body = source.title, source.body
     review: dict[str, object] = {
         "repository": claim.repository,
         "number": claim.issue_number,
+        "title": title,
+        "body": body,
         "claim_id": claim.id,
         "pull_request": pr,
         "branch": branch,

@@ -475,6 +475,10 @@ _RUNNER_NO_SESSION_DIR = _RUNNER_OK.replace(" [--session-dir <path>]", "")
 _RUNNER_REJECTS_WORKFLOW = _RUNNER_OK.replace(
     "-validate) exit 0", "-validate) echo bad >&2; exit 1"
 )
+_RUNNER_REJECTS_REVIEW_WORKFLOW = _RUNNER_OK.replace(
+    "-validate) exit 0",
+    '-validate) case "$2" in *factory-review-v1.0.yaml) echo bad-review >&2; exit 1;; esac',
+)
 _GH_OK = (
     '#!/bin/sh\nif [ "$1 $2" = "auth status" ] && [ -n "${GH_TOKEN:-}" ]; then exit 0; fi\nexit 1\n'
 )
@@ -592,7 +596,13 @@ def test_host_readiness_passes_with_every_prerequisite_and_never_reads_the_runne
             {"agent-runner": _RUNNER_REJECTS_WORKFLOW},
             _SETTINGS_OK,
             "fix host workflow validation",
-            "rejected the packaged workflow",
+            "rejected packaged factory-fix-v1.0.yaml",
+        ),
+        (
+            {"agent-runner": _RUNNER_REJECTS_REVIEW_WORKFLOW},
+            _SETTINGS_OK,
+            "fix host workflow validation",
+            "rejected packaged factory-review-v1.0.yaml",
         ),
         (
             {"gh": _GH_AUTH_FAILS},

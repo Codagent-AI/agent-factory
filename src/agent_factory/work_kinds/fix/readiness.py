@@ -326,21 +326,21 @@ def _session_dir_flag_diagnostic(runner: str) -> Diagnostic:
 
 def _validate_diagnostic(runner: str, shared: SharedConfig) -> Diagnostic:
     name = "fix host workflow validation"
-    try:
-        workflow_text = launch.packaged_workflow_text(shared.fix.contract)
-    except ReadinessError as error:
-        return _host_failure(name, str(error), "Reinstall the factory package.")
     with tempfile.TemporaryDirectory() as tmp:
-        workflow_path = Path(tmp) / launch.WORKFLOW_FILE
-        workflow_path.write_text(workflow_text, encoding="utf-8")
-        _output, failure = _probe((runner, "-validate", str(workflow_path)))
-    if failure is not None:
-        return _host_failure(
-            name,
-            f"agent-runner -validate rejected the packaged workflow: {failure}",
-            "Repair the packaged fix workflow or the installed Runner.",
-        )
-    return _host_pass(name, "packaged workflow validates")
+        catalog = Path(tmp)
+        try:
+            launch.stage_workflow_into(catalog, shared.fix.contract)
+        except ReadinessError as error:
+            return _host_failure(name, str(error), "Reinstall the factory package.")
+        for filename in (launch.WORKFLOW_FILE, launch.REVIEW_WORKFLOW_FILE):
+            _output, failure = _probe((runner, "-validate", str(catalog / filename)))
+            if failure is not None:
+                return _host_failure(
+                    name,
+                    f"agent-runner -validate rejected packaged {filename}: {failure}",
+                    "Repair the packaged fix/review workflows or the installed Runner.",
+                )
+    return _host_pass(name, "packaged fix and review workflows validate")
 
 
 def _gh_auth_status_diagnostic(local: LocalConfig) -> Diagnostic:
