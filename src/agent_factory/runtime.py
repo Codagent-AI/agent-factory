@@ -100,9 +100,23 @@ def cycle(state: Path, config_path: Path) -> None:
 
         def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
             if candidate_handler.kind not in kind_failure_cache:
-                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                failures = _kind_failures(
                     candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
                 )
+                mismatch = store.get_setting("runtime", "fly:mismatch")
+                if candidate_handler.kind == "eval" and mismatch:
+                    machine = mismatch.get("machine_id", "unknown")
+                    remedy = mismatch.get("remedy", "wait for the Machine deadline")
+                    failures.append(
+                        Diagnostic(
+                            "Fly ownership mismatch",
+                            False,
+                            f"Machine {machine}: {remedy}",
+                            str(remedy),
+                            "eval-fly",
+                        )
+                    )
+                kind_failure_cache[candidate_handler.kind] = failures
             return kind_failure_cache[candidate_handler.kind]
 
         def kind_ready(candidate_handler: WorkKindHandler) -> bool:
@@ -502,6 +516,16 @@ def _kind_failures(
             d for d in diagnostics if d.group in {"shared", "eval", mode_group} and not d.available
         ]
         if getattr(local, "eval_execution", "docker") == "fly":
+            mismatch = next(
+                (
+                    d
+                    for d in diagnostics
+                    if d.group == "eval-fly" and d.name == "Fly ownership mismatch"
+                ),
+                None,
+            )
+            if mismatch is not None:
+                failures.append(mismatch)
             return failures
         memory = sandbox_memory()
         return failures + ([memory] if not memory.available else [])

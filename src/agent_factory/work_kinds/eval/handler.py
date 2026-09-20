@@ -281,6 +281,47 @@ class EvalHandler:
             )
             if deadline is not None:
                 result = replace(result, quota_until=deadline)
+        if (
+            result.result.get("reason") == "machine lost"
+            or result.result.get("collection") == "failed"
+        ):
+            result = replace(
+                result,
+                result={
+                    **result.result,
+                    "failure": {"owner": "factory", "code": "machine-lost"},
+                },
+            )
+        machine = run.progress.get("machine")
+        if isinstance(machine, Mapping):
+            machine_values = cast(Mapping[str, object], machine)
+            provenance = {
+                key: machine_values[key]
+                for key in (
+                    "id",
+                    "image_digest",
+                    "image_ref",
+                    "cpu_kind",
+                    "cpus",
+                    "memory_mb",
+                    "region",
+                )
+                if machine_values.get(key) is not None
+            }
+            result = replace(
+                result,
+                result={
+                    **result.result,
+                    "execution_provenance": {
+                        **(
+                            dict(cast(Mapping[str, object], result.result["execution_provenance"]))
+                            if isinstance(result.result.get("execution_provenance"), Mapping)
+                            else {}
+                        ),
+                        "fly": provenance or {"observation": "unavailable"},
+                    },
+                },
+            )
         return result
 
     def classify(self, run: Run, result: AttemptResult) -> Classification:
@@ -425,8 +466,16 @@ def plan_attempt(
 ) -> ExecutionPlan:
     """Build the suite invocation, resuming only when a prior attempt proved a checkpoint."""
     previous = store.runs_for_claim(claim.id)[:-1]
+    latest = previous[-1] if previous else None
     stopped_before_checkpoint = bool(
-        previous and previous[-1].result.get("reason") == "suite launch failed"
+        latest
+        and (
+            latest.result.get("reason") == "suite launch failed"
+            or (
+                latest.progress.get("checkpoint_seen") is not True
+                and not Path(latest.evidence_path, "run-state.json").is_file()
+            )
+        )
     )
     plan = adapter.plan(
         claim.frozen_spec,
@@ -438,7 +487,9 @@ def plan_attempt(
         run_id=run.id,
         unit_key=run.unit_key,
         expect_checkpoint=(
-            run.reason != "initial" and Path(run.evidence_path, "run-state.json").is_file()
+            run.reason != "initial"
+            and latest is not None
+            and latest.progress.get("checkpoint_seen") is True
         ),
     )
     if plan.ownership_hints.get("backend") == "fly-machine":
@@ -464,6 +515,8 @@ def _unit_count(claim: Claim) -> int:
 
 
 def _technical_failure(result: AttemptResult) -> bool:
+    if _machine_lost(result.result):
+        return False
     if result.execution_status not in {"failed", "interrupted"}:
         return False
     resumable = result.resumable
@@ -474,6 +527,8 @@ def _technical_failure(result: AttemptResult) -> bool:
 
 
 def _run_needs_recovery(run: Run) -> bool:
+    if _machine_lost(run.result):
+        return False
     if run.status not in {"failed", "interrupted"}:
         return False
     resumable = run.result.get("resumable")
@@ -497,6 +552,19 @@ def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | No
         return False
     failure = cast(Mapping[str, object], failure_raw)
     return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
+
+
+def _machine_lost(result: Mapping[str, object]) -> bool:
+    failure = result.get("failure")
+    return (
+        result.get("reason") == "machine lost"
+        or result.get("collection") == "failed"
+        or (
+            isinstance(failure, Mapping)
+            and cast(Mapping[str, object], failure).get("owner") == "factory"
+            and cast(Mapping[str, object], failure).get("code") == "machine-lost"
+        )
+    )
 
 
 def _public_diagnostic(value: str) -> str:
