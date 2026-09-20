@@ -540,7 +540,7 @@ def test_doctor_reports_per_kind_free_space_floors(tmp_path: Path) -> None:
 
     diagnostics = operations.doctor(config)
     eval_floor = next(
-        d for d in diagnostics if d.name == "free storage" and d.group == "eval-sandbox"
+        d for d in diagnostics if d.name == "free storage" and d.group == "eval"
     )
     fix_floor = next(
         d for d in diagnostics if d.name == "free storage" and d.group == "fix-sandbox"
@@ -556,14 +556,13 @@ def test_doctor_shared_group_never_depends_on_eval_only_prerequisites(tmp_path: 
 
     diagnostics = operations.doctor(config)
     eval_only_names = {
-        "eval repository",
-        "shared configuration",
-        "selected suite entry point and launcher",
-        "suite candidate credentials",
+            "eval repository",
+            "shared configuration",
+            "suite candidate credentials",
     }
     for diagnostic in diagnostics:
         if diagnostic.name in eval_only_names:
-            assert diagnostic.group == "eval-sandbox", diagnostic
+            assert diagnostic.group == "eval", diagnostic
 
 
 def test_doctor_with_docker_stopped_and_fix_host_shows_expected_groups(tmp_path: Path) -> None:

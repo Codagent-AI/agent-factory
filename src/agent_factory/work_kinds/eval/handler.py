@@ -82,6 +82,7 @@ class EvalHandler:
             {role: str(values.get(role, "")) for role in ("lead", "implementor", "tester")},
             bool(values.get("skip_validator", False)),
             shared.eval.repetitions,
+            execution=local.eval_execution,
         )
         sources = SourceRepositories(
             local.repositories.agent_runner,
@@ -210,6 +211,10 @@ class EvalHandler:
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
         roles = mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
+        if self._local is not None and self._local.eval_execution == "fly":
+            for role, profile in roles.items():
+                if str(profile).split(":", 1)[0] == "cursor":
+                    raise ReadinessError(f"{role}: Cursor is unavailable on Fly")
         auth = model_authentication({key: str(value) for key, value in roles.items()})
         failures = [check.detail for check in auth if not check.available]
         if failures:

@@ -36,6 +36,7 @@ class EvalDefaults:
     skip_validator: bool
     repetitions: int
     max_repetitions: int | None = None
+    execution: str = "docker"
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,10 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
             roles[key] = cast(str, value)
         else:
             effective[key] = value
+    if defaults.execution == "fly":
+        for role, profile in cast(Mapping[str, str], effective["roles"]).items():
+            if profile.split(":", 1)[0] == "cursor":
+                raise ValueError(f"{role}: Cursor is unavailable on Fly")
     canonical = json.dumps(parsed, sort_keys=True, separators=(",", ":"))
     return ParsedRequest(parsed, effective, hashlib.sha256(canonical.encode()).hexdigest())
 
