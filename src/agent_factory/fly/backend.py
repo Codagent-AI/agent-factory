@@ -277,7 +277,7 @@ class FlyMachineBackend:
             value.get("machine_id")
             for value in records.values()
             if isinstance(value.get("machine_id"), str)
-        }
+        } | _live_machine_ids(store)
         unknown: list[dict[str, object]] = []
         destroyed: list[str] = []
         now = time.time()
@@ -584,6 +584,24 @@ def _settings_by_prefix(store: object, prefix: str) -> Mapping[str, Mapping[str,
         return {}
     values = getter("runtime", prefix)
     return cast(Mapping[str, Mapping[str, object]], values) if isinstance(values, Mapping) else {}
+
+
+def _live_machine_ids(store: object) -> set[str]:
+    """Machines hosting a running attempt, which the run's progress records until disposal."""
+    getter = getattr(store, "nonterminal_runs", None)
+    runs = cast(list[object], getter()) if callable(getter) else []
+    ids: set[str] = set()
+    for run in runs:
+        progress: object = getattr(run, "progress", None)
+        if not isinstance(progress, Mapping):
+            continue
+        machine = cast(Mapping[str, object], progress).get("machine")
+        if not isinstance(machine, Mapping):
+            continue
+        machine_id = cast(Mapping[str, object], machine).get("id")
+        if isinstance(machine_id, str) and machine_id:
+            ids.add(machine_id)
+    return ids
 
 
 def _set_machine_record(

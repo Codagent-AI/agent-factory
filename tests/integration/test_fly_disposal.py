@@ -439,6 +439,25 @@ def test_reconciliation_destroys_only_expired_tagged_machines_and_reports_unknow
     )
 
 
+def test_reconciliation_counts_a_live_attempts_machine_as_known(cycle: Cycle) -> None:
+    # A running attempt records its Machine in the run's progress, not in a disposal
+    # record; that Machine is the store's own and must not be reported as unknown.
+    now = int(time.time())
+    claim = cycle.claim()
+    run = cycle.store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="unused")
+    cycle.store.mark_running(run.id, {})
+    cycle.store.update_progress(
+        run.id, {"machine": {"id": "machine-live", "state": "alive", "deadline_epoch": now + 3600}}
+    )
+    cycle.tagged("machine-live", deadline=now + 3600)
+
+    assert cycle.reconcile() == []
+
+    assert cycle.api.machines["machine-live"]["state"] == "started"
+    assert cycle.store.get_setting("runtime", "fly:unknown") == {}
+    assert not any("machine-live" in line for line in status(cycle.store, cycle.local))
+
+
 def test_reconciliation_leaves_a_held_stopped_machine_within_its_deadline_alone(
     cycle: Cycle,
 ) -> None:
