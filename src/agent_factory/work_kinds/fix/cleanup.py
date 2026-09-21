@@ -6,8 +6,10 @@ as its execution has stopped, since its card may never travel through Review.
 
 from __future__ import annotations
 
+import os
 import shutil
-from collections.abc import Mapping
+import stat
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
@@ -56,7 +58,7 @@ class FixCleanup:
                 if not isinstance(path, str):
                     continue
                 try:
-                    shutil.rmtree(path)
+                    _remove_tree(path)
                 except FileNotFoundError:
                     pass
                 except OSError as error:
@@ -88,3 +90,18 @@ class FixCleanup:
                 except OSError as error:
                     errors[f"credential:{run.id}"] = str(error)
         return errors
+
+
+def _remove_tree(path: str) -> None:
+    """Remove a clone even where tools left it read-only, as Go's module cache does."""
+
+    def restore_write(function: Callable[..., object], target: str, error: BaseException) -> None:
+        if not isinstance(error, PermissionError):
+            raise error
+        parent = os.path.dirname(target)
+        os.chmod(parent, os.stat(parent).st_mode | stat.S_IRWXU)
+        if os.path.isdir(target) and not os.path.islink(target):
+            os.chmod(target, os.stat(target).st_mode | stat.S_IRWXU)
+        function(target)
+
+    shutil.rmtree(path, onexc=restore_write)
