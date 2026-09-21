@@ -430,7 +430,7 @@ def _plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bo
             return False
         return _json_names_plugin(data, plugin_name)
     for line in output.splitlines():
-        token = line.strip().lstrip("-*• \t")
+        token = line.strip().lstrip("-*•❯> \t")
         if not token:
             continue
         token = token.split()[0]
