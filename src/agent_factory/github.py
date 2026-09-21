@@ -670,6 +670,70 @@ class GitHubClient:
         comment_id = payload.get("id")
         return str(comment_id) if isinstance(comment_id, int | str) else None
 
+    def commit_files(
+        self, repository: str, branch: str, files: Mapping[str, bytes], message: str
+    ) -> str | None:
+        """Add one commit writing ``files`` onto ``branch``; None when nothing changes.
+
+        The ref update is a plain fast-forward, so a concurrent push fails this call
+        rather than being overwritten.
+        """
+        encoded_branch = urllib.parse.quote(branch, safe="/")
+        ref = _json_object(
+            self._request(
+                ["api", f"repos/{repository}/git/ref/heads/{encoded_branch}", "--method", "GET"],
+                None,
+            )
+        )
+        parent = _required_string(_object(ref.get("object")), "sha")
+        base = _json_object(
+            self._request(
+                ["api", f"repos/{repository}/git/commits/{parent}", "--method", "GET"], None
+            )
+        )
+        base_tree = _required_string(_object(base.get("tree")), "sha")
+        entries: list[object] = []
+        for path, content in sorted(files.items()):
+            blob = _json_object(
+                self._request(
+                    _write(f"repos/{repository}/git/blobs", "POST"),
+                    {"content": base64.b64encode(content).decode("ascii"), "encoding": "base64"},
+                )
+            )
+            entries.append(
+                {
+                    "path": path,
+                    "mode": "100644",
+                    "type": "blob",
+                    "sha": _required_string(blob, "sha"),
+                }
+            )
+        tree = _required_string(
+            _json_object(
+                self._request(
+                    _write(f"repos/{repository}/git/trees", "POST"),
+                    {"base_tree": base_tree, "tree": entries},
+                )
+            ),
+            "sha",
+        )
+        if tree == base_tree:
+            return None
+        commit = _required_string(
+            _json_object(
+                self._request(
+                    _write(f"repos/{repository}/git/commits", "POST"),
+                    {"message": message, "tree": tree, "parents": [parent]},
+                )
+            ),
+            "sha",
+        )
+        self._request(
+            _write(f"repos/{repository}/git/refs/heads/{encoded_branch}", "PATCH"),
+            {"sha": commit, "force": False},
+        )
+        return commit
+
     def _graphql(self, query: str, variables: dict[str, object]) -> Mapping[str, object]:
         response = self._request(
             ["api", "graphql", "--input", "-"], {"query": query, "variables": variables}
@@ -681,6 +745,10 @@ class GitHubClient:
 
     def _request(self, arguments: list[str], body: dict[str, object] | None) -> str:
         return self._runner.run(arguments, body, {"GH_TOKEN": self._token()})
+
+
+def _write(path: str, method: str) -> list[str]:
+    return ["api", path, "--method", method, "--input", "-"]
 
 
 def _single_select_fields(item: Mapping[str, object]) -> dict[str, str]:

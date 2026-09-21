@@ -109,6 +109,9 @@ class EvalConfig:
     suite: str
     repetitions: int
     defaults: Mapping[str, object] = field(default_factory=lambda: dict[str, object]())
+    # Where finished repetitions' curated results are committed; None disables it.
+    results_repository: str | None = None
+    results_branch: str = "main"
 
 
 @dataclass(frozen=True)
@@ -403,6 +406,12 @@ class SharedConfig:
                 suite=_string(eval_config, "suite", "eval"),
                 repetitions=repetitions,
                 defaults=dict(_table(eval_config.get("defaults", {}), "eval.defaults")),
+                results_repository=(
+                    _string(eval_config, "results_repository", "eval")
+                    if "results_repository" in eval_config
+                    else None
+                ),
+                results_branch=_optional_string(eval_config, "results_branch", "eval", "main"),
             ),
             fix=_fix_shared_config(document.get("fix")),
         )

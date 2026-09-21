@@ -349,7 +349,11 @@ token_file = "{token}"
 
 @pytest.mark.parametrize(
     "origin",
-    ["https://user:secret@github.com/org/repo.git", "https://token@github.com/org/repo.git"],
+    [
+        "https://user:secret@github.com/org/repo.git",
+        "https://token@github.com/org/repo.git",
+        "ssh://git:secret@github.com/org/repo.git",
+    ],
 )
 def test_pinned_worktree_origin_with_embedded_credentials_is_refused(
     tmp_path: Path, origin: str
@@ -368,7 +372,12 @@ def test_pinned_worktree_origin_with_embedded_credentials_is_refused(
 
 
 @pytest.mark.parametrize(
-    "origin", ["https://github.com/org/repo.git", "git@github.com:org/repo.git"]
+    "origin",
+    [
+        "https://github.com/org/repo.git",
+        "git@github.com:org/repo.git",
+        "ssh://git@github.com/org/repo.git",
+    ],
 )
 def test_pinned_worktree_origin_without_credentials_is_recorded(
     tmp_path: Path, origin: str

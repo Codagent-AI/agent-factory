@@ -50,6 +50,16 @@ the Runner's repeated `--docker-run-arg` interface, mounted read-only at their
 host-resolved paths. This lets Git inside the container verify linked worktree
 provenance without modifying a source checkout or Git metadata.
 
+Human review is optional. As soon as a repetition's attempt is consumed with a
+`pending-human-review` or conclusive `complete` result, Factory commits the
+suite's curated files (`result.json`, `report.html`, `ambiguity-ledger.json`,
+`implementation.diff`, `artifact-manifest.json`) to
+`evals/agent-runner/and-scene/results/<run-id>/` in `eval.results_repository`
+and links the commit on the eval issue. Harness failures are not captured. If a
+review later writes `human-review.json` (and its finalized score) into the same
+run directory, the next tick commits the updated snapshot. Review any subset of
+repetitions, or none.
+
 When a repetition is `pending-human-review`, the Factory report includes an
 absolute, shell-quoted command of this form:
 
@@ -58,7 +68,9 @@ absolute, shell-quoted command of this form:
 ```
 
 Run it on the Mac holding the files. The command is valid while the item remains
-in Review; Factory never performs the human rating. Product failures and
+in Review; Factory never performs the human rating. Move the item to Done
+whenever you are finished with it, reviewed or not; once a Done item's results
+are saved, Factory stops watching it, so finish any review before moving it. Product failures and
 incomplete results intentionally receive no review command.
 
 Candidate branches, draft PRs, controller logs, and SQLite history are never

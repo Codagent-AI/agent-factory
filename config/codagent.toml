@@ -53,6 +53,9 @@ hold_label = "factory-hold"
 harness_ref = "main"
 suite = "and-scene"
 repetitions = 3
+# Finished repetitions are committed here whether or not they are human-reviewed.
+results_repository = "Codagent-AI/agent-evals"
+results_branch = "main"
 
 [eval.defaults]
 lead = "claude:opus:medium"

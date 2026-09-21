@@ -41,6 +41,7 @@ from agent_factory.suites.and_scene import (
 from agent_factory.supervisor import launch_supervisor
 from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler, card_status
 from agent_factory.work_kinds.eval import ParsedRequest
+from agent_factory.work_kinds.eval.publication import publish_eval_results
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.review import process_review_claim
@@ -86,6 +87,9 @@ def cycle(state: Path, config_path: Path) -> None:
         for card in cards:
             _assign_ready_bug(client, shared, card, permission_cache)
         _consume_results(store, controller, local)
+        # Results are captured whether or not anyone reviews them; a failure is
+        # reported on the item and retried next tick, never blocking the cycle.
+        publish_eval_results(store, client, shared)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"

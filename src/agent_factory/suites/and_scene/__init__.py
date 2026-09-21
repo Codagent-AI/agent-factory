@@ -480,10 +480,11 @@ class AndSceneAdapter:
             (str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve()))
         )
         return (
-            f"Human review is ready on {self._mac_name} while this item remains in Review.\n"
+            f"Optional human review is available on {self._mac_name} while this item remains "
+            "in Review. The automated results are saved to the eval repository without it; "
+            "a completed review is added to them on a later tick.\n"
             f"Run: {command}\n"
-            "The retained suite worktree may be released only after the reviewed item moves "
-            "to Done."
+            "Moving the item to Done releases the retained suite worktree, reviewed or not."
         )
 
     def failure_quota_until(
@@ -693,7 +694,9 @@ def _remote_url(path: Path) -> str:
         raise ReadinessError(f"pinned worktree has no origin URL: {path}")
     # The URL is written to the non-secret manifest and handed to the guest.
     parsed = urlsplit(value)
-    if parsed.scheme in {"http", "https"} and (parsed.username or parsed.password):
+    # An SSH user name such as `git` is not a secret; a password is, in any scheme,
+    # and over HTTP(S) a bare user name is commonly a token.
+    if parsed.password is not None or (parsed.scheme in {"http", "https"} and parsed.username):
         raise ReadinessError(
             f"pinned worktree origin embeds credentials; use a credential-free URL: {path}"
         )
