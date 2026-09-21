@@ -42,3 +42,9 @@ While a current claim has verified active execution, the card SHALL not retain a
 - **WHEN** a technical recovery retry fails before all repetitions finish
 - **THEN** the card moves to Review with `infra-error`
 - **AND** the comment preserves completed results, any established product failures, and the list of repetitions left unstarted
+
+#### Scenario: Defer unfinished work automatically
+
+- **WHEN** a quota or recoverable infrastructure interruption defers an unfinished claim
+- **THEN** the card returns to Ready with the corresponding deferral verdict
+- **AND** the factory preserves the claim's frozen inputs, completed results, and retry history

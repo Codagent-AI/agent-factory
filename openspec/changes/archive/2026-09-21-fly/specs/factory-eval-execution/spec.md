@@ -15,11 +15,17 @@ The factory SHALL prepare factory-owned clean Git worktrees for the accepted Run
 - **THEN** the earlier claim's worktrees remain pinned to their accepted revisions
 - **AND** the new claim does not repoint them
 
-#### Scenario: Verify pinned source provenance in the sandbox
+#### Scenario: Verify linked worktree provenance inside Docker
 
-- **WHEN** the selected suite runs against the claim's pinned Runner and Skills revisions
-- **THEN** the sandbox can verify the actual pinned source SHAs and cleanliness: under Docker by reading the mounted linked-worktree Git metadata read-only, and under Fly through clones at the recorded commits
-- **AND** no execution mode mutates the shared checkouts or their Git metadata
+- **WHEN** the selected suite runs using factory-owned linked worktrees
+- **THEN** its container can read the required backing Git metadata and verify the actual pinned source SHAs and cleanliness
+- **AND** source and Git metadata mounts remain read-only without mutating shared checkouts
+
+#### Scenario: Verify pinned source provenance on Fly
+
+- **WHEN** the selected suite runs under `fly` execution against the claim's pinned Runner and Skills revisions
+- **THEN** the Machine verifies the actual pinned source SHAs and cleanliness through clones at the recorded commits
+- **AND** the shared checkouts and their Git metadata on the factory host are not mutated
 
 ### Requirement: Invoke the suite with accepted execution settings
 
@@ -33,7 +39,7 @@ Selected-suite readiness SHALL be verified before execution. Calibration SHALL r
 - **THEN** the suite receives the saved role profiles, component worktree paths, artifact directory, environment paths, and validator setting
 - **AND** the invocation uses the retained harness version
 
-#### Scenario: Launch with Cursor role profiles under Docker
+#### Scenario: Launch with Cursor role profiles
 
 - **WHEN** the eval kind runs under Docker execution, an accepted request selects Cursor for one or more role profiles, and the host Cursor CLI is available
 - **THEN** the factory passes those profiles unchanged to the selected suite

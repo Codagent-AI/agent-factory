@@ -27,7 +27,7 @@ Suite-specific readiness checks, invocation, evidence interpretation, supported 
 
 ### Requirement: Execute against clean pinned worktrees
 
-The factory SHALL prepare factory-owned clean Git worktrees for the accepted Runner and Skills commits and retain the deployed `agent-evals` version in a pinned worktree. These worktrees SHALL remain associated with the claim for its lifetime, including automatic deferrals and recovery, and SHALL NOT be repointed for another claim. Repetitions SHALL use the same accepted inputs rather than re-resolving moving refs.
+The factory SHALL prepare factory-owned clean Git worktrees for the accepted Runner and Skills commits and retain the deployed `agent-evals` version in a pinned worktree. These worktrees SHALL remain associated with the claim for its lifetime, including automatic deferrals and recovery, and SHALL NOT be repointed for another claim. Repetitions SHALL use the same accepted inputs rather than re-resolving moving refs. The worktrees SHALL remain the factory-host record of the accepted inputs in every execution mode; under `fly` execution the sandbox obtains the same commits by cloning, as defined in `factory-fly-execution`.
 
 #### Scenario: Defer a claim while source branches advance
 
@@ -46,9 +46,15 @@ The factory SHALL prepare factory-owned clean Git worktrees for the accepted Run
 - **THEN** its container can read the required backing Git metadata and verify the actual pinned source SHAs and cleanliness
 - **AND** source and Git metadata mounts remain read-only without mutating shared checkouts
 
+#### Scenario: Verify pinned source provenance on Fly
+
+- **WHEN** the selected suite runs under `fly` execution against the claim's pinned Runner and Skills revisions
+- **THEN** the Machine verifies the actual pinned source SHAs and cleanliness through clones at the recorded commits
+- **AND** the shared checkouts and their Git metadata on the factory host are not mutated
+
 ### Requirement: Invoke the suite with accepted execution settings
 
-For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. The initial integration SHALL support the selected suite's Codex, Claude, and Cursor role adapters. It SHALL pass the accepted `skip_validator` setting to the suite. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The existing suite SHALL launch one container per repetition attempt, with the controller and supervisor on the host. A recovery attempt SHALL reuse the repetition's artifacts through a new container; controller restart SHALL preserve verified surviving execution. Integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments, and expose any missing compatibility as an actionable readiness problem before model execution.
+For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. Under Docker execution the integration SHALL support the selected suite's Codex, Claude, and Cursor role adapters; under Fly execution it SHALL support Codex and Claude only. It SHALL pass the accepted `skip_validator` setting to the suite. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The suite SHALL run in one sandbox per repetition in the configured execution mode, with the controller and supervisor on the host. Under Docker a recovery attempt SHALL reuse the repetition's artifacts through a new container; under Fly it SHALL reuse the repetition's surviving Machine as defined in `factory-fly-execution`. Controller restart SHALL preserve verified surviving execution in every mode. Under Docker, integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments; under Fly it SHALL verify that the pinned harness invokes the factory's launcher with an argument set the launcher supports. The launcher SHALL accept the harness's credential-mount flags in any order, because the harness emits them in role order and that order varies with the configured role CLIs. The Fly compatibility check SHALL exercise a role selection that produces the widest credential-mount shape the harness can emit, so that an ordering or grammar mismatch is detected before model execution rather than during an attempt. Missing compatibility SHALL be exposed as an actionable readiness problem before model execution.
 
 Selected-suite readiness SHALL be verified before execution. Calibration SHALL remain an optional suite-maintainer diagnostic; the factory SHALL NOT require a calibration receipt or pass removed calibration-record arguments. Unavailable prerequisites SHALL follow the readiness-hold behavior in `factory-claim-lifecycle`.
 
@@ -60,7 +66,7 @@ Selected-suite readiness SHALL be verified before execution. Calibration SHALL r
 
 #### Scenario: Launch with Cursor role profiles
 
-- **WHEN** an accepted request selects Cursor for one or more role profiles and the host Cursor CLI is available
+- **WHEN** the eval kind runs under Docker execution, an accepted request selects Cursor for one or more role profiles, and the host Cursor CLI is available
 - **THEN** the factory passes those profiles unchanged to the selected suite
 - **AND** the suite remains responsible for validating the mounted Cursor authentication at launch
 
@@ -68,6 +74,11 @@ Selected-suite readiness SHALL be verified before execution. Calibration SHALL r
 
 - **WHEN** the selected suite's required entry-point or fixture files are unavailable in the pinned environment
 - **THEN** no evaluation starts and the factory reports the readiness problem without consuming an execution attempt or recovery retry
+
+#### Scenario: Hold Fly readiness on an unexpected launcher argument
+
+- **WHEN** the eval kind runs under Fly execution and the pinned harness would invoke the launcher with an argument the launcher does not support
+- **THEN** no Machine is created, eval admission is held, and the readiness problem names the unsupported argument and the harness commit
 
 ### Requirement: Isolate repetitions with stable identities
 
@@ -86,7 +97,7 @@ Each requested repetition SHALL run with the same accepted settings and revision
 
 ### Requirement: Resume through the suite's supported interface
 
-The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed.
+The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed. Under Fly execution, resume SHALL run only inside the repetition's surviving Machine; a missing Machine, or a Machine without a checkpoint it was known to have created, SHALL follow the lost-Machine outcome in `factory-fly-execution` rather than the corrupt-state scenario below, while a surviving Machine whose attempt verifiably stopped before checkpoint creation follows the fresh-retry scenario below inside that Machine.
 
 #### Scenario: Resume compatible saved work
 
@@ -112,13 +123,13 @@ The factory SHALL resume interrupted `and-scene` work with a valid checkpoint th
 
 ### Requirement: Record the evaluated environment accurately
 
-The factory SHALL retain the selected suite identity, full Runner and Skills commit SHAs, deployed `agent-evals` commit SHA, fixture and reference pins, rubric identities, workflow, judge profile, role settings, validator setting, and repetition count. It SHALL record the actual container's immutable Docker image ID after the image is built rather than infer it from a mutable tag or claim that a future image digest was known when the request was accepted. If that observation is unavailable, provenance SHALL say so rather than substitute a later tag lookup. These records SHALL distinguish requested inputs from observed execution provenance.
+The factory SHALL retain the selected suite identity, full Runner and Skills commit SHAs, deployed `agent-evals` commit SHA, fixture and reference pins, rubric identities, workflow, judge profile, role settings, validator setting, and repetition count. It SHALL record the sandbox image actually used: under Docker, the actual container's immutable image ID after the image is built; under Fly, the immutable image digest observed on the launched Machine together with the Machine identity, size, and region. It SHALL NOT infer the image from a mutable tag or claim that a future image digest was known when the request was accepted. If that observation is unavailable, provenance SHALL say so rather than substitute a later tag lookup. These records SHALL distinguish requested inputs from observed execution provenance.
 
 #### Scenario: Inspect a completed evaluation
 
 - **WHEN** the user inspects a repetition's saved evaluation details
 - **THEN** the tested Runner and Skills revisions and the harness, suite, scoring inputs, and execution settings used to evaluate them are identifiable
-- **AND** the recorded image identifies the image actually used
+- **AND** the recorded image identifies the image actually used and, for Fly, the Machine used
 
 ### Requirement: Preserve suite-owned evidence and candidate outputs
 

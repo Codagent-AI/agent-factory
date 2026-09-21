@@ -17,6 +17,8 @@ The change SHALL provide a regular Markdown issue template in `Codagent-AI/agent
 
 Execution admission SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository, independently of the check routing performed. Organization membership or the presence of the request label alone SHALL NOT satisfy this check. Failure to establish the author's permission SHALL NOT be treated as authorization. Routing-time enforcement is specified in `factory-routing`.
 
+Execution admission SHALL identify an evaluation card by its native issue type, its source repository, and its board Owner and Status. The routing label SHALL be the router's entry signal only and SHALL NOT be a further condition of admission, so a card carrying the evaluation issue type is admitted whether or not the label is present.
+
 #### Scenario: Receive an outside contributor's request
 
 - **WHEN** a public-repository contributor without write access creates an issue from the eval template
@@ -28,9 +30,17 @@ Execution admission SHALL verify that the issue author has effective write, main
 - **WHEN** a Ready card has the eval marker but its author lacks the required repository access
 - **THEN** the factory does not accept it for execution based only on its label or board fields
 
+#### Scenario: Admit an evaluation card created without the routing label
+
+- **WHEN** a Ready card owned by the factory in the eval source repository carries the evaluation issue type but not the routing label
+- **THEN** the factory admits it for execution on the strength of its issue type
+- **AND** the operator is not required to restate the issue type as a label
+
 ### Requirement: Interpret one evaluation configuration per request
 
 The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `lead`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
+
+When the eval kind is configured for Fly execution, a request whose effective lead, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
 
 Request-level revision selection SHALL apply to Agent Runner and Agent Skills. The `agent-evals` harness SHALL follow the configured harness branch (default `main`); request-level selection of harness revisions remains unsupported. Recording the resolved harness commit SHALL identify the test environment used for the result.
 
@@ -52,6 +62,17 @@ Repetitions SHALL be a positive integer. An optional configured maximum SHALL re
 - **WHEN** a repetition maximum is configured and a request exceeds it
 - **THEN** the factory rejects the request settings and explains the limit
 - **AND** it does not silently run fewer repetitions
+
+#### Scenario: Select Cursor under Fly execution
+
+- **WHEN** the eval kind runs under Fly execution and a request's effective role profiles include a `cursor` CLI
+- **THEN** the request is invalid, stays in Ready with `needs-input`, and the comment names the role and that Cursor is unavailable on Fly
+- **AND** no claim is created
+
+#### Scenario: Replace Cursor with a supported CLI
+
+- **WHEN** the user changes the flagged role to a complete Codex or Claude profile
+- **THEN** the factory removes `needs-input` and the request can become eligible for admission
 
 ### Requirement: Flag invalid requests for correction
 
@@ -106,6 +127,11 @@ A new claim SHALL record the effective evaluation settings, including the select
 
 - **WHEN** the harness branch advances between two admissions
 - **THEN** each claim records the harness commit it resolved at its own admission and the difference is visible in its Refs and results
+
+#### Scenario: Switch to Fly with a frozen Cursor claim
+
+- **WHEN** a claim admitted with a Cursor role profile has unfinished repetitions and the eval execution mode changes to Fly
+- **THEN** its frozen inputs are not mutated and it is held under the eval readiness behavior in `factory-claim-lifecycle` with an explanation naming the Cursor role
 
 ### Requirement: Distinguish continuation from an explicit fresh request
 
