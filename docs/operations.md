@@ -13,10 +13,22 @@ Evals can run in Fly.io Machines instead of Docker. One-time setup:
    the Machines API, the image registry, and `flyctl ssh`.
 3. Build and push the amd64 sandbox image from an Agent Runner checkout that
    includes commit `8c6cf713c39775b5d8226c9ee5e7b88b80eead44` (accepts Playwright's
-   `chrome-linux64` layout and adds a `.dockerignore`):
+   `chrome-linux64` layout and adds a `.dockerignore`). The checkout must also
+   create `/eval-input`, `/agent-runner-source`, and `/agent-skills-source` and
+   give them to the unprivileged user the job runs as. Under Docker those paths
+   arrive as bind mounts the daemon creates, but a Fly guest has no binds and
+   clones into them itself, so without that the first `git clone` fails with
+   `could not create work tree dir: Permission denied`.
+
+   `flyctl deploy` reads its app configuration from the app's running Machines.
+   The sandbox app runs none, so write a minimal config first and pass it
+   explicitly; without `--config` the build stops at `failed to grab app config
+   from existing machines`.
 
    ```sh
+   printf 'app = "agent-factory-sandbox"\nprimary_region = "ewr"\n' > /tmp/fly-sandbox.toml
    flyctl deploy --build-only --push --remote-only -a agent-factory-sandbox \
+     --config /tmp/fly-sandbox.toml \
      --dockerfile docker/dev/Dockerfile --image-label base
    ```
 
