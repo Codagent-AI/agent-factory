@@ -257,7 +257,11 @@ class FlyMachineBackend:
         artifact = _artifact_path(plan)
         if artifact is None:
             raise ValueError("Fly plan has no artifact path")
-        launcher = _allowed_environment(plan).get("SANDBOX_RUNNER", LAUNCHER_NAME)
+        # Resolve as launch does, so reattachment works where only the interpreter's
+        # directory holds the launcher; an explicit SANDBOX_RUNNER still wins.
+        launcher = (
+            _allowed_environment(plan).get("SANDBOX_RUNNER") or fly_launcher() or LAUNCHER_NAME
+        )
         return (launcher, "attach", "--run-dir", str(artifact))
 
     def reconcile(self, store: object) -> list[str]:

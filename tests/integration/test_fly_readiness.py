@@ -254,6 +254,28 @@ def test_fly_launcher_resolves_beside_the_running_interpreter(
     assert executable() == str(launcher)
 
 
+def test_fly_reattachment_resolves_the_launcher_beside_the_running_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A plan without a recorded launcher reattaches through the same resolution as launch."""
+    import sys
+
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    installed = tmp_path / "venv" / "bin"
+    installed.mkdir(parents=True)
+    launcher = installed / "agent-factory-fly-launcher"
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(installed / "python"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    plan = {"ownership_hints": {"artifact_path": str(tmp_path / "run")}}
+
+    argv = FlyMachineBackend().attach_argv(plan, None)
+
+    assert argv == (str(launcher), "attach", "--run-dir", str(tmp_path / "run"))
+
+
 def test_fly_launcher_absence_is_reported_rather_than_guessed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
