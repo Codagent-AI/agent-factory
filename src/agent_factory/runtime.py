@@ -589,21 +589,29 @@ def _report(
     # A reviewed Done card releases worktrees; never bounce it back to Review.
     if not (current == "Done" and claim.lifecycle == "settled"):
         option = shared.project.status.option(status.lower())
+        status_key = f"{claim_id}:{shared.project.status.id}"
+        delivered = store.get_setting("field-delivery", status_key)
         if card.fields.get(shared.project.status.id) != option:
             client.set_single_select_field(
                 shared.project.id, card.id, shared.project.status.id, option
             )
             card.fields[shared.project.status.id] = option
+            # Only a card the factory already showed as Running was moved by someone
+            # else; admission's own move out of a queued status needs no explanation.
             if (
                 (active or claim.lifecycle == "blocked")
                 and status == "Running"
                 and current in {"Ready", "Review", "Done"}
+                and delivered is not None
+                and delivered.get("value") == "Running"
             ):
                 store.record_event(
                     claim_id,
                     f"status-repair:{current}:{len(runs)}",
                     "Status restored to Running because this evaluation is still active.",
                 )
+        if delivered is None or delivered.get("value") != status:
+            store.set_setting("field-delivery", status_key, {"value": status})
     if desired.verdict:
         field = shared.project.verdict.id
         receipt = store.get_setting("field-delivery", f"{claim_id}:{field}")

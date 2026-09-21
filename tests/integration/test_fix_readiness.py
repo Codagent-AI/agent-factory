@@ -395,10 +395,7 @@ def test_plugin_installed_accepts_the_claude_cli_glyph_bullet() -> None:
     listing = "Installed plugins:\n\n  ❯ codagent@codagent\n    Version: 0.11.0\n"
     assert _check_plugin_installed(listing, "codagent", json_format=False) is True
     # The glyph must not turn a different plugin into a match.
-    assert (
-        _check_plugin_installed("  ❯ codagent-extra@x\n", "codagent", json_format=False)
-        is False
-    )
+    assert _check_plugin_installed("  ❯ codagent-extra@x\n", "codagent", json_format=False) is False
 
 
 def test_plugin_installed_json_requires_exact_name_or_id() -> None:
