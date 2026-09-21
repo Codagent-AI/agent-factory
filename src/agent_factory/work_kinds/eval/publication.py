@@ -12,7 +12,7 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from agent_factory.config import SharedConfig
 from agent_factory.github import GitHubApiError
@@ -31,6 +31,8 @@ REVIEW_FILE = "human-review.json"
 _CAPTURED_STATUSES = frozenset({"pending-human-review", "complete"})
 _RESULTS_DIRECTORIES = {"and-scene": "evals/agent-runner/and-scene/results"}
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+# A captured run whose files are not all in place yet; it is retried, never finalized.
+_WAITING: Literal["waiting"] = "waiting"
 
 
 class ResultsClient(Protocol):
@@ -47,17 +49,21 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
         return
     branch = shared.eval.results_branch
     for claim in store.all_claims():
-        if claim.kind != "eval" or claim.lifecycle in {"cancelled", "superseded"}:
+        # Cancelled and superseded claims keep the results they already produced.
+        if claim.kind != "eval":
             continue
         # A Done item is scanned only until everything it produced is saved, so
         # history does not grow the per-tick cost.
-        done = claim.cleanup.get("done_observed_at") is not None
+        # A terminal claim produces nothing new, so it is finalized once its
+        # outstanding commits succeed, just like a Done item.
+        terminal = claim.lifecycle in {"cancelled", "superseded"}
+        done = terminal or claim.cleanup.get("done_observed_at") is not None
         if done and claim.cleanup.get("results_final") is True:
             continue
         pending = False
         for run in store.runs_for_claim(claim.id):
             if not store.get_setting("consumed-results", run.id):
-                pending = True
+                pending = pending or not terminal
                 continue
             recorded = store.get_setting("eval-publication", run.id) or {}
             # Stat before reading: an untouched run directory costs no reads or hashing.
@@ -65,6 +71,9 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
             if recorded.get("signature") == signature:
                 continue
             snapshot = _snapshot(run)
+            if snapshot == _WAITING:
+                pending = pending or not terminal
+                continue
             if snapshot is None:
                 continue
             run_id, files = snapshot
@@ -123,8 +132,8 @@ def _signature(artifact: Path) -> list[list[object]]:
     return entries
 
 
-def _snapshot(run: Run) -> tuple[str, dict[str, bytes]] | None:
-    """The run's curated files, or None until every one of them is present."""
+def _snapshot(run: Run) -> tuple[str, dict[str, bytes]] | Literal["waiting"] | None:
+    """The run's curated files; "waiting" while a captured run is incomplete; else None."""
     artifact = Path(run.evidence_path)
     try:
         result = json.loads((artifact / "result.json").read_text(encoding="utf-8"))
@@ -143,7 +152,7 @@ def _snapshot(run: Run) -> tuple[str, dict[str, bytes]] | None:
         try:
             files[name] = (artifact / name).read_bytes()
         except OSError:
-            return None
+            return _WAITING
     # The review file is saved after every answer; only a finalized review, as the
     # suite itself defines one, is part of the record.
     try:
@@ -157,6 +166,6 @@ def _snapshot(run: Run) -> tuple[str, dict[str, bytes]] | None:
     ):
         return run_id, files
     if values.get("evaluation_status") != "complete":
-        return None  # the review finished but result.json is not rewritten yet
+        return _WAITING  # the review finished but result.json is not rewritten yet
     files[REVIEW_FILE] = review_bytes
     return run_id, files

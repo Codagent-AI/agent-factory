@@ -313,3 +313,71 @@ def test_a_done_claim_keeps_retrying_until_its_results_are_saved(
     publish_eval_results(store, client, _shared())
 
     assert len(client.commits) == 1
+
+
+def test_a_done_claim_waiting_on_curated_files_is_not_finalized(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    claim, _, artifact = _finished(store, tmp_path)
+    moved = artifact / "implementation.diff.later"
+    (artifact / "implementation.diff").rename(moved)
+    _mark_done(store, claim)
+    client = RecordingClient()
+    publish_eval_results(store, client, _shared())
+
+    moved.rename(artifact / "implementation.diff")
+    publish_eval_results(store, client, _shared())
+
+    assert len(client.commits) == 1
+
+
+def test_a_done_claim_waiting_on_a_finalized_result_is_not_finalized(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    claim, _, artifact = _finished(store, tmp_path)
+    client = RecordingClient()
+    publish_eval_results(store, client, _shared())
+    _mark_done(store, claim)
+    (artifact / "human-review.json").write_text(json.dumps({"complete": True}), encoding="utf-8")
+    publish_eval_results(store, client, _shared())
+
+    _finalize_review(artifact)
+    publish_eval_results(store, client, _shared())
+
+    assert len(client.commits) == 2
+
+
+def test_a_cancelled_claims_failed_commit_is_still_retried(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    claim, _, _ = _finished(store, tmp_path)
+    client = RecordingClient(failure=GitHubApiError("gh api request failed"))
+    publish_eval_results(store, client, _shared())
+    store.set_claim_lifecycle(claim.id, "cancelled", {})
+
+    client.failure = None
+    publish_eval_results(store, client, _shared())
+
+    assert len(client.commits) == 1
+
+
+def test_a_cancelled_claims_incomplete_run_stops_being_scanned(
+    store: ClaimStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claim, _, artifact = _finished(store, tmp_path)
+    (artifact / "implementation.diff").unlink()
+    store.set_claim_lifecycle(claim.id, "cancelled", {})
+    client = RecordingClient()
+    publish_eval_results(store, client, _shared())
+    scanned: list[str] = []
+    original = ClaimStore.runs_for_claim
+
+    def counting(self: ClaimStore, claim_id: str) -> list[Run]:
+        scanned.append(claim_id)
+        return original(self, claim_id)
+
+    monkeypatch.setattr(ClaimStore, "runs_for_claim", counting)
+    publish_eval_results(store, client, _shared())
+
+    assert client.commits == []
+    assert scanned == []
