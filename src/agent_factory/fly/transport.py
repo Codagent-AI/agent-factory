@@ -760,8 +760,9 @@ def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str
     lines: list[str] = []
     for path in env_files:
         for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
+            # Only the parsing prefix is trimmed; a value's trailing spaces are data.
+            line = raw.lstrip()
+            if not line.strip() or line.startswith("#"):
                 continue
             if re.match(r"export\s", line):
                 line = line[6:].lstrip()

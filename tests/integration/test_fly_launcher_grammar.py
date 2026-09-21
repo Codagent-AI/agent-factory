@@ -117,6 +117,7 @@ def test_env_file_values_reach_the_guest_as_literal_data(
         "SUBST=$(touch pwned)\n"
         "QUOTED='unmatched\n"
         "export EXPORTED=kept\n"
+        "TRAILING=value  \n"
         "PASSED\n",
         encoding="utf-8",
     )
@@ -130,7 +131,7 @@ def test_env_file_values_reach_the_guest_as_literal_data(
             "bash",
             "-c",
             'set -a; . "$1"; set +a; '
-            'printf "%s|" "$SPACED" "$SUBST" "$QUOTED" "$EXPORTED" "$PASSED"',
+            'printf "%s|" "$SPACED" "$SUBST" "$QUOTED" "$EXPORTED" "$PASSED" "$TRAILING"',
             "_",
             str(script),
         ],
@@ -141,5 +142,5 @@ def test_env_file_values_reach_the_guest_as_literal_data(
         check=True,
     )
 
-    assert shown.stdout == "a b|$(touch pwned)|'unmatched|kept|from host|"
+    assert shown.stdout == "a b|$(touch pwned)|'unmatched|kept|from host|value  |"
     assert not (tmp_path / "pwned").exists()
