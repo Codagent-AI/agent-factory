@@ -563,3 +563,38 @@ def test_forged_receipt_from_another_author_is_ignored() -> None:
     }
     receipts = [c for c in github.comments["example/work#99"] if c.author == BOT_LOGIN]
     assert len(receipts) == 1
+
+
+def test_eval_card_is_admitted_on_issue_type_without_a_redundant_label() -> None:
+    """Issue type Eval already identifies the card; a label must not be required too."""
+    from agent_factory.github import ProjectQueueItem
+    from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
+
+    config = SharedConfig.from_toml(config_text())
+    github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
+    card = ProjectQueueItem(
+        id="P1",
+        content_id="I1",
+        fields={
+            config.project.owner.id: config.project.owner.option("factory"),
+            config.project.status.id: config.project.status.option("ready"),
+        },
+        source=SourceItem(
+            id="I1",
+            repository=config.routing.eval_source,
+            number=26,
+            author="writer",
+            labels=frozenset(),
+            issue_type=config.routing.eval_type,
+            state="open",
+        ),
+    )
+
+    defaults = EvalDefaults(
+        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
+    )
+    handler = EvalHandler(defaults, harness_ref="e" * 40)
+    snapshot = handler.snapshot(card, github, config)
+
+    assert snapshot is not None
+    assert snapshot.issue_number == 26

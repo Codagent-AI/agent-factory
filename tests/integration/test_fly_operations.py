@@ -218,6 +218,7 @@ def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
     assert "docker" not in text.lower()
     fly_checks = {item.name: item for item in groups["eval-fly"]}
     assert set(fly_checks) == {
+        "Fly launcher",
         "Fly deploy token",
         "Fly app API",
         "Fly image manifest",

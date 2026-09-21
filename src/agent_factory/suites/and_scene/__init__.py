@@ -11,7 +11,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -216,8 +215,10 @@ class AndSceneAdapter:
         if self._execution == "fly":
             if self._fly is None:
                 return "Fly settings are unavailable"
-            if shutil.which("agent-factory-fly-launcher") is None:
-                return "factory Fly launcher is not executable on the service PATH"
+            from agent_factory.fly.launcher import executable as fly_launcher
+
+            if fly_launcher() is None:
+                return "factory Fly launcher is not installed alongside the running factory"
             reason = self._fly_dry_run(worktrees)
             if reason is not None:
                 return reason
@@ -241,9 +242,11 @@ class AndSceneAdapter:
 
     def _fly_dry_run(self, worktrees: PreparedWorktrees) -> str | None:
         """Exercise the exact harness-to-launcher seam without contacting Fly."""
-        launcher = shutil.which("agent-factory-fly-launcher")
+        from agent_factory.fly.launcher import executable as fly_launcher
+
+        launcher = fly_launcher()
         if launcher is None:
-            return "factory Fly launcher is not executable on the service PATH"
+            return "factory Fly launcher is not installed alongside the running factory"
         run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
         harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
         with tempfile.TemporaryDirectory(prefix="factory-fly-readiness-") as temporary:
@@ -283,8 +286,11 @@ class AndSceneAdapter:
                 str(artifact),
                 "--env-file",
                 str(self._environment_file),
+                # A claude lead with codex implementor and tester is the widest auth
+                # shape the harness emits, and the only one that orders the mount
+                # flags claude-first. Anything narrower cannot catch grammar drift.
                 "--lead-cli",
-                "codex",
+                "claude",
                 "--lead-model",
                 "default",
                 "--lead-effort",
@@ -374,7 +380,10 @@ class AndSceneAdapter:
                 ),
                 encoding="utf-8",
             )
-            launcher = shutil.which("agent-factory-fly-launcher") or "agent-factory-fly-launcher"
+            from agent_factory.fly.launcher import LAUNCHER_NAME
+            from agent_factory.fly.launcher import executable as fly_launcher
+
+            launcher = fly_launcher() or LAUNCHER_NAME
             return ExecutionPlan(
                 tuple(arguments),
                 str(worktrees.evals),

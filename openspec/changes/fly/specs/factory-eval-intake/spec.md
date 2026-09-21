@@ -1,5 +1,28 @@
 ## MODIFIED Requirements
 
+### Requirement: Restrict automatic execution to repository writers
+
+Execution admission SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository, independently of the check routing performed. Organization membership or the presence of the request label alone SHALL NOT satisfy this check. Failure to establish the author's permission SHALL NOT be treated as authorization. Routing-time enforcement is specified in `factory-routing`.
+
+Execution admission SHALL identify an evaluation card by its native issue type, its source repository, and its board Owner and Status. The routing label SHALL be the router's entry signal only and SHALL NOT be a further condition of admission, so a card carrying the evaluation issue type is admitted whether or not the label is present.
+
+#### Scenario: Receive an outside contributor's request
+
+- **WHEN** a public-repository contributor without write access creates an issue from the eval template
+- **THEN** routing leaves the request in Backlog without factory ownership, as specified in `factory-routing`
+- **AND** execution admission never accepts it even though the template applied the request label
+
+#### Scenario: Recheck permission at execution admission
+
+- **WHEN** a Ready card has the eval marker but its author lacks the required repository access
+- **THEN** the factory does not accept it for execution based only on its label or board fields
+
+#### Scenario: Admit an evaluation card created without the routing label
+
+- **WHEN** a Ready card owned by the factory in the eval source repository carries the evaluation issue type but not the routing label
+- **THEN** the factory admits it for execution on the strength of its issue type
+- **AND** the operator is not required to restate the issue type as a label
+
 ### Requirement: Interpret one evaluation configuration per request
 
 The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `lead`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.

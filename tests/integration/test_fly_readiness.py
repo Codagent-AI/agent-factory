@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from agent_factory.config import ConfigurationError, LocalConfig
+from agent_factory.config import (
+    ConfigurationError,
+    FlyLocalConfig,
+    LocalConfig,
+    SharedConfig,
+)
 from agent_factory.work_kinds.eval import EvalDefaults, parse_request
 
 
@@ -170,3 +177,126 @@ def test_created_machine_survives_a_stop_so_a_quota_hold_can_restart_it(tmp_path
     assert body["config"]["auto_destroy"] is False
     assert body["config"]["restart"] == {"policy": "no"}
     assert cast(dict[str, str], body["config"]["guest"])["persist_rootfs"] == "always"
+
+
+def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dry run must emit both auth flags, or it cannot catch launcher grammar drift."""
+    from agent_factory.suites.and_scene import (
+        AndSceneAdapter,
+        PreparedWorktrees,
+        SourceRepositories,
+    )
+
+    launcher_bin = tmp_path / "bin"
+    launcher_bin.mkdir()
+    launcher = launcher_bin / "agent-factory-fly-launcher"
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{launcher_bin}:{os.environ['PATH']}")
+
+    evals = tmp_path / "evals"
+    run_script = evals / "evals/agent-runner/and-scene/run.sh"
+    run_script.parent.mkdir(parents=True)
+    recorded = tmp_path / "argv"
+    run_script.write_text(
+        f'#!/bin/sh\nprintf "%s\\n" "$@" > {recorded}\nexit 0\n', encoding="utf-8"
+    )
+    run_script.chmod(0o755)
+
+    for name in ("runner", "skills"):
+        repository = tmp_path / name
+        repository.mkdir()
+        subprocess.run(["git", "init", "-q", str(repository)], check=True)
+
+    environment_file = tmp_path / "env"
+    environment_file.write_text("NAME=value\n", encoding="utf-8")
+    suite = AndSceneAdapter(
+        environment_file=environment_file,
+        execution="fly",
+        fly=cast(FlyLocalConfig, object()),
+    )
+    worktrees = PreparedWorktrees(
+        "claim",
+        tmp_path / "runner",
+        tmp_path / "skills",
+        evals,
+        SourceRepositories(tmp_path / "runner", tmp_path / "skills", evals),
+    )
+
+    assert suite._fly_dry_run(worktrees) is None  # pyright: ignore[reportPrivateUsage]
+    arguments = recorded.read_text(encoding="utf-8").split("\n")
+    selected = {
+        arguments[index + 1]
+        for index, value in enumerate(arguments)
+        if value in ("--lead-cli", "--implementor-cli", "--tester-cli")
+    }
+    assert selected == {"claude", "codex"}
+
+
+def test_fly_launcher_resolves_beside_the_running_interpreter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The launcher ships with the factory, so a bare service PATH must still find it."""
+    import sys
+
+    from agent_factory.fly.launcher import executable
+
+    installed = tmp_path / "venv" / "bin"
+    installed.mkdir(parents=True)
+    launcher = installed / "agent-factory-fly-launcher"
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(installed / "python"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    assert executable() == str(launcher)
+
+
+def test_fly_launcher_absence_is_reported_rather_than_guessed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from agent_factory.fly.launcher import executable
+
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    monkeypatch.setattr(sys, "executable", str(empty / "python"))
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    assert executable() is None
+
+
+def test_fly_doctor_reports_a_missing_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A launcher the factory cannot resolve must fail readiness, not a live card."""
+    import sys
+
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    empty = tmp_path / "bin"
+    empty.mkdir()
+    monkeypatch.setattr(sys, "executable", str(empty / "python"))
+    monkeypatch.setenv("PATH", str(tmp_path / "absent"))
+
+    token = tmp_path / "token"
+    token.write_text("token-value\n", encoding="utf-8")
+    config = LocalConfig.from_toml(
+        _local(f'''
+[eval]
+execution = "fly"
+[fly]
+app = "factory"
+image = "registry.fly.io/factory:base"
+token_file = "{token}"
+''')
+    )
+    diagnostics = FlyMachineBackend().readiness(config, cast(SharedConfig, object()))
+
+    launcher = [d for d in diagnostics if d.name == "Fly launcher"]
+    assert len(launcher) == 1
+    assert launcher[0].available is False
+    assert launcher[0].group == "eval-fly"

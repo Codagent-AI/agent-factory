@@ -17,6 +17,8 @@ from typing import cast
 from agent_factory.backends import Disposal, Probe
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.fly.api import FlyApiError, FlyMachinesClient, is_gone, read_token
+from agent_factory.fly.launcher import LAUNCHER_NAME
+from agent_factory.fly.launcher import executable as fly_launcher
 from agent_factory.fly.transport import FlyTransport, FlyTransportError
 from agent_factory.operations import Diagnostic
 
@@ -52,8 +54,9 @@ class FlyMachineBackend:
                 )
             ]
         fly = local.fly
+        result = [_launcher_diagnostic()]
         token_check = _token_diagnostic(fly.token_file)
-        result = [token_check]
+        result.append(token_check)
         if token_check.available:
             client = FlyMachinesClient(fly.app, fly.token_file)
             for name, call, action in (
@@ -254,7 +257,7 @@ class FlyMachineBackend:
         artifact = _artifact_path(plan)
         if artifact is None:
             raise ValueError("Fly plan has no artifact path")
-        launcher = _allowed_environment(plan).get("SANDBOX_RUNNER", "agent-factory-fly-launcher")
+        launcher = _allowed_environment(plan).get("SANDBOX_RUNNER", LAUNCHER_NAME)
         return (launcher, "attach", "--run-dir", str(artifact))
 
     def reconcile(self, store: object) -> list[str]:
@@ -390,6 +393,20 @@ class FlyMachineBackend:
         return cast(
             FlyMachinesClient, self._client_factory(_app(identity), Path(_token_file(identity)))
         )
+
+
+def _launcher_diagnostic() -> Diagnostic:
+    """The launcher is the harness-to-Fly seam; without it no evaluation can start."""
+    resolved = fly_launcher()
+    if resolved is None:
+        return Diagnostic(
+            "Fly launcher",
+            False,
+            f"{LAUNCHER_NAME} is not installed alongside the running factory",
+            "Reinstall the factory so its console scripts sit beside the running interpreter.",
+            "eval-fly",
+        )
+    return Diagnostic("Fly launcher", True, resolved, "No action required.", "eval-fly")
 
 
 def _token_diagnostic(path: Path) -> Diagnostic:

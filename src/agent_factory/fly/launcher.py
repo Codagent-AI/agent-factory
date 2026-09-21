@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -17,6 +18,28 @@ from typing import cast
 
 class ArgumentError(ValueError):
     pass
+
+
+LAUNCHER_NAME = "agent-factory-fly-launcher"
+
+
+def executable() -> str | None:
+    """Resolve the launcher, preferring the copy installed with the running factory.
+
+    An explicit PATH entry still wins, so an operator can substitute a launcher.
+    Otherwise the interpreter's own directory holds the matching console script,
+    which keeps the service working without a bespoke PATH entry.
+    """
+    found = shutil.which(LAUNCHER_NAME)
+    if found is not None:
+        return found
+    sibling = Path(sys.executable).parent / LAUNCHER_NAME
+    if sibling.is_file() and os.access(sibling, os.X_OK):
+        return str(sibling)
+    return None
+
+
+_AUTH_FLAGS = ("--mount-codex-auth", "--mount-claude-auth", "--mount-cursor-auth")
 
 
 @dataclass(frozen=True)
@@ -54,10 +77,15 @@ def parse_arguments(argv: Sequence[str], manifest: Mapping[str, object]) -> Laun
     while values[:1] == ["--env-file"]:
         del values[:1]
         env_files.append(Path(_next(values, "--env-file")))
-    codex = _take(values, "--mount-codex-auth")
-    claude = _take(values, "--mount-claude-auth")
-    if values[:1] == ["--mount-cursor-auth"]:
-        raise ArgumentError("--mount-cursor-auth is unsupported on Fly")
+    # The harness emits auth flags in role order (lead, implementor, tester, judge),
+    # so their relative order varies with the configured role CLIs.
+    codex = claude = False
+    while values and values[0] in _AUTH_FLAGS:
+        flag = values.pop(0)
+        if flag == "--mount-cursor-auth":
+            raise ArgumentError("--mount-cursor-auth is unsupported on Fly")
+        codex = codex or flag == "--mount-codex-auth"
+        claude = claude or flag == "--mount-claude-auth"
     if len(values) != 2 or values[0] != "--":
         raise ArgumentError(values[0] if values else "missing --")
     return LaunchArguments(

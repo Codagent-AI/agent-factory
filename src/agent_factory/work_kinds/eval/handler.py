@@ -127,8 +127,9 @@ class EvalHandler:
         if (
             source.repository != shared.routing.eval_source
             or source.state.lower() == "closed"
+            # The issue type already identifies an evaluation. The routing label is
+            # the router's entry signal, not a second gate the card must satisfy.
             or source.issue_type != shared.routing.eval_type
-            or shared.routing.eval_label not in source.labels
             or card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
             or card_status(shared, card) != "Ready"
         ):
