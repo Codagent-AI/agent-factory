@@ -111,19 +111,9 @@ def cycle(state: Path, config_path: Path) -> None:
                 failures = _kind_failures(
                     candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
                 )
-                mismatch = store.get_setting("runtime", "fly:mismatch")
-                if candidate_handler.kind == "eval" and mismatch:
-                    machine = mismatch.get("machine_id", "unknown")
-                    remedy = mismatch.get("remedy", "wait for the Machine deadline")
-                    failures.append(
-                        Diagnostic(
-                            "Fly ownership mismatch",
-                            False,
-                            f"Machine {machine}: {remedy}",
-                            str(remedy),
-                            "eval-fly",
-                        )
-                    )
+                mismatch = _fly_mismatch_diagnostic(store, local)
+                if candidate_handler.kind == "eval" and mismatch is not None:
+                    failures.append(mismatch)
                 kind_failure_cache[candidate_handler.kind] = failures
             return kind_failure_cache[candidate_handler.kind]
 
@@ -506,6 +496,20 @@ def _assign_ready_bug(
         )
         return
     card.fields[shared.project.owner.id] = factory
+
+
+def _fly_mismatch_diagnostic(store: ClaimStore, local: LocalConfig) -> Diagnostic | None:
+    """A saved mismatch holds evals only under Fly, where reconciliation can clear it."""
+    if getattr(local, "eval_execution", "docker") != "fly":
+        return None
+    mismatch = store.get_setting("runtime", "fly:mismatch")
+    if not mismatch:
+        return None
+    machine = mismatch.get("machine_id", "unknown")
+    remedy = mismatch.get("remedy", "wait for the Machine deadline")
+    return Diagnostic(
+        "Fly ownership mismatch", False, f"Machine {machine}: {remedy}", str(remedy), "eval-fly"
+    )
 
 
 def _kind_failures(

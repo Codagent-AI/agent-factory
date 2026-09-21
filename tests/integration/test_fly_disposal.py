@@ -455,7 +455,10 @@ def test_reconciliation_counts_a_live_attempts_machine_as_known(cycle: Cycle) ->
 
     assert cycle.api.machines["machine-live"]["state"] == "started"
     assert cycle.store.get_setting("runtime", "fly:unknown") == {}
-    assert not any("machine-live" in line for line in status(cycle.store, cycle.local))
+    assert not any(
+        "machine-live" in line and line.startswith("blocking condition")
+        for line in status(cycle.store, cycle.local).splitlines()
+    )
 
 
 def test_reconciliation_leaves_a_held_stopped_machine_within_its_deadline_alone(

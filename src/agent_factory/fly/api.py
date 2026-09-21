@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -60,6 +61,15 @@ def read_token(token_file: Path) -> str:
     return token
 
 
+def _encrypted_endpoint(url: str) -> str:
+    """The deploy token rides every request, so only a loopback fake may use HTTP."""
+    parsed = urlsplit(url)
+    loopback = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and loopback):
+        raise ValueError(f"Fly endpoint must use HTTPS: {parsed.scheme}://{parsed.hostname}")
+    return url.rstrip("/")
+
+
 class FlyMachinesClient:
     def __init__(
         self,
@@ -75,11 +85,11 @@ class FlyMachinesClient:
         self.token_file = token_file
         # An explicit URL wins. The environment override exists so the launcher,
         # which builds its own client from a manifest, can be pointed at a local fake.
-        self.base_url = (
+        self.base_url = _encrypted_endpoint(
             base_url or os.environ.get("AGENT_FACTORY_FLY_API_URL") or "https://api.machines.dev"
-        ).rstrip("/")
+        )
         self._cached_token: str | None = None
-        self.registry_base_url = registry_base_url.rstrip("/")
+        self.registry_base_url = _encrypted_endpoint(registry_base_url)
 
     def _token(self) -> str:
         # A deploy token is static for the life of a client; read it once.

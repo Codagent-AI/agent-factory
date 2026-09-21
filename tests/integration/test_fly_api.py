@@ -182,3 +182,42 @@ def test_wait_state_raises_for_any_other_failure(fly: Harness) -> None:
     with pytest.raises(FlyApiError) as raised:
         fly.client.wait_state("machine-1", "started", timeout_seconds=1)
     assert raised.value.status == 500
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"base_url": "http://api.example.test"},
+        {"registry_base_url": "http://registry.example.test"},
+    ],
+)
+def test_client_refuses_cleartext_endpoints_that_would_carry_the_token(
+    tmp_path: Path, override: dict[str, str]
+) -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        FlyMachinesClient(
+            "app",
+            tmp_path / "token",
+            base_url=override.get("base_url"),
+            registry_base_url=override.get("registry_base_url", "https://registry.fly.io"),
+        )
+
+
+def test_client_refuses_a_cleartext_environment_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_FACTORY_FLY_API_URL", "http://api.example.test")
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        FlyMachinesClient("app", tmp_path / "token")
+
+
+def test_client_accepts_cleartext_loopback_endpoints_for_local_fakes(tmp_path: Path) -> None:
+    client = FlyMachinesClient(
+        "app",
+        tmp_path / "token",
+        base_url="http://127.0.0.1:9",
+        registry_base_url="http://localhost:9",
+    )
+
+    assert client.base_url == "http://127.0.0.1:9"

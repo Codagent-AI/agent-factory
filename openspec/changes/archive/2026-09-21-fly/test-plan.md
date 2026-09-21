@@ -39,7 +39,7 @@ Conventions: `tests/integration/test_fly_*.py`, `tests/e2e/test_fly_eval_cycle.p
 - Action: create, get, update metadata for one key, update the config env of a stopped Machine,
   list with metadata filter, stop, start, destroy, destroy again.
 - Assertions: create body carries image, guest size, `persist_rootfs = "always"`,
-  `auto_destroy = true`, restart policy `no`, `init.exec`, and metadata with owner marker, run id,
+  `auto_destroy = false`, restart policy `no`, `init.exec`, and metadata with owner marker, run id,
   claim id, nonce, deadline epoch, unit key; the bearer token is sent and never logged; metadata
   update changes only the named key; list filtering returns only marked Machines; a 404 on destroy
   is treated as success; a 5xx surfaces as a typed error with the request path.
@@ -119,7 +119,7 @@ Conventions: `tests/integration/test_fly_*.py`, `tests/e2e/test_fly_eval_cycle.p
   one within deadline with no run, one untagged.
 - Action: run one controller cycle.
 - Assertions: settled and exhausted → destroy; quota → stop with the deadline set to the later of
-  hold expiry and the next window opening plus total limit plus grace, `fly:machine:<claim>`
+  hold expiry and the next window opening plus total limit plus grace, `fly:machine:<run id>`
   recorded, and refreshed on a later cycle when the hold moves; technical with retry → Machine
   kept; expired orphan destroyed; unknown orphan recorded under `fly:unknown` and untouched;
   untagged Machine untouched; a stopped held Machine within its deadline untouched; a failed

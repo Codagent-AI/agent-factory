@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import stat
@@ -754,9 +755,24 @@ def _value(machine: Mapping[str, object], *keys: str) -> object:
 
 
 def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str:
+    # The guest sources this file, but env files hold Docker-style literal values:
+    # each one is re-quoted so quotes, spaces, and substitutions stay data.
     lines: list[str] = []
     for path in env_files:
-        lines.extend(path.read_text(encoding="utf-8").splitlines())
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if re.match(r"export\s", line):
+                line = line[6:].lstrip()
+            name, separator, value = line.partition("=")
+            name = name.rstrip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                raise ValueError(f"env file {path} has an invalid entry name")
+            if separator:
+                lines.append(f"{name}={shlex.quote(value)}")
+            elif name in os.environ:
+                lines.append(f"{name}={shlex.quote(os.environ[name])}")
     for name in env_names:
         if name in os.environ:
             lines.append(f"{name}={shlex.quote(os.environ[name])}")

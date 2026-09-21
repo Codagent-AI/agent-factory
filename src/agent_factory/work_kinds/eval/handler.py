@@ -468,7 +468,11 @@ def plan_attempt(
     worktrees: PreparedWorktrees,
 ) -> ExecutionPlan:
     """Build the suite invocation, resuming only when a prior attempt proved a checkpoint."""
-    previous = store.runs_for_claim(claim.id)[:-1]
+    previous = [
+        candidate
+        for candidate in store.runs_for_claim(claim.id)
+        if candidate.unit_key == run.unit_key and candidate.id != run.id
+    ]
     latest = previous[-1] if previous else None
     stopped_before_checkpoint = bool(
         latest

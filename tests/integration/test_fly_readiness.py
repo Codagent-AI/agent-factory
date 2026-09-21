@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -179,10 +180,9 @@ def test_created_machine_survives_a_stop_so_a_quota_hold_can_restart_it(tmp_path
     assert cast(dict[str, str], body["config"]["guest"])["persist_rootfs"] == "always"
 
 
-def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The dry run must emit both auth flags, or it cannot catch launcher grammar drift."""
+def _dry_run_suite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_body: str
+) -> tuple[Any, Any]:
     from agent_factory.suites.and_scene import (
         AndSceneAdapter,
         PreparedWorktrees,
@@ -199,10 +199,7 @@ def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
     evals = tmp_path / "evals"
     run_script = evals / "evals/agent-runner/and-scene/run.sh"
     run_script.parent.mkdir(parents=True)
-    recorded = tmp_path / "argv"
-    run_script.write_text(
-        f'#!/bin/sh\nprintf "%s\\n" "$@" > {recorded}\nexit 0\n', encoding="utf-8"
-    )
+    run_script.write_text(f"#!/bin/sh\n{run_body}\n", encoding="utf-8")
     run_script.chmod(0o755)
 
     for name in ("runner", "skills"):
@@ -224,6 +221,17 @@ def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
         evals,
         SourceRepositories(tmp_path / "runner", tmp_path / "skills", evals),
     )
+    return suite, worktrees
+
+
+def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dry run must emit both auth flags, or it cannot catch launcher grammar drift."""
+    recorded = tmp_path / "argv"
+    suite, worktrees = _dry_run_suite(
+        tmp_path, monkeypatch, f'printf "%s\\n" "$@" > {recorded}\nexit 0'
+    )
 
     assert suite._fly_dry_run(worktrees) is None  # pyright: ignore[reportPrivateUsage]
     arguments = recorded.read_text(encoding="utf-8").split("\n")
@@ -233,6 +241,21 @@ def test_fly_readiness_dry_run_exercises_a_mixed_cli_auth_shape(
         if value in ("--lead-cli", "--implementor-cli", "--tester-cli")
     }
     assert selected == {"claude", "codex"}
+
+
+def test_fly_readiness_dry_run_fails_rather_than_hanging_on_a_stalled_harness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import agent_factory.suites.and_scene as and_scene
+
+    monkeypatch.setattr(and_scene, "_FLY_DRY_RUN_TIMEOUT_SECONDS", 1)
+    suite, worktrees = _dry_run_suite(tmp_path, monkeypatch, "exec sleep 30")
+
+    started = time.monotonic()
+    reason = suite._fly_dry_run(worktrees)  # pyright: ignore[reportPrivateUsage]
+
+    assert time.monotonic() - started < 10
+    assert reason is not None and "timed out" in reason
 
 
 def test_fly_launcher_resolves_beside_the_running_interpreter(
@@ -322,3 +345,37 @@ token_file = "{token}"
     assert len(launcher) == 1
     assert launcher[0].available is False
     assert launcher[0].group == "eval-fly"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["https://user:secret@github.com/org/repo.git", "https://token@github.com/org/repo.git"],
+)
+def test_pinned_worktree_origin_with_embedded_credentials_is_refused(
+    tmp_path: Path, origin: str
+) -> None:
+    from agent_factory.suites.and_scene import (
+        ReadinessError,
+        _remote_url,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", origin], check=True)
+
+    with pytest.raises(ReadinessError) as raised:
+        _remote_url(tmp_path)
+    assert "secret" not in str(raised.value) and "token@" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://github.com/org/repo.git", "git@github.com:org/repo.git"]
+)
+def test_pinned_worktree_origin_without_credentials_is_recorded(
+    tmp_path: Path, origin: str
+) -> None:
+    from agent_factory.suites.and_scene import _remote_url  # pyright: ignore[reportPrivateUsage]
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", origin], check=True)
+
+    assert _remote_url(tmp_path) == origin

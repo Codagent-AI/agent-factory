@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
@@ -26,6 +27,8 @@ from agent_factory.store import ClaimStore
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+# The dry run only parses arguments; a harness that stalls must not stall readiness.
+_FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -308,9 +311,20 @@ class AndSceneAdapter:
                 "--tester-effort",
                 "medium",
             )
-            completed = subprocess.run(
-                command, text=True, capture_output=True, env=environment, check=False
-            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                    timeout=_FLY_DRY_RUN_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                return (
+                    f"Fly launcher compatibility failed at harness {harness_commit}: "
+                    f"dry run timed out after {_FLY_DRY_RUN_TIMEOUT_SECONDS} seconds"
+                )
         if completed.returncode == 0:
             return None
         detail = (
@@ -677,6 +691,12 @@ def _remote_url(path: Path) -> str:
     value = _git(path, "remote", "get-url", "origin", allow_failure=True)
     if not value:
         raise ReadinessError(f"pinned worktree has no origin URL: {path}")
+    # The URL is written to the non-secret manifest and handed to the guest.
+    parsed = urlsplit(value)
+    if parsed.scheme in {"http", "https"} and (parsed.username or parsed.password):
+        raise ReadinessError(
+            f"pinned worktree origin embeds credentials; use a credential-free URL: {path}"
+        )
     return value
 
 

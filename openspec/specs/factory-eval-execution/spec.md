@@ -27,7 +27,7 @@ Suite-specific readiness checks, invocation, evidence interpretation, supported 
 
 ### Requirement: Execute against clean pinned worktrees
 
-The factory SHALL prepare factory-owned clean Git worktrees for the accepted Runner and Skills commits and retain the deployed `agent-evals` version in a pinned worktree. These worktrees SHALL remain associated with the claim for its lifetime, including automatic deferrals and recovery, and SHALL NOT be repointed for another claim. Repetitions SHALL use the same accepted inputs rather than re-resolving moving refs. The worktrees SHALL remain the factory-host record of the accepted inputs in every execution mode; under `fly` execution the sandbox obtains the same commits by cloning, as defined in `factory-fly-execution`.
+The factory SHALL prepare factory-owned clean Git worktrees for the accepted Runner and Skills commits and retain the deployed `agent-evals` version in a pinned worktree. These worktrees SHALL remain associated with the claim for its lifetime, including automatic deferrals and recovery, and SHALL NOT be repointed for another claim. Repetitions SHALL use the same accepted inputs rather than re-resolving moving refs. The worktrees SHALL remain the factory-host record of the accepted inputs in every execution mode; under `fly` execution the sandbox clones Runner and Skills at the same commits and receives the harness input delivered from the pinned `agent-evals` worktree, as defined in `factory-fly-execution`.
 
 #### Scenario: Defer a claim while source branches advance
 

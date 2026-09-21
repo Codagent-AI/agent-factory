@@ -213,7 +213,10 @@ fly apps create factory-evals --org <organization>
 fly tokens create deploy --app factory-evals > /private/credentials/fly-deploy-token
 chmod 600 /private/credentials/fly-deploy-token
 git -C /path/to/agent-runner rev-parse HEAD  # must include chrome-linux64/chrome discovery
-fly deploy --remote-only --app factory-evals --image-label runner-base
+# A new app has no Machines to read config from, so pass a minimal one explicitly.
+printf 'app = "factory-evals"\nprimary_region = "ewr"\n' > /tmp/fly-sandbox.toml
+fly deploy --build-only --push --remote-only --app factory-evals \
+  --config /tmp/fly-sandbox.toml --image-label runner-base
 ```
 
 Build from the Agent Runner revision that contains the `chrome-linux64/chrome`

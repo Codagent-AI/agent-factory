@@ -5,12 +5,12 @@ TBD - created by archiving change fly. Update Purpose after archive.
 ## Requirements
 ### Requirement: Execute eval attempts in a Fly Machine
 
-When the eval kind is configured for `fly` execution, the factory SHALL run each repetition attempt in one Fly Machine owned by the factory. The Machine SHALL obtain the Agent Runner, Agent Skills, and `agent-evals` harness sources by cloning them at the full commits recorded on the claim, at the paths the selected suite expects, and SHALL run the suite's unmodified workflow, controller, judging, and scoring inside the Machine. Each repetition SHALL use its own Machine; a recovery attempt for a repetition SHALL reuse that repetition's Machine as defined below. A failure to obtain any recorded commit SHALL end the attempt as a technical failure before model execution.
+When the eval kind is configured for `fly` execution, the factory SHALL run each repetition attempt in one Fly Machine owned by the factory. The Machine SHALL obtain the Agent Runner and Agent Skills sources by cloning them at the full commits recorded on the claim, SHALL receive the `agent-evals` harness input delivered from the claim's pinned harness worktree at its recorded commit, each at the path the selected suite expects, and SHALL run the suite's unmodified workflow, controller, judging, and scoring inside the Machine. Each repetition SHALL use its own Machine; a recovery attempt for a repetition SHALL reuse that repetition's Machine as defined below. A failure to obtain any recorded commit SHALL end the attempt as a technical failure before model execution.
 
 #### Scenario: Launch a repetition on Fly
 
 - **WHEN** an eligible eval claim's repetition is admitted under `fly` execution
-- **THEN** a Machine is created for that attempt and the suite runs inside it against clones at the claim's recorded Runner, Skills, and harness commits
+- **THEN** a Machine is created for that attempt and the suite runs inside it against clones at the claim's recorded Runner and Skills commits and harness input from its recorded harness commit
 - **AND** the suite's own source provenance and cleanliness checks pass against those clones
 
 #### Scenario: Fail to obtain a recorded commit

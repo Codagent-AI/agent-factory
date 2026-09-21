@@ -135,6 +135,22 @@ def doctor(
         if shared is not None
         else {}
     )
+    if config.eval_execution == "fly":
+        # A local Cursor login proves nothing on Fly, where Cursor cannot run.
+        cursor_roles = sorted(
+            role for role, profile in profiles.items() if profile.split(":", 1)[0] == "cursor"
+        )
+        for role in cursor_roles:
+            diagnostics.append(
+                Diagnostic(
+                    "Fly role compatibility",
+                    False,
+                    f"{role}: Cursor is unavailable on Fly",
+                    f"Select a codex or claude profile for the {role} default.",
+                    group="eval-fly",
+                )
+            )
+        profiles = {role: p for role, p in profiles.items() if role not in cursor_roles}
     diagnostics.extend(model_authentication(profiles, group="eval"))
     diagnostics.append(free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval"))
     diagnostics.append(_resolved_path_diagnostic())

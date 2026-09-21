@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path: Path) -> None:
     from agent_factory.fly.launcher import main
@@ -98,3 +100,46 @@ def test_launcher_accepts_claude_auth_before_codex_auth(tmp_path: Path) -> None:
         manifest_path=manifest,
     )
     assert result == 0
+
+
+def test_env_file_values_reach_the_guest_as_literal_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import subprocess
+
+    from agent_factory.fly.transport import environment_text
+
+    env_file = tmp_path / "candidate.env"
+    env_file.write_text(
+        "# comment\n"
+        "\n"
+        "SPACED=a b\n"
+        "SUBST=$(touch pwned)\n"
+        "QUOTED='unmatched\n"
+        "export EXPORTED=kept\n"
+        "PASSED\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PASSED", "from host")
+
+    text = environment_text([env_file], [])
+    script = tmp_path / "env"
+    script.write_text(text, encoding="utf-8")
+    shown = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'set -a; . "$1"; set +a; '
+            'printf "%s|" "$SPACED" "$SUBST" "$QUOTED" "$EXPORTED" "$PASSED"',
+            "_",
+            str(script),
+        ],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin"},
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    assert shown.stdout == "a b|$(touch pwned)|'unmatched|kept|from host|"
+    assert not (tmp_path / "pwned").exists()

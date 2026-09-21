@@ -440,3 +440,22 @@ def test_status_shows_a_quota_held_machine_as_stopped_with_its_deadline(site: Si
         assert "Machine: machine-1 stopped (quota hold), deadline 1930000000" in text
     finally:
         store.close()
+
+
+def test_doctor_under_fly_fails_a_cursor_role_even_when_cursor_is_logged_in(
+    site: Site,
+) -> None:
+    site.shared_path.write_text(
+        SHARED.replace('tester = "codex:x:medium"', 'tester = "cursor:agent:medium"'),
+        encoding="utf-8",
+    )
+    site.stub("cursor", exit_code=0)
+
+    diagnostics = doctor(site.config(evals="fly", fixes="host"))
+
+    compatibility = [d for d in diagnostics if "Cursor is unavailable on Fly" in d.detail]
+    assert len(compatibility) == 1
+    assert not compatibility[0].available
+    assert compatibility[0].group == "eval-fly"
+    assert "tester" in compatibility[0].detail
+    assert not any("cursor" in d.name.lower() and d.available for d in diagnostics)

@@ -184,3 +184,31 @@ def test_status_shows_each_stopped_quota_machine_of_a_claim(tmp_path: Path) -> N
         assert "machine-9" not in lines
     finally:
         store.close()
+
+
+def test_a_saved_fly_mismatch_holds_evals_only_while_evals_run_on_fly(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from agent_factory.config import LocalConfig
+    from agent_factory.runtime import (
+        _fly_mismatch_diagnostic,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        store.set_setting(
+            "runtime", "fly:mismatch", {"machine_id": "machine-1", "remedy": "destroy it"}
+        )
+
+        held = _fly_mismatch_diagnostic(
+            store, cast(LocalConfig, SimpleNamespace(eval_execution="fly"))
+        )
+        stale = _fly_mismatch_diagnostic(
+            store, cast(LocalConfig, SimpleNamespace(eval_execution="docker"))
+        )
+
+        assert held is not None and not held.available and "machine-1" in held.detail
+        assert stale is None
+    finally:
+        store.close()
