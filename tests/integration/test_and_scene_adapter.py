@@ -490,3 +490,12 @@ def test_review_handoff_opts_out_of_suite_publication_only_when_the_pinned_scrip
     handoff = adapter.review_handoff(result, review_script, artifact)
     assert handoff is not None
     assert "--no-publish" not in handoff
+
+    # A mention outside the option dispatch is not support.
+    review_script.write_text(
+        '#!/bin/sh\n# TODO: add --no-publish)\necho "unknown option --no-publish"\n',
+        encoding="utf-8",
+    )
+    handoff = adapter.review_handoff(result, review_script, artifact)
+    assert handoff is not None
+    assert "--no-publish" not in handoff.split("Run: ", 1)[1].splitlines()[0]

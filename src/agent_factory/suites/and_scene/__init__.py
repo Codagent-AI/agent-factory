@@ -29,6 +29,7 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 # The dry run only parses arguments; a harness that stalls must not stall readiness.
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
+_ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -478,9 +479,10 @@ class AndSceneAdapter:
             return None
         arguments = [str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve())]
         # The factory saves results itself, and the suite's own push cannot succeed
-        # from the pinned detached worktree. Pins older than the option reject it.
+        # from the pinned detached worktree. Pins older than the option reject it,
+        # so it is passed only when the script's option dispatch accepts it.
         try:
-            if "--no-publish" in review_script.read_text(encoding="utf-8"):
+            if _ACCEPTS_NO_PUBLISH.search(review_script.read_text(encoding="utf-8")):
                 arguments.append("--no-publish")
         except OSError:
             pass
