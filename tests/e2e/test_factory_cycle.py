@@ -482,10 +482,10 @@ def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_pat
     interpreter.symlink_to(sys.executable)
     _cli(config, env, "tick")
     retry = store.nonterminal_runs()[0]
-    assert retry.reason == "recovery" and retry.evidence_path == first.evidence_path
+    assert retry.reason == "initial" and retry.unit_key == first.unit_key
     assert "--resume" not in retry.plan["argv"]  # pyright: ignore[reportOperatorIssue]
     _finish(store, Path(retry.evidence_path))
-    assert store.recovery_attempts(claim.id, retry.unit_key) == 1
+    assert store.recovery_attempts(claim.id, retry.unit_key) == 0
     store.close()
 
 

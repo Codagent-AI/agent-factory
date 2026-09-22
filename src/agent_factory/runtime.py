@@ -313,7 +313,12 @@ def _launch(
             AttemptResult(
                 "failed",
                 None,
-                {"reason": str(error), "error_type": type(error).__name__},
+                {
+                    "reason": str(error),
+                    "error_type": type(error).__name__,
+                    "failure_stage": "pre-suite",
+                    "stage": "planning",
+                },
             ),
         )
         # Preserve worktree readiness handling and unexpected error tracebacks.
@@ -624,6 +629,8 @@ def _dispose_fly_result(
         return
     if result.quota_until is not None or classification == "quota":
         decision = "stop"
+    elif result.result.get("failure_stage") == "pre-suite" and run.reason == "initial":
+        decision = "destroy"
     elif classification == "technical" and run.reason != "recovery":
         decision = "keep"
     else:

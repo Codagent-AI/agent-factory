@@ -11,6 +11,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -155,6 +156,9 @@ def doctor(
     diagnostics.append(free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval"))
     diagnostics.append(_resolved_path_diagnostic())
     diagnostics.append(_launch_agent_path_diagnostic(config, shared=shared))
+    diagnostics.append(launch_agent_identity_diagnostic(_LAUNCH_AGENT_PLIST))
+    if include_informational and sys.platform == "darwin":
+        diagnostics.append(stale_unknown_keychain_diagnostic())
     if shared is not None and include_fix:
         diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
     if shared is not None and config.eval_execution == "fly":
@@ -317,8 +321,11 @@ def render_launch_agent(
     credential_path: Path,
     *,
     path: str = "",
+    user: str | None = None,
 ) -> str:
     """Return a launchd-safe per-user controller definition with explicit paths."""
+    from agent_factory.fly.transport import service_user
+
     values = {
         "__EXECUTABLE__": str(executable),
         "__CONFIG__": str(config_path),
@@ -326,6 +333,7 @@ def render_launch_agent(
         "__LOG__": str(log_path),
         "__CREDENTIAL__": str(credential_path),
         "__PATH__": path,
+        "__USER__": user or service_user(),
     }
     rendered = _PLIST_TEMPLATE
     if not path:
@@ -933,6 +941,57 @@ def _launch_agent_path_diagnostic(
     )
 
 
+def launch_agent_identity_diagnostic(path: Path) -> Diagnostic:
+    if not path.is_file():
+        return Diagnostic(
+            "LaunchAgent identity", True, "LaunchAgent is not installed", "", "shared"
+        )
+    try:
+        with path.open("rb") as stream:
+            document = plistlib.load(stream)
+    except (OSError, ValueError, ExpatError):
+        return Diagnostic(
+            "LaunchAgent identity", False, f"Cannot read {path}", f"Repair {path}.", "shared"
+        )
+    environment: Mapping[str, object] = (
+        cast(Mapping[str, object], cast(dict[str, object], document).get("EnvironmentVariables"))
+        if isinstance(document, dict)
+        and isinstance(cast(dict[str, object], document).get("EnvironmentVariables"), dict)
+        else {}
+    )
+    if not isinstance(environment, dict) or not environment.get("USER"):
+        return Diagnostic(
+            "LaunchAgent identity",
+            False,
+            f"{path} lacks USER",
+            "Add USER and LOGNAME to the definition, then launchctl bootout and bootstrap it.",
+            "shared",
+        )
+    return Diagnostic("LaunchAgent identity", True, f"USER={environment['USER']}", "", "shared")
+
+
+def stale_unknown_keychain_diagnostic(*, platform: str | None = None) -> Diagnostic:
+    if (platform or sys.platform) != "darwin":
+        return Diagnostic("Stale Claude login", True, "Keychain check does not apply", "", "shared")
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", "Claude Code-credentials", "-a", "unknown"],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return Diagnostic(
+            "Stale Claude login", True, "unknown-account item could not be inspected", "", "shared"
+        )
+    detail = (
+        "Stale Claude Code-credentials item for account unknown; created without USER"
+        if result.returncode == 0
+        else "No stale unknown-account Claude login"
+    )
+    return Diagnostic("Stale Claude login", True, detail, "", "shared")
+
+
 def _launch_agent_path_result(
     config: LocalConfig, name: str, detail: str, action: str
 ) -> Diagnostic:
@@ -1180,6 +1239,6 @@ _PLIST_TEMPLATE = """<?xml version=\"1.0\" encoding=\"UTF-8\"?>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>__LOG__</string>
   <key>StandardErrorPath</key><string>__LOG__</string>
-  <key>EnvironmentVariables</key><dict><key>AGENT_FACTORY_ROOT</key><string>__ROOT__</string><key>AGENT_FACTORY_GITHUB_APP_KEY</key><string>__CREDENTIAL__</string><key>PATH</key><string>__PATH__</string></dict>
+  <key>EnvironmentVariables</key><dict><key>AGENT_FACTORY_ROOT</key><string>__ROOT__</string><key>AGENT_FACTORY_GITHUB_APP_KEY</key><string>__CREDENTIAL__</string><key>USER</key><string>__USER__</string><key>LOGNAME</key><string>__USER__</string><key>PATH</key><string>__PATH__</string></dict>
 </dict></plist>
 """

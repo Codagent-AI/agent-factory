@@ -70,7 +70,7 @@ poll_seconds = 60
 #
 # [fly]
 # app = "agent-factory-sandbox"
-# image = "registry.fly.io/agent-factory-sandbox:base"
+# image = "registry.fly.io/agent-factory-sandbox:base" # repository for per-claim builds; tag ignored
 # token_file = "/Users/you/.agent-factory/credentials/fly-deploy-token"
 # region = "ewr"               # default
 # cpu_kind = "shared"          # default

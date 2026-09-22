@@ -203,7 +203,12 @@ def _launch_and_observe(
         store.finish_run(
             run.id,
             execution_status="failed",
-            result={"reason": "suite launch failed", "error": str(error)},
+            result={
+                "reason": "suite launch failed",
+                "error": str(error),
+                "failure_stage": "pre-suite",
+                "stage": "process-start",
+            },
         )
         return
     try:
@@ -255,6 +260,10 @@ def _supervise_fly(
         return
     identity = backend.identity_from_plan(plan, run)
     if identity is None:
+        progress = dict(run.progress)
+        _copy_fly_image_build(plan, progress)
+        if progress != run.progress:
+            store.update_progress(run.id, progress)
         if _identity_status(run.process) == "alive":
             # The launcher names this attempt in the record only once the Machine
             # carries its identity, which for a stopped Machine includes a config
@@ -262,11 +271,21 @@ def _supervise_fly(
             deadline = time.monotonic() + min(_IDENTITY_WAIT_SECONDS, limits.inactivity_seconds)
             while time.monotonic() < deadline and _identity_status(run.process) == "alive":
                 time.sleep(_POLL_SECONDS)
+                current = _required_run(store, run.id)
+                progress = dict(current.progress)
+                _copy_fly_image_build(plan, progress)
+                if progress != current.progress:
+                    store.update_progress(run.id, progress)
                 identity = backend.identity_from_plan(plan, _required_run(store, run.id))
                 if identity is not None:
                     _supervise_fly(store, _required_run(store, run.id), plan, limits)
                     return
-            store.report_uncertainty(run.id, "Fly Machine identity was not recorded by launcher")
+            if _identity_status(run.process) == "missing":
+                _finish_fly_launcher_exit(store, run, plan)
+            else:
+                store.report_uncertainty(
+                    run.id, "Fly Machine identity was not recorded by launcher"
+                )
         else:
             _finish_fly_launcher_exit(store, run, plan)
         return
@@ -274,6 +293,7 @@ def _supervise_fly(
     probe = backend.probe(identity)
     progress["machine"] = _machine_progress(identity, probe.state)
     _copy_fly_heartbeat(plan, progress)
+    _copy_fly_image_build(plan, progress)
     progress["machine_provenance"] = dict(backend.provenance(identity))
     store.update_progress(run.id, progress)
     if probe.state == "gone":
@@ -351,12 +371,37 @@ def _finish_fly_launcher_exit(store: ClaimStore, run: Run, plan: ExecutionPlan) 
         store.report_uncertainty(run.id, "Fly launcher reported ownership mismatch")
     elif code == EXIT_TRANSPORT:
         store.finish_run(
-            run.id, execution_status="failed", result={"reason": "Fly launcher failed"}
+            run.id,
+            execution_status="failed",
+            result=_fly_launcher_failure(Path(_artifact_root(plan, run.evidence_path)), code),
         )
     else:
         store.finish_run(
-            run.id, execution_status="interrupted", result={"reason": "Fly launcher exited"}
+            run.id,
+            execution_status="interrupted",
+            result=_fly_launcher_failure(Path(_artifact_root(plan, run.evidence_path)), code),
         )
+
+
+def _fly_launcher_failure(artifact: Path, code: int | None) -> dict[str, object]:
+    reason = "Fly launcher failed" if code == EXIT_TRANSPORT else "Fly launcher exited"
+    result: dict[str, object] = {"reason": reason}
+    try:
+        stage = json.loads(
+            (artifact / ".factory" / "launch-stage.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return result
+    if (
+        isinstance(stage, dict)
+        and cast(dict[str, object], stage).get("failure_stage") == "pre-suite"
+    ):
+        stage = cast(dict[str, object], stage)
+        result["failure_stage"] = "pre-suite"
+        result["stage"] = stage.get("stage", "launch")
+        if isinstance(stage.get("detail"), str):
+            result["error"] = stage["detail"]
+    return result
 
 
 def _launcher_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
@@ -411,6 +456,16 @@ def _copy_fly_heartbeat(plan: ExecutionPlan, progress: dict[str, object]) -> Non
         progress["checkpoint_seen"] = True
 
 
+def _copy_fly_image_build(plan: ExecutionPlan, progress: dict[str, object]) -> None:
+    path = Path(_artifact_root(plan, "")) / ".factory" / "image-build.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if isinstance(data, dict) and isinstance(cast(dict[str, object], data).get("digest"), str):
+        progress["image_build"] = cast(dict[str, object], data)
+
+
 def _observe_fly(
     store: ClaimStore,
     run_id: str,
@@ -440,6 +495,7 @@ def _observe_fly(
         progress = dict(run.progress)
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         _copy_fly_heartbeat(plan, progress)
+        _copy_fly_image_build(plan, progress)
         changed, sources = _progress_changed(plan.progress_sources, sources)
         if changed:
             last_progress = now

@@ -87,7 +87,14 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
             def do_GET(self) -> None:  # noqa: N802
                 self._record()
                 parsed = urlsplit(self.path)
-                if parsed.path.endswith("/machines"):
+                if parsed.path.startswith("/v2/"):
+                    if not self.headers.get("Authorization", "").startswith("Basic "):
+                        self._send(401)
+                        return
+                    self.send_response(200)
+                    self.send_header("Docker-Content-Digest", fake.manifest_digest)
+                    self.end_headers()
+                elif parsed.path.endswith("/machines"):
                     filters = parse_qs(parsed.query)
                     machines = list(fake.machines.values())
                     for key, values in filters.items():
@@ -134,6 +141,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                         "id": machine_id,
                         "state": "started",
                         "config": config,
+                        "image_ref": {
+                            "digest": "sha256:" + "0" * 64,
+                            "tag": str(config.get("image", "")),
+                        },
                     }
                     fake.machines[machine_id] = machine
                     self._send(200, machine)

@@ -3,9 +3,10 @@
 ## Purpose
 TBD - created by archiving change pickup-and-fix-bugs. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: Comment on fix activity
 
-The factory SHALL comment on the issue when it admits a bug (including the resolved refs and attempt number), when it admits a review round (naming the PR and the comments it will address), when an attempt is declined, fails, is retried, is cancelled, or produces a PR, when a review round completes (linking the PR and summarizing what was changed and answered), and when a post-merge sync succeeds or is blocked. Comments SHALL carry stable markers and SHALL NOT repeat for unchanged state. When the attempt being reported ran in host mode, the comment reporting its outcome (`pull-request`, `needs-input`, `failed`, or exhausted recovery) SHALL state that the attempt ran on the host and that the recorded Runner and Skills commits were not the versions that executed. The admission comment SHALL be unchanged.
+The factory SHALL comment on the issue when it admits a bug (including the resolved refs and attempt number), when it admits a review round (naming the PR and the comments it will address), when an attempt is declined, fails, is retried, is cancelled, or produces a PR, when a review round completes (linking the PR and summarizing what was changed and answered), and when a post-merge sync succeeds or is blocked. Comments SHALL carry stable markers and SHALL NOT repeat for unchanged state. When the attempt being reported ran in host mode, the comment reporting its outcome (`pull-request`, `needs-input`, `failed`, or exhausted recovery) SHALL state that the attempt ran on the host and that the recorded Runner and Skills commits were not the versions that executed. The acceptance comment posted when a fix claim's inputs are accepted SHALL read `Fix inputs accepted and frozen.` rather than the eval wording, and SHALL keep its existing stable marker; the admission comment's content SHALL otherwise be unchanged.
 
 #### Scenario: Admit a bug
 
@@ -26,6 +27,12 @@ The factory SHALL comment on the issue when it admits a bug (including the resol
 
 - **WHEN** a Docker-mode attempt returns any outcome
 - **THEN** its outcome comment carries no host note
+
+#### Scenario: Accept a fix claim's inputs
+
+- **WHEN** the factory accepts and freezes a bug fix claim's inputs
+- **THEN** the acceptance comment reads `Fix inputs accepted and frozen.` and never `Evaluation inputs accepted and frozen.`
+- **AND** an eval claim's acceptance comment still reads `Evaluation inputs accepted and frozen.`
 
 ### Requirement: Map fix outcomes to the board
 
@@ -100,4 +107,3 @@ Fix reporting SHALL use the same per-claim reporting progress, stable markers, l
 
 - **WHEN** GitHub accepts the PR-link comment but the response is lost
 - **THEN** reconciliation finds it by marker and completes the board update without a second comment
-

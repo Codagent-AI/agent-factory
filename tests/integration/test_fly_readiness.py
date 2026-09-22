@@ -115,7 +115,7 @@ def test_image_manifest_resolves_with_the_registry_basic_auth_scheme(tmp_path: P
             "app", token, base_url=api.base_url, registry_base_url=api.base_url
         )
         assert client.resolve_manifest("registry.fly.io/app:base") == "sha256:abc"
-        request = next(r for r in api.requests if r["method"] == "HEAD")
+        request = next(r for r in api.requests if r["method"] == "GET")
     headers = {str(k).lower(): str(v) for k, v in cast(dict[str, str], request["headers"]).items()}
     assert headers["authorization"] == "Basic " + base64.b64encode(b"x:deploy-token").decode()
     # Without manifest media types the registry cannot resolve an OCI image.

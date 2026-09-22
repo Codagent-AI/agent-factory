@@ -52,6 +52,9 @@ with open(LOG, "a", encoding="utf-8") as stream:
 if os.path.exists(ROOT + "/.unreachable"):
     sys.stderr.write("no route to machine\n")
     sys.exit(1)
+if args[:1] == ["deploy"]:
+    sys.stdout.write("pushed image digest sha256:" + "0" * 64 + "\n")
+    sys.exit(0)
 if args[:2] == ["machine", "list"]:
     sys.exit(0)
 if args[:2] == ["ssh", "console"]:

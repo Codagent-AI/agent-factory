@@ -160,7 +160,7 @@ class Controller:
             else self._store.supersede_and_create(current.id, accepted)
         )
         self._store.set_claim_lifecycle(claim.id, "active", {})
-        self._store.record_event(claim.id, "accepted", "Evaluation inputs accepted and frozen.")
+        self._store.record_event(claim.id, "accepted", handler.accepted_message())
         return cast(Claim, self._store.get_claim(claim.id))
 
     def reserve_next(self, claim_id: str, *, readiness: Callable[[], str | None]) -> Run | None:
@@ -240,6 +240,28 @@ class Controller:
             # fail closed as a technical error instead of losing the run.
             classification = Classification("technical")
         persist(run.id, execution_status=result.execution_status, result=stored_result)
+        if stored_result.get("failure_stage") == "pre-suite":
+            consecutive = 0
+            for previous in reversed(self._store.runs_for_claim(run.claim_id)):
+                if previous.unit_key != run.unit_key:
+                    continue
+                if previous.result.get("failure_stage") != "pre-suite":
+                    break
+                consecutive += 1
+            detail = str(stored_result.get("stage", "launch"))
+            if consecutive >= 2:
+                self._store.set_claim_lifecycle(
+                    run.claim_id, "settled", {"verdict": "infra-error", "failed_unit": run.unit_key}
+                )
+            else:
+                self._store.set_claim_lifecycle(run.claim_id, "waiting", {"verdict": "infra-error"})
+                self._store.set_hold(run.claim_id, f"pre-suite:{run.unit_key}", {"stage": detail})
+            self._store.record_event(
+                run.claim_id,
+                f"{run.unit_key}:attempt-{run.attempt_number}:pre-suite",
+                f"{run.unit_key} failed before the suite started ({detail}).",
+            )
+            return
         stage = "complete"
         if classification.kind == "technical":
             stage = "exhausted" if run.reason == "recovery" else "retry"

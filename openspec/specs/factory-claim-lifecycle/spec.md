@@ -3,6 +3,7 @@
 ## Purpose
 TBD - created by archiving change iteration-1. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: Keep lifecycle behavior independent of work kind
 
 Core scheduling, claim/run persistence, retries, cancellation, restart recovery, and durable reporting SHALL remain independent of Codagent identities and eval-specific parsing or scoring. Work kinds SHALL supply request interpretation, execution planning, result interpretation, report presentation, admission-time input resolution, kind-specific readiness checks, and the kind's fresh-attempt and unblock gestures through one handler interface that the controller and runtime use for every kind. The eval handler SHALL own repetition semantics and suite integration; the fix handler SHALL own bug eligibility, branch resolution, workflow invocation, and outcome mapping. The generic core SHALL NOT interpret a score out of 70, Runner/Skills fields, an `and-scene` command path, a pull-request outcome, or the blocked state's label. Extracting this interface from the existing eval-shaped controller SHALL preserve all existing eval behavior.
@@ -138,6 +139,8 @@ Evaluations SHALL be launched so that restarting the factory controller does not
 
 The factory SHALL allow one automatic recovery retry per repetition after a technical execution failure, using supported suite resume behavior and preserving completed repetitions. It SHALL record execution attempts and consumed retries durably. A completed evaluation with a poor product result SHALL NOT trigger a technical retry. A suite-confirmed non-resumable implementation-workflow failure SHALL settle that repetition as failed without a retry and SHALL allow remaining repetitions to proceed. Resumable workflow failures and recoverable harness failures SHALL follow the bounded technical recovery policy. The factory SHALL preserve the suite's failure owner, code, and resumable value and SHALL NOT infer non-resumability from the workflow-failed status alone. Recognized quota waiting, unavailable prerequisites detected before execution, and waiting for an admission window SHALL NOT consume this retry budget. Under Fly execution, a lost Machine SHALL settle that repetition as failed for a factory-owned infrastructure reason without consuming a retry and SHALL allow remaining repetitions to proceed, as defined in `factory-fly-execution`.
 
+A pre-suite failure SHALL NOT consume the recovery retry. A pre-suite failure is one identified by an explicit launch-stage signal, never by elapsed time: a readiness or planning error raised after the attempt was reserved but before its process started; a failure of the attempt's process to start; under Fly execution, a failure of the per-claim image build, a launcher transport failure before the job was delivered to the Machine, or a job failure before the factory's job script wrote the setup-complete marker defined in `factory-fly-execution`. A failure after the suite or workflow process has started, including a model login failure, SHALL NOT be a pre-suite failure. On a pre-suite failure the factory SHALL record the failed attempt with its diagnostic, SHALL under Fly execution destroy any Machine that attempt created before anything relaunches (a recovery attempt's retained Machine SHALL remain retained), and SHALL hold the claim waiting with `infra-error` and an explanation. On a subsequent poll where readiness passes, the factory SHALL relaunch the same unit of work with the same recovery status it had, so a first attempt relaunches as a first attempt and a recovery attempt relaunches as that recovery attempt. A second consecutive pre-suite failure of the same unit SHALL stop the claim exactly as an exhausted recovery does. This SHALL apply to eval and fix claims alike.
+
 If the recovery retry fails, the factory SHALL stop the claim, leave remaining repetitions unstarted, retain completed results and failure evidence, and move the issue to Review with `infra-error` and an explanation. Other eligible requests MAY proceed. Another evaluation SHALL require the explicit fresh-request behavior defined by intake and SHALL start the requested repetitions anew while preserving prior claim history.
 
 #### Scenario: Recover the second repetition
@@ -178,6 +181,27 @@ If the recovery retry fails, the factory SHALL stop the claim, leave remaining r
 
 - **WHEN** repetition 2's Machine is found destroyed or without its checkpoint in a request for three repetitions
 - **THEN** repetition 2 is recorded as failed for an infrastructure reason with its streamed evidence, no retry is consumed, and repetition 3 starts in a new Machine
+
+#### Scenario: Relaunch after a pre-suite failure
+
+- **WHEN** repetition 1's first attempt fails because the launcher could not deliver the job to its Machine
+- **THEN** the attempt is recorded as failed with its diagnostic, its Machine is destroyed, the claim waits with `infra-error`, and no recovery retry is consumed
+- **AND** on the next poll where readiness passes, repetition 1 launches again as a first attempt in a new Machine
+
+#### Scenario: Stop after two pre-suite failures
+
+- **WHEN** the relaunched attempt of the same repetition also fails before the suite starts
+- **THEN** the claim stops as for an exhausted recovery and the issue moves to Review with `infra-error` and both diagnostics
+
+#### Scenario: Fail after the suite started
+
+- **WHEN** an attempt fails after the job script wrote the setup-complete marker
+- **THEN** the failure follows the ordinary bounded technical recovery policy and is not treated as pre-suite
+
+#### Scenario: Fail a fix attempt before its process starts
+
+- **WHEN** a fix attempt fails with a readiness error raised after the attempt was reserved
+- **THEN** its recovery attempt is not consumed and the fix relaunches as the same attempt once readiness passes
 
 ### Requirement: Wait for provider quota without discarding progress
 
@@ -291,7 +315,7 @@ Before terminating execution for cancellation, timeout, or recovery cleanup, the
 
 ### Requirement: Recheck unavailable prerequisites without retrying execution
 
-Before accepting work for execution, the factory SHALL check the readiness that applies to that kind and, before launch, the selected suite's or mode's readiness. Readiness checks SHALL be classified as shared, eval, eval-sandbox, eval-fly, fix-sandbox, or fix-host, and only the classes that apply to a kind under its configured execution mode SHALL hold that kind. The eval class SHALL cover the mode-neutral eval prerequisites, namely harness branch resolution, the factory host's Codex and Claude logins, the suite environment file, and free disk space, and SHALL hold the eval kind under every execution mode. The eval-sandbox class SHALL cover only Docker availability, the Docker launcher, and the memory allowance. The eval-fly class SHALL cover Fly API access with the configured deploy token, the configured app, a resolvable configured image, the availability of the factory's own Fly launcher, the SSH transport the factory uses for delivery and collection, and the absence of a Cursor role on the claim being admitted. An unavailable prerequisite SHALL hold affected work without launching an attempt, recording an execution attempt, or consuming a recovery retry. The factory SHALL explain the problem and any required operator action, then recheck readiness on subsequent polls. A recorded hold whose check no longer applies to a kind after a configuration change SHALL clear on the next successful poll. These checks SHALL NOT attempt to repair credentials or configuration.
+Before accepting work for execution, the factory SHALL check the readiness that applies to that kind and, before launch, the selected suite's or mode's readiness. Readiness checks SHALL be classified as shared, eval, eval-sandbox, eval-fly, fix-sandbox, or fix-host, and only the classes that apply to a kind under its configured execution mode SHALL hold that kind. The eval class SHALL cover the mode-neutral eval prerequisites, namely harness branch resolution, the factory host's Codex and Claude logins, the suite environment file, and free disk space, and SHALL hold the eval kind under every execution mode. The eval-sandbox class SHALL cover only Docker availability, the Docker launcher, and the memory allowance. The eval-fly class SHALL cover Fly API access with the configured deploy token, the configured app, an image repository in that app's registry, a deliverable Claude login as defined in `factory-fly-execution` when a role on the claim uses Claude, the availability of the factory's own Fly launcher, the SSH transport the factory uses for delivery and collection, and the absence of a Cursor role on the claim being admitted. An unavailable prerequisite SHALL hold affected work without launching an attempt, recording an execution attempt, or consuming a recovery retry. The factory SHALL explain the problem and any required operator action, then recheck readiness on subsequent polls. A recorded hold whose check no longer applies to a kind after a configuration change SHALL clear on the next successful poll. These checks SHALL NOT attempt to repair credentials or configuration.
 
 #### Scenario: Wait for Docker or authentication
 
@@ -318,6 +342,11 @@ Before accepting work for execution, the factory SHALL check the readiness that 
 
 - **WHEN** a claim with a frozen Cursor role profile is next in line and the eval kind runs under Fly execution
 - **THEN** that claim is held with the Cursor role named, its frozen inputs are unchanged, and other eligible eval claims may proceed
+
+#### Scenario: Hold for an unavailable Claude login under Fly
+
+- **WHEN** the eval kind runs under Fly execution, a role uses Claude, the suite environment file has no Claude token, and the Keychain read times out
+- **THEN** eval admission is held naming the Claude login and the Keychain item, no Machine is created, and no attempt or retry is consumed
 
 ### Requirement: Recover reporting independently of execution
 
@@ -395,4 +424,3 @@ Issue closure SHALL cancel only claims with unfinished execution. A settled fix 
 
 - **WHEN** the factory closed the issue after a successful sync and observes the closed issue on a later poll
 - **THEN** it records nothing new and posts no cancellation comment
-

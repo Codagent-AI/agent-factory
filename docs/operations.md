@@ -11,30 +11,19 @@ Evals can run in Fly.io Machines instead of Docker. One-time setup:
    and store only the token, on one line, in an owner-readable file such as
    `~/.agent-factory/credentials/fly-deploy-token`. The same token authenticates
    the Machines API, the image registry, and `flyctl ssh`.
-3. Build and push the amd64 sandbox image from an Agent Runner checkout that
-   includes commit `8c6cf713c39775b5d8226c9ee5e7b88b80eead44` (accepts Playwright's
-   `chrome-linux64` layout and adds a `.dockerignore`). The checkout must also
+3. Use an Agent Runner branch that includes the Fly sandbox Dockerfile from
+   PR #117 and its `FACTORY_CLI_REFRESH` build argument. The checkout must also
    create `/eval-input`, `/agent-runner-source`, and `/agent-skills-source` and
    give them to the unprivileged user the job runs as. Under Docker those paths
    arrive as bind mounts the daemon creates, but a Fly guest has no binds and
    clones into them itself, so without that the first `git clone` fails with
    `could not create work tree dir: Permission denied`.
 
-   `flyctl deploy` reads its app configuration from the app's running Machines.
-   The sandbox app runs none, so write a minimal config first and pass it
-   explicitly; without `--config` the build stops at `failed to grab app config
-   from existing machines`.
-
-   ```sh
-   printf 'app = "agent-factory-sandbox"\nprimary_region = "ewr"\n' > /tmp/fly-sandbox.toml
-   flyctl deploy --build-only --push --remote-only -a agent-factory-sandbox \
-     --config /tmp/fly-sandbox.toml \
-     --dockerfile docker/dev/Dockerfile --image-label base
-   ```
-
-   Machines are x86-64 only, so build remotely or with `--platform linux/amd64`.
-   `doctor` records the image's immutable digest; retag and rerun `doctor` after
-   each rebuild.
+   The factory builds from that pinned checkout on Fly's remote builder once
+   per claim. It tags `claim-<claim id>` and pins the digest for every attempt.
+   `[fly] image` names the repository to push to; its configured tag is ignored.
+   The launcher writes a temporary app config outside the checkout. Old
+   `claim-` registry tags are not removed automatically.
 4. Install `flyctl` where the LaunchAgent's PATH can find it.
 5. In `local.toml` set `[eval] execution = "fly"` and a `[fly]` table (see
    `config/local.example.toml`). Defaults: region `ewr`, `shared` CPUs, 4 CPUs,
@@ -49,7 +38,7 @@ a retry. Human review always runs on the Mac against the collected directory.
 ## Fly eval operations
 
 With `eval.execution = "fly"`, `doctor` reports the mode-neutral `eval` group
-and the `eval-fly` group (deploy token, app API, image manifest, and `flyctl`
+and the `eval-fly` group (deploy token, app API, image repository, Claude login, and `flyctl`
 transport). `status` shows the backing Machine ID, state, and deadline for an
 active repetition; a quota hold shows `stopped (quota hold)` and its retained
 Machine deadline. It also reports reconciliation findings for unknown Machines,
@@ -112,42 +101,23 @@ works in a terminal. Reproduce with
 
 ### Fly evals
 
-A Machine has no Keychain. The Fly launcher copies an allowlist of files into it:
-`~/.codex/auth.json` and `~/.claude/.credentials.json` (plus the optional Claude
-settings files), exactly as the Docker sandbox mounts them. A missing required
-file fails the attempt at once with `required credential file is missing`
-(launcher exit 70). The suite environment file (`credentials.suite_environment`)
-is delivered too.
-
-On macOS, refresh the Claude file from the live Keychain item before an eval, and
-whenever a Machine reports "OAuth session expired and could not be refreshed".
-Always name the account; without `-a` the command may return the stale
-`unknown` item:
-
-```sh
-tmp=$(mktemp ~/.claude/.credentials.json.XXXXXX) && chmod 600 "$tmp" &&
-  security find-generic-password -s "Claude Code-credentials" -a "$USER" -w > "$tmp" &&
-  mv "$tmp" ~/.claude/.credentials.json || rm -f "$tmp"
-```
-
-The copy lands in a private temporary file first, so a locked or missing Keychain
-entry leaves the existing file untouched. Check it without printing secrets:
-
-```sh
-python3 -c 'import json,os,time;d=json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"];print(round((d["expiresAt"]/1000-time.time())/60),"min left")'
-```
-
-A refresh inside a Machine rotates the token; if the Mac CLI then asks you to sign in
-again, run `claude auth login` in a terminal and copy once more.
+A Machine has no Keychain. The Fly launcher delivers Codex's
+`~/.codex/auth.json` and resolves Claude in this order: a nonempty
+`CLAUDE_CODE_OAUTH_TOKEN` in the suite environment, the Mac Keychain item
+`Claude Code-credentials` for the service's `USER`, then
+`~/.claude/.credentials.json`. A Keychain login is streamed directly to the
+Machine and is never written to a file on the Mac. The LaunchAgent must set
+`USER` and `LOGNAME`. Doctor and admission check that the login can be
+delivered before a Machine is created. A blocked Keychain read times out.
 
 ### Quick diagnosis
 
 | Symptom | Where | Fix |
 | --- | --- | --- |
-| `required credential file is missing: ~/.claude/.credentials.json` | Fly eval, within a minute | Copy the Keychain item (above) and move the item back to Ready |
+| Fly Claude login unavailable | Fly eval | Check the suite token, then the service user's Keychain login with `claude auth status`; run `claude auth login` if needed |
 | `OAuth session expired and could not be refreshed`, `claude` works in a terminal | Host fix | Confirm the resident has `USER` (`ps -E -o command= -p <pid>`); add it to the LaunchAgent and restart |
-| Same error on a Fly eval | Fly eval | The copied file is stale or rotated: copy again, with `-a "$USER"` |
-| Same error everywhere, including a terminal | Both | Run `claude auth login`, then copy again |
+| Same error on a Fly eval | Fly eval | Refresh the suite token or the service user's Keychain login, then rerun `doctor` |
+| Same error everywhere, including a terminal | Both | Run `claude auth login`, then rerun `doctor` |
 
 ## Fly Machine lifecycle
 

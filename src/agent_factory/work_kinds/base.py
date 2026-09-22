@@ -124,6 +124,8 @@ class WorkKindHandler(Protocol):
 
     def frozen_inputs_event(self, claim: Claim) -> str | None: ...
 
+    def accepted_message(self) -> str: ...
+
 
 def card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:
     """Logical board status (Ready, Running, ...) of a card from its option id."""

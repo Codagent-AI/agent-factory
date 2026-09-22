@@ -16,6 +16,7 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
+from agent_factory.fly.transport import resolve_claude_login
 from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic, model_authentication
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
@@ -47,6 +48,10 @@ class EvalHandler:
     """Owns every eval-shaped decision the generic controller used to make inline."""
 
     kind = "eval"
+
+    @staticmethod
+    def accepted_message() -> str:
+        return "Evaluation inputs accepted and frozen."
 
     def __init__(
         self,
@@ -221,6 +226,9 @@ class EvalHandler:
             for role, profile in roles.items():
                 if str(profile).split(":", 1)[0] == "cursor":
                     raise ReadinessError(f"{role}: Cursor is unavailable on Fly")
+            reason = fly_claude_readiness(roles, self._local.credentials.suite_environment)
+            if reason:
+                raise ReadinessError(reason)
         auth = model_authentication({key: str(value) for key, value in roles.items()})
         failures = [check.detail for check in auth if not check.available]
         if failures:
@@ -242,6 +250,8 @@ class EvalHandler:
                 return None, "initial"
             if latest.status == "deferred":
                 return key, "quota"
+            if latest.result.get("failure_stage") == "pre-suite":
+                return key, latest.reason
             if _run_needs_recovery(latest) and latest.reason != "recovery":
                 return key, "recovery"
         return None, "initial"
@@ -302,6 +312,12 @@ class EvalHandler:
             provenance = (
                 dict(cast(Mapping[str, object], machine)) if isinstance(machine, Mapping) else {}
             )
+            image_build = _fly_image_build(evidence, run.progress)
+            if image_build:
+                provenance["image_build"] = image_build
+            versions = _fly_versions(evidence)
+            if versions:
+                provenance["cli_versions"] = versions
             result = replace(
                 result,
                 result={
@@ -501,6 +517,14 @@ def plan_attempt(
         ),
     )
     if plan.ownership_hints.get("backend") == "fly-machine":
+        digest = _claim_image_digest(
+            [candidate for candidate in store.runs_for_claim(claim.id) if candidate.id != run.id]
+        )
+        if digest:
+            manifest_path = Path(run.evidence_path) / ".factory" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["image_digest"] = digest
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
         return plan
     # Build under a per-run tag so a concurrent fix build cannot retag this image.
     tag = f"agent-runner-factory:{run.id}"
@@ -509,6 +533,85 @@ def plan_attempt(
         allowed_environment={**plan.allowed_environment, "IMAGE": tag},
         ownership_hints={**plan.ownership_hints, "image_tag": tag},
     )
+
+
+def _claim_image_digest(runs: Sequence[Run]) -> str | None:
+    for run in reversed(runs):
+        record = run.progress.get("image_build")
+        if not isinstance(record, Mapping):
+            try:
+                record = json.loads(
+                    (Path(run.evidence_path) / ".factory" / "image-build.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (OSError, ValueError):
+                continue
+        digest = (
+            cast(Mapping[str, object], record).get("digest")
+            if isinstance(record, Mapping)
+            else None
+        )
+        if isinstance(digest, str) and digest.startswith("sha256:"):
+            return digest
+    return None
+
+
+def _fly_versions(evidence: Path) -> dict[str, str]:
+    unavailable = {"claude": "unavailable", "codex": "unavailable"}
+    jobs = evidence / ".factory" / "job"
+    try:
+        paths = sorted(jobs.glob("*/versions.json"))
+    except OSError:
+        return unavailable
+    for path in reversed(paths):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, dict):
+            return {
+                **unavailable,
+                **{
+                    name: version
+                    for name, version in cast(dict[str, object], value).items()
+                    if name in unavailable and isinstance(version, str)
+                },
+            }
+    return unavailable
+
+
+def _fly_image_build(evidence: Path, progress: Mapping[str, object]) -> dict[str, object]:
+    recorded = progress.get("image_build")
+    if isinstance(recorded, Mapping):
+        return dict(cast(Mapping[str, object], recorded))
+    try:
+        built = json.loads((evidence / ".factory" / "image-build.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        built = None
+    if isinstance(built, dict):
+        return cast(dict[str, object], built)
+    try:
+        manifest = json.loads((evidence / ".factory" / "manifest.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(manifest, dict):
+        return {}
+    values = cast(dict[str, object], manifest)
+    repository, digest = values.get("image_repository"), values.get("image_digest")
+    if isinstance(repository, str) and isinstance(digest, str):
+        return {"repository": repository, "digest": digest}
+    return {}
+
+
+def fly_claude_readiness(roles: Mapping[str, object], environment: Path) -> str | None:
+    if not any(str(profile).startswith("claude:") for profile in roles.values()):
+        return None
+    try:
+        login = resolve_claude_login([environment])
+    except OSError as error:
+        return f"Fly Claude login unavailable: {type(error).__name__}"
+    return f"Fly Claude login unavailable: {login.reason}" if login.kind == "unavailable" else None
 
 
 def _unit_count(claim: Claim) -> int:

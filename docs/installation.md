@@ -201,10 +201,10 @@ Before enabling it, create a Fly organization and app, then create an
 app-scoped deploy token. Store that single token in a private owner-readable
 file beside the App key and suite environment file; it is separate from the
 candidate-branch, fix-PR, and board credentials. Install `flyctl` on the
-LaunchAgent PATH. Build the amd64 Runner sandbox base image with Fly's remote
-builder after upgrading Agent Runner to the revision whose Dockerfile discovers
-`chrome-linux64/chrome`, and use its `.dockerignore` so the remote build does
-not send the working tree.
+LaunchAgent PATH. Use an Agent Runner revision containing PR #117's Fly sandbox
+Dockerfile and the `ARG FACTORY_CLI_REFRESH` directly before the model CLI
+install layer. The factory builds the amd64 image on Fly's remote builder
+from each claim's pinned Runner worktree when its first attempt launches.
 
 ```sh
 fly auth login
@@ -212,17 +212,14 @@ fly orgs create <organization>
 fly apps create factory-evals --org <organization>
 fly tokens create deploy --app factory-evals > /private/credentials/fly-deploy-token
 chmod 600 /private/credentials/fly-deploy-token
-git -C /path/to/agent-runner rev-parse HEAD  # must include chrome-linux64/chrome discovery
-# A new app has no Machines to read config from, so pass a minimal one explicitly.
-printf 'app = "factory-evals"\nprimary_region = "ewr"\n' > /tmp/fly-sandbox.toml
-fly deploy --build-only --push --remote-only --app factory-evals \
-  --config /tmp/fly-sandbox.toml --image-label runner-base
+git -C /path/to/agent-runner rev-parse HEAD  # must include the Fly Dockerfile and refresh ARG
 ```
 
-Build from the Agent Runner revision that contains the `chrome-linux64/chrome`
-Dockerfile discovery change and its `.dockerignore`; record that immutable
-commit alongside the pushed image tag. The remote build must target amd64 (the
-Factory Fly image), not a local arm64-only image. `fly tokens create deploy`
+The launcher builds once per claim with a private temporary app config,
+`FACTORY_CLI_REFRESH=<claim id>`, and tag `claim-<first 12 claim id characters>`.
+It pins the pushed digest across repetitions and recoveries. The configured
+`[fly] image` tag is ignored; the repository must be `registry.fly.io/<app>`.
+Old `claim-` registry tags are not removed automatically. `fly tokens create deploy`
 is run with the app selected, so its token is scoped to that app rather than
 being a personal controller or candidate credential.
 
@@ -233,7 +230,7 @@ eval.execution = "fly"
 
 [fly]
 app = "factory-evals"
-image = "registry.fly.io/factory-evals:runner"
+image = "registry.fly.io/factory-evals:base" # repository for per-claim builds
 token_file = "/private/credentials/fly-deploy-token"
 region = "ewr"                    # default
 cpu_kind = "shared"                # default
@@ -246,7 +243,7 @@ heartbeat_seconds = 20              # default
 The absolute deadline is the attempt total limit plus collection grace (and,
 when quota-held, the earliest eligible restart). At the defaults its worst-case
 Machine cost is about $0.75 per attempt. Roll out in this order: land the
-Agent Runner image prerequisite; create the app, token, and image; deploy with
+Agent Runner image prerequisite; create the app and token; deploy with
 Docker still selected and run `doctor`; switch to Fly and complete one eval and
 human review from collected artifacts; then prove one Codex and Claude token
 refresh interval before treating Fly as production.
