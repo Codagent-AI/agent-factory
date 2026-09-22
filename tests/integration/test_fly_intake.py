@@ -171,6 +171,14 @@ class FakeGitHub:
                 )
             ]
             fields.append({"id": shared.project.refs.id, "dataType": "TEXT"})
+            if shared.project.priority_id:
+                fields.append(
+                    {
+                        "id": shared.project.priority_id,
+                        "dataType": "SINGLE_SELECT",
+                        "name": "Priority",
+                    }
+                )
             return {"node": {"fields": {"nodes": fields, "pageInfo": {"hasNextPage": False}}}}
         if "query Items" in query:
             item = {

@@ -10,8 +10,11 @@ from agent_factory.github import (
     GitHubApiError,
     GitHubClient,
     GitHubNotFoundError,
+    ProjectQueueItem,
     _single_select_fields,  # pyright: ignore[reportPrivateUsage]
+    rank_project_queue,
 )
+from agent_factory.routing import SourceItem
 
 
 @dataclass
@@ -154,6 +157,198 @@ def test_client_reads_manual_project_order_and_native_issue_type_from_issue_data
     assert items[0].source.issue_type == "Eval"
     assert items[0].fields == {"status": "ready"}
     assert "issueType" in gh.calls[0].body["query"]  # type: ignore[index]
+    assert "createdAt" in gh.calls[0].body["query"]  # type: ignore[index]
+    assert "issueFieldValues" in gh.calls[0].body["query"]  # type: ignore[index]
+
+
+def _queued(
+    item_id: str,
+    *,
+    priority: str | None = None,
+    created_at: str = "",
+) -> ProjectQueueItem:
+    return ProjectQueueItem(
+        item_id,
+        f"content-{item_id}",
+        {},
+        SourceItem(
+            f"content-{item_id}",
+            "example/evals",
+            1,
+            "writer",
+            frozenset(),
+            "Eval",
+            "OPEN",
+            created_at=created_at,
+        ),
+        priority=priority,
+    )
+
+
+def test_queue_ranks_priority_then_newest_created() -> None:
+    items = [
+        _queued("old-high", priority="High", created_at="2026-01-01T00:00:00Z"),
+        _queued("new-low", priority="Low", created_at="2026-09-21T00:00:00Z"),
+        _queued("new-high", priority="High", created_at="2026-09-20T00:00:00Z"),
+        _queued("urgent", priority="Urgent", created_at="2026-02-01T00:00:00Z"),
+        _queued("unset-new", created_at="2026-09-22T00:00:00Z"),
+        _queued("medium", priority="Medium", created_at="2026-03-01T00:00:00Z"),
+    ]
+
+    ranked = rank_project_queue(items)
+
+    assert [item.id for item in ranked] == [
+        "urgent",
+        "new-high",
+        "old-high",
+        "medium",
+        "new-low",
+        "unset-new",
+    ]
+
+
+def test_client_reads_project_card_priority_ahead_of_issue_field() -> None:
+    response: dict[str, object] = {
+        "data": {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "P-issue-high",
+                            "content": {
+                                "__typename": "Issue",
+                                "id": "I-issue-high",
+                                "number": 1,
+                                "body": "issue says High",
+                                "state": "OPEN",
+                                "createdAt": "2026-09-22T00:00:00Z",
+                                "author": {"login": "writer"},
+                                "repository": {"nameWithOwner": "example/evals"},
+                                "labels": {"nodes": []},
+                                "issueType": {"name": "Eval"},
+                                "issueFieldValues": {
+                                    "nodes": [{"name": "High", "field": {"name": "Priority"}}]
+                                },
+                            },
+                            "fieldValues": {
+                                "nodes": [
+                                    {
+                                        "name": "Low",
+                                        "optionId": "low",
+                                        "field": {"id": "priority-field", "name": "Priority"},
+                                    }
+                                ]
+                            },
+                        },
+                        {
+                            "id": "P-card-urgent",
+                            "content": {
+                                "__typename": "Issue",
+                                "id": "I-card-urgent",
+                                "number": 2,
+                                "body": "card says Urgent",
+                                "state": "OPEN",
+                                "createdAt": "2026-01-01T00:00:00Z",
+                                "author": {"login": "writer"},
+                                "repository": {"nameWithOwner": "example/evals"},
+                                "labels": {"nodes": []},
+                                "issueType": {"name": "Eval"},
+                                "issueFieldValues": {"nodes": []},
+                            },
+                            "fieldValues": {
+                                "nodes": [
+                                    {
+                                        "name": "Urgent",
+                                        "optionId": "urgent",
+                                        "field": {"id": "priority-field", "name": "Priority"},
+                                    }
+                                ]
+                            },
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+    }
+    gh = RecordingGh([json.dumps(response)])
+
+    items = GitHubClient(gh, lambda: "installation-token").list_project_items(
+        "PROJECT", priority_id="priority-field"
+    )
+
+    assert [item.id for item in items] == ["P-card-urgent", "P-issue-high"]
+    assert items[0].priority == "Urgent"
+    assert items[1].priority == "Low"
+
+
+def test_client_reads_issue_priority_and_reorders_away_from_position() -> None:
+    response: dict[str, object] = {
+        "data": {
+            "node": {
+                "items": {
+                    "nodes": [
+                        {
+                            "id": "P-low",
+                            "content": {
+                                "__typename": "Issue",
+                                "id": "I-low",
+                                "number": 1,
+                                "body": "later",
+                                "state": "OPEN",
+                                "createdAt": "2026-09-22T00:00:00Z",
+                                "author": {"login": "writer"},
+                                "repository": {"nameWithOwner": "example/evals"},
+                                "labels": {"nodes": []},
+                                "issueType": {"name": "Eval"},
+                                "issueFieldValues": {
+                                    "nodes": [
+                                        {
+                                            "name": "Low",
+                                            "field": {"name": "Priority"},
+                                        }
+                                    ]
+                                },
+                            },
+                            "fieldValues": {"nodes": []},
+                        },
+                        {
+                            "id": "P-high",
+                            "content": {
+                                "__typename": "Issue",
+                                "id": "I-high",
+                                "number": 2,
+                                "body": "earlier",
+                                "state": "OPEN",
+                                "createdAt": "2026-01-01T00:00:00Z",
+                                "author": {"login": "writer"},
+                                "repository": {"nameWithOwner": "example/evals"},
+                                "labels": {"nodes": []},
+                                "issueType": {"name": "Eval"},
+                                "issueFieldValues": {
+                                    "nodes": [
+                                        {
+                                            "name": "High",
+                                            "field": {"name": "Priority"},
+                                        }
+                                    ]
+                                },
+                            },
+                            "fieldValues": {"nodes": []},
+                        },
+                    ],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+    }
+    gh = RecordingGh([json.dumps(response)])
+
+    items = GitHubClient(gh, lambda: "installation-token").list_project_items("PROJECT")
+
+    assert [item.id for item in items] == ["P-high", "P-low"]
+    assert items[0].priority == "High"
+    assert items[1].priority == "Low"
 
 
 @pytest.mark.parametrize("lookup", [False, True], ids=["queue", "routing-lookup"])

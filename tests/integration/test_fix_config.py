@@ -88,13 +88,9 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
     assert shared.fix.contract == "factory-fix/1"
 
 
-def test_deployed_fix_defaults_match_the_factory_role_split() -> None:
+def test_deployed_config_maps_the_priority_issue_field() -> None:
     shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
-    assert shared.fix.defaults == {
-        "lead": "claude:opus:high",
-        "implementor": "codex:gpt-6-sol:medium",
-        "tester": "codex:gpt-6-luna:medium",
-    }
+    assert shared.project.priority_id == "PVTSSF_lADOEARcIs4Bi5pPzhjHbIg"
 
 
 def test_shared_config_parses_fix_targets_and_defaults() -> None:

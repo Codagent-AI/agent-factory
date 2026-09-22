@@ -318,6 +318,14 @@ fix_environment = "{tmp_path / "fix.env"}"
                 }
             )
         fields.append({"id": self.shared.project.refs.id, "dataType": "TEXT"})
+        if self.shared.project.priority_id:
+            fields.append(
+                {
+                    "id": self.shared.project.priority_id,
+                    "dataType": "SINGLE_SELECT",
+                    "name": "Priority",
+                }
+            )
         field_values = [
             {
                 "field": {"id": self.shared.project.status.id},

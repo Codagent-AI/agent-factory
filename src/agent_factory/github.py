@@ -45,14 +45,18 @@ class PullRequestInfo:
     head_sha: str
 
 
+_PRIORITY_ORDER = ("urgent", "high", "medium", "low")
+
+
 @dataclass(frozen=True)
 class ProjectQueueItem:
-    """One Project item in GitHub's delivered manual POSITION order."""
+    """One Project item in Priority-then-newest-created queue order."""
 
     id: str
     content_id: str
     fields: dict[str, str]
     source: SourceItem
+    priority: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +260,10 @@ class GitHubClient:
         refs = fields.get(project.refs.id)
         if refs is None or refs.get("dataType") != "TEXT":
             raise GitHubApiError(f"configured text field is missing or changed: {project.refs.id}")
+        if project.priority_id and project.priority_id not in fields:
+            raise GitHubApiError(
+                f"configured select field is missing or changed: {project.priority_id}"
+            )
 
     def whoami(self) -> str:
         payload = _json_object(self._request(["api", "user"], None))
@@ -385,10 +393,13 @@ class GitHubClient:
             body=_optional_string(payload, "body"),
             pull_request="pull_request" in payload,
             title=_optional_string(payload, "title"),
+            created_at=_optional_string(payload, "created_at"),
         )
 
-    def list_project_items(self, project_id: str) -> list[ProjectQueueItem]:
-        """Read all Project cards in API order; callers apply eligibility afterwards."""
+    def list_project_items(
+        self, project_id: str, *, priority_id: str = ""
+    ) -> list[ProjectQueueItem]:
+        """Read all Project cards, then rank by Priority and newest created."""
         cursor: str | None = None
         result: list[ProjectQueueItem] = []
         while True:
@@ -398,12 +409,16 @@ class GitHubClient:
                         "query Items($project: ID!, $cursor: String) { node(id: $project) { ",
                         "... on ProjectV2 { items(first: 100, after: $cursor, ",
                         "orderBy: {field: POSITION, direction: ASC}) { nodes { id ",
-                        "content { __typename ... on Issue { id number body state ",
+                        "content { __typename ... on Issue { id number body state createdAt ",
                         "author { login } ",
                         "repository { nameWithOwner } labels(first: 100) { nodes { name } } ",
-                        "issueType { name } } } fieldValues(first: 50) { nodes { ... on ",
-                        "ProjectV2ItemFieldSingleSelectValue ",
-                        "{ field { ... on ProjectV2SingleSelectField { id } } optionId } } } } ",
+                        "issueType { name } ",
+                        "issueFieldValues(first: 20) { nodes { ",
+                        "... on IssueFieldSingleSelectValue { name ",
+                        "field { ... on IssueFieldSingleSelect { name } } } } } } } ",
+                        "fieldValues(first: 50) { nodes { ... on ",
+                        "ProjectV2ItemFieldSingleSelectValue { name optionId ",
+                        "field { ... on ProjectV2SingleSelectField { id name } } } } } } ",
                         "pageInfo { ",
                         "hasNextPage endCursor } } } } }",
                     )
@@ -421,13 +436,13 @@ class GitHubClient:
                 if content.get("__typename") != "Issue":
                     continue
                 try:
-                    result.append(_queue_item(project_item, content))
+                    result.append(_queue_item(project_item, content, priority_id=priority_id))
                 except GitHubApiError:
                     # A draft, pull request, or malformed card is not eligible work.
                     continue
             page_info = _object(items.get("pageInfo"))
             if page_info.get("hasNextPage") is not True:
-                return result
+                return rank_project_queue(result)
             cursor = _required_string(page_info, "endCursor")
 
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None:
@@ -768,7 +783,10 @@ def _single_select_fields(item: Mapping[str, object]) -> dict[str, str]:
 
 
 def _queue_item(
-    project_item: Mapping[str, object], content: Mapping[str, object]
+    project_item: Mapping[str, object],
+    content: Mapping[str, object],
+    *,
+    priority_id: str = "",
 ) -> ProjectQueueItem:
     """Build an eligible Issue-shaped card; callers skip malformed cards."""
     # The Project connection may omit native Type. It belongs to issue data.
@@ -793,8 +811,87 @@ def _queue_item(
             issue_type=issue_type if isinstance(issue_type, str) else None,
             state=_required_string(content, "state"),
             body=_optional_string(content, "body"),
+            created_at=_optional_string(content, "createdAt"),
         ),
+        priority=_card_priority(project_item, content, priority_id=priority_id),
     )
+
+
+def rank_project_queue(items: list[ProjectQueueItem]) -> list[ProjectQueueItem]:
+    """Highest Priority first, then newest created; unset Priority sorts last."""
+    return sorted(items, key=_queue_sort_key)
+
+
+def _queue_sort_key(item: ProjectQueueItem) -> tuple[int, float]:
+    return (_priority_rank(item.priority), -_created_timestamp(item.source.created_at))
+
+
+def _priority_rank(name: str | None) -> int:
+    if not name:
+        return len(_PRIORITY_ORDER)
+    try:
+        return _PRIORITY_ORDER.index(name.strip().lower())
+    except ValueError:
+        return len(_PRIORITY_ORDER)
+
+
+def _created_timestamp(value: str) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _card_priority(
+    project_item: Mapping[str, object],
+    content: Mapping[str, object],
+    *,
+    priority_id: str = "",
+) -> str | None:
+    """Prefer the configured Project Priority field; fall back to the issue field."""
+    raw_values = project_item.get("fieldValues")
+    if isinstance(raw_values, Mapping):
+        values = cast(Mapping[str, object], raw_values)
+        for value in _list(values.get("nodes")):
+            selection = _object(value)
+            if not selection:
+                continue
+            raw_field = selection.get("field")
+            if not isinstance(raw_field, Mapping):
+                continue
+            field = cast(Mapping[str, object], raw_field)
+            if priority_id:
+                if field.get("id") != priority_id:
+                    continue
+            elif field.get("name") != "Priority":
+                continue
+            name = selection.get("name")
+            return name if isinstance(name, str) and name else None
+    return _issue_priority(content)
+
+
+def _issue_priority(content: Mapping[str, object]) -> str | None:
+    raw_values = content.get("issueFieldValues")
+    if not isinstance(raw_values, Mapping):
+        return None
+    values = cast(Mapping[str, object], raw_values)
+    for value in _list(values.get("nodes")):
+        selection = _object(value)
+        if not selection:
+            continue
+        raw_field = selection.get("field")
+        field_name = (
+            cast(Mapping[str, object], raw_field).get("name")
+            if isinstance(raw_field, Mapping)
+            else None
+        )
+        if field_name != "Priority":
+            continue
+        name = selection.get("name")
+        return name if isinstance(name, str) and name else None
+    return None
 
 
 def _base64url(value: bytes) -> str:

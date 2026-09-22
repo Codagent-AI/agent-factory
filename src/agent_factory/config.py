@@ -91,6 +91,7 @@ class ProjectConfig:
     owner: SelectField
     refs: TextField
     verdict: SelectField
+    priority_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -392,6 +393,15 @@ class SharedConfig:
                     _string(_table(fields.get("refs"), "fields.refs"), "id", "fields.refs")
                 ),
                 verdict=_select_field(fields, "verdict"),
+                priority_id=(
+                    _string(
+                        _table(fields.get("priority"), "fields.priority"),
+                        "id",
+                        "fields.priority",
+                    )
+                    if "priority" in fields
+                    else ""
+                ),
             ),
             routing=RoutingConfig(
                 eval_source=eval_source,

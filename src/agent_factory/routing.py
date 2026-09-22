@@ -29,6 +29,7 @@ class SourceItem:
     body: str = ""
     pull_request: bool = False
     title: str = ""
+    created_at: str = ""
 
 
 @dataclass

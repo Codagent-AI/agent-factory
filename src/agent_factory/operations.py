@@ -381,7 +381,7 @@ def _github_access(shared: SharedConfig, key: Path) -> Diagnostic:
         )
         client = GitHubClient(runner, token)
         client.validate_project(shared.project)
-        client.list_project_items(shared.project.id)
+        client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
     except (GitHubApiError, OSError) as error:
         return Diagnostic(
             "GitHub authentication and Project mapping",

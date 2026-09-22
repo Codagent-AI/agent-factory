@@ -82,7 +82,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 app=local.fly.app, token_file=local.fly.token_file, local=local
             ).reconcile(store)
         client.validate_project(shared.project)
-        cards = client.list_project_items(shared.project.id)
+        cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
         permission_cache: dict[tuple[str, str], str | None] = {}
         for card in cards:
             _assign_ready_bug(client, shared, card, permission_cache)
