@@ -6,7 +6,10 @@ live in ``test_fly_readiness.py``; this file covers the remaining obligations.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import threading
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import cast
 
@@ -221,3 +224,64 @@ def test_client_accepts_cleartext_loopback_endpoints_for_local_fakes(tmp_path: P
     )
 
     assert client.base_url == "http://127.0.0.1:9"
+
+
+class _Recorder(BaseHTTPRequestHandler):
+    """Answers every request with a redirect, or records its Authorization header."""
+
+    location: str | None = None
+    seen: list[str | None]
+
+    def _answer(self) -> None:
+        if self.location is not None:
+            self.send_response(302)
+            self.send_header("Location", self.location + self.path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        self.seen.append(self.headers.get("Authorization"))
+        self.send_response(200)
+        self.send_header("Docker-Content-Digest", "sha256:" + "0" * 64)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(b"{}")
+
+    do_GET = do_HEAD = _answer
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+
+@contextmanager
+def _server(location: str | None) -> Generator[tuple[str, list[str | None]]]:
+    seen: list[str | None] = []
+    handler = type("Handler", (_Recorder,), {"location": location, "seen": seen})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("call", ["api", "registry"])
+def test_redirects_are_refused_so_the_token_never_reaches_another_endpoint(
+    tmp_path: Path, call: str
+) -> None:
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    token.chmod(0o600)
+    with _server(None) as (elsewhere, seen), _server(elsewhere) as (redirecting, _):
+        client = FlyMachinesClient(
+            "app", token, base_url=redirecting, registry_base_url=redirecting
+        )
+        with pytest.raises(FlyApiError):
+            if call == "api":
+                client.get_app()
+            else:
+                client.resolve_manifest("registry.fly.io/app:tag")
+
+    assert seen == []

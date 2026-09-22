@@ -11,7 +11,18 @@ from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+
+class _RefuseRedirects(HTTPRedirectHandler):
+    # urllib forwards the Authorization header to a redirect target, which would hand
+    # the deploy token to whatever host the response names. Neither API redirects.
+    def redirect_request(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        return None
+
+
+_OPENER = build_opener(_RefuseRedirects)
 
 
 class FlyApiError(RuntimeError):
@@ -117,7 +128,7 @@ class FlyMachinesClient:
         # other failure is reported at once.
         for attempt in range(_RATE_LIMIT_ATTEMPTS):
             try:
-                with urlopen(request, timeout=timeout) as response:  # noqa: S310 -- configured API endpoint
+                with _OPENER.open(request, timeout=timeout) as response:
                     raw = response.read()
                     return cast(
                         Mapping[str, object] | list[object] | None,
@@ -275,7 +286,7 @@ class FlyMachinesClient:
         request.add_header("Authorization", f"Basic {credentials}")
         request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
         try:
-            with urlopen(request, timeout=20) as response:  # noqa: S310
+            with _OPENER.open(request, timeout=20) as response:
                 digest = response.headers.get("Docker-Content-Digest")
         except HTTPError as error:
             raise FlyApiError(path, error.code, f"HTTP {error.code}") from error

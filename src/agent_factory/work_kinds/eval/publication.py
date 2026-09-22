@@ -136,9 +136,15 @@ def _snapshot(run: Run) -> tuple[str, dict[str, bytes]] | Literal["waiting"] | N
     """The run's curated files; "waiting" while a captured run is incomplete; else None."""
     artifact = Path(run.evidence_path)
     try:
-        result = json.loads((artifact / "result.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = (artifact / "result.json").read_text(encoding="utf-8")
+    except FileNotFoundError:
         return None
+    except OSError:
+        return _WAITING  # present but unreadable right now; retried, never finalized
+    try:
+        result = json.loads(text)
+    except ValueError:
+        return _WAITING  # a result caught mid-write is retried on a later tick
     if not isinstance(result, Mapping):
         return None
     values = cast(Mapping[str, object], result)

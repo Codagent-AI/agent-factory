@@ -331,6 +331,22 @@ def test_a_done_claim_waiting_on_curated_files_is_not_finalized(
     assert len(client.commits) == 1
 
 
+def test_a_done_claim_with_a_temporarily_unreadable_result_is_retried(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    claim, _, artifact = _finished(store, tmp_path)
+    written = (artifact / "result.json").read_text(encoding="utf-8")
+    (artifact / "result.json").write_text(written[: len(written) // 2], encoding="utf-8")
+    _mark_done(store, claim)
+    client = RecordingClient()
+    publish_eval_results(store, client, _shared())
+
+    (artifact / "result.json").write_text(written, encoding="utf-8")
+    publish_eval_results(store, client, _shared())
+
+    assert len(client.commits) == 1
+
+
 def test_a_done_claim_waiting_on_a_finalized_result_is_not_finalized(
     store: ClaimStore, tmp_path: Path
 ) -> None:
