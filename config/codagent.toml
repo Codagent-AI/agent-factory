@@ -43,6 +43,7 @@ general_sources = [
   "Codagent-AI/agent-skills",
   "Codagent-AI/agent-validator",
   "Codagent-AI/agent-plugin",
+  "Codagent-AI/agent-factory",
 ]
 eval_label = "eval-request"
 eval_type = "Eval"
@@ -59,9 +60,9 @@ results_branch = "main"
 
 [eval.defaults]
 agent_runner_ref = "dev"
-lead = "claude:opus:medium"
-implementor = "codex:gpt-5.6-luna:medium"
-tester = "codex:gpt-5.6-luna:medium"
+lead = "claude:opus:high"
+implementor = "codex:gpt-6-luna:medium"
+tester = "codex:gpt-6-luna:medium"
 skip_validator = false
 
 [fix]
@@ -86,7 +87,10 @@ repository = "Codagent-AI/agent-plugin"
 [[fix.targets]]
 repository = "Codagent-AI/agent-evals"
 
+[[fix.targets]]
+repository = "Codagent-AI/agent-factory"
+
 [fix.defaults]
-lead = "claude:fable:medium"
-implementor = "codex:gpt-5.6-terra:medium"
-tester = "codex:gpt-5.6-luna:medium"
+lead = "claude:opus:high"
+implementor = "codex:gpt-6-sol:medium"
+tester = "codex:gpt-6-luna:medium"

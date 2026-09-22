@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -511,3 +512,37 @@ def test_cancelling_a_host_attempt_kills_the_runner_stand_in_and_its_child(
         if watcher.poll() is None:
             watcher.kill()
         store.close()
+
+
+def test_launched_process_keeps_the_login_identity(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    # Claude Code keys its macOS Keychain login by $USER and falls back to a
+    # separate "unknown" entry without it, so a job must keep the login identity.
+    from unittest.mock import patch
+
+    from agent_factory import supervisor
+
+    monkeypatch.setenv("USER", "operator")
+    monkeypatch.setenv("LOGNAME", "operator")
+    monkeypatch.setenv("UNRELATED_SECRET", "leak")
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    run = store.reserve_run(
+        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+    )
+    plan = _plan(
+        tmp_path,
+        "import json, os, pathlib, sys\n"
+        "seen = {k: os.environ.get(k) for k in ('USER', 'LOGNAME', 'UNRELATED_SECRET')}\n"
+        "pathlib.Path(sys.argv[1], 'env.json').write_text(json.dumps(seen))\n"
+        "pathlib.Path(sys.argv[1], 'result.json').write_text("
+        '\'{"evaluation_status":"completed","product_verdict":"fail"}\')\n',
+    )
+
+    with patch.object(supervisor, "_process_identity", side_effect=_wait_for_child_exit):
+        supervisor._launch_and_observe(  # pyright: ignore[reportPrivateUsage]
+            store, run, plan, SupervisionLimits(10, 10, 10)
+        )
+    seen = json.loads((tmp_path / "artifact" / "env.json").read_text(encoding="utf-8"))
+    assert seen == {"USER": "operator", "LOGNAME": "operator", "UNRELATED_SECRET": None}
+    store.close()

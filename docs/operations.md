@@ -69,24 +69,87 @@ collected artifact directory, not against a Fly Machine. For diagnosis the
 launcher supports `stand-in` and `attach` modes; neither is a normal execution
 path.
 
-Model logins reach a Machine as files: `~/.codex/auth.json` and
-`~/.claude/.credentials.json` (plus the optional Claude settings files), exactly as
-the Docker sandbox mounts them. On macOS the Claude CLI keeps its live login in the
-Keychain and does not maintain that file, so it goes stale while `claude` keeps
-working on the Mac. Before an eval, and whenever a Machine reports "OAuth session
-expired and could not be refreshed", copy the Keychain entry into the file:
+## Model authentication
+
+Factory never holds model API keys of its own. Every agent (Claude Code, Codex)
+runs on the operator's subscription logins, which reach the agent in one of two
+ways depending on where the work runs.
+
+### Where the logins live on the Mac
+
+| CLI | Live login | File copy |
+| --- | --- | --- |
+| Claude Code | macOS Keychain, service `Claude Code-credentials`, **account `$USER`** | `~/.claude/.credentials.json` (not maintained by Claude on macOS) |
+| Codex | `~/.codex/auth.json` | same file |
+
+Claude Code picks the Keychain item by the `USER` environment variable. When
+`USER` is unset it silently reads and writes a *different* item under account
+`unknown`, which is never refreshed by your terminal sessions and goes stale.
+List the items with:
+
+```sh
+security dump-keychain | grep -B4 -A4 '"svce"<blob>="Claude Code-credentials"' | grep -E 'acct|mdat'
+```
+
+The one under your user name with a recent `mdat` is the live login. A stale
+`acct=unknown` item is harmless once nothing reads it.
+
+### Host bug fixes
+
+Fix jobs run the host's `claude` and `codex` directly, so they use the live
+Keychain login and `~/.codex/auth.json`. Two things must hold for that:
+
+- The LaunchAgent sets `USER` and `LOGNAME` (in its `EnvironmentVariables`),
+  so the resident controller runs as the real login identity.
+- The supervisor passes `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `LANG`, and
+  `LC_ALL` (and nothing else from its environment) to each job.
+
+Symptom when `USER` is missing: the fix fails at triage with `Failed to
+authenticate: OAuth session expired and could not be refreshed` while `claude`
+works in a terminal. Reproduce with
+`env -i HOME=$HOME PATH=/opt/homebrew/bin:/usr/bin:/bin:$HOME/.local/bin claude -p ok`
+(fails) against the same command with `USER=$USER` added (works).
+
+### Fly evals
+
+A Machine has no Keychain. The Fly launcher copies an allowlist of files into it:
+`~/.codex/auth.json` and `~/.claude/.credentials.json` (plus the optional Claude
+settings files), exactly as the Docker sandbox mounts them. A missing required
+file fails the attempt at once with `required credential file is missing`
+(launcher exit 70). The suite environment file (`credentials.suite_environment`)
+is delivered too.
+
+On macOS, refresh the Claude file from the live Keychain item before an eval, and
+whenever a Machine reports "OAuth session expired and could not be refreshed".
+Always name the account; without `-a` the command may return the stale
+`unknown` item:
 
 ```sh
 tmp=$(mktemp ~/.claude/.credentials.json.XXXXXX) && chmod 600 "$tmp" &&
-  security find-generic-password -s "Claude Code-credentials" -w > "$tmp" &&
+  security find-generic-password -s "Claude Code-credentials" -a "$USER" -w > "$tmp" &&
   mv "$tmp" ~/.claude/.credentials.json || rm -f "$tmp"
 ```
 
 The copy lands in a private temporary file first, so a locked or missing Keychain
-entry leaves the existing file untouched.
+entry leaves the existing file untouched. Check it without printing secrets:
+
+```sh
+python3 -c 'import json,os,time;d=json.load(open(os.path.expanduser("~/.claude/.credentials.json")))["claudeAiOauth"];print(round((d["expiresAt"]/1000-time.time())/60),"min left")'
+```
 
 A refresh inside a Machine rotates the token; if the Mac CLI then asks you to sign in
-again, run `claude auth login` and copy once more.
+again, run `claude auth login` in a terminal and copy once more.
+
+### Quick diagnosis
+
+| Symptom | Where | Fix |
+| --- | --- | --- |
+| `required credential file is missing: ~/.claude/.credentials.json` | Fly eval, within a minute | Copy the Keychain item (above) and move the item back to Ready |
+| `OAuth session expired and could not be refreshed`, `claude` works in a terminal | Host fix | Confirm the resident has `USER` (`ps -E -o command= -p <pid>`); add it to the LaunchAgent and restart |
+| Same error on a Fly eval | Fly eval | The copied file is stale or rotated: copy again, with `-a "$USER"` |
+| Same error everywhere, including a terminal | Both | Run `claude auth login`, then copy again |
+
+## Fly Machine lifecycle
 
 A Machine is created without Fly's auto-destroy, because on Fly that setting also
 destroys a Machine on an API stop, which a quota hold relies on. At its deadline a
