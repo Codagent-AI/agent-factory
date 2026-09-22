@@ -326,7 +326,7 @@ def test_fly_claim_image_build_records_digest_and_refreshes_cli_layer(tmp_path: 
     runner.mkdir()
     factory = tmp_path / ".factory"
     factory.mkdir()
-    output = b"pushing registry.fly.io/app:claim-abcdef123456@sha256:" + b"a" * 64 + b"\n"
+    output = b"pushed image registry.fly.io/app:claim-abcdef123456@sha256:" + b"a" * 64 + b"\n"
 
     class Builder:
         def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
@@ -365,10 +365,42 @@ def test_fly_claim_image_ignores_unrelated_digest_after_pushed_image(tmp_path: P
     factory = tmp_path / ".factory"
     factory.mkdir()
     output = (
-        b"pushing registry.fly.io/app:claim-abcdef123456@sha256:"
+        b"pushed image registry.fly.io/app:claim-abcdef123456@sha256:"
         + b"a" * 64
         + b"\nlayer sha256:"
         + b"b" * 64
+        + b"\n"
+    )
+
+    class Builder:
+        def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
+            stdout.write(output)  # type: ignore[attr-defined]
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    with patch("subprocess.Popen", side_effect=Builder):
+        image = build_claim_image(
+            "app", "registry.fly.io/app", "abcdef123456789", runner, factory, {}
+        )
+    assert image == "registry.fly.io/app@sha256:" + "a" * 64
+
+
+def test_fly_claim_image_uses_pushed_record_after_earlier_tag_digest(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    output = (
+        b"cached image registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"b" * 64
+        + b"\npushed image registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"a" * 64
         + b"\n"
     )
 
@@ -399,7 +431,9 @@ def test_fly_claim_image_uses_registry_when_output_has_no_pushed_digest(tmp_path
 
     class Builder:
         def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
-            stdout.write(b"layer sha256:" + b"b" * 64 + b"\n")  # type: ignore[attr-defined]
+            stdout.write(  # type: ignore[attr-defined]
+                b"cached image registry.fly.io/app:claim-abcdef123456@sha256:" + b"b" * 64 + b"\n"
+            )
 
         def wait(self, timeout: float | None = None) -> int:
             return 0

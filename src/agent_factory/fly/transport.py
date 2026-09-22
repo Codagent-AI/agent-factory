@@ -248,10 +248,15 @@ def build_claim_image(
     if code:
         diagnostic = bytes(tail[-2000:]).decode(errors="replace")
         raise FlyTransportError(f"Fly image build failed: {diagnostic}")
-    pushed = re.search(
-        re.escape(image.encode()) + rb"@(sha256:[0-9a-fA-F]{64})(?![0-9a-fA-F])", tail
+    pushed = list(
+        re.finditer(
+            rb"(?m)^pushed image[ \t]+"
+            + re.escape(image.encode())
+            + rb"@(sha256:[0-9a-fA-F]{64})[ \t]*\r?$",
+            tail,
+        )
     )
-    digest = pushed.group(1).decode() if pushed else ""
+    digest = pushed[-1].group(1).decode() if pushed else ""
     if not digest and client is not None:
         digest = client.resolve_manifest(image)
     if not digest:
