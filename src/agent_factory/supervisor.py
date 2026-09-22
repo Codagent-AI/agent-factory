@@ -172,16 +172,17 @@ def supervise(state_path: Path, run_id: str, nonce: str) -> None:
             store.close()
 
 
+# USER and LOGNAME carry the login identity: Claude Code keys its macOS Keychain
+# login by $USER and silently uses a separate, stale "unknown" entry without it.
+_INHERITED_ENVIRONMENT = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL")
+
+
 def _launch_and_observe(
     store: ClaimStore, run: Run, plan: ExecutionPlan, limits: SupervisionLimits
 ) -> None:
     output = Path(run.evidence_path) / "factory-suite.log"
     output.parent.mkdir(parents=True, exist_ok=True)
-    environment = {
-        key: os.environ[key]
-        for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
-        if key in os.environ
-    }
+    environment = {key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ}
     environment.update({str(key): str(value) for key, value in plan.allowed_environment.items()})
     try:
         with output.open("ab", buffering=0) as stream:
@@ -371,11 +372,7 @@ def _spawn_plan_process(
 ) -> Mapping[str, object]:
     output = Path(evidence_path) / "factory-suite.log"
     output.parent.mkdir(parents=True, exist_ok=True)
-    environment = {
-        key: os.environ[key]
-        for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
-        if key in os.environ
-    }
+    environment = {key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ}
     environment.update(plan.allowed_environment)
     with output.open("ab", buffering=0) as stream:
         child = subprocess.Popen(

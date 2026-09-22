@@ -91,9 +91,9 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
 def test_deployed_fix_defaults_match_the_factory_role_split() -> None:
     shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
     assert shared.fix.defaults == {
-        "lead": "claude:fable:medium",
-        "implementor": "codex:gpt-5.6-terra:medium",
-        "tester": "codex:gpt-5.6-luna:medium",
+        "lead": "claude:opus:high",
+        "implementor": "codex:gpt-6-sol:medium",
+        "tester": "codex:gpt-6-luna:medium",
     }
 
 
