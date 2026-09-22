@@ -195,9 +195,9 @@ def test_fly_settings_default_to_ewr_shared_4_cpus_8_gib_and_900_s_grace(site: S
 def test_codagent_shared_defaults_select_opus_lead_and_luna_implementor_and_tester() -> None:
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
 
-    assert shared.eval.defaults["lead"] == "claude:opus:medium"
-    assert shared.eval.defaults["implementor"] == "codex:gpt-5.6-luna:medium"
-    assert shared.eval.defaults["tester"] == "codex:gpt-5.6-luna:medium"
+    assert shared.eval.defaults["lead"] == "claude:opus:high"
+    assert shared.eval.defaults["implementor"] == "codex:gpt-6-luna:medium"
+    assert shared.eval.defaults["tester"] == "codex:gpt-6-luna:medium"
 
 
 # -- doctor --------------------------------------------------------------------
