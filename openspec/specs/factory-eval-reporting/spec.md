@@ -73,7 +73,7 @@ For each repetition, results SHALL include execution status, established product
 
 ### Requirement: Provide executable human-review instructions
 
-Each repetition reported by the suite as ready for human review without a product failure SHALL receive its own copyable review command in its completion comment. For `and-scene`, the command SHALL invoke the retained suite's `human-review.sh` with `--run-dir` pointing to that repetition's actual artifact directory. Script and artifact paths SHALL be absolute and safely quoted, with no placeholders for the user to fill in. The comment SHALL state that the command runs on the Mac mini holding those files and remains usable until the reviewed item moves to Done, which triggers removal of its suite worktree.
+Each repetition reported by the suite as ready for human review without a product failure SHALL receive its own copyable review command in its completion comment. For `and-scene`, the command SHALL invoke the retained suite's `human-review.sh` with `--run-dir` pointing to that repetition's actual artifact directory. When the pinned script supports `--no-publish`, the command SHALL pass it, because the factory saves results itself and the suite's own publication cannot succeed from the pinned detached worktree. Script and artifact paths SHALL be absolute and safely quoted, with no placeholders for the user to fill in. The comment SHALL state that the review is optional, that the command runs on the Mac mini holding those files, and that it remains usable until the item moves to Done, reviewed or not, which triggers removal of its suite worktree.
 
 Failed or incomplete repetitions SHALL receive explanations rather than commands presenting them as ready for human review. A repetition that is ready SHALL receive its command even when another repetition in the same request failed. The factory SHALL NOT perform human review, invent human ratings, or assign an official pass.
 
@@ -88,9 +88,28 @@ Failed or incomplete repetitions SHALL receive explanations rather than commands
 - **THEN** the reviewable repetition still receives its own review command
 - **AND** the failed repetition does not
 
+### Requirement: Capture finished repetition results in the eval repository
+
+When `eval.results_repository` is configured, the factory SHALL commit each consumed repetition whose suite result is ready for human review or a conclusive product result to that repository's configured results branch, whether or not it is ever human-reviewed. For `and-scene`, the commit SHALL contain only the suite's curated files (`result.json`, `report.html`, `ambiguity-ledger.json`, `implementation.diff`, `artifact-manifest.json`, and `human-review.json` once present) under `evals/agent-runner/and-scene/results/<run-id>/`, and SHALL NOT include logs, session state, or credentials. A repetition missing any required curated file SHALL NOT be committed as a partial record. Harness failures SHALL NOT be captured. The factory SHALL link each commit on the eval issue, SHALL commit a repetition again only when its curated files change, and SHALL report a failed commit on the issue once per snapshot and retry it on later cycles without blocking the cycle. The branch update SHALL be a fast-forward that never overwrites a concurrent push.
+
+#### Scenario: Capture an unreviewed repetition
+
+- **WHEN** a repetition's attempt is consumed as ready for human review and nobody reviews it
+- **THEN** its curated files are committed to the results branch and the commit is linked on the eval issue
+
+#### Scenario: Add a later human review
+
+- **WHEN** a human review writes `human-review.json` into a captured repetition's run directory
+- **THEN** a later cycle commits the updated snapshot including the review
+
+#### Scenario: Results commit is refused
+
+- **WHEN** the results commit fails, for example because the App lacks write access
+- **THEN** the factory reports the failure on the eval issue once and retries on later cycles
+
 ### Requirement: Apply aggregate board verdicts without hiding partial results
 
-When all requested repetitions complete their automated evaluation or settle with a confirmed non-resumable implementation-workflow failure, the factory SHALL move the issue to Review. If any repetition has a suite-established product failure or a confirmed non-resumable implementation-workflow failure, the aggregate Verdict SHALL be `failed`; otherwise it SHALL be `pending-human-review`. The factory SHALL never assign `passed` in iteration 1 and SHALL NOT close the issue as part of automated completion.
+When all requested repetitions complete their automated evaluation, settle with a confirmed non-resumable implementation-workflow failure, or settle as lost Machines under `factory-fly-execution`, the factory SHALL move the issue to Review. If any repetition has a suite-established product failure or a confirmed non-resumable implementation-workflow failure, the aggregate Verdict SHALL be `failed`; otherwise, when at least one repetition is reviewable, it SHALL be `pending-human-review`. Lost repetitions SHALL NOT influence the choice between `failed` and `pending-human-review`; the results comment SHALL list each lost repetition with its infrastructure reason and SHALL NOT present it as a product result. When every repetition is lost, the card SHALL move to Review with `infra-error` and each loss explained. The factory SHALL never assign `passed` in iteration 1 and SHALL NOT close the issue as part of automated completion.
 
 If a technical failure exhausts its recovery retry, the lifecycle's stop behavior SHALL take precedence: move to Review with `infra-error`, preserving all completed results and explaining which repetitions remain unstarted. Any already-established product failures SHALL remain visible in the results comment. While unfinished work is automatically deferred, the card SHALL use Ready with the applicable `quota-deferred` or `infra-error` verdict so the existing claim can continue under the intake rules.
 
@@ -113,6 +132,17 @@ While a current claim has verified active execution, the card SHALL not retain a
 - **WHEN** all repetitions have settled and at least one has a suite-confirmed non-resumable implementation-workflow failure
 - **THEN** the card moves to Review with `failed` and explains the workflow failure
 - **AND** the report preserves the suite's separate product verdict, including unavailable, and any other repetition's review command
+
+#### Scenario: Complete with a lost repetition
+
+- **WHEN** one repetition settled as a lost Machine and the others finished ready for human review
+- **THEN** the card moves to Review with `pending-human-review`
+- **AND** the results comment lists the lost repetition with its infrastructure reason and carries review commands only for the surviving repetitions
+
+#### Scenario: Lose every repetition
+
+- **WHEN** every repetition of a claim settled as a lost Machine
+- **THEN** the card moves to Review with `infra-error` and each loss is explained
 
 #### Scenario: Stop after exhausting technical recovery
 

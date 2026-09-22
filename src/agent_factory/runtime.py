@@ -41,6 +41,7 @@ from agent_factory.suites.and_scene import (
 from agent_factory.supervisor import launch_supervisor
 from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler, card_status
 from agent_factory.work_kinds.eval import ParsedRequest
+from agent_factory.work_kinds.eval.publication import publish_eval_results
 from agent_factory.work_kinds.fix.blocked import process_blocked_claim
 from agent_factory.work_kinds.fix.handler import FixHandler
 from agent_factory.work_kinds.fix.review import process_review_claim
@@ -72,12 +73,23 @@ def cycle(state: Path, config_path: Path) -> None:
             factory_login=shared.bot_login,
             artifact_root=local.storage_root / "artifacts",
         )
+        if local.eval_execution == "fly" and local.fly is not None:
+            # Reconciliation is deliberately before result consumption and admission:
+            # cost containment must continue even when every other controller action fails.
+            from agent_factory.fly.backend import FlyMachineBackend
+
+            FlyMachineBackend(
+                app=local.fly.app, token_file=local.fly.token_file, local=local
+            ).reconcile(store)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id)
         permission_cache: dict[tuple[str, str], str | None] = {}
         for card in cards:
             _assign_ready_bug(client, shared, card, permission_cache)
-        _consume_results(store, controller)
+        _consume_results(store, controller, local)
+        # Results are captured whether or not anyone reviews them; a failure is
+        # reported on the item and retried next tick, never blocking the cycle.
+        publish_eval_results(store, client, shared)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)
         artifact_root = local.storage_root / "artifacts"
@@ -100,9 +112,13 @@ def cycle(state: Path, config_path: Path) -> None:
 
         def kind_failures(candidate_handler: WorkKindHandler) -> list[Diagnostic]:
             if candidate_handler.kind not in kind_failure_cache:
-                kind_failure_cache[candidate_handler.kind] = _kind_failures(
+                failures = _kind_failures(
                     candidate_handler, local, shared, shared_eval_diagnostics(), sandbox_memory
                 )
+                mismatch = _fly_mismatch_diagnostic(store, local)
+                if candidate_handler.kind == "eval" and mismatch is not None:
+                    failures.append(mismatch)
+                kind_failure_cache[candidate_handler.kind] = failures
             return kind_failure_cache[candidate_handler.kind]
 
         def kind_ready(candidate_handler: WorkKindHandler) -> bool:
@@ -486,6 +502,20 @@ def _assign_ready_bug(
     card.fields[shared.project.owner.id] = factory
 
 
+def _fly_mismatch_diagnostic(store: ClaimStore, local: LocalConfig) -> Diagnostic | None:
+    """A saved mismatch holds evals only under Fly, where reconciliation can clear it."""
+    if getattr(local, "eval_execution", "docker") != "fly":
+        return None
+    mismatch = store.get_setting("runtime", "fly:mismatch")
+    if not mismatch:
+        return None
+    machine = mismatch.get("machine_id", "unknown")
+    remedy = mismatch.get("remedy", "wait for the Machine deadline")
+    return Diagnostic(
+        "Fly ownership mismatch", False, f"Machine {machine}: {remedy}", str(remedy), "eval-fly"
+    )
+
+
 def _kind_failures(
     handler: WorkKindHandler,
     local: LocalConfig,
@@ -495,9 +525,24 @@ def _kind_failures(
 ) -> list[Diagnostic]:
     """Only the groups applicable to this kind under its configured mode can hold it."""
     if handler.kind == "eval":
+        mode_group = (
+            "eval-fly" if getattr(local, "eval_execution", "docker") == "fly" else "eval-sandbox"
+        )
         failures = [
-            d for d in diagnostics if d.group in {"shared", "eval-sandbox"} and not d.available
+            d for d in diagnostics if d.group in {"shared", "eval", mode_group} and not d.available
         ]
+        if getattr(local, "eval_execution", "docker") == "fly":
+            mismatch = next(
+                (
+                    d
+                    for d in diagnostics
+                    if d.group == "eval-fly" and d.name == "Fly ownership mismatch"
+                ),
+                None,
+            )
+            if mismatch is not None:
+                failures.append(mismatch)
+            return failures
         memory = sandbox_memory()
         return failures + ([memory] if not memory.available else [])
     failures = [d for d in diagnostics if d.group == "shared" and not d.available]
@@ -523,7 +568,9 @@ def _presents_card(claim: Claim, *, issue_state: str) -> bool:
     return not (claim.lifecycle == "cancelled" and issue_state.lower() != "closed")
 
 
-def _consume_results(store: ClaimStore, controller: Controller) -> None:
+def _consume_results(
+    store: ClaimStore, controller: Controller, local: LocalConfig | None = None
+) -> None:
     """Record every finished-but-unconsumed attempt through its kind's handler."""
     for claim in store.all_claims():
         if claim.lifecycle in {"cancelled", "superseded"}:
@@ -548,9 +595,42 @@ def _consume_results(store: ClaimStore, controller: Controller) -> None:
                     },
                 )
             controller.record_result(run.id, result)
+            _dispose_fly_result(store, handler, run, result, local)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
+
+
+def _dispose_fly_result(
+    store: ClaimStore,
+    handler: WorkKindHandler,
+    run: Run,
+    result: AttemptResult,
+    local: LocalConfig | None,
+) -> None:
+    """Dispose after classification; collection/result normalization has already completed."""
+    hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
+    hint_values = cast(Mapping[str, object], hints) if isinstance(hints, Mapping) else None
+    if hint_values is None or hint_values.get("backend") != "fly-machine":
+        return
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    backend = FlyMachineBackend(local=local)
+    identity = backend.identity_from_plan(run.plan, run)
+    if identity is None:
+        return
+    classification = handler.classify(run, result).kind
+    if result.execution_status == "cancelled" or run.status == "cancelled":
+        return
+    if result.quota_until is not None or classification == "quota":
+        decision = "stop"
+    elif classification == "technical" and run.reason != "recovery":
+        decision = "keep"
+    else:
+        # Includes a lost Machine: the backend re-probes and only destroys when
+        # it still owns the matching resource.
+        decision = "destroy"
+    backend.dispose(identity, decision, store)
 
 
 def _hold_for_missing_handler(store: ClaimStore, claim: Claim, run: Run) -> None:
@@ -589,21 +669,29 @@ def _report(
     # A reviewed Done card releases worktrees; never bounce it back to Review.
     if not (current == "Done" and claim.lifecycle == "settled"):
         option = shared.project.status.option(status.lower())
+        status_key = f"{claim_id}:{shared.project.status.id}"
+        delivered = store.get_setting("field-delivery", status_key)
         if card.fields.get(shared.project.status.id) != option:
             client.set_single_select_field(
                 shared.project.id, card.id, shared.project.status.id, option
             )
             card.fields[shared.project.status.id] = option
+            # Only a card the factory already showed as Running was moved by someone
+            # else; admission's own move out of a queued status needs no explanation.
             if (
                 (active or claim.lifecycle == "blocked")
                 and status == "Running"
                 and current in {"Ready", "Review", "Done"}
+                and delivered is not None
+                and delivered.get("value") == "Running"
             ):
                 store.record_event(
                     claim_id,
                     f"status-repair:{current}:{len(runs)}",
                     "Status restored to Running because this evaluation is still active.",
                 )
+        if delivered is None or delivered.get("value") != status:
+            store.set_setting("field-delivery", status_key, {"value": status})
     if desired.verdict:
         field = shared.project.verdict.id
         receipt = store.get_setting("field-delivery", f"{claim_id}:{field}")

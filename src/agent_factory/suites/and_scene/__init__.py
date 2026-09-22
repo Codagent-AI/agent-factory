@@ -13,17 +13,23 @@ import re
 import shlex
 import stat
 import subprocess
+import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
+from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
 from agent_factory.store import ClaimStore
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+# The dry run only parses arguments; a harness that stalls must not stall readiness.
+_FLY_DRY_RUN_TIMEOUT_SECONDS = 60
+_ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -175,9 +181,20 @@ class GitWorktreeManager:
 class AndSceneAdapter:
     """Readiness, argv construction, recovery, and result adaptation for and-scene."""
 
-    def __init__(self, *, environment_file: Path, mac_name: str = "the factory Mac") -> None:
+    def __init__(
+        self,
+        *,
+        environment_file: Path,
+        mac_name: str = "the factory Mac",
+        execution: str = "docker",
+        fly: FlyLocalConfig | None = None,
+        total_seconds: int = 18000,
+    ) -> None:
         self._environment_file = environment_file.resolve()
         self._mac_name = mac_name
+        self._execution = execution
+        self._fly = fly
+        self._total_seconds = total_seconds
 
     @staticmethod
     def authentication_commands(roles: Mapping[str, str]) -> list[tuple[str, ...]]:
@@ -199,11 +216,24 @@ class AndSceneAdapter:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
-        runner_script = worktrees.runner / "scripts/sandbox-run.sh"
-        if not runner_script.is_file() or "--docker-run-arg" not in runner_script.read_text(
-            encoding="utf-8"
-        ):
-            return "selected Agent Runner sandbox launcher lacks repeated --docker-run-arg support"
+        if self._execution == "fly":
+            if self._fly is None:
+                return "Fly settings are unavailable"
+            from agent_factory.fly.launcher import executable as fly_launcher
+
+            if fly_launcher() is None:
+                return "factory Fly launcher is not installed alongside the running factory"
+            reason = self._fly_dry_run(worktrees)
+            if reason is not None:
+                return reason
+        else:
+            runner_script = worktrees.runner / "scripts/sandbox-run.sh"
+            if not runner_script.is_file() or "--docker-run-arg" not in runner_script.read_text(
+                encoding="utf-8"
+            ):
+                return (
+                    "selected Agent Runner sandbox launcher lacks repeated --docker-run-arg support"
+                )
         if not (worktrees.runner / "workflows/core/implement-change-v1.0.yaml").is_file():
             return "selected Agent Runner revision lacks the and-scene implementation workflow"
         if not self._environment_file.is_file():
@@ -214,6 +244,95 @@ class AndSceneAdapter:
             return str(error)
         return None
 
+    def _fly_dry_run(self, worktrees: PreparedWorktrees) -> str | None:
+        """Exercise the exact harness-to-launcher seam without contacting Fly."""
+        from agent_factory.fly.launcher import executable as fly_launcher
+
+        launcher = fly_launcher()
+        if launcher is None:
+            return "factory Fly launcher is not installed alongside the running factory"
+        run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
+        harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+        with tempfile.TemporaryDirectory(prefix="factory-fly-readiness-") as temporary:
+            artifact = Path(temporary) / "artifact"
+            manifest = artifact / ".factory" / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "artifact_dir": str(artifact),
+                        "worktrees": {
+                            "runner": str(worktrees.runner),
+                            "skills": str(worktrees.skills),
+                        },
+                        "git_common_dirs": [
+                            _git_common_dir(worktrees.runner),
+                            _git_common_dir(worktrees.skills),
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            environment = {
+                **os.environ,
+                "SANDBOX_RUNNER": launcher,
+                "AGENT_FACTORY_FLY_MANIFEST": str(manifest),
+            }
+            command = (
+                str(run_script),
+                "--run-agent",
+                "--dry-run",
+                "--agent-runner-dir",
+                str(worktrees.runner),
+                "--agent-skills-dir",
+                str(worktrees.skills),
+                "--artifact-dir",
+                str(artifact),
+                "--env-file",
+                str(self._environment_file),
+                # A claude lead with codex implementor and tester is the widest auth
+                # shape the harness emits, and the only one that orders the mount
+                # flags claude-first. Anything narrower cannot catch grammar drift.
+                "--lead-cli",
+                "claude",
+                "--lead-model",
+                "default",
+                "--lead-effort",
+                "medium",
+                "--implementor-cli",
+                "codex",
+                "--implementor-model",
+                "default",
+                "--implementor-effort",
+                "medium",
+                "--tester-cli",
+                "codex",
+                "--tester-model",
+                "default",
+                "--tester-effort",
+                "medium",
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    text=True,
+                    capture_output=True,
+                    env=environment,
+                    check=False,
+                    timeout=_FLY_DRY_RUN_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                return (
+                    f"Fly launcher compatibility failed at harness {harness_commit}: "
+                    f"dry run timed out after {_FLY_DRY_RUN_TIMEOUT_SECONDS} seconds"
+                )
+        if completed.returncode == 0:
+            return None
+        detail = (
+            completed.stderr.strip() or completed.stdout.strip() or "launcher rejected arguments"
+        )
+        return f"Fly launcher compatibility failed at harness {harness_commit}: {detail}"
+
     def plan(
         self,
         frozen: Mapping[str, object],
@@ -222,6 +341,10 @@ class AndSceneAdapter:
         *,
         recovery: bool,
         pre_checkpoint_proven: bool = False,
+        expect_checkpoint: bool = False,
+        claim_id: str = "",
+        run_id: str = "",
+        unit_key: str = "",
     ) -> ExecutionPlan:
         readiness = self.readiness(worktrees)
         if readiness is not None:
@@ -252,6 +375,42 @@ class AndSceneAdapter:
             arguments.append("--skip-validator")
         if resume:
             arguments.append("--resume")
+        if self._execution == "fly":
+            manifest_path = artifact / ".factory" / "manifest.json"
+            manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            manifest_path.write_text(
+                json.dumps(
+                    _fly_manifest(
+                        frozen,
+                        worktrees,
+                        artifact,
+                        claim_id,
+                        run_id,
+                        unit_key,
+                        self._fly,
+                        self._total_seconds,
+                        expect_checkpoint,
+                    ),
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            from agent_factory.fly.launcher import LAUNCHER_NAME
+            from agent_factory.fly.launcher import executable as fly_launcher
+
+            launcher = fly_launcher() or LAUNCHER_NAME
+            return ExecutionPlan(
+                tuple(arguments),
+                str(worktrees.evals),
+                {"SANDBOX_RUNNER": launcher, "AGENT_FACTORY_FLY_MANIFEST": str(manifest_path)},
+                (str(self._environment_file),),
+                (
+                    str(artifact / "factory-suite.log"),
+                    str(artifact / ".factory" / "heartbeat.json"),
+                ),
+                {"artifact_path": str(artifact), "suite": "and-scene", "backend": "fly-machine"},
+                resume,
+            )
         return ExecutionPlan(
             tuple(arguments),
             str(worktrees.evals),
@@ -318,14 +477,22 @@ class AndSceneAdapter:
     ) -> str | None:
         if result.get("evaluation_status") != "pending-human-review":
             return None
-        command = shlex.join(
-            (str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve()))
-        )
+        arguments = [str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve())]
+        # The factory saves results itself, and the suite's own push cannot succeed
+        # from the pinned detached worktree. Pins older than the option reject it,
+        # so it is passed only when the script's option dispatch accepts it.
+        try:
+            if _ACCEPTS_NO_PUBLISH.search(review_script.read_text(encoding="utf-8")):
+                arguments.append("--no-publish")
+        except OSError:
+            pass
+        command = shlex.join(arguments)
         return (
-            f"Human review is ready on {self._mac_name} while this item remains in Review.\n"
+            f"Optional human review is available on {self._mac_name} while this item remains "
+            "in Review. The automated results are saved to the eval repository without it; "
+            "a completed review is added to them on a later tick.\n"
             f"Run: {command}\n"
-            "The retained suite worktree may be released only after the reviewed item moves "
-            "to Done."
+            "Moving the item to Done releases the retained suite worktree, reviewed or not."
         )
 
     def failure_quota_until(
@@ -465,6 +632,90 @@ def _revisions(value: Mapping[str, object]) -> dict[str, str]:
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
     return result
+
+
+def _fly_manifest(
+    frozen: Mapping[str, object],
+    worktrees: PreparedWorktrees,
+    artifact: Path,
+    claim_id: str,
+    run_id: str,
+    unit_key: str,
+    fly: FlyLocalConfig | None,
+    total_seconds: int,
+    expect_checkpoint: bool,
+) -> dict[str, object]:
+    if fly is None:
+        raise ReadinessError("Fly settings are unavailable")
+    revisions = _revisions(cast(Mapping[str, object], frozen.get("revisions")))
+    return {
+        "run_id": run_id,
+        "claim_id": claim_id,
+        "unit_key": unit_key,
+        "nonce": os.urandom(16).hex(),
+        "artifact_dir": str(artifact),
+        "deadline": {
+            "total_seconds": total_seconds,
+            "collection_grace_seconds": fly.collection_grace_seconds,
+        },
+        "expect_checkpoint": expect_checkpoint,
+        "worktrees": {
+            "runner": str(worktrees.runner),
+            "skills": str(worktrees.skills),
+            "evals": str(worktrees.evals),
+        },
+        "git_common_dirs": [
+            _git_common_dir(worktrees.runner),
+            _git_common_dir(worktrees.skills),
+        ],
+        "repositories": {
+            name: _remote_url(path)
+            for name, path in (
+                ("runner", worktrees.runner),
+                ("skills", worktrees.skills),
+                ("evals", worktrees.evals),
+            )
+        },
+        "commits": revisions,
+        "image": fly.image,
+        "fly": {
+            "app": fly.app,
+            "token_file": str(fly.token_file),
+            "region": fly.region,
+            "cpu_kind": fly.cpu_kind,
+            "cpus": fly.cpus,
+            "memory_mb": fly.memory_mb,
+            "heartbeat_seconds": fly.heartbeat_seconds,
+        },
+        "guest_paths": {
+            "runner": "/agent-runner-source",
+            "skills": "/agent-skills-source",
+            "input": "/eval-input",
+            "artifacts": "/artifacts",
+        },
+    }
+
+
+def _remote_url(path: Path) -> str:
+    value = _git(path, "remote", "get-url", "origin", allow_failure=True)
+    if not value:
+        raise ReadinessError(f"pinned worktree has no origin URL: {path}")
+    # The URL is written to the non-secret manifest and handed to the guest.
+    parsed = urlsplit(value)
+    # An SSH user name such as `git` is not a secret; a password is, in any scheme,
+    # and over HTTP(S) a bare user name is commonly a token.
+    if parsed.password is not None or (parsed.scheme in {"http", "https"} and parsed.username):
+        raise ReadinessError(
+            f"pinned worktree origin embeds credentials; use a credential-free URL: {path}"
+        )
+    return value
+
+
+def _git_common_dir(path: Path) -> str:
+    value = _git(path, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if not value:
+        raise ReadinessError(f"pinned worktree has no Git common directory: {path}")
+    return value
 
 
 def _settings(frozen: Mapping[str, object]) -> Mapping[str, object]:

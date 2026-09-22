@@ -420,3 +420,72 @@ def test_list_review_activity_follows_every_connection_past_the_first_page() -> 
         "reviews": "reviews-1",
         "threads": "threads-1",
     }
+
+
+def test_commit_files_adds_one_commit_on_the_branch_through_the_git_data_api() -> None:
+    import base64
+
+    gh = RecordingGh(
+        [
+            json.dumps({"object": {"sha": "base-commit"}}),
+            json.dumps({"tree": {"sha": "base-tree"}}),
+            json.dumps({"sha": "blob-a"}),
+            json.dumps({"sha": "blob-b"}),
+            json.dumps({"sha": "new-tree"}),
+            json.dumps({"sha": "new-commit"}),
+            json.dumps({"object": {"sha": "new-commit"}}),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    commit = client.commit_files(
+        "org/evals",
+        "main",
+        {"results/run-1/a.json": b'{"a": 1}', "results/run-1/b.html": b"<p>"},
+        "chore: record and-scene eval run-1",
+    )
+
+    assert commit == "new-commit"
+    routes = [(c.arguments[1], c.arguments[c.arguments.index("--method") + 1]) for c in gh.calls]
+    assert routes == [
+        ("repos/org/evals/git/ref/heads/main", "GET"),
+        ("repos/org/evals/git/commits/base-commit", "GET"),
+        ("repos/org/evals/git/blobs", "POST"),
+        ("repos/org/evals/git/blobs", "POST"),
+        ("repos/org/evals/git/trees", "POST"),
+        ("repos/org/evals/git/commits", "POST"),
+        ("repos/org/evals/git/refs/heads/main", "PATCH"),
+    ]
+    assert gh.calls[2].body == {
+        "content": base64.b64encode(b'{"a": 1}').decode(),
+        "encoding": "base64",
+    }
+    assert gh.calls[4].body == {
+        "base_tree": "base-tree",
+        "tree": [
+            {"path": "results/run-1/a.json", "mode": "100644", "type": "blob", "sha": "blob-a"},
+            {"path": "results/run-1/b.html", "mode": "100644", "type": "blob", "sha": "blob-b"},
+        ],
+    }
+    assert gh.calls[5].body == {
+        "message": "chore: record and-scene eval run-1",
+        "tree": "new-tree",
+        "parents": ["base-commit"],
+    }
+    # An ordinary fast-forward: a concurrent push is never overwritten.
+    assert gh.calls[6].body == {"sha": "new-commit", "force": False}
+
+
+def test_commit_files_skips_the_commit_when_the_tree_is_unchanged() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps({"object": {"sha": "base-commit"}}),
+            json.dumps({"tree": {"sha": "base-tree"}}),
+            json.dumps({"sha": "blob-a"}),
+            json.dumps({"sha": "base-tree"}),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.commit_files("org/evals", "main", {"a": b"a"}, "message") is None
+    assert len(gh.calls) == 4

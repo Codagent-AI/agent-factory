@@ -63,3 +63,18 @@ poll_seconds = 60
 "Codagent-AI/agent-validator" = "/srv/working/agent-validator"
 "Codagent-AI/agent-plugin" = "/srv/working/agent-plugin"
 "Codagent-AI/agent-evals" = "/srv/working/agent-evals"
+
+# Evals on Fly.io Machines instead of Docker. Fixes are unaffected.
+# [eval]
+# execution = "fly"           # "docker" (default) or "fly"
+#
+# [fly]
+# app = "agent-factory-sandbox"
+# image = "registry.fly.io/agent-factory-sandbox:base"
+# token_file = "/Users/you/.agent-factory/credentials/fly-deploy-token"
+# region = "ewr"               # default
+# cpu_kind = "shared"          # default
+# cpus = 4                     # default
+# memory_mb = 8192             # default
+# collection_grace_seconds = 900   # default
+# heartbeat_seconds = 20           # default

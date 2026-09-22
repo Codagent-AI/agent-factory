@@ -109,6 +109,9 @@ class EvalConfig:
     suite: str
     repetitions: int
     defaults: Mapping[str, object] = field(default_factory=lambda: dict[str, object]())
+    # Where finished repetitions' curated results are committed; None disables it.
+    results_repository: str | None = None
+    results_branch: str = "main"
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,19 @@ class FixLocalConfig:
 
 
 @dataclass(frozen=True)
+class FlyLocalConfig:
+    app: str
+    image: str
+    token_file: Path
+    region: str = "ewr"
+    cpu_kind: str = "shared"
+    cpus: int = 4
+    memory_mb: int = 8192
+    collection_grace_seconds: int = 900
+    heartbeat_seconds: int = 20
+
+
+@dataclass(frozen=True)
 class LocalConfig:
     """Machine-specific paths and limits, deliberately separate from deployment TOML."""
 
@@ -186,6 +202,8 @@ class LocalConfig:
     limits: LimitsConfig
     credentials: CredentialsConfig
     fix: FixLocalConfig = field(default_factory=FixLocalConfig)
+    eval_execution: Literal["docker", "fly"] = "docker"
+    fly: FlyLocalConfig | None = None
 
     @property
     def state_path(self) -> Path:
@@ -235,10 +253,11 @@ class LocalConfig:
         }
         eval_local = _table(document.get("eval", {}), "eval")
         eval_execution = eval_local.get("execution", "docker")
-        if eval_execution != "docker":
+        if eval_execution not in ("docker", "fly"):
             raise ConfigurationError(
-                'eval.execution only supports "docker"; eval host execution is unsupported'
+                'eval.execution must be "docker" or "fly"; eval host execution is unsupported'
             )
+        fly = _fly_local_config(document.get("fly")) if eval_execution == "fly" else None
         fix_environment_value = credentials.get("fix_environment")
         fix_environment = (
             _path(credentials, "fix_environment", "credentials")
@@ -283,6 +302,8 @@ class LocalConfig:
                 fix_environment=fix_environment,
             ),
             fix=_fix_local_config(document.get("fix")),
+            eval_execution=eval_execution,
+            fly=fly,
         )
 
 
@@ -385,6 +406,12 @@ class SharedConfig:
                 suite=_string(eval_config, "suite", "eval"),
                 repetitions=repetitions,
                 defaults=dict(_table(eval_config.get("defaults", {}), "eval.defaults")),
+                results_repository=(
+                    _string(eval_config, "results_repository", "eval")
+                    if "results_repository" in eval_config
+                    else None
+                ),
+                results_branch=_optional_string(eval_config, "results_branch", "eval", "main"),
             ),
             fix=_fix_shared_config(document.get("fix")),
         )
@@ -480,4 +507,21 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
         minimum_free_gib = float(floor)
     return FixLocalConfig(
         limits=limits, schedule=schedule, execution=execution, minimum_free_gib=minimum_free_gib
+    )
+
+
+def _fly_local_config(raw: object) -> FlyLocalConfig:
+    fly = _table(raw, "fly")
+    return FlyLocalConfig(
+        app=_string(fly, "app", "fly"),
+        image=_string(fly, "image", "fly"),
+        token_file=_path(fly, "token_file", "fly"),
+        region=_optional_string(fly, "region", "fly", "ewr"),
+        cpu_kind=_optional_string(fly, "cpu_kind", "fly", "shared"),
+        cpus=_optional_positive_int(fly, "cpus", "fly", 4),
+        memory_mb=_optional_positive_int(fly, "memory_mb", "fly", 8192),
+        collection_grace_seconds=_optional_positive_int(
+            fly, "collection_grace_seconds", "fly", 900
+        ),
+        heartbeat_seconds=_optional_positive_int(fly, "heartbeat_seconds", "fly", 20),
     )

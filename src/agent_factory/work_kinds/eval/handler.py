@@ -82,6 +82,7 @@ class EvalHandler:
             {role: str(values.get(role, "")) for role in ("lead", "implementor", "tester")},
             bool(values.get("skip_validator", False)),
             shared.eval.repetitions,
+            execution=local.eval_execution,
         )
         sources = SourceRepositories(
             local.repositories.agent_runner,
@@ -95,7 +96,12 @@ class EvalHandler:
             shared=shared,
             local=local,
             sources=sources,
-            adapter=AndSceneAdapter(environment_file=local.credentials.suite_environment),
+            adapter=AndSceneAdapter(
+                environment_file=local.credentials.suite_environment,
+                execution=local.eval_execution,
+                fly=local.fly,
+                total_seconds=local.limits.total_seconds,
+            ),
             manager=GitWorktreeManager(local.storage_root, sources),
             fallback_seconds=local.limits.codex_reset_fallback_seconds,
         )
@@ -121,8 +127,9 @@ class EvalHandler:
         if (
             source.repository != shared.routing.eval_source
             or source.state.lower() == "closed"
+            # The issue type already identifies an evaluation. The routing label is
+            # the router's entry signal, not a second gate the card must satisfy.
             or source.issue_type != shared.routing.eval_type
-            or shared.routing.eval_label not in source.labels
             or card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
             or card_status(shared, card) != "Ready"
         ):
@@ -210,6 +217,10 @@ class EvalHandler:
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
         roles = mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
+        if self._local is not None and self._local.eval_execution == "fly":
+            for role, profile in roles.items():
+                if str(profile).split(":", 1)[0] == "cursor":
+                    raise ReadinessError(f"{role}: Cursor is unavailable on Fly")
         auth = model_authentication({key: str(value) for key, value in roles.items()})
         failures = [check.detail for check in auth if not check.available]
         if failures:
@@ -271,6 +282,40 @@ class EvalHandler:
             )
             if deadline is not None:
                 result = replace(result, quota_until=deadline)
+        if _machine_lost(result.result):
+            # The supervisor records the loss as an interruption; the repetition
+            # settles as failed, owned by the factory, so aggregation and retry
+            # planning never treat it as unfinished work or a product result.
+            result = replace(
+                result,
+                execution_status="failed",
+                result={
+                    **result.result,
+                    "failure": {"owner": "factory", "code": "machine-lost"},
+                },
+            )
+        machine = run.progress.get("machine_provenance")
+        fly_plan = isinstance(run.plan.get("ownership_hints"), Mapping) and (
+            cast(Mapping[str, object], run.plan["ownership_hints"]).get("backend") == "fly-machine"
+        )
+        if isinstance(machine, Mapping) or fly_plan:
+            provenance = (
+                dict(cast(Mapping[str, object], machine)) if isinstance(machine, Mapping) else {}
+            )
+            result = replace(
+                result,
+                result={
+                    **result.result,
+                    "execution_provenance": {
+                        **(
+                            dict(cast(Mapping[str, object], result.result["execution_provenance"]))
+                            if isinstance(result.result.get("execution_provenance"), Mapping)
+                            else {}
+                        ),
+                        "fly": provenance or {"observation": "unavailable"},
+                    },
+                },
+            )
         return result
 
     def classify(self, run: Run, result: AttemptResult) -> Classification:
@@ -295,11 +340,18 @@ class EvalHandler:
             if _run_needs_recovery(latest):
                 return None
             settled.append(latest)
-        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in settled)
-        verdict = "failed" if failed else "pending-human-review"
+        losses = [run for run in settled if _machine_lost(run.result)]
+        surviving = [run for run in settled if run not in losses]
+        failed = any(_product_failed(run) or _nonresumable_workflow(run) for run in surviving)
+        verdict = "infra-error" if not surviving else "failed" if failed else "pending-human-review"
+        loss_text = "".join(
+            f"\n- {run.unit_key} was lost to factory infrastructure: "
+            f"{str(run.result.get('reason', 'machine lost'))}."
+            for run in losses
+        )
         return Outcome(
             verdict,
-            event_body=f"All repetitions settled; aggregate verdict is {verdict}.",
+            event_body=f"All repetitions settled; aggregate verdict is {verdict}." + loss_text,
         )
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
@@ -316,6 +368,8 @@ class EvalHandler:
         )
 
     def report_events(self, claim: Claim, run: Run, result: AttemptResult) -> list[ReportEvent]:
+        if _machine_lost(result.result):
+            return []
         if self.adapter is None:
             return []
         paths = mapping(claim.preparation.get("worktrees", {}))
@@ -414,9 +468,22 @@ def plan_attempt(
     worktrees: PreparedWorktrees,
 ) -> ExecutionPlan:
     """Build the suite invocation, resuming only when a prior attempt proved a checkpoint."""
-    previous = store.runs_for_claim(claim.id)[:-1]
+    previous = [
+        candidate
+        for candidate in store.runs_for_claim(claim.id)
+        if candidate.unit_key == run.unit_key and candidate.id != run.id
+    ]
+    latest = previous[-1] if previous else None
     stopped_before_checkpoint = bool(
-        previous and previous[-1].result.get("reason") == "suite launch failed"
+        latest
+        and (
+            latest.result.get("reason") == "suite launch failed"
+            or (
+                latest.progress.get("checkpoint_seen") is not True
+                and not Path(latest.evidence_path, "run-state.json").is_file()
+                and not Path(latest.evidence_path, "candidate.json").exists()
+            )
+        )
     )
     plan = adapter.plan(
         claim.frozen_spec,
@@ -424,7 +491,17 @@ def plan_attempt(
         Path(run.evidence_path),
         recovery=run.reason != "initial",
         pre_checkpoint_proven=stopped_before_checkpoint,
+        claim_id=claim.id,
+        run_id=run.id,
+        unit_key=run.unit_key,
+        expect_checkpoint=(
+            run.reason != "initial"
+            and latest is not None
+            and latest.progress.get("checkpoint_seen") is True
+        ),
     )
+    if plan.ownership_hints.get("backend") == "fly-machine":
+        return plan
     # Build under a per-run tag so a concurrent fix build cannot retag this image.
     tag = f"agent-runner-factory:{run.id}"
     return replace(
@@ -446,6 +523,8 @@ def _unit_count(claim: Claim) -> int:
 
 
 def _technical_failure(result: AttemptResult) -> bool:
+    if _machine_lost(result.result):
+        return False
     if result.execution_status not in {"failed", "interrupted"}:
         return False
     resumable = result.resumable
@@ -456,6 +535,8 @@ def _technical_failure(result: AttemptResult) -> bool:
 
 
 def _run_needs_recovery(run: Run) -> bool:
+    if _machine_lost(run.result):
+        return False
     if run.status not in {"failed", "interrupted"}:
         return False
     resumable = run.result.get("resumable")
@@ -479,6 +560,15 @@ def _is_nonresumable_workflow(result: Mapping[str, object], resumable: bool | No
         return False
     failure = cast(Mapping[str, object], failure_raw)
     return failure.get("owner") in {"workflow", "implementation-workflow"} and resumable is False
+
+
+def _machine_lost(result: Mapping[str, object]) -> bool:
+    failure = result.get("failure")
+    return result.get("reason") == "machine lost" or (
+        isinstance(failure, Mapping)
+        and cast(Mapping[str, object], failure).get("owner") == "factory"
+        and cast(Mapping[str, object], failure).get("code") == "machine-lost"
+    )
 
 
 def _public_diagnostic(value: str) -> str:

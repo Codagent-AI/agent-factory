@@ -1,5 +1,16 @@
 # `and-scene` suite integration
 
+## Fly adapter seam
+
+For Fly evals, Factory uses the suite's `SANDBOX_RUNNER` override rather than
+changing suite semantics. The adapter receives a typed, non-secret manifest
+with the pinned Runner, Skills, and harness revisions, attempt identity,
+deadline, and guest/artifact paths. It accepts only the pinned `run.sh`
+argument grammar. A harness update that changes that grammar is an admission
+hold: run the adapter's dry-run readiness check against the new pinned harness
+before deploying it. The adapter collects the completed artifact tree once;
+human review uses that collected host directory.
+
 Agent Factory evaluates only the `and-scene` suite in iteration 1. Its harness
 branch is configured in `config/codagent.toml` as `eval.harness_ref` (default
 `main`). Factory resolves that branch to a commit at each claim's admission and
@@ -39,15 +50,31 @@ the Runner's repeated `--docker-run-arg` interface, mounted read-only at their
 host-resolved paths. This lets Git inside the container verify linked worktree
 provenance without modifying a source checkout or Git metadata.
 
+Human review is optional. As soon as a repetition's attempt is consumed with a
+`pending-human-review` or conclusive `complete` result, Factory commits the
+suite's curated files (`result.json`, `report.html`, `ambiguity-ledger.json`,
+`implementation.diff`, `artifact-manifest.json`) to
+`evals/agent-runner/and-scene/results/<run-id>/` in `eval.results_repository`
+and links the commit on the eval issue. Harness failures are not captured. If a
+review later writes `human-review.json` (and its finalized score) into the same
+run directory, the next tick commits the updated snapshot. Review any subset of
+repetitions, or none.
+
 When a repetition is `pending-human-review`, the Factory report includes an
 absolute, shell-quoted command of this form:
 
 ```sh
-/absolute/path/to/human-review.sh --run-dir '/absolute/path/to/artifacts/run id'
+/absolute/path/to/human-review.sh --run-dir '/absolute/path/to/artifacts/run id' --no-publish
 ```
 
+`--no-publish` stops the suite from committing and pushing from the pinned,
+detached worktree, since Factory saves the results itself. It is added only when
+the pinned `human-review.sh` supports it.
+
 Run it on the Mac holding the files. The command is valid while the item remains
-in Review; Factory never performs the human rating. Product failures and
+in Review; Factory never performs the human rating. Move the item to Done
+whenever you are finished with it, reviewed or not; once a Done item's results
+are saved, Factory stops watching it, so finish any review before moving it. Product failures and
 incomplete results intentionally receive no review command.
 
 Candidate branches, draft PRs, controller logs, and SQLite history are never

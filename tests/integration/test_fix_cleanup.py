@@ -43,6 +43,26 @@ def test_clones_removed_after_review_then_done(tmp_path: Path) -> None:
     assert claim.cleanup["complete"] is True
 
 
+def test_read_only_module_cache_in_a_clone_is_removed(tmp_path: Path) -> None:
+    # Go's module cache marks its directories and files read-only, so a plain tree
+    # removal fails with EACCES and the clone would leak on every retry.
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone = _settled_claim_with_clones(store, tmp_path)
+    module = clone / ".validator/cache/go/pkg/mod/example.com/lib@v1.0.0"
+    module.mkdir(parents=True)
+    (module / "lib.go").write_text("package lib\n")
+    (module / "lib.go").chmod(0o444)
+    module.chmod(0o555)
+    module.parent.chmod(0o555)
+    cleanup = FixCleanup(store)
+    cleanup.reconcile(claim_id, board_status="Review")
+
+    result = cleanup.reconcile(claim_id, board_status="Done")
+
+    assert result is True
+    assert not clone.exists()
+
+
 def test_done_without_prior_review_is_not_cleaned_up(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)

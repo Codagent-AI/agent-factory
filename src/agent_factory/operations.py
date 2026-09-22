@@ -33,9 +33,16 @@ if TYPE_CHECKING:
     from agent_factory.store import Run
 
 
-DiagnosticGroup = Literal["shared", "eval-sandbox", "fix-sandbox", "fix-host"]
+DiagnosticGroup = Literal["shared", "eval", "eval-sandbox", "eval-fly", "fix-sandbox", "fix-host"]
 
-_GROUP_ORDER: tuple[DiagnosticGroup, ...] = ("shared", "eval-sandbox", "fix-sandbox", "fix-host")
+_GROUP_ORDER: tuple[DiagnosticGroup, ...] = (
+    "shared",
+    "eval",
+    "eval-sandbox",
+    "eval-fly",
+    "fix-sandbox",
+    "fix-host",
+)
 
 # host mode -> executable each configured role CLI adapter needs on PATH.
 ADAPTER_EXECUTABLES: Mapping[str, str] = {"claude": "claude", "codex": "codex", "cursor": "agent"}
@@ -102,19 +109,24 @@ def doctor(
                 "name, not a commit SHA.",
             )
         )
-    diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
-    diagnostics.extend(_repository_checks(config))
-    diagnostics.append(_suite_environment(config.credentials.suite_environment))
-    docker = _command_check(
-        "Docker",
-        ("docker", "info"),
-        "Start Docker Desktop, then rerun doctor.",
-        timeout=30,
-        group="eval-sandbox",
+    needs_docker = config.eval_execution == "docker" or (
+        include_fix and config.fix.execution == "docker"
     )
-    diagnostics.append(docker)
-    if include_informational:
-        diagnostics.append(_docker_reclaimable_diagnostic(docker_available=docker.available))
+    diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
+    diagnostics.extend(_repository_checks(config, include_sandbox=needs_docker))
+    diagnostics.append(_suite_environment(config.credentials.suite_environment))
+    docker: Diagnostic | None = None
+    if needs_docker:
+        docker = _command_check(
+            "Docker",
+            ("docker", "info"),
+            "Start Docker Desktop, then rerun doctor.",
+            timeout=30,
+            group="eval-sandbox",
+        )
+        diagnostics.append(docker)
+        if include_informational:
+            diagnostics.append(_docker_reclaimable_diagnostic(docker_available=docker.available))
     profiles = (
         {
             role: str(shared.eval.defaults.get(role, ""))
@@ -123,14 +135,32 @@ def doctor(
         if shared is not None
         else {}
     )
-    diagnostics.extend(model_authentication(profiles, group="eval-sandbox"))
-    diagnostics.append(
-        free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval-sandbox")
-    )
+    if config.eval_execution == "fly":
+        # A local Cursor login proves nothing on Fly, where Cursor cannot run.
+        cursor_roles = sorted(
+            role for role, profile in profiles.items() if profile.split(":", 1)[0] == "cursor"
+        )
+        for role in cursor_roles:
+            diagnostics.append(
+                Diagnostic(
+                    "Fly role compatibility",
+                    False,
+                    f"{role}: Cursor is unavailable on Fly",
+                    f"Select a codex or claude profile for the {role} default.",
+                    group="eval-fly",
+                )
+            )
+        profiles = {role: p for role, p in profiles.items() if role not in cursor_roles}
+    diagnostics.extend(model_authentication(profiles, group="eval"))
+    diagnostics.append(free_space(config, floor_gib=config.limits.minimum_free_gib, group="eval"))
     diagnostics.append(_resolved_path_diagnostic())
     diagnostics.append(_launch_agent_path_diagnostic(config, shared=shared))
     if shared is not None and include_fix:
         diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
+    if shared is not None and config.eval_execution == "fly":
+        from agent_factory.fly.backend import FlyMachineBackend
+
+        diagnostics.extend(FlyMachineBackend().readiness(config, shared))
     if shared is not None and config.credentials.github_app_key.is_file():
         diagnostics.append(_github_access(shared, config.credentials.github_app_key))
     else:
@@ -147,7 +177,7 @@ def doctor(
 
 
 def model_authentication(
-    profiles: Mapping[str, str], *, group: DiagnosticGroup = "eval-sandbox"
+    profiles: Mapping[str, str], *, group: DiagnosticGroup = "eval"
 ) -> list[Diagnostic]:
     try:
         commands = AndSceneAdapter.authentication_commands(profiles)
@@ -219,6 +249,36 @@ def status(
     for key, saved in sorted(store.get_settings_by_prefix("runtime", "readiness:").items()):
         if saved.get("reason"):
             lines.append(f"{key}: {saved['reason']}")
+    for key in ("fly:unknown", "fly:cleanup-failed"):
+        saved = store.get_setting("runtime", key)
+        saved_values: Mapping[str, object] = (
+            cast(Mapping[str, object], saved)
+            if isinstance(saved, Mapping)
+            else cast(Mapping[str, object], {})
+        )
+        raw_machines: object = saved_values.get("machines", [])
+        if not isinstance(raw_machines, list):
+            lines.append(f"blocking condition: malformed {key} state")
+        machines: list[object] = (
+            cast(list[object], raw_machines) if isinstance(raw_machines, list) else []
+        )
+        for machine in machines:
+            if not isinstance(machine, Mapping):
+                lines.append(f"blocking condition: malformed {key} machine state")
+                continue
+            values = cast(Mapping[str, object], machine)
+            remedy = values.get("remedy")
+            lines.append(
+                f"blocking condition: Machine {values.get('machine_id', 'unknown')}: "
+                f"{values.get('reason', key)}"
+                + (f"; remedy: {remedy}" if isinstance(remedy, str) else "")
+            )
+    mismatch = store.get_setting("runtime", "fly:mismatch")
+    if isinstance(mismatch, Mapping):
+        lines.append(
+            f"blocking condition: Machine {mismatch.get('machine_id', 'unknown')} mismatch; "
+            f"{mismatch.get('remedy', 'verify and destroy it if unsafe')}"
+        )
     lines.extend(_quota_hold_lines(store, config))
     for claim in claims:
         run = active_by_claim.get(claim.id)
@@ -291,14 +351,14 @@ def _harness_branch_diagnostic(shared: SharedConfig, config: LocalConfig) -> Dia
             False,
             f"harness branch {shared.eval.harness_ref} could not be resolved locally: {error}",
             "Fetch the configured agent_evals repository, then rerun doctor.",
-            group="eval-sandbox",
+            group="eval",
         )
     return Diagnostic(
         "shared configuration",
         True,
         f"harness branch {shared.eval.harness_ref} → {sha}",
         "No action required.",
-        group="eval-sandbox",
+        group="eval",
     )
 
 
@@ -360,7 +420,7 @@ def _private_file(name: str, path: Path) -> Diagnostic:
     return Diagnostic(name, True, f"private file is readable: {path}", "No action required.")
 
 
-def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
+def _repository_checks(config: LocalConfig, *, include_sandbox: bool = True) -> list[Diagnostic]:
     """Runner and Skills are shared (both kinds clone them); evals is eval-only."""
     shared_checks: list[tuple[str, Path, str]] = [
         ("Agent Runner repository", config.repositories.agent_runner, "sandbox launcher"),
@@ -372,7 +432,7 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
     result: list[Diagnostic] = []
     grouped: tuple[tuple[list[tuple[str, Path, str]], DiagnosticGroup], ...] = (
         (shared_checks, "shared"),
-        (eval_checks, "eval-sandbox"),
+        (eval_checks, "eval"),
     )
     for checks, group in grouped:
         for name, path, purpose in checks:
@@ -391,19 +451,21 @@ def _repository_checks(config: LocalConfig) -> list[Diagnostic]:
                     group=group,
                 )
             )
-    runner = config.repositories.agent_runner / "scripts" / "sandbox-run.sh"
-    eval_entry = config.repositories.agent_evals / "evals/agent-runner/and-scene/run.sh"
-    result.append(
-        Diagnostic(
-            "selected suite entry point and launcher",
-            runner.is_file() and eval_entry.is_file(),
-            "selected and-scene entry point and Runner launcher are present"
-            if runner.is_file() and eval_entry.is_file()
-            else "selected suite entry point or Runner launcher is unavailable",
-            "Install the pinned suite and Runner revisions with their required launcher support.",
-            group="eval-sandbox",
+    if include_sandbox:
+        runner = config.repositories.agent_runner / "scripts" / "sandbox-run.sh"
+        eval_entry = config.repositories.agent_evals / "evals/agent-runner/and-scene/run.sh"
+        launcher_action = "Install the pinned suite and Runner revisions with launcher support."
+        result.append(
+            Diagnostic(
+                "selected suite entry point and launcher",
+                runner.is_file() and eval_entry.is_file(),
+                "selected and-scene entry point and Runner launcher are present"
+                if runner.is_file() and eval_entry.is_file()
+                else "selected suite entry point or Runner launcher is unavailable",
+                launcher_action,
+                group="eval-sandbox",
+            )
         )
-    )
     return result
 
 
@@ -639,7 +701,7 @@ def _suite_environment(path: Path) -> Diagnostic:
             False,
             f"token environment file is unavailable: {path}",
             "Create the separately managed suite environment file; do not put the App key in it.",
-            group="eval-sandbox",
+            group="eval",
         )
     try:
         content = path.read_text(encoding="utf-8")
@@ -649,7 +711,7 @@ def _suite_environment(path: Path) -> Diagnostic:
             False,
             f"token environment file is unreadable: {error}",
             "Fix file permissions, path, or UTF-8 content, then rerun doctor.",
-            group="eval-sandbox",
+            group="eval",
         )
     if not content.strip():
         return Diagnostic(
@@ -657,14 +719,14 @@ def _suite_environment(path: Path) -> Diagnostic:
             False,
             "token environment file is empty",
             "Add suite credentials.",
-            group="eval-sandbox",
+            group="eval",
         )
     return Diagnostic(
         "suite candidate credentials",
         True,
         f"environment file is present: {path}",
         "No action required.",
-        group="eval-sandbox",
+        group="eval",
     )
 
 
@@ -992,6 +1054,14 @@ def _progress_lines(run: Run) -> list[str]:
         values.append(f"attempt: {run.attempt_number + 1} ({run.reason})")
     if run.progress:
         values.append(f"progress: {run.progress}")
+        machine = run.progress.get("machine")
+        if isinstance(machine, Mapping):
+            values_map = cast(Mapping[str, object], machine)
+            values.append(
+                f"Machine: {values_map.get('id', 'unknown')}, "
+                f"state: {values_map.get('state', 'unknown')}, "
+                f"deadline: {values_map.get('deadline_epoch', 'unknown')}"
+            )
     return values
 
 
@@ -1007,6 +1077,14 @@ def _hold_lines(store: ClaimStore, claim: Claim, config: LocalConfig | None) -> 
         lines.append(
             f"quota hold: {until if isinstance(until, str) else 'operator action required'}"
         )
+    # Records are keyed by run so a claim's repetitions never overwrite each other;
+    # a claim's stopped Machines are found by the claim id each record carries.
+    for machine in store.get_settings_by_prefix("runtime", "fly:machine:").values():
+        if machine.get("claim_id") == claim.id and machine.get("decision") == "stop":
+            lines.append(
+                f"Machine: {machine.get('machine_id', 'unknown')} stopped (quota hold), "
+                f"deadline {machine.get('deadline_epoch', 'unknown')}"
+            )
     if claim.lifecycle == "waiting" and readiness is None and quota is None:
         lines.append("blocking condition: waiting; inspect the latest controller report")
     if config is not None and store.is_paused():

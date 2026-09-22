@@ -2,6 +2,8 @@
 
 The Codagent example uses the existing Codagent Factory App, Project #1, native `Eval` issue type, and IDs in `config/codagent.toml`. The App key remains outside Git; local keys must be owner-readable only. Repository Actions use `FACTORY_APP_PRIVATE_KEY` plus `FACTORY_APP_ID` / `FACTORY_APP_INSTALLATION_ID` variables.
 
+The App commits each finished eval repetition's curated results to `eval.results_repository` on `eval.results_branch` (Codagent: `Codagent-AI/agent-evals` `main`), so its installation needs **Contents: write** on that repository and the branch must accept the App's pushes. Without it, the factory posts a "results could not be saved" note on the eval issue and retries every tick.
+
 Create labels idempotently in each configured source repository before enabling callers:
 
 ```sh
