@@ -58,6 +58,7 @@ results_repository = "Codagent-AI/agent-evals"
 results_branch = "main"
 
 [eval.defaults]
+agent_runner_ref = "dev"
 lead = "claude:opus:medium"
 implementor = "codex:gpt-5.6-luna:medium"
 tester = "codex:gpt-5.6-luna:medium"

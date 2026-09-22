@@ -81,6 +81,9 @@ if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
             "workflows/core/implement-change-v1.0.yaml": "# fixture",
         },
     )
+    # The shared config may pin eval defaults to a non-main runner branch.
+    _git(tmp_path / "runner", "push", "--quiet", "origin", "HEAD:refs/heads/dev")
+    _git(tmp_path / "runner", "fetch", "--quiet", "origin")
     _repo(tmp_path / "skills", {"README.md": "fixture"})
     text = Path("config/codagent.toml").read_text()
     (tmp_path / "shared.toml").write_text(text)
