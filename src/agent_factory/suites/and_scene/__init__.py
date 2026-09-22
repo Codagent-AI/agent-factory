@@ -476,9 +476,15 @@ class AndSceneAdapter:
     ) -> str | None:
         if result.get("evaluation_status") != "pending-human-review":
             return None
-        command = shlex.join(
-            (str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve()))
-        )
+        arguments = [str(review_script.resolve()), "--run-dir", str(artifact_dir.resolve())]
+        # The factory saves results itself, and the suite's own push cannot succeed
+        # from the pinned detached worktree. Pins older than the option reject it.
+        try:
+            if "--no-publish" in review_script.read_text(encoding="utf-8"):
+                arguments.append("--no-publish")
+        except OSError:
+            pass
+        command = shlex.join(arguments)
         return (
             f"Optional human review is available on {self._mac_name} while this item remains "
             "in Review. The automated results are saved to the eval repository without it; "

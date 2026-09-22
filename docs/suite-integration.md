@@ -64,8 +64,12 @@ When a repetition is `pending-human-review`, the Factory report includes an
 absolute, shell-quoted command of this form:
 
 ```sh
-/absolute/path/to/human-review.sh --run-dir '/absolute/path/to/artifacts/run id'
+/absolute/path/to/human-review.sh --run-dir '/absolute/path/to/artifacts/run id' --no-publish
 ```
+
+`--no-publish` stops the suite from committing and pushing from the pinned,
+detached worktree, since Factory saves the results itself. It is added only when
+the pinned `human-review.sh` supports it.
 
 Run it on the Mac holding the files. The command is valid while the item remains
 in Review; Factory never performs the human rating. Move the item to Done

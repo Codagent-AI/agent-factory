@@ -466,3 +466,27 @@ def test_failure_quota_uses_current_structured_result_not_retained_attempt_logs(
         AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(tmp_path, result)
         is None
     )
+
+
+def test_review_handoff_opts_out_of_suite_publication_only_when_the_pinned_script_supports_it(
+    tmp_path: Path,
+) -> None:
+    # The factory saves results itself; the suite's own push cannot succeed from
+    # the pinned detached worktree. Older pins reject the unknown option.
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    artifact = tmp_path / "run"
+    artifact.mkdir()
+    result: dict[str, object] = {"evaluation_status": "pending-human-review"}
+    adapter = AndSceneAdapter(environment_file=tmp_path / "env", mac_name="Factory Mac")
+    review_script = tmp_path / "human-review.sh"
+
+    review_script.write_text("#!/bin/sh\n    --no-publish)\n", encoding="utf-8")
+    handoff = adapter.review_handoff(result, review_script, artifact)
+    assert handoff is not None
+    assert handoff.split("Run: ", 1)[1].splitlines()[0].endswith(" --no-publish")
+
+    review_script.write_text("#!/bin/sh\n    --run-dir)\n", encoding="utf-8")
+    handoff = adapter.review_handoff(result, review_script, artifact)
+    assert handoff is not None
+    assert "--no-publish" not in handoff
