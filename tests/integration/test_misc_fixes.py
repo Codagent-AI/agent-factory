@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import io
+import json
 import os
 import plistlib
 import subprocess
@@ -37,17 +37,49 @@ def test_fly_claude_token_uses_suite_export_syntax(tmp_path: Path) -> None:
     run.assert_not_called()
 
 
+def test_fly_empty_quoted_claude_token_uses_file(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import environment_text, resolve_claude_login
+
+    env = tmp_path / "suite.env"
+    env.write_text('CLAUDE_CODE_OAUTH_TOKEN=""\n')
+    credentials = tmp_path / ".claude/.credentials.json"
+    credentials.parent.mkdir()
+    credentials.write_text("credential")
+    assert resolve_claude_login([env], home=tmp_path, platform="linux").kind == "file"
+    assert (
+        resolve_claude_login(
+            [], home=tmp_path, platform="linux", env_text=environment_text([env], [])
+        ).kind
+        == "file"
+    )
+
+
 def test_fly_claude_keychain_login_is_resolved_without_a_host_file(tmp_path: Path) -> None:
     from agent_factory.fly.transport import resolve_claude_login
 
     with patch(
-        "subprocess.run", return_value=subprocess.CompletedProcess([], 0, b'{"claudeAiOauth": {}}')
+        "subprocess.run",
+        return_value=subprocess.CompletedProcess(
+            [],
+            0,
+            b'{"claudeAiOauth":{"accessToken":"access","refreshToken":"refresh","expiresAt":123}}',
+        ),
     ) as run:
         login = resolve_claude_login([], user="service", home=tmp_path, platform="darwin")
     assert login.kind == "keychain"
-    assert login.data == b'{"claudeAiOauth": {}}'
+    assert b'"accessToken":"access"' in login.data
     assert "claudeAiOauth" not in repr(login)
     assert run.call_args.args[0][-3:] == ["-a", "service", "-w"]
+
+
+def test_fly_empty_keychain_oauth_is_unavailable(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import resolve_claude_login
+
+    with patch(
+        "subprocess.run", return_value=subprocess.CompletedProcess([], 0, b'{"claudeAiOauth": {}}')
+    ):
+        login = resolve_claude_login([], user="service", home=tmp_path, platform="darwin")
+    assert login.kind == "unavailable"
 
 
 def test_fly_claude_keychain_timeout_does_not_fall_back(tmp_path: Path) -> None:
@@ -297,12 +329,16 @@ def test_fly_claim_image_build_records_digest_and_refreshes_cli_layer(tmp_path: 
     output = b"pushing registry.fly.io/app:claim-abcdef123456@sha256:" + b"a" * 64 + b"\n"
 
     class Builder:
-        stdout = io.BytesIO(output)
+        def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
+            stdout.write(output)  # type: ignore[attr-defined]
 
-        def wait(self) -> int:
+        def wait(self, timeout: float | None = None) -> int:
             return 0
 
-    with patch("subprocess.Popen", return_value=Builder()) as run:
+        def poll(self) -> int:
+            return 0
+
+    with patch("subprocess.Popen", side_effect=Builder) as run:
         image = build_claim_image(
             "app",
             "registry.fly.io/app",
@@ -319,6 +355,139 @@ def test_fly_claim_image_build_records_digest_and_refreshes_cli_layer(tmp_path: 
     assert "secret" not in repr(argv)
     assert "sha256:" in (factory / "image-build.json").read_text()
     assert (factory / "image-build.log").read_bytes() == output
+
+
+def test_fly_claim_image_ignores_unrelated_digest_after_pushed_image(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    output = (
+        b"pushing registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"a" * 64
+        + b"\nlayer sha256:"
+        + b"b" * 64
+        + b"\n"
+    )
+
+    class Builder:
+        def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
+            stdout.write(output)  # type: ignore[attr-defined]
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    with patch("subprocess.Popen", side_effect=Builder):
+        image = build_claim_image(
+            "app", "registry.fly.io/app", "abcdef123456789", runner, factory, {}
+        )
+    assert image == "registry.fly.io/app@sha256:" + "a" * 64
+
+
+def test_fly_claim_image_uses_registry_when_output_has_no_pushed_digest(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+
+    class Builder:
+        def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
+            stdout.write(b"layer sha256:" + b"b" * 64 + b"\n")  # type: ignore[attr-defined]
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    with (
+        patch("subprocess.Popen", side_effect=Builder),
+        patch.object(
+            FlyMachinesClient, "resolve_manifest", return_value="sha256:" + "a" * 64
+        ) as lookup,
+    ):
+        client = FlyMachinesClient("app", tmp_path / "token")
+        image = build_claim_image(
+            "app", "registry.fly.io/app", "abcdef123456789", runner, factory, {}, client
+        )
+    assert image == "registry.fly.io/app@sha256:" + "a" * 64
+    lookup.assert_called_once_with("registry.fly.io/app:claim-abcdef123456")
+
+
+def test_fly_claim_image_opens_log_before_process(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    (factory / "image-build.log").mkdir()
+    with patch("subprocess.Popen") as run, pytest.raises(OSError):
+        build_claim_image("app", "registry.fly.io/app", "abcdef123456789", runner, factory, {})
+    run.assert_not_called()
+
+
+def test_fly_claim_image_timeout_terminates_process(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import FlyTransportError, build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+
+    class Builder:
+        terminated = False
+
+        def wait(self, timeout: float | None = None) -> int:
+            if not self.terminated:
+                raise subprocess.TimeoutExpired("flyctl", timeout or 1)
+            return -15
+
+        def poll(self) -> int | None:
+            return -15 if self.terminated else None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+    builder = Builder()
+    with (
+        patch("subprocess.Popen", return_value=builder),
+        pytest.raises(FlyTransportError, match="timed out"),
+    ):
+        build_claim_image("app", "registry.fly.io/app", "abcdef123456789", runner, factory, {})
+    assert builder.terminated
+
+
+def test_fly_claim_build_reuses_durable_record_without_manifest_digest(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import Lifecycle
+
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    (factory / "image-build.json").write_text(
+        json.dumps(
+            {
+                "repository": "registry.fly.io/app",
+                "tag": "claim-abcdef123456",
+                "digest": "sha256:" + "a" * 64,
+            }
+        )
+    )
+    manifest = {
+        "claim_id": "abcdef123456789",
+        "image_repository": "registry.fly.io/app",
+        "fly": {"app": "app", "token_file": str(tmp_path / "token")},
+    }
+    lifecycle = Lifecycle(manifest, factory)
+    with patch("agent_factory.fly.transport.build_claim_image") as build:
+        assert lifecycle._machine_image() == "registry.fly.io/app@sha256:" + "a" * 64  # pyright: ignore[reportPrivateUsage]
+    build.assert_not_called()
 
 
 def test_fly_claim_build_reuses_pinned_digest(tmp_path: Path) -> None:

@@ -34,6 +34,8 @@ EXIT_MISMATCH = 73
 OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
+_BUILD_TIMEOUT_SECONDS = 1800
+_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
 _CLAUDE_FILES = (
@@ -67,6 +69,32 @@ class ClaudeLogin:
     reason: str = ""
 
 
+def _claude_token_value(value: str) -> str:
+    """Decode optional quotes on the one Docker env value used for readiness."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _valid_claude_oauth(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    document = cast(Mapping[str, object], value)
+    oauth: object = document.get("claudeAiOauth")
+    if not isinstance(oauth, Mapping):
+        return False
+    fields = cast(Mapping[str, object], oauth)
+    return (
+        all(
+            isinstance(fields.get(key), str) and bool(fields[key])
+            for key in ("accessToken", "refreshToken")
+        )
+        and isinstance(fields.get("expiresAt"), int)
+        and not isinstance(fields["expiresAt"], bool)
+    )
+
+
 def service_user() -> str:
     return os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
 
@@ -86,7 +114,11 @@ def resolve_claude_login(
             if re.match(r"export\s", line):
                 line = line[6:].lstrip()
             name, separator, value = line.partition("=")
-            if separator and name.rstrip() == "CLAUDE_CODE_OAUTH_TOKEN" and value.strip():
+            if (
+                separator
+                and name.rstrip() == "CLAUDE_CODE_OAUTH_TOKEN"
+                and _claude_token_value(value)
+            ):
                 return ClaudeLogin("token")
     credentials = (home or Path.home()) / ".claude/.credentials.json"
     if (platform or sys.platform) == "darwin":
@@ -117,9 +149,7 @@ def resolve_claude_login(
                 value = json.loads(result.stdout)
             except (ValueError, UnicodeDecodeError):
                 value = None
-            if not isinstance(value, dict) or not isinstance(
-                cast(dict[str, object], value).get("claudeAiOauth"), dict
-            ):
+            if not _valid_claude_oauth(value):
                 return ClaudeLogin("unavailable", reason=f"{keychain} is invalid")
             return ClaudeLogin("keychain", data=result.stdout)
         if result.returncode != 44:
@@ -176,39 +206,52 @@ def build_claim_image(
         f"FACTORY_CLI_REFRESH={claim_id}",
         ".",
     ]
-    tail = bytearray()
     with tempfile.TemporaryDirectory() as scratch:
         config = Path(scratch) / "fly.toml"
         config.write_text(f'app = "{app}"\nprimary_region = "{region}"\n', encoding="utf-8")
         command[2:2] = ["-c", str(config)]
-        try:
-            process = subprocess.Popen(
-                command,
-                cwd=runner,
-                env=dict(environment),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-            )
-        except OSError as error:
-            raise FlyTransportError(
-                f"Fly image build could not start: {type(error).__name__}"
-            ) from error
-        if process.stdout is None:
-            raise FlyTransportError("Fly image build has no output stream")
-        with (factory / "image-build.log").open("wb") as log:
-            while chunk := process.stdout.read(8192):
-                log.write(chunk)
-                log.flush()
-                tail.extend(chunk)
-                if len(tail) > 20000:
-                    del tail[:-20000]
-        code = process.wait()
+        # The child writes directly to the open artifact, so a silent remote
+        # builder cannot strand us in a blocking pipe read.
+        with (factory / "image-build.log").open("wb+") as log:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=runner,
+                    env=dict(environment),
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
+            except OSError as error:
+                raise FlyTransportError(
+                    f"Fly image build could not start: {type(error).__name__}"
+                ) from error
+            try:
+                try:
+                    code = process.wait(timeout=_BUILD_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as error:
+                    log.flush()
+                    log.seek(max(0, log.seek(0, os.SEEK_END) - 2000))
+                    diagnostic = log.read().decode(errors="replace")
+                    raise FlyTransportError(f"Fly image build timed out: {diagnostic}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            log.flush()
+            log.seek(max(0, log.seek(0, os.SEEK_END) - 20000))
+            tail = log.read()
     if code:
         diagnostic = bytes(tail[-2000:]).decode(errors="replace")
         raise FlyTransportError(f"Fly image build failed: {diagnostic}")
-    matches = list(re.finditer(rb"sha256:[0-9a-fA-F]{64}", tail))
-    digest = matches[-1].group().decode() if matches else ""
+    pushed = re.search(
+        re.escape(image.encode()) + rb"@(sha256:[0-9a-fA-F]{64})(?![0-9a-fA-F])", tail
+    )
+    digest = pushed.group(1).decode() if pushed else ""
     if not digest and client is not None:
         digest = client.resolve_manifest(image)
     if not digest:
@@ -621,9 +664,21 @@ class Lifecycle:
         digest = self.manifest.get("image_digest")
         if isinstance(digest, str) and digest.startswith("sha256:"):
             return f"{repository}@{digest}"
+        self._stage = "build"
+        built = read_record(self.factory / "image-build.json")
+        if built:
+            claim_id = string_field(self.manifest, "claim_id")
+            recorded_digest = built.get("digest")
+            if (
+                built.get("repository") != repository
+                or built.get("tag") != f"claim-{claim_id[:12]}"
+                or not isinstance(recorded_digest, str)
+                or _DIGEST_PATTERN.fullmatch(recorded_digest) is None
+            ):
+                raise FlyTransportError("Fly image build record is invalid for this claim")
+            return f"{repository}@{recorded_digest}"
         worktrees = mapping_field(self.manifest, "worktrees")
         runner = Path(string_field(worktrees, "runner"))
-        self._stage = "build"
         return build_claim_image(
             string_field(self.fly, "app"),
             repository,
@@ -1011,6 +1066,8 @@ def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 raise ValueError(f"env file {path} has an invalid entry name")
             if separator:
+                if name == "CLAUDE_CODE_OAUTH_TOKEN":
+                    value = _claude_token_value(value)
                 lines.append(f"{name}={shlex.quote(value)}")
             elif name in os.environ:
                 lines.append(f"{name}={shlex.quote(os.environ[name])}")

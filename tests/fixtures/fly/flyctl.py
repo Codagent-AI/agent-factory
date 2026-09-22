@@ -53,7 +53,12 @@ if os.path.exists(ROOT + "/.unreachable"):
     sys.stderr.write("no route to machine\n")
     sys.exit(1)
 if args[:1] == ["deploy"]:
-    sys.stdout.write("pushed image digest sha256:" + "0" * 64 + "\n")
+    app = option(args, "-a")
+    claim = option(args, "--build-arg").split("=", 1)[1]
+    sys.stdout.write(
+        "pushed image registry.fly.io/" + app + ":claim-" + claim[:12]
+        + "@sha256:" + "0" * 64 + "\n"
+    )
     sys.exit(0)
 if args[:2] == ["machine", "list"]:
     sys.exit(0)
