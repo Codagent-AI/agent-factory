@@ -327,6 +327,8 @@ class FlyMachineBackend:
             return []
         records = _settings_by_prefix(store, "fly:machine:")
         failures = _cleanup_failures(store)
+        # A listing that succeeds resolves any earlier failed listing.
+        failures.pop("list", None)
         self._refresh_stopped_deadlines(store, client, records, failures)
         known_ids = {
             value.get("machine_id")
