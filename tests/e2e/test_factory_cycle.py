@@ -125,6 +125,10 @@ suite_environment = "{tmp_path / "suite.env"}"
             }
         )
     fields.append({"id": shared.project.refs.id, "dataType": "TEXT"})
+    if shared.project.priority_id:
+        fields.append(
+            {"id": shared.project.priority_id, "dataType": "SINGLE_SELECT", "name": "Priority"}
+        )
     body = (
         "```eval\nrepetitions=1\n"
         + "".join(f'{role}="codex:test:high"\n' for role in ("lead", "implementor", "tester"))
@@ -478,10 +482,10 @@ def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_pat
     interpreter.symlink_to(sys.executable)
     _cli(config, env, "tick")
     retry = store.nonterminal_runs()[0]
-    assert retry.reason == "recovery" and retry.evidence_path == first.evidence_path
+    assert retry.reason == "initial" and retry.unit_key == first.unit_key
     assert "--resume" not in retry.plan["argv"]  # pyright: ignore[reportOperatorIssue]
     _finish(store, Path(retry.evidence_path))
-    assert store.recovery_attempts(claim.id, retry.unit_key) == 1
+    assert store.recovery_attempts(claim.id, retry.unit_key) == 0
     store.close()
 
 
@@ -823,5 +827,29 @@ def test_eval_admission_is_held_when_docker_memory_is_scarce(tmp_path: Path) -> 
         reason_text = str(eval_reason.get("reason", ""))
         assert "memory" in reason_text.lower() or "headroom" in reason_text.lower()
         assert not store.nonterminal_runs()
+    finally:
+        store.close()
+
+
+def test_second_worktree_planning_failure_keeps_the_claim_settled(tmp_path: Path) -> None:
+    config, _board, env, _shared = _setup(tmp_path)
+    before_cli = """
+from agent_factory.suites.and_scene import WorktreeError
+def fail_plan(*args, **kwargs):
+    raise WorktreeError('planning failed before launch')
+from agent_factory.work_kinds.eval import handler as eval_handler
+eval_handler.plan_attempt = fail_plan
+"""
+    # The second consecutive pre-suite failure settles the claim within its own tick.
+    for _ in range(2):
+        _cli(config, env, "tick", before_cli=before_cli)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        claim = store.all_claims()[0]
+        attempts = store.runs_for_claim(claim.id)
+        assert [run.reason for run in attempts] == ["initial", "initial"]
+        assert all(run.result["failure_stage"] == "pre-suite" for run in attempts)
+        assert claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "infra-error"
     finally:
         store.close()

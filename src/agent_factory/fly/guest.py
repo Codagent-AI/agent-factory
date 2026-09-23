@@ -154,6 +154,20 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "-o /workspace/bin/agent-runner ./cmd/agent-runner",
             "cd /workspace",
             "set -a; . /run/factory/env; set +a",
+            'python3 - "$(dirname "$0")/versions.json" <<\'PY\'',
+            "import json, subprocess, sys",
+            "def version(name):",
+            "    try:",
+            '        result = subprocess.run([name, "--version"], '
+            "capture_output=True, text=True, timeout=10, check=False)",
+            '        return (result.stdout.strip() or "unavailable") '
+            'if result.returncode == 0 else "unavailable"',
+            "    except (OSError, subprocess.TimeoutExpired):",
+            '        return "unavailable"',
+            'with open(sys.argv[1], "w") as output:',
+            '    json.dump({name: version(name) for name in ("claude", "codex")}, output)',
+            "PY",
+            'touch "$(dirname "$0")/setup-complete"',
             suite_script,
             "",
         )

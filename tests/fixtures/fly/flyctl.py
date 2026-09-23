@@ -52,6 +52,14 @@ with open(LOG, "a", encoding="utf-8") as stream:
 if os.path.exists(ROOT + "/.unreachable"):
     sys.stderr.write("no route to machine\n")
     sys.exit(1)
+if args[:1] == ["deploy"]:
+    app = option(args, "-a")
+    claim = option(args, "--build-arg").split("=", 1)[1]
+    sys.stdout.write(
+        "#14 pushing manifest for registry.fly.io/" + app + ":claim-" + claim[:12]
+        + "@sha256:" + "0" * 64 + " 0.4s done\n"
+    )
+    sys.exit(0)
 if args[:2] == ["machine", "list"]:
     sys.exit(0)
 if args[:2] == ["ssh", "console"]:

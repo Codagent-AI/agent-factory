@@ -8,16 +8,18 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import re
 import shlex
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -32,6 +34,8 @@ EXIT_MISMATCH = 73
 OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
+_BUILD_TIMEOUT_SECONDS = 1800
+_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
 _CLAUDE_FILES = (
@@ -55,6 +59,215 @@ class OwnershipMismatchError(RuntimeError):
 
 class CollectionError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ClaudeLogin:
+    kind: str
+    data: bytes = field(default=b"", repr=False)
+    path: Path | None = None
+    reason: str = ""
+
+
+def _claude_token_value(value: str) -> str:
+    """Decode optional quotes on the one Docker env value used for readiness."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _valid_claude_oauth(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    document = cast(Mapping[str, object], value)
+    oauth: object = document.get("claudeAiOauth")
+    if not isinstance(oauth, Mapping):
+        return False
+    fields = cast(Mapping[str, object], oauth)
+    return (
+        all(
+            isinstance(fields.get(key), str) and bool(fields[key])
+            for key in ("accessToken", "refreshToken")
+        )
+        and isinstance(fields.get("expiresAt"), int)
+        and not isinstance(fields["expiresAt"], bool)
+    )
+
+
+def service_user() -> str:
+    return os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+
+
+def resolve_claude_login(
+    env_files: Sequence[Path],
+    *,
+    user: str | None = None,
+    home: Path | None = None,
+    platform: str | None = None,
+    env_text: str = "",
+) -> ClaudeLogin:
+    """Resolve only the credential source; never expose the token or login in diagnostics."""
+    for source in [env_text, *(path.read_text(encoding="utf-8") for path in env_files)]:
+        for raw in source.splitlines():
+            line = raw.lstrip()
+            if re.match(r"export\s", line):
+                line = line[6:].lstrip()
+            name, separator, value = line.partition("=")
+            if (
+                separator
+                and name.rstrip() == "CLAUDE_CODE_OAUTH_TOKEN"
+                and _claude_token_value(value)
+            ):
+                return ClaudeLogin("token")
+    credentials = (home or Path.home()) / ".claude/.credentials.json"
+    if (platform or sys.platform) == "darwin":
+        account = user or service_user()
+        keychain = f"Claude Code-credentials Keychain item for account {account}"
+        try:
+            result = subprocess.run(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-s",
+                    "Claude Code-credentials",
+                    "-a",
+                    account,
+                    "-w",
+                ],
+                capture_output=True,
+                check=False,
+                timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired:
+            return ClaudeLogin("unavailable", reason=f"{keychain} read timed out")
+        except OSError:
+            return ClaudeLogin("unavailable", reason=f"{keychain} could not be read")
+        if result.returncode == 0:
+            try:
+                value = json.loads(result.stdout)
+            except (ValueError, UnicodeDecodeError):
+                value = None
+            if not _valid_claude_oauth(value):
+                return ClaudeLogin("unavailable", reason=f"{keychain} is invalid")
+            return ClaudeLogin("keychain", data=result.stdout)
+        if result.returncode != 44:
+            return ClaudeLogin("unavailable", reason=f"{keychain} read failed")
+    if credentials.is_file() and os.access(credentials, os.R_OK):
+        return ClaudeLogin("file", path=credentials)
+    return ClaudeLogin("unavailable", reason="Claude credential file is missing or unreadable")
+
+
+def image_digest(machine: Mapping[str, object]) -> str:
+    value = machine.get("image_ref")
+    if isinstance(value, Mapping):
+        value = cast(Mapping[str, object], value).get("digest")
+    if isinstance(value, str):
+        match = re.search(r"sha256:[0-9a-fA-F]+", value)
+        if match:
+            return match.group()
+    return "unavailable"
+
+
+def image_repository(image: str) -> str:
+    if "@" in image:
+        return image.split("@", 1)[0]
+    suffix = image.rsplit("/", 1)[-1]
+    return image.rsplit(":", 1)[0] if ":" in suffix else image
+
+
+def build_claim_image(
+    app: str,
+    repository: str,
+    claim_id: str,
+    runner: Path,
+    factory: Path,
+    environment: Mapping[str, str],
+    client: FlyMachinesClient | None = None,
+    region: str = "ewr",
+) -> str:
+    """Build once in the detached launcher and persist its immutable digest."""
+    tag = f"claim-{claim_id[:12]}"
+    image = f"{repository}:{tag}"
+    command = [
+        "flyctl",
+        "deploy",
+        "--build-only",
+        "--push",
+        "--remote-only",
+        "-a",
+        app,
+        "--dockerfile",
+        "docker/dev/Dockerfile",
+        "--image-label",
+        tag,
+        "--build-arg",
+        f"FACTORY_CLI_REFRESH={claim_id}",
+        ".",
+    ]
+    with tempfile.TemporaryDirectory() as scratch:
+        config = Path(scratch) / "fly.toml"
+        config.write_text(f'app = "{app}"\nprimary_region = "{region}"\n', encoding="utf-8")
+        command[2:2] = ["-c", str(config)]
+        # The child writes directly to the open artifact, so a silent remote
+        # builder cannot strand us in a blocking pipe read.
+        with (factory / "image-build.log").open("wb+") as log:
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=runner,
+                    env=dict(environment),
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL,
+                )
+            except OSError as error:
+                raise FlyTransportError(
+                    f"Fly image build could not start: {type(error).__name__}"
+                ) from error
+            try:
+                try:
+                    code = process.wait(timeout=_BUILD_TIMEOUT_SECONDS)
+                except subprocess.TimeoutExpired as error:
+                    log.flush()
+                    log.seek(max(0, log.seek(0, os.SEEK_END) - 2000))
+                    diagnostic = log.read().decode(errors="replace")
+                    raise FlyTransportError(f"Fly image build timed out: {diagnostic}") from error
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+            log.flush()
+            log.seek(max(0, log.seek(0, os.SEEK_END) - 20000))
+            tail = log.read()
+    if code:
+        diagnostic = bytes(tail[-2000:]).decode(errors="replace")
+        raise FlyTransportError(f"Fly image build failed: {diagnostic}")
+    # BuildKit's progress reports the pushed manifest as
+    # "#N pushing manifest for <image>@sha256:<digest> <time> done"; anything else
+    # (cached or exported layers, other tags) is not this build's pushed image.
+    pushed = list(
+        re.finditer(
+            rb"(?m)^(?:#\d+[ \t]+)?pushing manifest for[ \t]+"
+            + re.escape(image.encode())
+            + rb"@(sha256:[0-9a-fA-F]{64})\b",
+            tail,
+        )
+    )
+    digest = pushed[-1].group(1).decode() if pushed else ""
+    if not digest and client is not None:
+        digest = client.resolve_manifest(image)
+    if not digest:
+        raise FlyTransportError("Fly image build returned no digest")
+    _write_record(
+        factory / "image-build.json", {"repository": repository, "tag": tag, "digest": digest}
+    )
+    return f"{repository}@{digest}"
 
 
 @dataclass(frozen=True)
@@ -100,6 +313,9 @@ class FlyTransport:
                 raise FlyTransportError(str(error)) from error
         return environment
 
+    def deploy_environment(self) -> dict[str, str]:
+        return self._environment()
+
     def _console(self, command: str) -> tuple[str, ...]:
         if not self.machine_id:
             raise FlyTransportError("Machine identity is unavailable")
@@ -133,6 +349,28 @@ class FlyTransport:
         if result.returncode:
             raise FlyTransportError(result.stderr.decode(errors="replace").strip() or "ssh failed")
         return result.stdout
+
+    def put_bytes(self, data: bytes, remote: str) -> None:
+        """Stream credential bytes into a private guest file without a host file."""
+        target = shlex.quote(remote)
+        command = (
+            f"umask 077; cat > {target}.tmp && chmod 0600 {target}.tmp && mv {target}.tmp {target}"
+        )
+        try:
+            result = subprocess.run(
+                (*self._console(command)[:-2], "--pty=false", *self._console(command)[-2:]),
+                input=data,
+                capture_output=True,
+                check=False,
+                timeout=120,
+                env=self._environment(),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise FlyTransportError(
+                f"ssh credential delivery failed: {type(error).__name__}"
+            ) from error
+        if result.returncode:
+            raise FlyTransportError("ssh credential delivery failed")
 
     def put_file(
         self, local: Path, remote: str, *, mode: str = "0600", prepare: bool = True
@@ -274,14 +512,39 @@ class Lifecycle:
             _log(self.factory, f"collection failed: {error}")
             return EXIT_COLLECTION_FAILED
         except (FlyApiError, FlyTransportError, OSError, ValueError) as error:
+            stage = getattr(self, "_stage", "credential")
+            if stage != "suite":
+                _write_record(
+                    self.factory / "launch-stage.json",
+                    {"failure_stage": "pre-suite", "stage": stage, "detail": str(error)[-2000:]},
+                )
             _log(self.factory, f"transport failure: {error}")
             return EXIT_TRANSPORT
 
     # -- claiming -----------------------------------------------------------
 
     def _run(self, request: JobRequest) -> int:
+        (self.factory / "launch-stage.json").unlink(missing_ok=True)
+        self._stage = "credential"
+        # Validate all local credential sources before creating a billable Machine.
+        self._resolved_credentials = self._credential_files(request)
+        self._claude_login = (
+            resolve_claude_login([], env_text=request.environment)
+            if request.claude_auth
+            else ClaudeLogin("token")
+        )
+        if self._claude_login.kind == "unavailable":
+            raise FlyTransportError(self._claude_login.reason)
+        if self._claude_login.kind == "file" and self._claude_login.path is not None:
+            self._resolved_credentials.append((self._claude_login.path, "claude/.credentials.json"))
+        elif self._claude_login.kind == "token" and request.claude_auth:
+            optional = Path.home() / ".claude/.credentials.json"
+            if optional.is_file():
+                self._resolved_credentials.append((optional, "claude/.credentials.json"))
+        self._stage = "machine"
         machine_id, deadline = self._claim()
         self.transport.machine_id = machine_id
+        self._stage = "delivery"
         job, running = self._next_job()
         if running:
             # A launcher for this same attempt died after starting the job.
@@ -295,9 +558,12 @@ class Lifecycle:
                     raise MachineLostError("the suite checkpoint is missing from the Machine")
             self._deliver(request, deadline, job)
         self._update_record({"job": job})
+        self._stage = "suite"
         return self._follow(request.artifact_dir, job)
 
     def _attach(self, artifact_dir: Path) -> int:
+        # Pre-suite until observation sees the job's setup-complete marker.
+        self._stage = "attach"
         record = read_record(self.record_path)
         machine_id = record.get("id")
         if not isinstance(machine_id, str):
@@ -353,8 +619,10 @@ class Lifecycle:
         deadline = self._fresh_deadline()
         run_id = string_field(self.manifest, "run_id")
         nonce = string_field(self.manifest, "nonce")
+        image = self._machine_image()
+        self._stage = "machine"
         machine = self.client.create_machine(
-            image=string_field(self.manifest, "image"),
+            image=image,
             cpu_kind=string_field(self.fly, "cpu_kind"),
             cpus=_integer(self.fly, "cpus"),
             memory_mb=_integer(self.fly, "memory_mb"),
@@ -397,6 +665,40 @@ class Lifecycle:
             }
         )
         return machine_id, deadline
+
+    def _machine_image(self) -> str:
+        repository = self.manifest.get("image_repository")
+        if not isinstance(repository, str):
+            # Existing manifests remain usable by launchers already in flight.
+            return string_field(self.manifest, "image")
+        digest = self.manifest.get("image_digest")
+        if isinstance(digest, str) and digest.startswith("sha256:"):
+            return f"{repository}@{digest}"
+        self._stage = "build"
+        built = read_record(self.factory / "image-build.json")
+        if built:
+            claim_id = string_field(self.manifest, "claim_id")
+            recorded_digest = built.get("digest")
+            if (
+                built.get("repository") != repository
+                or built.get("tag") != f"claim-{claim_id[:12]}"
+                or not isinstance(recorded_digest, str)
+                or _DIGEST_PATTERN.fullmatch(recorded_digest) is None
+            ):
+                raise FlyTransportError("Fly image build record is invalid for this claim")
+            return f"{repository}@{recorded_digest}"
+        worktrees = mapping_field(self.manifest, "worktrees")
+        runner = Path(string_field(worktrees, "runner"))
+        return build_claim_image(
+            string_field(self.fly, "app"),
+            repository,
+            string_field(self.manifest, "claim_id"),
+            runner,
+            self.factory,
+            self.transport.deploy_environment(),
+            self.client,
+            string_field(self.fly, "region"),
+        )
 
     def _ensure_started(
         self, machine_id: str, machine: Mapping[str, object], deadline: int, run_id: str
@@ -474,7 +776,7 @@ class Lifecycle:
 
     def _deliver(self, request: JobRequest, deadline: int, job: int) -> None:
         directory = f"/artifacts/.factory/job/{job}"
-        credentials = self._credential_files(request)
+        credentials = self._resolved_credentials
         # One ssh round trip prepares every target, so the uploads need none each.
         self.transport.command(
             "rm -rf /eval-input /host-home /run/factory/env && "
@@ -486,6 +788,8 @@ class Lifecycle:
             self.transport.put_directory(request.input_dir, "/eval-input")
         for path, target in credentials:
             self.transport.put_file(path, f"/host-home/{target}", prepare=False)
+        if self._claude_login.kind == "keychain":
+            self.transport.put_bytes(self._claude_login.data, "/host-home/claude/.credentials.json")
         with tempfile.TemporaryDirectory() as scratch:
             # Secret-bearing files are staged outside the artifact tree.
             environment = Path(scratch) / "env"
@@ -515,7 +819,7 @@ class Lifecycle:
         """Resolve the allowlist before anything is sent, so a gap fails early."""
         selected = [
             *(_CODEX_FILES if request.codex_auth else ()),
-            *(_CLAUDE_FILES if request.claude_auth else ()),
+            *((entry for entry in _CLAUDE_FILES if not entry[2]) if request.claude_auth else ()),
         ]
         files: list[tuple[Path, str]] = []
         for source, target, required in selected:
@@ -551,6 +855,7 @@ class Lifecycle:
                 raw = self.transport.command(
                     f"test -e {directory}/DONE && printf 1 || printf 0; printf '\\n'; "
                     "test -e /artifacts/run-state.json && printf 1 || printf 0; printf '\\n'; "
+                    f"test -e {directory}/setup-complete && printf 1 || printf 0; printf '\\n'; "
                     "find /artifacts -path /artifacts/.factory -prune -o -type f "
                     "-printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 1; printf '\\n'; "
                     f"printf '%s' '{_LOG_MARKER.decode().strip()}'; printf '\\n'; "
@@ -569,7 +874,9 @@ class Lifecycle:
             lines = head.decode(errors="replace").splitlines()
             done = bool(lines) and lines[0].strip() == "1"
             checkpoint = len(lines) > 1 and lines[1].strip() == "1"
-            latest = lines[2].strip() if len(lines) > 2 else ""
+            if len(lines) > 2 and lines[2].strip() == "1":
+                self._stage = "suite"
+            latest = lines[3].strip() if len(lines) > 3 else ""
             if log:
                 sys.stdout.buffer.write(log)
                 sys.stdout.buffer.flush()
@@ -606,6 +913,11 @@ class Lifecycle:
         placed = _place(staging, artifact_dir, declared)
         shutil.rmtree(staging, ignore_errors=True)
         (artifact_dir / "guest-exit-code").write_text(f"{value}\n", encoding="utf-8")
+        if not (artifact_dir / ".factory" / "job" / str(job) / "setup-complete").is_file():
+            _write_record(
+                self.factory / "launch-stage.json",
+                {"failure_stage": "pre-suite", "stage": "guest-setup"},
+            )
         _log(self.factory, f"collected job {job}: {placed} files, exit code {value}")
         return value
 
@@ -738,11 +1050,7 @@ def _write_record(path: Path, value: Mapping[str, object]) -> None:
 
 
 def _image(machine: Mapping[str, object]) -> object:
-    config = machine.get("config")
-    if not isinstance(config, Mapping):
-        return ""
-    values = cast(Mapping[str, object], config)
-    return machine.get("image_ref") or values.get("image_ref") or values.get("image", "")
+    return image_digest(machine)
 
 
 def _value(machine: Mapping[str, object], *keys: str) -> object:
@@ -771,6 +1079,8 @@ def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 raise ValueError(f"env file {path} has an invalid entry name")
             if separator:
+                if name == "CLAUDE_CODE_OAUTH_TOKEN":
+                    value = _claude_token_value(value)
                 lines.append(f"{name}={shlex.quote(value)}")
             elif name in os.environ:
                 lines.append(f"{name}={shlex.quote(os.environ[name])}")

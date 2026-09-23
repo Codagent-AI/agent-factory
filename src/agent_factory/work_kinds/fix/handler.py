@@ -70,6 +70,10 @@ class FixHandler:
 
     kind = "fix"
 
+    @staticmethod
+    def accepted_message() -> str:
+        return "Fix inputs accepted and frozen."
+
     def __init__(
         self,
         shared: SharedConfig,
@@ -429,6 +433,8 @@ class FixHandler:
         latest = unit_runs[-1]
         if latest.status in NONTERMINAL_RUN_STATUSES:
             return None, "initial"
+        if latest.result.get("failure_stage") == "pre-suite":
+            return "fix", latest.reason
         if _needs_recovery(latest) and latest.reason != "recovery":
             return "fix", "recovery"
         return None, "initial"

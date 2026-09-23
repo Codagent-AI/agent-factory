@@ -35,6 +35,9 @@ failed = "9c4eddb9"
 quota-deferred = "e446e882"
 infra-error = "e852ed91"
 
+[fields.priority]
+id = "PVTSSF_lADOEARcIs4Bi5pPzhjHbIg"
+
 [routing]
 eval_source = "Codagent-AI/agent-evals"
 general_sources = [

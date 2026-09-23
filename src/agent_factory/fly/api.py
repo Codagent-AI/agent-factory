@@ -274,12 +274,15 @@ class FlyMachinesClient:
         return _mapping(self._request(f"/v1/apps/{self.app}"))
 
     def resolve_manifest(self, image: str) -> str:
-        repository, tag = (
-            image.rsplit(":", 1) if ":" in image.rsplit("/", 1)[-1] else (image, "latest")
-        )
+        if "@" in image:
+            repository, tag = image.split("@", 1)
+        else:
+            repository, tag = (
+                image.rsplit(":", 1) if ":" in image.rsplit("/", 1)[-1] else (image, "latest")
+            )
         repo = repository.removeprefix("registry.fly.io/")
         path = f"/v2/{repo}/manifests/{tag}"
-        request = Request(f"{self.registry_base_url}{path}", method="HEAD")
+        request = Request(f"{self.registry_base_url}{path}", method="GET")
         # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
         # user name and the token as the password.
         credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()

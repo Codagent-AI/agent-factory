@@ -19,8 +19,29 @@ from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.fly.api import FlyApiError, FlyMachinesClient, is_gone, read_token
 from agent_factory.fly.launcher import LAUNCHER_NAME
 from agent_factory.fly.launcher import executable as fly_launcher
-from agent_factory.fly.transport import FlyTransport, FlyTransportError
+from agent_factory.fly.transport import (
+    FlyTransport,
+    FlyTransportError,
+    image_digest,
+    image_repository,
+    resolve_claude_login,
+)
 from agent_factory.operations import Diagnostic
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, Run
+
+
+def fly_repository_diagnostic(image: str, app: str) -> Diagnostic:
+    repository = image_repository(image)
+    expected = f"registry.fly.io/{app}"
+    if repository == expected:
+        return Diagnostic("Fly image repository", True, repository, "", "eval-fly")
+    return Diagnostic(
+        "Fly image repository",
+        False,
+        f"{image} targets {repository}",
+        f"Set [fly] image to {expected}:base.",
+        "eval-fly",
+    )
 
 
 class FlyMachineBackend:
@@ -42,7 +63,6 @@ class FlyMachineBackend:
         self._local = local
 
     def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
-        del shared
         if local.fly is None:
             return [
                 Diagnostic(
@@ -55,6 +75,40 @@ class FlyMachineBackend:
             ]
         fly = local.fly
         result = [_launcher_diagnostic()]
+        result.append(fly_repository_diagnostic(fly.image, fly.app))
+        roles: Mapping[str, object] = cast(
+            Mapping[str, object], getattr(getattr(shared, "eval", None), "defaults", {})
+        )
+        if any(
+            str(roles.get(role, "")).startswith("claude:")
+            for role in ("lead", "implementor", "tester")
+        ):
+            try:
+                login = resolve_claude_login([local.credentials.suite_environment])
+                result.append(
+                    Diagnostic(
+                        "Fly Claude login",
+                        login.kind != "unavailable",
+                        f"Claude login source: {login.kind}"
+                        if login.kind != "unavailable"
+                        else login.reason,
+                        "Set CLAUDE_CODE_OAUTH_TOKEN in the suite environment "
+                        "or repair the service user's Claude login."
+                        if login.kind == "unavailable"
+                        else "",
+                        "eval-fly",
+                    )
+                )
+            except OSError as error:
+                result.append(
+                    Diagnostic(
+                        "Fly Claude login",
+                        False,
+                        type(error).__name__,
+                        "Repair the suite environment file.",
+                        "eval-fly",
+                    )
+                )
         token_check = _token_diagnostic(fly.token_file)
         result.append(token_check)
         if token_check.available:
@@ -64,11 +118,6 @@ class FlyMachineBackend:
                     "Fly app API",
                     client.get_app,
                     f"Verify deploy-token access to Fly app {fly.app}.",
-                ),
-                (
-                    "Fly image manifest",
-                    lambda: client.resolve_manifest(fly.image),
-                    f"Push or configure a resolvable Fly image: {fly.image}.",
                 ),
             ):
                 try:
@@ -201,6 +250,8 @@ class FlyMachineBackend:
             return
         if decision == "destroy":
             if not self._destroy_verified(self._client(identity), _machine_id(identity)):
+                # Keep the record so reconciliation knows the Machine and retries the destroy.
+                _set_machine_record(store, identity, decision, probe.state)
                 _cleanup_failure(store, _machine_id(identity), "destroy was not verified")
                 return
             _clear_machine_record(store, identity)
@@ -284,6 +335,12 @@ class FlyMachineBackend:
             for value in records.values()
             if isinstance(value.get("machine_id"), str)
         } | _live_machine_ids(store)
+        # Disposal already chose to destroy these, verified as owned, but Fly did not confirm it.
+        pending_destroy = {
+            value.get("machine_id")
+            for value in records.values()
+            if value.get("decision") == "destroy" and isinstance(value.get("machine_id"), str)
+        }
         unknown: list[dict[str, object]] = []
         destroyed: list[str] = []
         now = time.time()
@@ -292,7 +349,7 @@ class FlyMachineBackend:
             if not isinstance(machine_id, str) or not machine_id:
                 continue
             deadline = _deadline_epoch(_metadata(machine).get("deadline_epoch"))
-            if deadline is not None and now > deadline:
+            if (deadline is not None and now > deadline) or machine_id in pending_destroy:
                 if self._destroy_verified(client, machine_id):
                     destroyed.append(machine_id)
                     failures.pop(machine_id, None)
@@ -303,7 +360,18 @@ class FlyMachineBackend:
                         "reason": "destroy was not verified",
                     }
                 continue
-            if machine_id not in known_ids:
+            metadata_run_id = _metadata(machine).get("run_id")
+            get_run = getattr(store, "get_run", None)
+            run = (
+                cast(Callable[[str], Run | None], get_run)(metadata_run_id)
+                if isinstance(metadata_run_id, str) and callable(get_run)
+                else None
+            )
+            undisposed_run = run is not None and (
+                run.status in NONTERMINAL_RUN_STATUSES
+                or not _settings_by_prefix(store, f"fly:machine:{metadata_run_id}")
+            )
+            if machine_id not in known_ids and not undisposed_run:
                 unknown.append(
                     {
                         "machine_id": machine_id,
@@ -388,7 +456,7 @@ class FlyMachineBackend:
         )
         return {
             "machine_id": _machine_id(identity),
-            "image_digest": values.get("image_ref", values.get("image")),
+            "image_digest": image_digest(machine),
             "cpu_kind": size.get("cpu_kind"),
             "cpus": size.get("cpus"),
             "memory_mb": size.get("memory_mb"),

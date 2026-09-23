@@ -22,6 +22,7 @@ from typing import cast
 
 import pytest
 
+from agent_factory.config import LocalConfig
 from agent_factory.fly.guest import guest_init_script
 from agent_factory.store import ClaimStore, Run
 from tests.e2e.test_factory_cycle import (
@@ -195,6 +196,12 @@ class Factory:
             "heartbeat_seconds = 1\n"
         )
         self.config.write_text(text, encoding="utf-8")
+        suite_environment = LocalConfig.from_file(self.config).credentials.suite_environment
+        suite_environment.write_text(
+            suite_environment.read_text(encoding="utf-8")
+            + "\nCLAUDE_CODE_OAUTH_TOKEN=fixture-token\n",
+            encoding="utf-8",
+        )
         # Transport double, launcher, and the operator's Codex login for delivery.
         write_guest_flyctl(
             bin_dir, self.roots, tmp_path / "flyctl.log", tmp_path / "none", per_machine=True

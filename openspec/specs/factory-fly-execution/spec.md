@@ -3,20 +3,27 @@
 ## Purpose
 TBD - created by archiving change fly. Update Purpose after archive.
 ## Requirements
+
 ### Requirement: Execute eval attempts in a Fly Machine
 
-When the eval kind is configured for `fly` execution, the factory SHALL run each repetition attempt in one Fly Machine owned by the factory. The Machine SHALL obtain the Agent Runner and Agent Skills sources by cloning them at the full commits recorded on the claim, SHALL receive the `agent-evals` harness input delivered from the claim's pinned harness worktree at its recorded commit, each at the path the selected suite expects, and SHALL run the suite's unmodified workflow, controller, judging, and scoring inside the Machine. Each repetition SHALL use its own Machine; a recovery attempt for a repetition SHALL reuse that repetition's Machine as defined below. A failure to obtain any recorded commit SHALL end the attempt as a technical failure before model execution.
+When the eval kind is configured for `fly` execution, the factory SHALL run each repetition attempt in one Fly Machine owned by the factory, created from the image digest recorded on the claim by the per-claim build. The Machine SHALL obtain the Agent Runner and Agent Skills sources by cloning them at the full commits recorded on the claim, SHALL receive the `agent-evals` harness input delivered from the claim's pinned harness worktree at its recorded commit, each at the path the selected suite expects, and SHALL run the suite's unmodified workflow, controller, judging, and scoring inside the Machine. Each repetition SHALL use its own Machine; a recovery attempt for a repetition SHALL reuse that repetition's Machine as defined below. The factory's own job script in the Machine SHALL write a setup-complete marker immediately before it starts the suite, after sources and harness input are in place; the suite SHALL NOT be responsible for this marker. A failure to obtain any recorded commit SHALL end the attempt as a technical failure before model execution, and because it happens before the setup-complete marker, it SHALL be a pre-suite failure as defined in `factory-claim-lifecycle`.
 
 #### Scenario: Launch a repetition on Fly
 
 - **WHEN** an eligible eval claim's repetition is admitted under `fly` execution
-- **THEN** a Machine is created for that attempt and the suite runs inside it against clones at the claim's recorded Runner and Skills commits and harness input from its recorded harness commit
+- **THEN** a Machine is created for that attempt from the claim's recorded image digest and the suite runs inside it against clones at the claim's recorded Runner and Skills commits and harness input from its recorded harness commit
 - **AND** the suite's own source provenance and cleanliness checks pass against those clones
 
 #### Scenario: Fail to obtain a recorded commit
 
 - **WHEN** the Machine cannot obtain one of the recorded commits
 - **THEN** the attempt ends as a technical failure without model execution and the diagnostic is preserved with the attempt
+- **AND** no setup-complete marker was written, so the failure is classified as pre-suite
+
+#### Scenario: Mark the start of the suite
+
+- **WHEN** the job script in the Machine has placed the sources and harness input and is about to start the suite
+- **THEN** it writes the setup-complete marker, and any later failure is not a pre-suite failure
 
 ### Requirement: Establish containment before delivering anything
 
@@ -68,17 +75,22 @@ Ownership of a Fly attempt SHALL be verified from the recorded Machine identity,
 
 ### Requirement: Deliver credentials from an exact allowlist after ownership
 
-Model credentials SHALL be delivered to the Machine only from an exact per-provider file allowlist for Codex and Claude, only after ownership is persisted and verified, over an authenticated transport rather than the Machine configuration, with owner-only permissions in the Machine. Cursor credentials SHALL never be delivered. Credentials and the candidate-delivery token SHALL never appear in the Machine configuration, the artifact tree, factory logs, or the heartbeat, and SHALL be removed from the Machine before the completion marker is written. The factory SHALL never write the factory host's own credential files.
+Model credentials SHALL be delivered to the Machine only from an exact per-provider allowlist for Codex and Claude, only after ownership is persisted and verified, over an authenticated transport rather than the Machine configuration, with owner-only permissions in the Machine. The Claude credential delivered SHALL be the login resolved by the requirement "Resolve the Claude login to deliver from the host", which MAY come from the macOS Keychain rather than a host file; whether it is required SHALL follow that requirement. Cursor credentials SHALL never be delivered. Credentials and the candidate-delivery token SHALL never appear in the Machine configuration, the artifact tree, factory logs, or the heartbeat, and SHALL be removed from the Machine before the completion marker is written. The factory SHALL never write the factory host's own credential files, and SHALL never write a Keychain-sourced login to any file on the factory host.
 
 #### Scenario: Deliver credentials
 
 - **WHEN** ownership of a Machine has been persisted and verified
-- **THEN** only the allowlisted Codex and Claude files and the candidate-delivery environment are delivered, and the Machine configuration contains none of them
+- **THEN** only the allowlisted Codex and Claude credentials and the candidate-delivery environment are delivered, and the Machine configuration contains none of them
 
 #### Scenario: Collect artifacts
 
 - **WHEN** the artifact tree is collected from a completed Machine
 - **THEN** it contains no delivered credential or token
+
+#### Scenario: Deliver a Keychain login
+
+- **WHEN** the resolved Claude login comes from the macOS Keychain
+- **THEN** it reaches the Machine's Claude credential path with owner-only permissions and no file containing it exists on the factory host at any point
 
 ### Requirement: Supervise through a live stream and heartbeat
 
@@ -172,7 +184,7 @@ When a Machine is found destroyed, missing, or without a checkpoint it was known
 
 ### Requirement: Reconcile stale Machines every cycle
 
-Each controller cycle SHALL inspect every Machine in the factory's Fly app that carries the factory's ownership marker, including Machines the local store never recorded. Any such Machine past its recorded deadline SHALL be destroyed; a Machine within its deadline but unknown to the store SHALL be left running and reported. Cleanup SHALL be idempotent, retried, and verified against Fly, and a cleanup failure SHALL be reported for operator attention rather than silently dropped.
+Each controller cycle SHALL inspect every Machine in the factory's Fly app that carries the factory's ownership marker, including Machines the local store never recorded. Any such Machine past its recorded deadline SHALL be destroyed; a Machine within its deadline but unknown to the store SHALL be left running and reported. A Machine SHALL count as known to the store when its ownership metadata names the run id of an attempt that is launching, running, being resumed, or finished but not yet disposed, including an attempt whose result the same cycle has not yet consumed, even before that attempt's run record or local Machine record carries the Machine identity; reconciliation SHALL NOT report such a Machine as unknown. Cleanup SHALL be idempotent, retried, and verified against Fly, and a cleanup failure SHALL be reported for operator attention rather than silently dropped.
 
 #### Scenario: Destroy an orphan
 
@@ -183,6 +195,16 @@ Each controller cycle SHALL inspect every Machine in the factory's Fly app that 
 
 - **WHEN** a Machine carrying the factory's marker is within its deadline but no recorded attempt owns it
 - **THEN** reconciliation leaves it running and reports it, and it is destroyed once its deadline passes
+
+#### Scenario: Do not report a Machine whose attempt just finished
+
+- **WHEN** an attempt's run became terminal after the previous cycle and its Machine has not yet been disposed or recorded
+- **THEN** reconciliation in the next cycle does not report that Machine as unknown to the store
+
+#### Scenario: Do not report a Machine being launched or resumed
+
+- **WHEN** a Machine whose ownership metadata names an active attempt's run id has been created or is being resumed, and neither the run record nor the launcher's local Machine record carries its identity yet
+- **THEN** reconciliation does not report it as unknown to the store and status shows no blocking condition for it
 
 ### Requirement: Treat in-Machine authentication failure as attempt failure
 
@@ -200,10 +222,82 @@ A model login failure inside the Machine SHALL end the attempt as a technical fa
 
 ### Requirement: Record Machine provenance
 
-Before model execution, the factory SHALL record the Machine identity, the immutable image digest observed on the launched Machine, and the Machine's CPU kind, CPU count, memory, and region as observed execution provenance for the attempt. A configured mutable image tag SHALL NOT be recorded in place of the observed digest.
+Before model execution, the factory SHALL record the Machine identity, the immutable image digest observed on the launched Machine, and the Machine's CPU kind, CPU count, memory, and region as observed execution provenance for the attempt. The observed digest SHALL be read from the digest Fly reports for the Machine's image, not from the image reference in the Machine's configuration. A configured mutable image tag SHALL NOT be recorded in place of the observed digest; when Fly reports no digest, provenance SHALL say the digest is unavailable. Provenance SHALL also record the digest the claim's build reported and the versions reported inside the Machine by `claude --version` and `codex --version`, or say that a version is unavailable.
 
 #### Scenario: Inspect a completed Fly repetition
 
 - **WHEN** the user inspects a repetition's saved evaluation details
 - **THEN** the Machine identity, observed image digest, size, and region used for that attempt are identifiable
+- **AND** the claim's built image digest and the Claude and Codex CLI versions are identifiable
 
+#### Scenario: Record the observed digest, not the tag
+
+- **WHEN** a Machine's configuration names an image by tag and Fly reports the image's digest for the Machine
+- **THEN** provenance records that digest and never the tag
+
+### Requirement: Build the sandbox image once per claim
+
+Under `fly` execution, the factory SHALL build the sandbox image once per eval claim from the claim's pinned Agent Runner worktree, using that worktree's `docker/dev/Dockerfile` with the worktree root as build context, on Fly's remote builder, and SHALL push it to the image repository derived from `[fly] image` under the tag `claim-` followed by the first 12 characters of the claim id. The build SHALL pass a build argument `FACTORY_CLI_REFRESH` whose value is the claim id, so the model CLI layer and every later layer are rebuilt for each claim while earlier layers may come from the builder's cache. The build SHALL run in the detached process that launches the claim's first attempt, before any Machine is created, and SHALL NOT run inside the controller cycle. The factory SHALL take the immutable digest the build itself reports. Only when a build succeeded but its output carries no digest MAY the factory resolve the claim's own tag, which this build just created and nothing else writes, once through a registry manifest GET; it SHALL NOT use a registry HEAD request for this and SHALL NOT resolve any other tag. The digest SHALL be recorded durably with the attempt, in a form the factory reads back as the claim's image digest, before the Machine is created, so that it survives a controller or supervisor restart and does not depend on the attempt's result being consumed. Every later attempt of the claim, including recovery attempts and relaunches after a pre-suite failure, SHALL launch its Machine from the digest of the claim's most recent successful build and SHALL NOT build again. A build failure, or a successful build for which neither the build output nor the single GET yields a digest, SHALL be a pre-suite failure of the attempt that ran it, with the builder's diagnostic preserved with the attempt; no digest is recorded, the factory SHALL NOT fall back to a previously built or configured image, and the relaunch permitted by the pre-suite policy SHALL build again.
+
+#### Scenario: Build at the claim's first launch
+
+- **WHEN** the first repetition of an admitted eval claim launches under `fly` execution and no digest is recorded on the claim
+- **THEN** the image is built from the claim's pinned Runner worktree with `FACTORY_CLI_REFRESH` set to the claim id, pushed to the repository derived from `[fly] image` under the tag `claim-` followed by the first 12 characters of the claim id, and the digest the build reports is durably recorded as the claim's image digest before the Machine is created from that digest
+
+#### Scenario: Reuse the claim's image
+
+- **WHEN** a later repetition, a recovery attempt, or a relaunch after a pre-suite failure launches for a claim that already has a successful build's digest
+- **THEN** no build runs and its Machine is created from that digest
+
+#### Scenario: Keep the controller cycle responsive during a build
+
+- **WHEN** a claim's image build is running
+- **THEN** controller cycles continue to observe running attempts, reconcile Machines, and admit and supervise fix work without waiting for the build
+
+#### Scenario: Fail a build
+
+- **WHEN** the remote build fails
+- **THEN** no Machine is created, no digest is recorded, no stale or configured image is used, and the attempt ends as a pre-suite failure carrying the builder's diagnostic
+- **AND** the relaunch the pre-suite policy permits builds the image again
+
+#### Scenario: Build without a printed digest
+
+- **WHEN** the build succeeds but its output carries no digest
+- **THEN** the factory resolves the new `claim-` tag once with a registry manifest GET and records that digest; if the GET yields no digest, the attempt ends as a pre-suite failure
+
+#### Scenario: Recover the digest after a restart
+
+- **WHEN** the controller restarts after a claim's build recorded its digest but before that attempt's result was consumed
+- **THEN** the claim's later attempts use that recorded digest without building again
+
+### Requirement: Resolve the Claude login to deliver from the host
+
+Under `fly` execution, when a claim's roles use Claude, the factory SHALL determine the Claude login to deliver as follows. When the suite environment file assigns a non-empty `CLAUDE_CODE_OAUTH_TOKEN`, the Claude credential file SHALL be optional: it SHALL be delivered only if `~/.claude/.credentials.json` exists, and the macOS Keychain SHALL NOT be read. Otherwise the Claude login SHALL be required: on macOS the factory SHALL read it from the login Keychain item with service `Claude Code-credentials` and account equal to the service's `USER`, always naming the account, and SHALL fall back to `~/.claude/.credentials.json` only when no such Keychain item exists; on other platforms it SHALL read the file. Every Keychain read SHALL be bounded by a timeout, and a timeout, access denial, or content that is not a Claude OAuth credential document SHALL count as an unavailable login rather than falling back to the file. A Keychain-sourced login SHALL be streamed to the Machine without being written to any file on the factory host and SHALL NOT appear in any log, argument list, or error message. Doctor, the eval admission readiness check, and the launcher SHALL use this same resolution.
+
+#### Scenario: Suite environment provides a Claude token
+
+- **WHEN** the suite environment file assigns `CLAUDE_CODE_OAUTH_TOKEN` and `~/.claude/.credentials.json` is missing
+- **THEN** the attempt launches without a Claude credential file, the Keychain is not read, and the Fly Claude-login readiness check passes
+- **AND** the mode-neutral eval check of the factory host's own Claude login, defined in `factory-claim-lifecycle`, still applies unchanged
+
+#### Scenario: Deliver the Keychain login
+
+- **WHEN** no Claude token is in the suite environment file, the host is macOS, and the Keychain item for service `Claude Code-credentials` and the service user's account exists
+- **THEN** its contents are delivered as the Machine's Claude credential file with owner-only permissions, no host file is created or modified, and `~/.claude/.credentials.json` is not consulted
+
+#### Scenario: Fall back to the credential file
+
+- **WHEN** no Claude token is in the suite environment file and no Keychain item exists for the service user's account
+- **THEN** `~/.claude/.credentials.json` is delivered if it exists
+
+#### Scenario: Keychain read blocks
+
+- **WHEN** the Keychain read does not complete within its timeout, for example because macOS is waiting for an access approval nobody can see
+- **THEN** the read is abandoned, the Claude login is reported unavailable with an action naming the Keychain item and account, and no attempt is launched
+
+#### Scenario: No Claude login available
+
+- **WHEN** no Claude token is in the suite environment file and neither a readable Keychain item nor the credential file is available
+- **THEN** doctor fails the eval-fly group naming the Claude login, eval admission is held with the same explanation before any Machine is created, and no attempt or retry is consumed
+
+## MODIFIED Requirements

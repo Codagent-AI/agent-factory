@@ -221,27 +221,32 @@ def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
         "Fly launcher",
         "Fly deploy token",
         "Fly app API",
-        "Fly image manifest",
+        "Fly image repository",
         "flyctl transport",
     }
     assert all(item.available for item in fly_checks.values()), text
-    # Diagnosis is read-only: the app and manifest were looked up, nothing was created.
-    assert {str(r["method"]) for r in site.api.requests} <= {"GET", "HEAD"}
+    # Diagnosis is read-only: the app was looked up, nothing was created.
+    assert {str(r["method"]) for r in site.api.requests} <= {"GET"}
+    assert not any("/manifests/" in str(r["path"]) for r in site.api.requests)
     assert not any(str(r["path"]).endswith("/machines") for r in site.api.requests)
     assert "Traceback" not in text
 
 
-def test_doctor_fails_the_eval_fly_group_for_an_unresolvable_image_without_creating(
+def test_doctor_fails_the_eval_fly_group_for_a_mismatched_image_repository_without_creating(
     site: Site,
 ) -> None:
-    site.api.manifest_digest = ""  # the registry answers without a digest
-    config = site.config(evals="fly", fixes="host")
+    site.config(evals="fly", fixes="host")
+    path = site.root / "local-fly-host.toml"
+    path.write_text(
+        path.read_text().replace("registry.fly.io/app:base", "registry.fly.io/other:base")
+    )
+    config = LocalConfig.from_file(path)
 
     diagnostics = doctor(config)
 
-    manifest = next(d for d in diagnostics if d.name == "Fly image manifest")
-    assert not manifest.available
-    assert "registry.fly.io/app:base" in manifest.action
+    repository = next(d for d in diagnostics if d.name == "Fly image repository")
+    assert not repository.available
+    assert "registry.fly.io/app" in repository.action
     assert all(str(r["method"]) != "POST" for r in site.api.requests)
 
 

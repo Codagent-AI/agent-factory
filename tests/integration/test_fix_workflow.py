@@ -25,6 +25,17 @@ FINALIZE_WITH_PARAM = (
 LAUNCHER = "#!/bin/sh\n# --image --artifact-dir --no-default-secrets --env-file --docker-run-arg\n"
 
 
+def _codagent_runner_cli() -> bool:
+    """Homebrew ships an unrelated `agent-runner` binary; only the Codagent CLI has `run`."""
+    executable = shutil.which("agent-runner")
+    if executable is None:
+        return False
+    probe = subprocess.run(
+        [executable, "run", "--help"], capture_output=True, text=True, timeout=10
+    )
+    return "session-dir" in f"{probe.stdout}{probe.stderr}"
+
+
 def _workflow_text() -> str:
     return (PACKAGE / launch.WORKFLOW_FILE).read_text(encoding="utf-8")
 
@@ -673,7 +684,7 @@ steps:
 """
 
 
-@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+@pytest.mark.skipif(not _codagent_runner_cli(), reason="Codagent agent-runner CLI is not installed")
 def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: Path) -> None:
     """Agent Runner keeps a text capture byte for byte, so a trailing newline from a script
     made every skip_if comparison fail and skipped implementation in the live attempt."""
@@ -708,7 +719,7 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
     assert (repo / "addressed").exists()
 
 
-@pytest.mark.skipif(shutil.which("agent-runner") is None, reason="agent-runner is not installed")
+@pytest.mark.skipif(not _codagent_runner_cli(), reason="Codagent agent-runner CLI is not installed")
 def test_installed_runner_loads_a_merged_config_with_both_profile_sets(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     workflows = repo / ".agent-runner" / "workflows"

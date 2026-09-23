@@ -645,6 +645,8 @@ def _fly_manifest(
     total_seconds: int,
     expect_checkpoint: bool,
 ) -> dict[str, object]:
+    from agent_factory.fly.transport import image_repository
+
     if fly is None:
         raise ReadinessError("Fly settings are unavailable")
     revisions = _revisions(cast(Mapping[str, object], frozen.get("revisions")))
@@ -677,7 +679,7 @@ def _fly_manifest(
             )
         },
         "commits": revisions,
-        "image": fly.image,
+        "image_repository": image_repository(fly.image),
         "fly": {
             "app": fly.app,
             "token_file": str(fly.token_file),
