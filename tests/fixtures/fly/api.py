@@ -24,6 +24,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.wait_failures: list[int] = []
         # Statuses to answer the next DELETEs with, leaving the Machine in place.
         self.delete_failures: list[int] = []
+        # Statuses to answer the next Machine listings with.
+        self.list_failures: list[int] = []
         # Machine ids are never reused, as on Fly; a destroyed id stays retired.
         self._created = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -87,7 +89,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
             def do_GET(self) -> None:  # noqa: N802
                 self._record()
                 parsed = urlsplit(self.path)
-                if parsed.path.endswith("/machines"):
+                if parsed.path.endswith("/machines") and fake.list_failures:
+                    self._send(fake.list_failures.pop(0))
+                elif parsed.path.endswith("/machines"):
                     filters = parse_qs(parsed.query)
                     machines = list(fake.machines.values())
                     for key, values in filters.items():

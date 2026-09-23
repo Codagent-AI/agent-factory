@@ -591,3 +591,15 @@ def test_every_repetition_lost_is_infra_error_with_each_loss_explained() -> None
     assert outcome.verdict == "infra-error"
     for unit in ("rep-1", "rep-2", "rep-3"):
         assert f"- {unit} was lost to factory infrastructure: machine lost." in outcome.event_body
+
+
+def test_a_failed_machine_listing_clears_once_listing_succeeds(cycle: Cycle) -> None:
+    # One transient list failure must not leave a permanent blocking condition.
+    cycle.api.list_failures.append(500)
+    assert cycle.reconcile() == []
+    assert "blocking condition: Machine list:" in status(cycle.store, cycle.local)
+
+    assert cycle.reconcile() == []
+
+    assert cycle.store.get_setting("runtime", "fly:cleanup-failed") == {}
+    assert "blocking condition" not in status(cycle.store, cycle.local)
