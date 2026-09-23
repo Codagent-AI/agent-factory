@@ -37,6 +37,9 @@ infra-error = "e852ed91"
 
 [fields.priority]
 id = "PVTSSF_lADOEARcIs4Bi5pPzhjHbIg"
+issue_field_id = "IFSS_kgDOAmcJrg"
+[fields.priority.options]
+low = "IFSSO_kgDOBDQ5DQ"
 
 [routing]
 eval_source = "Codagent-AI/agent-evals"

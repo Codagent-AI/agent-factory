@@ -65,6 +65,8 @@ class GitHubRoutingClient(Protocol):
         self, project_id: str, item_id: str, field_id: str, option_id: str
     ) -> None: ...
 
+    def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None: ...
+
     def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
@@ -79,6 +81,7 @@ class Router:
         source = event.item
         if source.repository not in self._config.routing.general_sources:
             raise ValueError(f"source repository is not configured: {source.repository}")
+        self._ensure_default_priority(source)
         project_item = self._github.find_project_item(self._config.project.id, source.id)
         if project_item is None:
             project_item = self._github.add_project_item(self._config.project.id, source.id)
@@ -118,6 +121,15 @@ class Router:
 
         applied = self._initialize(project_item, source, (("status", "backlog"),))
         return RouteResult("backlog" if applied else "preserved", project_item.id)
+
+    def _ensure_default_priority(self, source: SourceItem) -> None:
+        if source.pull_request:
+            return
+        field_id = self._config.project.priority_issue_field_id
+        option_id = self._config.project.priority_default_option_id
+        if not field_id or not option_id:
+            return
+        self._github.ensure_issue_select_default(source.id, field_id, option_id)
 
     def _is_eval(self, source: SourceItem) -> bool:
         return (

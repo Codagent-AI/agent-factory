@@ -91,6 +91,8 @@ def test_shared_config_defaults_fix_when_section_absent() -> None:
 def test_deployed_config_maps_the_priority_issue_field() -> None:
     shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
     assert shared.project.priority_id == "PVTSSF_lADOEARcIs4Bi5pPzhjHbIg"
+    assert shared.project.priority_issue_field_id == "IFSS_kgDOAmcJrg"
+    assert shared.project.priority_default_option_id == "IFSSO_kgDOBDQ5DQ"
 
 
 def test_shared_config_parses_fix_targets_and_defaults() -> None:

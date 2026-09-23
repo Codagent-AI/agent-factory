@@ -365,6 +365,101 @@ def test_project_item_query_is_valid_graphql(lookup: bool) -> None:
     parse(query)
 
 
+def test_client_sets_issue_select_default_only_when_empty() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "data": {
+                        "node": {
+                            "issueFieldValues": {
+                                "nodes": [{}],
+                                "pageInfo": {"hasNextPage": False, "endCursor": None},
+                            }
+                        }
+                    }
+                }
+            ),
+            json.dumps({"data": {"updateIssueFieldValue": {"issue": {"id": "ISSUE"}}}}),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.ensure_issue_select_default("ISSUE", "priority-field", "low-option")
+
+    assert gh.calls[0].body is not None
+    parse(str(gh.calls[0].body["query"]))
+    assert gh.calls[1].body is not None
+    parse(str(gh.calls[1].body["query"]))
+    assert gh.calls[1].body["variables"] == {
+        "issue": "ISSUE",
+        "field": "priority-field",
+        "option": "low-option",
+    }
+
+
+def test_client_leaves_an_existing_issue_select_value() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "data": {
+                        "node": {
+                            "issueFieldValues": {
+                                "nodes": [{"field": {"id": "priority-field"}}],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            )
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.ensure_issue_select_default("ISSUE", "priority-field", "low-option")
+
+    assert len(gh.calls) == 1
+
+
+def test_client_finds_issue_select_value_on_a_later_page() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "data": {
+                        "node": {
+                            "issueFieldValues": {
+                                "nodes": [{"field": {"id": "effort-field"}}],
+                                "pageInfo": {"hasNextPage": True, "endCursor": "page-1"},
+                            }
+                        }
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "data": {
+                        "node": {
+                            "issueFieldValues": {
+                                "nodes": [{"field": {"id": "priority-field"}}],
+                                "pageInfo": {"hasNextPage": False},
+                            }
+                        }
+                    }
+                }
+            ),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.ensure_issue_select_default("ISSUE", "priority-field", "low-option")
+
+    assert len(gh.calls) == 2
+    assert gh.calls[1].body is not None
+    assert gh.calls[1].body["variables"] == {"id": "ISSUE", "cursor": "page-1"}
+
+
 def test_select_field_parser_ignores_unselected_graphql_union_members() -> None:
     fields = _single_select_fields(
         {"fieldValues": {"nodes": [{}, {"field": {"id": "status"}, "optionId": "ready"}]}}

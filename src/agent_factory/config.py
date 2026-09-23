@@ -92,6 +92,8 @@ class ProjectConfig:
     refs: TextField
     verdict: SelectField
     priority_id: str = ""
+    priority_issue_field_id: str = ""
+    priority_default_option_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -393,15 +395,7 @@ class SharedConfig:
                     _string(_table(fields.get("refs"), "fields.refs"), "id", "fields.refs")
                 ),
                 verdict=_select_field(fields, "verdict"),
-                priority_id=(
-                    _string(
-                        _table(fields.get("priority"), "fields.priority"),
-                        "id",
-                        "fields.priority",
-                    )
-                    if "priority" in fields
-                    else ""
-                ),
+                **_priority_fields(fields),
             ),
             routing=RoutingConfig(
                 eval_source=eval_source,
@@ -425,6 +419,36 @@ class SharedConfig:
             ),
             fix=_fix_shared_config(document.get("fix")),
         )
+
+
+def _priority_fields(fields: Mapping[str, Any]) -> dict[str, str]:
+    if "priority" not in fields:
+        return {
+            "priority_id": "",
+            "priority_issue_field_id": "",
+            "priority_default_option_id": "",
+        }
+    priority = _table(fields.get("priority"), "fields.priority")
+    issue_field_id = (
+        _string(priority, "issue_field_id", "fields.priority")
+        if "issue_field_id" in priority
+        else ""
+    )
+    default_option_id = ""
+    if "options" in priority:
+        options = _table(priority.get("options"), "fields.priority.options")
+        if "low" in options:
+            default_option_id = _string(options, "low", "fields.priority.options")
+    if bool(issue_field_id) != bool(default_option_id):
+        raise ConfigurationError(
+            "fields.priority.issue_field_id and fields.priority.options.low "
+            "must be configured together"
+        )
+    return {
+        "priority_id": _string(priority, "id", "fields.priority"),
+        "priority_issue_field_id": issue_field_id,
+        "priority_default_option_id": default_option_id,
+    }
 
 
 def _select_field(fields: Mapping[str, Any], name: str) -> SelectField:

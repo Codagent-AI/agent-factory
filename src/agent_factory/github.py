@@ -510,6 +510,46 @@ class GitHubClient:
             {"project": project_id, "item": item_id, "field": field_id, "option": option_id},
         )
 
+    def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None:
+        """Set an organization issue select field only when that field is currently empty."""
+        cursor: str | None = None
+        while True:
+            payload = self._graphql(
+                "".join(
+                    (
+                        "query IssueSelect($id: ID!, $cursor: String) { node(id: $id) { ",
+                        "... on Issue { issueFieldValues(first: 20, after: $cursor) { nodes { ",
+                        "... on IssueFieldSingleSelectValue { ",
+                        "field { ... on IssueFieldSingleSelect { id } } } } ",
+                        "pageInfo { hasNextPage endCursor } } } } }",
+                    )
+                ),
+                {"id": issue_id, "cursor": cursor},
+            )
+            node = _object(payload.get("node"))
+            values = _object(node.get("issueFieldValues"))
+            for value in _list(values.get("nodes")):
+                selection = _object(value)
+                if not selection:
+                    continue
+                field = _object(selection.get("field"))
+                if field.get("id") == field_id:
+                    return
+            page_info = _object(values.get("pageInfo"))
+            if page_info.get("hasNextPage") is not True:
+                break
+            cursor = _required_string(page_info, "endCursor")
+        self._graphql(
+            "".join(
+                (
+                    "mutation DefaultIssueSelect($issue: ID!, $field: ID!, $option: ID!) { ",
+                    "updateIssueFieldValue(input: {issueId: $issue, issueField: {fieldId: $field, ",
+                    "singleSelectOptionId: $option}}) { issue { id } } }",
+                )
+            ),
+            {"issue": issue_id, "field": field_id, "option": option_id},
+        )
+
     def clear_field(self, project_id: str, item_id: str, field_id: str) -> None:
         """Remove a Project field value when it no longer describes the active claim."""
         self._graphql(

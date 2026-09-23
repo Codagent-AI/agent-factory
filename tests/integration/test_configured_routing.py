@@ -35,10 +35,14 @@ def _issue_types() -> dict[str, str]:
     return {}
 
 
+def _issue_select() -> dict[str, dict[str, str]]:
+    return {}
+
+
 BOT_LOGIN = "example-factory[bot]"
 
 
-def config_text(*, harness_ref: str = "main", extra_eval: str = "") -> str:
+def config_text(*, harness_ref: str = "main", extra_eval: str = "", extra_fields: str = "") -> str:
     return f'''\
 [github]
 organization = "Example Org"
@@ -74,6 +78,7 @@ failed = "failed-option"
 quota-deferred = "quota-option"
 infra-error = "infra-option"
 
+{extra_fields}
 [routing]
 eval_source = "example/evals"
 general_sources = ["example/evals", "example/work"]
@@ -97,6 +102,7 @@ class MemoryGitHub:
     roles: dict[tuple[str, str], str | None] = field(default_factory=_roles)
     comments: dict[str, list[IssueComment]] = field(default_factory=_comments)
     issue_types: dict[str, str] = field(default_factory=_issue_types)
+    issue_select: dict[str, dict[str, str]] = field(default_factory=_issue_select)
     added: int = 0
 
     def get_permission(self, repository: str, login: str) -> str | None:
@@ -120,6 +126,11 @@ class MemoryGitHub:
     ) -> None:
         item = next(value for value in self.items.values() if value.id == item_id)
         item.fields[field_id] = option_id
+
+    def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None:
+        fields = self.issue_select.setdefault(issue_id, {})
+        if field_id not in fields:
+            fields[field_id] = option_id
 
     def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
         return list(self.comments.get(f"{repository}#{number}", []))
@@ -598,3 +609,52 @@ def test_eval_card_is_admitted_on_issue_type_without_a_redundant_label() -> None
 
     assert snapshot is not None
     assert snapshot.issue_number == 26
+
+
+_PRIORITY_FIELDS = """
+[fields.priority]
+id = "priority-project-field"
+issue_field_id = "priority-issue-field"
+[fields.priority.options]
+low = "low-option"
+"""
+
+
+def test_priority_issue_field_and_low_option_must_be_configured_together() -> None:
+    incomplete = """
+[fields.priority]
+id = "priority-project-field"
+issue_field_id = "priority-issue-field"
+"""
+    with pytest.raises(ConfigurationError, match="issue_field_id.*options.low"):
+        SharedConfig.from_toml(config_text(extra_fields=incomplete))
+
+
+def test_routing_defaults_unset_priority_to_low() -> None:
+    config = SharedConfig.from_toml(config_text(extra_fields=_PRIORITY_FIELDS))
+    github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
+
+    Router(config, github).route(RouteEvent(item()))
+
+    assert github.issue_select == {"ISSUE-1": {"priority-issue-field": "low-option"}}
+
+
+def test_routing_does_not_overwrite_an_existing_priority() -> None:
+    config = SharedConfig.from_toml(config_text(extra_fields=_PRIORITY_FIELDS))
+    github = MemoryGitHub(
+        permissions={("example/evals", "writer"): "write"},
+        issue_select={"ISSUE-1": {"priority-issue-field": "high-option"}},
+    )
+
+    Router(config, github).route(RouteEvent(item()))
+
+    assert github.issue_select == {"ISSUE-1": {"priority-issue-field": "high-option"}}
+
+
+def test_routing_skips_priority_default_on_pull_requests() -> None:
+    config = SharedConfig.from_toml(config_text(extra_fields=_PRIORITY_FIELDS))
+    github = MemoryGitHub()
+
+    Router(config, github).route(RouteEvent(bug_item(pull_request=True, issue_type=None)))
+
+    assert github.issue_select == {}
