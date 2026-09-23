@@ -176,11 +176,7 @@ def cycle(state: Path, config_path: Path) -> None:
                                 preparation,
                             )
                         except (WorktreeError, ReadinessError) as error:
-                            store.set_hold(claim.id, "readiness", {"reason": str(error)})
-                            store.set_claim_lifecycle(
-                                claim.id, "waiting", {"verdict": "infra-error"}
-                            )
-                            store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
+                            _hold_for_readiness(store, claim.id, error)
                         claim = store.get_claim(claim.id) or claim
                 if claim.kind == "fix" and claim.lifecycle == "settled":
                     sync_claim(
@@ -286,10 +282,18 @@ def cycle(state: Path, config_path: Path) -> None:
                 _report(store, controller, client, shared, card, claim.id, handler)
                 break
             except (WorktreeError, ReadinessError) as error:
-                store.set_hold(claim.id, "readiness", {"reason": str(error)})
-                store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
-                store.record_event(claim.id, f"readiness:{error}", f"Waiting: {error}")
+                _hold_for_readiness(store, claim.id, error)
                 _report(store, controller, client, shared, card, claim.id, handler)
+
+
+def _hold_for_readiness(store: ClaimStore, claim_id: str, error: Exception) -> None:
+    """Wait on a readiness failure unless a recorded pre-suite failure already stopped the claim."""
+    current = store.get_claim(claim_id)
+    if current is not None and current.lifecycle == "settled":
+        return
+    store.set_hold(claim_id, "readiness", {"reason": str(error)})
+    store.set_claim_lifecycle(claim_id, "waiting", {"verdict": "infra-error"})
+    store.record_event(claim_id, f"readiness:{error}", f"Waiting: {error}")
 
 
 def _launch(
@@ -629,8 +633,10 @@ def _dispose_fly_result(
         return
     if result.quota_until is not None or classification == "quota":
         decision = "stop"
-    elif result.result.get("failure_stage") == "pre-suite" and run.reason == "initial":
-        decision = "destroy"
+    elif result.result.get("failure_stage") == "pre-suite":
+        # Only a Machine the failed attempt created goes; a recovery attempt's
+        # retained Machine holds the checkpoint its relaunch resumes from.
+        decision = "destroy" if run.reason == "initial" else "keep"
     elif classification == "technical" and run.reason != "recovery":
         decision = "keep"
     else:

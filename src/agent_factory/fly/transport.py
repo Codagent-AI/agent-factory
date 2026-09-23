@@ -562,6 +562,8 @@ class Lifecycle:
         return self._follow(request.artifact_dir, job)
 
     def _attach(self, artifact_dir: Path) -> int:
+        # Pre-suite until observation sees the job's setup-complete marker.
+        self._stage = "attach"
         record = read_record(self.record_path)
         machine_id = record.get("id")
         if not isinstance(machine_id, str):
@@ -853,6 +855,7 @@ class Lifecycle:
                 raw = self.transport.command(
                     f"test -e {directory}/DONE && printf 1 || printf 0; printf '\\n'; "
                     "test -e /artifacts/run-state.json && printf 1 || printf 0; printf '\\n'; "
+                    f"test -e {directory}/setup-complete && printf 1 || printf 0; printf '\\n'; "
                     "find /artifacts -path /artifacts/.factory -prune -o -type f "
                     "-printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 1; printf '\\n'; "
                     f"printf '%s' '{_LOG_MARKER.decode().strip()}'; printf '\\n'; "
@@ -871,7 +874,9 @@ class Lifecycle:
             lines = head.decode(errors="replace").splitlines()
             done = bool(lines) and lines[0].strip() == "1"
             checkpoint = len(lines) > 1 and lines[1].strip() == "1"
-            latest = lines[2].strip() if len(lines) > 2 else ""
+            if len(lines) > 2 and lines[2].strip() == "1":
+                self._stage = "suite"
+            latest = lines[3].strip() if len(lines) > 3 else ""
             if log:
                 sys.stdout.buffer.write(log)
                 sys.stdout.buffer.flush()

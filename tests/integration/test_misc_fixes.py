@@ -847,3 +847,43 @@ def test_launcher_exit_before_machine_record_finishes_failed_run(
     assert finished == [run.id]
     observed = store.get_run(run.id)
     assert observed is not None and observed.progress["image_build"] == {"digest": "sha256:abc"}
+
+
+@pytest.mark.parametrize("setup_complete", [False, True])
+def test_fly_attach_failure_is_presuite_only_before_setup_marker(
+    tmp_path: Path, setup_complete: bool
+) -> None:
+    from agent_factory.fly.transport import FlyTransportError, Lifecycle
+
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    (factory / "machine.json").write_text('{"id": "machine", "job": 1}')
+    manifest = {
+        "run_id": "r",
+        "claim_id": "c",
+        "unit_key": "rep-1",
+        "nonce": "n",
+        "fly": {"app": "app", "token_file": str(tmp_path / "token")},
+    }
+    lifecycle = Lifecycle(manifest, factory)
+    marker = b"1" if setup_complete else b"0"
+
+    def command(text: str, **_kwargs: object) -> bytes:
+        if "DONE" in text:
+            # DONE, checkpoint, setup-complete, latest file, then the log marker.
+            return b"1\n0\n" + marker + b"\n\n---FACTORY-LOG---\n"
+        raise FlyTransportError("ssh dropped during collection")
+
+    with (
+        patch.object(lifecycle, "_get", return_value={}),
+        patch("agent_factory.fly.transport._owned", return_value=True),
+        patch.object(lifecycle, "_next_job", return_value=(1, True)),
+        patch.object(lifecycle.transport, "command", side_effect=command),
+    ):
+        assert lifecycle.attach(tmp_path) == 70
+    stage_file = factory / "launch-stage.json"
+    assert "collection" in (factory / "launcher.log").read_text()
+    if setup_complete:
+        assert not stage_file.exists()
+    else:
+        assert json.loads(stage_file.read_text())["failure_stage"] == "pre-suite"

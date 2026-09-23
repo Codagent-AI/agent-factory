@@ -20,7 +20,8 @@ Evals can run in Fly.io Machines instead of Docker. One-time setup:
    `could not create work tree dir: Permission denied`.
 
    The factory builds from that pinned checkout on Fly's remote builder once
-   per claim. It tags `claim-<claim id>` and pins the digest for every attempt.
+   per claim. It tags `claim-<first 12 claim id characters>` and pins the
+   digest for every attempt.
    `[fly] image` names the repository to push to; its configured tag is ignored.
    The launcher writes a temporary app config outside the checkout. Old
    `claim-` registry tags are not removed automatically.

@@ -315,6 +315,32 @@ def test_technical_failure_with_a_retry_left_keeps_the_machine(cycle: Cycle) -> 
     assert cycle.store.recovery_attempts(claim.id, "rep-1") == 0
 
 
+@pytest.mark.parametrize(("reason", "kept"), [("initial", False), ("recovery", True)])
+def test_presuite_failure_destroys_only_a_machine_the_attempt_created(
+    cycle: Cycle, reason: str, kept: bool
+) -> None:
+    claim = cycle.claim()
+    presuite = AttemptResult(
+        "failed",
+        None,
+        {"reason": "Fly launcher failed", "failure_stage": "pre-suite", "stage": "delivery"},
+    )
+    run, machine_id = cycle.finished_run(claim, "rep-1", presuite, reason=reason)
+
+    cycle.consume()
+
+    # A recovery attempt resumes in the retained Machine, which holds its checkpoint.
+    assert (machine_id in cycle.api.machines) is kept
+    record = cycle.record(run)
+    if kept:
+        assert cycle.requests("DELETE") == []
+        assert record is not None and record["decision"] == "keep"
+    else:
+        assert record is None
+    saved = cycle.store.get_claim(claim.id)
+    assert saved is not None and saved.lifecycle == "waiting"
+
+
 def test_cancelled_attempt_is_left_to_the_supervisor_not_the_cycle(cycle: Cycle) -> None:
     claim = cycle.claim()
     cancelled = AttemptResult("cancelled", None, {"reason": "cancelled"})
@@ -495,6 +521,25 @@ def test_failed_destroy_is_recorded_and_surfaced_by_status(cycle: Cycle) -> None
     # The result itself was consumed; the failure is a containment finding, not a retry.
     saved = cycle.store.get_claim(claim.id)
     assert saved is not None and saved.lifecycle == "settled"
+
+
+def test_failed_destroy_keeps_the_record_and_reconciliation_retries_it(cycle: Cycle) -> None:
+    claim = cycle.claim()
+    run, machine_id = cycle.finished_run(claim, "rep-1", _reviewable())
+    cycle.api.delete_failures.append(500)
+
+    cycle.consume()
+
+    record = cycle.record(run)
+    assert record is not None and record["decision"] == "destroy"
+    assert machine_id in cycle.api.machines
+
+    assert cycle.reconcile() == [machine_id]
+
+    assert machine_id not in cycle.api.machines
+    assert cycle.record(run) is None
+    assert cycle.store.get_setting("runtime", "fly:cleanup-failed") == {}
+    assert cycle.store.get_setting("runtime", "fly:unknown") == {}
 
 
 def test_reconciliation_clears_a_cleanup_failure_once_the_machine_is_destroyed(

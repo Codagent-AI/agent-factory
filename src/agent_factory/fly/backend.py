@@ -250,6 +250,8 @@ class FlyMachineBackend:
             return
         if decision == "destroy":
             if not self._destroy_verified(self._client(identity), _machine_id(identity)):
+                # Keep the record so reconciliation knows the Machine and retries the destroy.
+                _set_machine_record(store, identity, decision, probe.state)
                 _cleanup_failure(store, _machine_id(identity), "destroy was not verified")
                 return
             _clear_machine_record(store, identity)
@@ -331,6 +333,12 @@ class FlyMachineBackend:
             for value in records.values()
             if isinstance(value.get("machine_id"), str)
         } | _live_machine_ids(store)
+        # Disposal already chose to destroy these, verified as owned, but Fly did not confirm it.
+        pending_destroy = {
+            value.get("machine_id")
+            for value in records.values()
+            if value.get("decision") == "destroy" and isinstance(value.get("machine_id"), str)
+        }
         unknown: list[dict[str, object]] = []
         destroyed: list[str] = []
         now = time.time()
@@ -339,7 +347,7 @@ class FlyMachineBackend:
             if not isinstance(machine_id, str) or not machine_id:
                 continue
             deadline = _deadline_epoch(_metadata(machine).get("deadline_epoch"))
-            if deadline is not None and now > deadline:
+            if (deadline is not None and now > deadline) or machine_id in pending_destroy:
                 if self._destroy_verified(client, machine_id):
                     destroyed.append(machine_id)
                     failures.pop(machine_id, None)

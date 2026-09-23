@@ -829,3 +829,27 @@ def test_eval_admission_is_held_when_docker_memory_is_scarce(tmp_path: Path) -> 
         assert not store.nonterminal_runs()
     finally:
         store.close()
+
+
+def test_second_worktree_planning_failure_keeps_the_claim_settled(tmp_path: Path) -> None:
+    config, _board, env, _shared = _setup(tmp_path)
+    before_cli = """
+from agent_factory.suites.and_scene import WorktreeError
+def fail_plan(*args, **kwargs):
+    raise WorktreeError('planning failed before launch')
+from agent_factory.work_kinds.eval import handler as eval_handler
+eval_handler.plan_attempt = fail_plan
+"""
+    # The second consecutive pre-suite failure settles the claim within its own tick.
+    for _ in range(2):
+        _cli(config, env, "tick", before_cli=before_cli)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        claim = store.all_claims()[0]
+        attempts = store.runs_for_claim(claim.id)
+        assert [run.reason for run in attempts] == ["initial", "initial"]
+        assert all(run.result["failure_stage"] == "pre-suite" for run in attempts)
+        assert claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "infra-error"
+    finally:
+        store.close()
