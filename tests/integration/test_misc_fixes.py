@@ -326,7 +326,11 @@ def test_fly_claim_image_build_records_digest_and_refreshes_cli_layer(tmp_path: 
     runner.mkdir()
     factory = tmp_path / ".factory"
     factory.mkdir()
-    output = b"pushed image registry.fly.io/app:claim-abcdef123456@sha256:" + b"a" * 64 + b"\n"
+    output = (
+        b"#14 pushing manifest for registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"a" * 64
+        + b" 0.4s done\n"
+    )
 
     class Builder:
         def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
@@ -357,7 +361,51 @@ def test_fly_claim_image_build_records_digest_and_refreshes_cli_layer(tmp_path: 
     assert (factory / "image-build.log").read_bytes() == output
 
 
-def test_fly_claim_image_ignores_unrelated_digest_after_pushed_image(tmp_path: Path) -> None:
+def test_fly_claim_image_reads_buildkit_manifest_push_line(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import build_claim_image
+
+    runner = tmp_path / "runner"
+    runner.mkdir()
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    # BuildKit's plain progress, as Fly's remote builder streams it.
+    output = (
+        b"#14 exporting to image\n"
+        b"#14 exporting layers 2.1s done\n"
+        b"#14 exporting manifest sha256:" + b"c" * 64 + b" done\n"
+        b"#14 pushing layers 4.0s done\n"
+        b"#14 pushing manifest for registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"a"
+        * 64
+        + b" 0.4s done\n"
+        b"#14 DONE 6.8s\n"
+    )
+
+    class Builder:
+        def __init__(self, *args: object, stdout: object, **kwargs: object) -> None:
+            stdout.write(output)  # type: ignore[attr-defined]
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    with (
+        patch("subprocess.Popen", side_effect=Builder),
+        patch.object(
+            FlyMachinesClient, "resolve_manifest", return_value="sha256:" + "f" * 64
+        ) as lookup,
+    ):
+        client = FlyMachinesClient("app", tmp_path / "token")
+        image = build_claim_image(
+            "app", "registry.fly.io/app", "abcdef123456789", runner, factory, {}, client
+        )
+    assert image == "registry.fly.io/app@sha256:" + "a" * 64
+    lookup.assert_not_called()
+
+
+def test_fly_claim_image_ignores_unrelated_digest_after_manifest_push(tmp_path: Path) -> None:
     from agent_factory.fly.transport import build_claim_image
 
     runner = tmp_path / "runner"
@@ -365,9 +413,9 @@ def test_fly_claim_image_ignores_unrelated_digest_after_pushed_image(tmp_path: P
     factory = tmp_path / ".factory"
     factory.mkdir()
     output = (
-        b"pushed image registry.fly.io/app:claim-abcdef123456@sha256:"
+        b"#14 pushing manifest for registry.fly.io/app:claim-abcdef123456@sha256:"
         + b"a" * 64
-        + b"\nlayer sha256:"
+        + b" 0.4s done\n#14 exporting manifest sha256:"
         + b"b" * 64
         + b"\n"
     )
@@ -389,7 +437,7 @@ def test_fly_claim_image_ignores_unrelated_digest_after_pushed_image(tmp_path: P
     assert image == "registry.fly.io/app@sha256:" + "a" * 64
 
 
-def test_fly_claim_image_uses_pushed_record_after_earlier_tag_digest(tmp_path: Path) -> None:
+def test_fly_claim_image_uses_manifest_push_after_earlier_tag_digest(tmp_path: Path) -> None:
     from agent_factory.fly.transport import build_claim_image
 
     runner = tmp_path / "runner"
@@ -399,9 +447,9 @@ def test_fly_claim_image_uses_pushed_record_after_earlier_tag_digest(tmp_path: P
     output = (
         b"cached image registry.fly.io/app:claim-abcdef123456@sha256:"
         + b"b" * 64
-        + b"\npushed image registry.fly.io/app:claim-abcdef123456@sha256:"
+        + b"\n#14 pushing manifest for registry.fly.io/app:claim-abcdef123456@sha256:"
         + b"a" * 64
-        + b"\n"
+        + b" 0.4s done\n"
     )
 
     class Builder:
@@ -421,7 +469,7 @@ def test_fly_claim_image_uses_pushed_record_after_earlier_tag_digest(tmp_path: P
     assert image == "registry.fly.io/app@sha256:" + "a" * 64
 
 
-def test_fly_claim_image_uses_registry_when_output_has_no_pushed_digest(tmp_path: Path) -> None:
+def test_fly_claim_image_uses_registry_when_output_has_no_manifest_push(tmp_path: Path) -> None:
     from agent_factory.fly.transport import build_claim_image
 
     runner = tmp_path / "runner"

@@ -248,11 +248,14 @@ def build_claim_image(
     if code:
         diagnostic = bytes(tail[-2000:]).decode(errors="replace")
         raise FlyTransportError(f"Fly image build failed: {diagnostic}")
+    # BuildKit's progress reports the pushed manifest as
+    # "#N pushing manifest for <image>@sha256:<digest> <time> done"; anything else
+    # (cached or exported layers, other tags) is not this build's pushed image.
     pushed = list(
         re.finditer(
-            rb"(?m)^pushed image[ \t]+"
+            rb"(?m)^(?:#\d+[ \t]+)?pushing manifest for[ \t]+"
             + re.escape(image.encode())
-            + rb"@(sha256:[0-9a-fA-F]{64})[ \t]*\r?$",
+            + rb"@(sha256:[0-9a-fA-F]{64})\b",
             tail,
         )
     )
