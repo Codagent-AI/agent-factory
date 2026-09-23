@@ -285,3 +285,85 @@ def test_redirects_are_refused_so_the_token_never_reaches_another_endpoint(
                 client.resolve_manifest("registry.fly.io/app:tag")
 
     assert seen == []
+
+
+def _create(client: FlyMachinesClient) -> dict[str, object]:
+    return dict(
+        client.create_machine(
+            image="registry.fly.io/app@sha256:abc",
+            cpu_kind="shared",
+            cpus=4,
+            memory_mb=8192,
+            region="ewr",
+            factory_owner="agent-factory",
+            run_id="run-1",
+            claim_id="claim-1",
+            nonce="nonce",
+            deadline_epoch="1900000000",
+            unit_key="rep-1",
+            guest_init="true",
+        )
+    )
+
+
+def test_a_rejected_request_reports_the_reason_fly_gave(fly: Harness) -> None:
+    fly.machine("machine-1", metadata=MARKER)
+    fly.api.post_failures.append((422, {"error": "invalid restart policy"}))
+
+    with pytest.raises(FlyApiError) as raised:
+        fly.client.stop("machine-1")
+
+    assert raised.value.status == 422
+    assert "HTTP 422: invalid restart policy" in str(raised.value)
+    assert "deploy-token" not in str(raised.value)
+
+
+# What Fly answers when the image cannot be pulled (captured from the live API).
+_UNPULLABLE = {
+    "error": "failed to get manifest registry.fly.io/app@sha256:abc: request failed: "
+    'not found [http 404]: {"errors":[{"code":"MANIFEST_UNKNOWN"}]}'
+}
+
+
+def test_create_retries_a_400_while_a_just_pushed_image_propagates(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    waits: list[float] = []
+    with FakeMachinesApi() as api:
+        client = FlyMachinesClient("app", token, base_url=api.base_url, sleep=waits.append)
+        api.post_failures.extend([(400, _UNPULLABLE), (400, _UNPULLABLE)])
+
+        machine = _create(client)
+
+        assert machine["id"] == "machine-1"
+        assert len([r for r in api.requests if r["method"] == "POST"]) == 3
+        assert len(waits) == 2 and waits[1] > waits[0] > 0
+
+
+def test_create_reports_any_other_400_at_once(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    with FakeMachinesApi() as api:
+        client = FlyMachinesClient("app", token, base_url=api.base_url, sleep=lambda _: None)
+        api.post_failures.append((400, {"error": "invalid guest cpu_kind"}))
+
+        with pytest.raises(FlyApiError) as raised:
+            _create(client)
+
+        assert "invalid guest cpu_kind" in str(raised.value)
+        assert len([r for r in api.requests if r["method"] == "POST"]) == 1
+
+
+def test_create_reports_a_400_that_persists_with_fly_reason(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    with FakeMachinesApi() as api:
+        client = FlyMachinesClient("app", token, base_url=api.base_url, sleep=lambda _: None)
+        api.post_failures.extend([(400, _UNPULLABLE)] * 20)
+
+        with pytest.raises(FlyApiError) as raised:
+            _create(client)
+
+        assert raised.value.status == 400
+        assert "failed to get manifest" in str(raised.value)
+        assert api.machines == {}
