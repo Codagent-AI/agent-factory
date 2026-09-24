@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from collections.abc import Mapping
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -671,7 +672,26 @@ def host_script(
         'git config --file "$GIT_CONFIG_GLOBAL" user.email "${login}@users.noreply.github.com"',
         f"cd {shlex.quote(str(repo_clone))}",
         *_RESTORE_TRACKED_CONFIG_LINES,
+        "set +e",
         run_command,
+        "run_status=$?",
+        # Every attempt is audited whatever its result, before the exit trap restores a
+        # tracked config: replay resolves the auditor from the staged factory profile. The
+        # audit runs with the operator's own GitHub identity, never the attempt's token,
+        # and its outcome never changes the attempt's exit status.
+        " ".join(
+            (
+                "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
+                "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
+                f"{shlex.quote(sys.executable)} -m agent_factory.audit host",
+                f"--runner {shlex.quote(runner)}",
+                f"--session-dir {shlex.quote(str(session_dir))}",
+                f"--project {shlex.quote(str(repo_clone))}",
+                f"--evidence {shlex.quote(str(evidence))}",
+                "|| true",
+            )
+        ),
+        'exit "$run_status"',
     ]
     return "\n".join(lines) + "\n"
 

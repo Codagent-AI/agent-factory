@@ -5,6 +5,7 @@ from __future__ import annotations
 import functools
 import logging
 import re
+import shutil
 import subprocess
 from collections.abc import Callable, Mapping
 from contextlib import closing
@@ -13,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import retention, work_kinds
+from agent_factory import audit, retention, work_kinds
 from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
@@ -604,10 +605,33 @@ def _consume_results(
                     },
                 )
             controller.record_result(run.id, result)
+            _settle_audit(store, claim, run)
             _dispose_fly_result(store, handler, run, result, local)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
+
+
+def _settle_audit(store: ClaimStore, claim: Claim, run: Run) -> None:
+    """Report an attempt whose post-run audit did not deliver its metrics to the Sheet.
+
+    Every factory run is audited: a host attempt audits inside its launch wrapper, and an
+    eval's sandbox-assembled reports are delivered from here. The attempt's own result is
+    never changed by its audit.
+    """
+    hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
+    suite = cast(Mapping[str, object], hints).get("suite") if isinstance(hints, Mapping) else None
+    evidence = Path(run.evidence_path)
+    summary = audit.settle(
+        evidence,
+        eval_suite=suite == "and-scene",
+        runner=shutil.which("agent-runner"),
+    )
+    body = audit.event_body(summary, evidence) if summary is not None else None
+    if body is not None:
+        store.record_event(
+            claim.id, f"{run.unit_key}:attempt-{run.attempt_number}:post-run-audit", body
+        )
 
 
 def _dispose_fly_result(
