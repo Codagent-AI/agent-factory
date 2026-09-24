@@ -135,7 +135,7 @@ Report only test counts you actually saw. Paul merges.
 
 1. Confirm the PR is in `origin/main`.
 2. Confirm no eval is running: `status` shows the eval slot free. Switching code under a running eval or fix is unsafe, and the deploy script refuses. A restart alone is safe, because supervisors and launchers survive it.
-3. Run `scripts/deploy.sh` (see "Deploying" in `AGENTS.md`). It pauses, detaches the service clone at `origin/main`, syncs the venv, runs `doctor`, reloads the LaunchAgent, resumes, and ticks.
+3. Run `scripts/deploy.sh` (see "Deploying" in `AGENTS.md`). It pauses, detaches the service clone at `origin/main`, syncs the venv, runs `doctor`, reloads the LaunchAgent, restores the prior pause state, and ticks.
 4. Check whether the PR changed the LaunchAgent template (`packaging/launchd/`) or local configuration; apply those too. The script handles dependencies. `doctor` must pass everything the next run needs.
 
 ### 9. Verify

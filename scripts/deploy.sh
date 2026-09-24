@@ -39,7 +39,10 @@ slots_free() {
 }
 busy=$(slots_free) || die "$busy; deploy when the eval and fix slots are free"
 was_paused=false
-grep -q '^paused: true$' <<<"$("$running" --config "$config" status)" && was_paused=true
+if ! status_text=$("$running" --config "$config" status); then
+  die "could not read factory status"
+fi
+grep -q '^paused: true$' <<<"$status_text" && was_paused=true
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $clone/.git ]]; then
