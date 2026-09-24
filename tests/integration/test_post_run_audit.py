@@ -99,6 +99,8 @@ def test_completed_link_without_a_report_is_a_failed_audit(tmp_path: Path) -> No
     _link(source, "audit-pending", delivery="pending")
     _link(source, "audit-warning", warning="value-audit failed: argument list too long")
     _link(source, "audit-running", state="started")
+    corrupt = _link(source, "audit-corrupt")
+    (corrupt / "local-report.json").write_text("{")
 
     outcomes = {o.audit_run_id: (o.outcome, o.reason) for o in audit.link_outcomes(source)}
 
@@ -109,6 +111,8 @@ def test_completed_link_without_a_report_is_a_failed_audit(tmp_path: Path) -> No
         "value-audit failed: argument list too long",
     )
     assert outcomes["audit-running"] == (audit.ACTIVE, "")
+    assert outcomes["audit-corrupt"][0] == audit.FAILED
+    assert "unreadable" in outcomes["audit-corrupt"][1]
 
 
 def test_host_audit_replays_with_the_clone_and_records_delivery(tmp_path: Path) -> None:

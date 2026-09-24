@@ -141,7 +141,10 @@ def _outcome(state: str, warning: str, reporting: str, audit_dir: Path) -> tuple
     failure = _text((_read_json(audit_dir / "state.json") or {}).get("failureReason"))
     if state == "failed":
         return FAILED, warning or failure or "audit launch failed"
-    report = _read_json(audit_dir / "local-report.json")
+    report_path = audit_dir / "local-report.json"
+    report = _read_json(report_path)
+    if report is None and report_path.exists():
+        return FAILED, f"local report is unreadable: {report_path}"
     delivery = _text(report.get("delivery_state")) if report is not None else ""
     if delivery == "delivered":
         return DELIVERED, ""
