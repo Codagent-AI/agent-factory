@@ -29,10 +29,16 @@ class FlyApiError(RuntimeError):
     """An API failure which identifies its path but never leaks its bearer token."""
 
     def __init__(
-        self, path: str, status: int | None = None, detail: str = "request failed"
+        self,
+        path: str,
+        status: int | None = None,
+        detail: str = "request failed",
+        reason: str = "",
     ) -> None:
         self.path = path
         self.status = status
+        # Fly's own one-line explanation, when it gave one.
+        self.reason = reason
         super().__init__(f"Fly API request failed for {path}: {detail}")
 
 
@@ -44,6 +50,28 @@ _MANIFEST_MEDIA_TYPES = (
 )
 
 _RATE_LIMIT_ATTEMPTS = 6
+# Fly answers 400 "failed to get manifest ..." to a create whose image it cannot
+# pull yet. An image pushed seconds earlier can take about a minute to become
+# pullable, so that one failure is retried for about 100 seconds; any other 400
+# is reported at once.
+_UNPULLABLE_IMAGE = "failed to get manifest"
+_CREATE_ATTEMPTS = 5
+_CREATE_RETRY_SECONDS = 10.0
+
+
+def _http_reason(error: HTTPError) -> str:
+    """Fly's own one-line reason for a failure, which never echoes the token."""
+    try:
+        raw = error.read(2048).decode("utf-8", "replace")
+    except OSError:
+        raw = ""
+    try:
+        parsed: object = json.loads(raw)
+    except ValueError:
+        parsed = raw
+    if isinstance(parsed, Mapping):
+        parsed = cast(Mapping[str, object], parsed).get("error", "")
+    return " ".join(str(parsed).split())[:300] if parsed else ""
 
 
 def _retry_after(header: str | None, attempt: int) -> float:
@@ -136,7 +164,9 @@ class FlyMachinesClient:
                     )
             except HTTPError as error:
                 if error.code != 429 or attempt == _RATE_LIMIT_ATTEMPTS - 1:
-                    raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
+                    reason = _http_reason(error)
+                    detail = f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}"
+                    raise FlyApiError(path, error.code, detail, reason) from error
                 self._sleep(_retry_after(error.headers.get("Retry-After"), attempt))
             except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise FlyApiError(path, detail="request could not be completed") from error
@@ -189,8 +219,16 @@ class FlyMachinesClient:
                 "init": {"exec": ["bash", "-c", guest_init]},
             },
         }
-        result = self._request(f"/v1/apps/{self.app}/machines", method="POST", body=body)
-        return _mapping(result)
+        path = f"/v1/apps/{self.app}/machines"
+        for attempt in range(_CREATE_ATTEMPTS):
+            try:
+                return _mapping(self._request(path, method="POST", body=body))
+            except FlyApiError as error:
+                unpullable = error.status == 400 and error.reason.startswith(_UNPULLABLE_IMAGE)
+                if not unpullable or attempt == _CREATE_ATTEMPTS - 1:
+                    raise
+                self._sleep(_CREATE_RETRY_SECONDS * (attempt + 1))
+        raise FlyApiError(path, 400, "HTTP 400")  # unreachable; keeps the return type total
 
     def get_machine(self, machine_id: str) -> Mapping[str, object]:
         return _mapping(self._request(f"/v1/apps/{self.app}/machines/{machine_id}"))

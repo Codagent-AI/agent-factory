@@ -13,3 +13,8 @@ build/
 dist/
 
 validator_logs
+
+# Project skills are shared; the rest of Claude Code state stays local.
+!.claude/
+.claude/*
+!.claude/skills/

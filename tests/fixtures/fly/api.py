@@ -19,7 +19,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.requests: list[dict[str, object]] = []
         self.manifest_digest = manifest_digest
         # Statuses to answer the next POSTs with, before normal handling resumes.
-        self.post_failures: list[int] = []
+        # A failure is a status, or a status and the JSON body Fly answers with.
+        self.post_failures: list[int | tuple[int, object]] = []
         # Statuses to answer the next state waits with (408 is Fly's wait timeout).
         self.wait_failures: list[int] = []
         # Statuses to answer the next DELETEs with, leaving the Machine in place.
@@ -135,7 +136,11 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                 self._record(body)
                 path = urlsplit(self.path).path
                 if fake.post_failures:
-                    self._send(fake.post_failures.pop(0))
+                    failure = fake.post_failures.pop(0)
+                    if isinstance(failure, tuple):
+                        self._send(*failure)
+                    else:
+                        self._send(failure)
                     return
                 if path.endswith("/machines"):
                     fake._created += 1  # pyright: ignore[reportPrivateUsage]
