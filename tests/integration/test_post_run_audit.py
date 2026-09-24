@@ -262,6 +262,27 @@ def test_settle_ignores_attempts_that_never_started_a_workflow(tmp_path: Path) -
     _source(tmp_path, (SESSION, "closed"))
     missing = audit.settle(tmp_path, eval_suite=False, runner=None)
     assert missing is not None and missing["outcome"] == audit.MISSING
+    assert json.loads((tmp_path / audit.AUDIT_FILE).read_text())["outcome"] == audit.MISSING
+
+
+def test_started_eval_without_collected_metrics_is_recorded_missing(tmp_path: Path) -> None:
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "agent-runner.log").write_text("started\n")
+
+    summary = audit.settle(tmp_path, eval_suite=True, runner="/bin/agent-runner")
+
+    assert summary is not None and summary["outcome"] == audit.MISSING
+    assert json.loads((tmp_path / audit.AUDIT_FILE).read_text())["outcome"] == audit.MISSING
+
+
+def test_eval_without_a_runner_records_the_failure_for_status(tmp_path: Path) -> None:
+    source = tmp_path / ".runtime" / "agent-runner-projects" / "p" / "runs" / "implement-1"
+    _write(source / audit.METRICS_FILE, {"sessions": [{"execution_session_id": SESSION}]})
+
+    summary = audit.settle(tmp_path, eval_suite=True, runner=None)
+
+    assert summary is not None and summary["outcome"] == audit.FAILED
+    assert json.loads((tmp_path / audit.AUDIT_FILE).read_text())["outcome"] == audit.FAILED
 
 
 def test_event_body_only_for_undelivered_audits(tmp_path: Path) -> None:

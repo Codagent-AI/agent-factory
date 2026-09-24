@@ -15,6 +15,7 @@ the resident records as an issue event.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import sys
@@ -356,30 +357,47 @@ def collected_sources(evidence: Path) -> list[Path]:
     ]
 
 
+# Files an eval's harness writes once Agent Runner has started the workflow.
+EVAL_WORKFLOW_STARTED = ("logs/agent-runner.log", "phases/workflow-execution.json")
+
+
 def settle(evidence: Path, *, eval_suite: bool, runner: str | None) -> Mapping[str, object] | None:
     """The attempt's audit outcome, delivering an eval's collected reports first.
 
-    ``None`` means the workflow never started, so there is nothing to audit. Never
-    raises: an audit problem is reported, and never changes the attempt's result.
+    ``None`` means the workflow never started, so there is nothing to audit. Every other
+    outcome is recorded in ``audit.json`` so ``status`` can list it. Never raises: an
+    audit problem is reported, and never changes the attempt's result.
     """
     try:
         if eval_suite:
             if not collected_sources(evidence):
-                return None
+                if not any((evidence / name).exists() for name in EVAL_WORKFLOW_STARTED):
+                    return None
+                return _recorded(
+                    evidence, MISSING, "the eval's Agent Runner metrics were not collected"
+                )
             existing = read_summary(evidence)
             if existing is not None and existing.get("outcome") == DELIVERED:
                 return existing
             if runner is None:
-                return {"outcome": FAILED, "reason": "agent-runner is not on PATH"}
+                return _recorded(evidence, FAILED, "agent-runner is not on PATH")
             return deliver_collected(runner, evidence)
         if not (evidence / HOST_SESSION_DIR / METRICS_FILE).is_file():
             return None
         summary = read_summary(evidence)
         if summary is None:
-            return {"outcome": MISSING, "reason": "the attempt recorded no post-run audit"}
+            return _recorded(evidence, MISSING, "the attempt recorded no post-run audit")
         return summary
     except Exception as error:  # noqa: BLE001 - audit problems are reported, never raised
-        return {"outcome": FAILED, "reason": f"audit settlement failed: {error}"}
+        return _recorded(evidence, FAILED, f"audit settlement failed: {error}")
+
+
+def _recorded(evidence: Path, outcome: str, reason: str) -> dict[str, object]:
+    summary = summarize([])
+    summary.update(outcome=outcome, reason=reason)
+    with contextlib.suppress(OSError):
+        write_summary(evidence, summary)
+    return summary
 
 
 def event_body(summary: Mapping[str, object], evidence: Path) -> str | None:
