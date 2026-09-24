@@ -74,7 +74,7 @@ Pausing stops new admissions and launches. Running supervisors and Fly launchers
 
 ### 2. Diagnose
 
-1. Read the run row and its claim from `~/.agent-factory/state.sqlite3`.
+1. Read the run row and its claim from the database the watcher reads: `$AGENT_FACTORY_ROOT/state.sqlite3` (default `~/.agent-factory/state.sqlite3`).
    - Run: `status`, `reason`, `attempt_number`, `result_json`, `evidence_path`, `plan_json`.
    - Claim: `lifecycle`, `outcome_json`, `frozen_spec_json`.
    - `agent-factory … status` shows the live view.

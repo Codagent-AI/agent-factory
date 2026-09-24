@@ -22,21 +22,46 @@ grace=7        # the resident ticks every poll_minutes (5); allow one tick plus 
 interval=90
 claims=1
 
+# An option's value must be present and must not be the next option.
+value() {
+  case "${2-}" in
+    ''|--*) echo "$1 needs a value" >&2; exit 2 ;;
+  esac
+}
+
+# A whole number within [min, max].
+bounded() {
+  case "$2" in
+    ''|*[!0-9]*) echo "$1 must be a whole number" >&2; exit 2 ;;
+  esac
+  # Too many digits would overflow the integer comparison below.
+  if [ "${#2}" -gt 5 ] || [ "$2" -lt "$3" ] || [ "$2" -gt "$4" ]; then
+    echo "$1 must be between $3 and $4" >&2; exit 2
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --since) since="$2"; shift 2 ;;
-    --grace-minutes) grace="$2"; shift 2 ;;
-    --interval) interval="$2"; shift 2 ;;
+    --since) value "$1" "${2-}"; since="$2"; shift 2 ;;
+    --grace-minutes) value "$1" "${2-}"; grace="$2"; shift 2 ;;
+    --interval) value "$1" "${2-}"; interval="$2"; shift 2 ;;
     --no-claims) claims=0; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 [ -r "$db" ] || { echo "state database not readable: $db" >&2; exit 2; }
-case "$grace$interval" in *[!0-9]*|'') echo "grace and interval must be whole numbers" >&2; exit 2 ;; esac
-[ "$interval" -ge 1 ] || { echo "interval must be at least 1 second" >&2; exit 2; }
-[ -n "$since" ] || since=$(sqlite3 "$db" "select strftime('%Y-%m-%dT%H:%M:%S','now')")
-case "$since" in *\'*) echo "invalid --since" >&2; exit 2 ;; esac
+bounded --grace-minutes "$grace" 0 1440
+bounded --interval "$interval" 1 3600
+if [ -z "$since" ]; then
+  since=$(sqlite3 "$db" "select strftime('%Y-%m-%dT%H:%M:%S','now')")
+else
+  # Normalize to the UTC form the queries compare against; reject what SQLite cannot parse.
+  case "$since" in *\'*) echo "invalid --since: $since" >&2; exit 2 ;; esac
+  normalized=$(sqlite3 "$db" "select strftime('%Y-%m-%dT%H:%M:%S', '$since')")
+  [ -n "$normalized" ] || { echo "invalid --since: $since" >&2; exit 2; }
+  since="$normalized"
+fi
 
 echo "watching $db for events after $since (grace ${grace}m, every ${interval}s)"
 while true; do

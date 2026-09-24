@@ -300,12 +300,18 @@ reaches Done.
 
 ## Service management and storage
 
-Restart the controller without touching independent supervisors:
+Restart the controller without touching independent supervisors. `kickstart -k`
+does not re-read a changed plist, so unload and load it instead:
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/com.codagent.agent-factory
-tail -f /absolute/path/to/.agent-factory/logs/controller.log
+agent-factory --config /absolute/path/to/config.toml pause
+launchctl bootout gui/$(id -u)/com.codagent.agent-factory
+# wait until `launchctl print gui/$(id -u)/com.codagent.agent-factory` fails
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-factory.plist
+agent-factory --config /absolute/path/to/config.toml resume
 ```
+
+`resident` does not write `controller.log`; use `status` and the per-run logs.
 
 The root contains `state.sqlite3`, controller and per-run logs, factory-owned
 worktrees and clones, mirrors, and artifacts. Inspect disk use with
