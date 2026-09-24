@@ -39,4 +39,41 @@ Do not leave uncommitted pins in `config/codagent.toml` (for example
 `harness_ref = "dev"`). The service would use them, and they fail the
 validator's end-to-end tests. Commit any pin through a PR.
 
+## Code and models each kind of work uses
+
+- Evals use Agent Evals `harness_ref` (`main`) and Agent Runner
+  `agent_runner_ref` (`dev`). Fixes use Agent Runner and Skills from
+  `[fix.branches]` (`main`). An Agent Runner change that evals need, such as a
+  Fly Dockerfile fix, must reach `dev`, not only `main`.
+- Role models are `[eval.defaults]` and `[fix.defaults]` in
+  `config/codagent.toml`. Each claim freezes its revisions and roles at
+  admission, so later edits affect only new claims.
+- The eval judge model is not set here. Agent Evals uses the Codex CLI default
+  (`codex-default`), so it changes with the CLI version.
+
+## Fly eval images
+
+- Each eval claim builds its own image on Fly's remote builder from its pinned
+  Agent Runner worktree (`docker/dev/Dockerfile`), tagged
+  `claim-<first 12 claim id characters>` and pinned by digest. The Dockerfile
+  needs the `FACTORY_CLI_REFRESH` build argument so the model CLIs are
+  reinstalled for each claim.
+- The registry can take about a minute to serve a just-pushed image; Fly then
+  answers a Machine create with HTTP 400 `failed to get manifest`.
+- Old `claim-` tags are not removed yet (see
+  https://github.com/Codagent-AI/agent-factory/issues/15).
+
+## Disk space
+
+Admission stops below `minimum_free_gib` (5 GiB). Space goes mainly to
+`~/.agent-factory/artifacts` and `clones`, which are cleaned only after a card
+reaches Done, and to Docker Desktop's disk image. Automated cleanup is tracked
+in https://github.com/Codagent-AI/agent-factory/issues/15.
+
+## Shell on this Mac
+
+- There is no `timeout` command.
+- The shell is zsh: `set -- $var` does not split words. Pass arguments
+  explicitly or use arrays.
+
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
