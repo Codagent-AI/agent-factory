@@ -14,11 +14,12 @@ import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 from xml.parsers.expat import ExpatError
 
+from agent_factory import audit
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
 from agent_factory.github import (
     AppCredentials,
@@ -159,6 +160,10 @@ def doctor(
     diagnostics.append(launch_agent_identity_diagnostic(_LAUNCH_AGENT_PLIST))
     if include_informational and sys.platform == "darwin":
         diagnostics.append(stale_unknown_keychain_diagnostic())
+    if include_informational:
+        # Informational: an audit problem is reported for each run and never holds admission.
+        available, detail, action = audit.readiness(shutil.which("agent-runner"))
+        diagnostics.append(Diagnostic("post-run audit", available, detail, action))
     if shared is not None and include_fix:
         diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
     if shared is not None and config.eval_execution == "fly":
@@ -284,6 +289,7 @@ def status(
             f"{mismatch.get('remedy', 'verify and destroy it if unsafe')}"
         )
     lines.extend(_quota_hold_lines(store, config))
+    lines.extend(_audit_lines(store, all_claims))
     for claim in claims:
         run = active_by_claim.get(claim.id)
         if run is not None:
@@ -1148,6 +1154,48 @@ def _hold_lines(store: ClaimStore, claim: Claim, config: LocalConfig | None) -> 
         lines.append("blocking condition: waiting; inspect the latest controller report")
     if config is not None and store.is_paused():
         lines.append("blocking condition: paused; resume clears only this control")
+    return lines
+
+
+_AUDIT_STATUS_WINDOW = timedelta(days=7)
+
+
+def _audit_lines(
+    store: ClaimStore, claims: Iterable[Claim], *, now: datetime | None = None
+) -> list[str]:
+    """Recent attempts whose post-run audit did not deliver metrics to the Sheet.
+
+    Reads only the recorded ``audit.json``; status never delivers or replays an audit.
+    """
+    current = now or datetime.now().astimezone()
+    lines: list[str] = []
+    for claim in claims:
+        for run in store.runs_for_claim(claim.id):
+            if run.finished_at is None:
+                continue
+            try:
+                finished = datetime.fromisoformat(run.finished_at)
+            except ValueError:
+                continue
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=UTC)
+            if current - finished > _AUDIT_STATUS_WINDOW:
+                continue
+            evidence = Path(run.evidence_path)
+            summary = audit.read_summary(evidence)
+            if summary is None:
+                if not (evidence / audit.HOST_SESSION_DIR / audit.METRICS_FILE).is_file():
+                    continue
+                outcome, reason = audit.MISSING, "the attempt recorded no post-run audit"
+            else:
+                outcome = str(summary.get("outcome", audit.MISSING))
+                reason = str(summary.get("reason", ""))
+            if outcome != audit.DELIVERED:
+                lines.append(
+                    f"post-run audit: {claim.repository}#{claim.issue_number} "
+                    f"{run.unit_key} attempt {run.attempt_number + 1}: {outcome}"
+                    + (f" — {reason}" if reason else "")
+                )
     return lines
 
 
