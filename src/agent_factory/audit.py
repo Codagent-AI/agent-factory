@@ -382,12 +382,13 @@ def settle(evidence: Path, *, eval_suite: bool, runner: str | None) -> Mapping[s
             if runner is None:
                 return _recorded(evidence, FAILED, "agent-runner is not on PATH")
             return deliver_collected(runner, evidence)
+        # The host wrapper records a summary even when the run left no session metrics.
+        summary = read_summary(evidence)
+        if summary is not None:
+            return summary
         if not (evidence / HOST_SESSION_DIR / METRICS_FILE).is_file():
             return None
-        summary = read_summary(evidence)
-        if summary is None:
-            return _recorded(evidence, MISSING, "the attempt recorded no post-run audit")
-        return summary
+        return _recorded(evidence, MISSING, "the attempt recorded no post-run audit")
     except Exception as error:  # noqa: BLE001 - audit problems are reported, never raised
         return _recorded(evidence, FAILED, f"audit settlement failed: {error}")
 

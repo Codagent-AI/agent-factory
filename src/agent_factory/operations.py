@@ -14,7 +14,7 @@ import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 from xml.parsers.expat import ExpatError
@@ -1177,6 +1177,8 @@ def _audit_lines(
                 finished = datetime.fromisoformat(run.finished_at)
             except ValueError:
                 continue
+            if finished.tzinfo is None:
+                finished = finished.replace(tzinfo=UTC)
             if current - finished > _AUDIT_STATUS_WINDOW:
                 continue
             evidence = Path(run.evidence_path)
@@ -1191,7 +1193,7 @@ def _audit_lines(
             if outcome != audit.DELIVERED:
                 lines.append(
                     f"post-run audit: {claim.repository}#{claim.issue_number} "
-                    f"{run.unit_key} attempt {run.attempt_number}: {outcome}"
+                    f"{run.unit_key} attempt {run.attempt_number + 1}: {outcome}"
                     + (f" — {reason}" if reason else "")
                 )
     return lines

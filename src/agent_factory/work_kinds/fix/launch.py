@@ -683,7 +683,8 @@ def host_script(
             (
                 "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
                 "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
-                f"{shlex.quote(sys.executable)} -m agent_factory.audit host",
+                # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
+                f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
                 f"--runner {shlex.quote(runner)}",
                 f"--session-dir {shlex.quote(str(session_dir))}",
                 f"--project {shlex.quote(str(repo_clone))}",

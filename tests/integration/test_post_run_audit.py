@@ -7,11 +7,12 @@ import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from agent_factory import audit
-from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.store import ClaimDraft, ClaimStore, Run
 
 SESSION = "exec-1"
 
@@ -401,3 +402,84 @@ if args[:2] == ["audit", "replay"]:
     assert replay["gh_token"] is None
     assert replay["factory_profile"] is True
     assert json.loads((built.evidence / audit.AUDIT_FILE).read_text())["outcome"] == "delivered"
+
+
+def test_host_summary_is_reported_even_without_session_metrics(tmp_path: Path) -> None:
+    audit.write_summary(
+        tmp_path, {"outcome": audit.FAILED, "reason": "the run recorded no execution session"}
+    )
+
+    summary = audit.settle(tmp_path, eval_suite=False, runner=None)
+
+    assert summary is not None and summary["outcome"] == audit.FAILED
+
+
+def test_status_lists_recent_undelivered_audits_one_based(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from agent_factory import operations
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 7, "I1", "P1", "fix", "fp", {"version": 1})
+    )
+    run = store.reserve_run(
+        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+    store.finish_run(run.id, execution_status="completed", result={})
+    evidence = Path(run.evidence_path)
+    evidence.mkdir(parents=True)
+    audit.write_summary(evidence, {"outcome": audit.FAILED, "reason": "value-audit failed"})
+    finished = store.get_run(run.id)
+    assert finished is not None and finished.finished_at is not None
+    naive = replace_finished(finished, datetime.now(UTC).replace(tzinfo=None).isoformat())
+
+    lines = operations._audit_lines(  # pyright: ignore[reportPrivateUsage]
+        cast(ClaimStore, _OneRunStore(naive)),
+        [claim],
+        now=datetime.now(UTC) + timedelta(minutes=1),
+    )
+
+    assert lines == [
+        f"post-run audit: example/work#7 fix attempt {naive.attempt_number + 1}: failed"
+        " — value-audit failed"
+    ]
+    store.close()
+
+
+def replace_finished(run: object, finished_at: str) -> Run:
+    from dataclasses import replace
+
+    return replace(cast(Run, run), finished_at=finished_at)
+
+
+class _OneRunStore:
+    def __init__(self, run: Run) -> None:
+        self.run = run
+
+    def runs_for_claim(self, claim_id: str) -> list[Run]:
+        del claim_id
+        return [self.run]
+
+
+def test_audit_event_failure_does_not_stop_result_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory import runtime
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {"version": 1})
+    )
+    run = store.reserve_run(
+        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+    Path(run.evidence_path).mkdir(parents=True)
+    audit.write_summary(Path(run.evidence_path), {"outcome": audit.FAILED, "reason": "x"})
+
+    def broken(*args: object) -> None:
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(store, "record_event", broken)
+    runtime._settle_audit(store, claim, run)  # pyright: ignore[reportPrivateUsage]
+    store.close()

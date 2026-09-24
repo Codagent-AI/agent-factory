@@ -629,9 +629,12 @@ def _settle_audit(store: ClaimStore, claim: Claim, run: Run) -> None:
     )
     body = audit.event_body(summary, evidence) if summary is not None else None
     if body is not None:
-        store.record_event(
-            claim.id, f"{run.unit_key}:attempt-{run.attempt_number}:post-run-audit", body
-        )
+        try:
+            store.record_event(
+                claim.id, f"{run.unit_key}:attempt-{run.attempt_number}:post-run-audit", body
+            )
+        except Exception:  # noqa: BLE001 - an audit report must not stop result consumption
+            logger.exception("could not record the post-run audit event for run %s", run.id)
 
 
 def _dispose_fly_result(
