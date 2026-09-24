@@ -4,34 +4,43 @@
 
 - The LaunchAgent `com.codagent.agent-factory`
   (`~/Library/LaunchAgents/com.codagent.agent-factory.plist`) runs `resident`
-  from the editable venv in the `/Users/paul/codagent/agent-factory.fly`
-  worktree. `~/.agent-factory/config.toml` points `shared_config` at that
-  worktree's `config/codagent.toml`, which is reloaded every tick.
-- There is no build or deploy step: the service runs whatever source is checked
-  out in that worktree. Source edits go live for newly spawned processes, so do
-  not edit or switch that worktree while a run is in progress.
-- The worktree is kept detached at `origin/main`. Paul's main checkout
-  (`/Users/paul/codagent/agent-factory`) holds in-progress work on other
-  branches; do not point the service at it unless Paul asks.
-- The `agent-factory.run-locally` worktree is retired. Never use it.
+  from the editable venv in the service clone,
+  `~/.agent-factory/agent-factory`. `~/.agent-factory/config.toml` points
+  `shared_config` at the clone's `config/codagent.toml`, which is reloaded
+  every tick.
+- The clone is kept detached at the deployed ref (normally `origin/main`).
+  Change it only with `scripts/deploy.sh`: because the venv is editable, any
+  switch or edit in the clone reaches newly spawned processes without a
+  restart. Never edit it by hand.
+- Paul's checkout (`/Users/paul/codagent/agent-factory`) is not live. It holds
+  his in-progress branches and is the post-merge sync's working clone for this
+  repository. Do fix work in a separate worktree.
+- The `agent-factory.fly` and `agent-factory.run-locally` worktrees are retired.
+  Never use them.
 - Always compare against `origin/main` rather than local `main`, which falls
   behind.
 
-## Deploying new `main`
+## Deploying
 
-1. `git fetch origin && git switch --detach origin/main` in
-   `agent-factory.fly`. Reinstall the venv if dependencies changed.
-2. `agent-factory --config ~/.agent-factory/config.toml pause`, then `doctor`.
-3. `launchctl bootout gui/$(id -u)/com.codagent.agent-factory`, and wait until
-   `launchctl print gui/$(id -u)/com.codagent.agent-factory` fails.
-4. `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-factory.plist`.
-   `launchctl kickstart -k` does not re-read a changed plist.
-5. `resume`, then one `tick`.
+Run `scripts/deploy.sh` from any checkout of this repository (optionally with a
+ref; the default is `origin/main`). It refuses while the eval or fix slot is
+busy, then:
 
-Supervisors and Fly launchers run in their own process groups and survive a
-restart. To run `tick` by hand from a shell, put the worktree's `.venv/bin`
-first on `PATH`. `controller.log` is stale because `resident` does not write
-to it.
+1. pauses the factory, detaches the service clone at the ref (cloning it first
+   if missing), and runs `uv sync --frozen`;
+2. points the plist's executable and `PATH`, and `shared_config`, at the clone;
+3. runs `doctor`, and stops with the factory paused if it fails;
+4. runs `launchctl bootout`, waits until the service is gone, and runs
+   `launchctl bootstrap` (`launchctl kickstart -k` does not re-read a changed
+   plist);
+5. resumes the factory unless it was already paused before the deploy, and
+   runs one `tick`.
+
+Apply any `packaging/launchd/` template change beyond the executable and `PATH`
+by hand before deploying. Supervisors and Fly launchers run in their own
+process groups and survive a restart. To run `tick` by hand from a shell, put
+`~/.agent-factory/agent-factory/.venv/bin` first on `PATH`. `controller.log` is
+stale because `resident` does not write to it.
 
 ## Configuration pins
 
