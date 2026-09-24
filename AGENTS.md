@@ -4,14 +4,14 @@
 
 - The LaunchAgent `com.codagent.agent-factory`
   (`~/Library/LaunchAgents/com.codagent.agent-factory.plist`) runs `resident`
-  from the editable venv in the service clone,
-  `~/.agent-factory/agent-factory`. `~/.agent-factory/config.toml` points
-  `shared_config` at the clone's `config/codagent.toml`, which is reloaded
-  every tick.
-- The clone is kept detached at the deployed ref (normally `origin/main`).
-  Change it only with `scripts/deploy.sh`: because the venv is editable, any
-  switch or edit in the clone reaches newly spawned processes without a
-  restart. Never edit it by hand.
+  from a release: an immutable, detached worktree of the service clone
+  (`~/.agent-factory/agent-factory`) at `~/.agent-factory/releases/<commit>`,
+  with its own venv. `releases/current` links to the newest release.
+  `~/.agent-factory/config.toml` points `shared_config` at that release's
+  `config/codagent.toml`, which is reloaded every tick.
+- Releases are created and removed only by `scripts/deploy.sh`. Never edit a
+  release, and never switch or edit the service clone by hand. A process keeps
+  the release it started from, so a running job is not affected by a deploy.
 - Paul's checkout (`/Users/paul/codagent/agent-factory`) is not live. It holds
   his in-progress branches and is the post-merge sync's working clone for this
   repository. Do fix work in a separate worktree.
@@ -22,25 +22,41 @@
 
 ## Deploying
 
-Run `scripts/deploy.sh` from any checkout of this repository (optionally with a
-ref; the default is `origin/main`). It refuses while the eval or fix slot is
-busy, then:
+Use the `factory-deploy` skill, or run `scripts/deploy.sh` from any checkout of
+this repository (optionally `--no-runner`, or a factory ref; the default is
+`origin/main`). Deploying while jobs run is safe: running jobs keep their
+release, and supervisors and Fly launchers survive the resident's restart.
+The script:
 
-1. pauses the factory, detaches the service clone at the ref (cloning it first
-   if missing), and runs `uv sync --frozen`;
-2. points the plist's executable and `PATH`, and `shared_config`, at the clone;
-3. runs `doctor`, and stops with the factory paused if it fails;
-4. runs `launchctl bootout`, waits until the service is gone, and runs
+1. brings the Agent Runner checkout (`[repositories] agent_runner`, on `dev`)
+   up to `origin/dev`, merges `origin/main` into `dev` (fast-forward or clean
+   merge), and pushes it, because evals build from `dev`. It skips the merge
+   with a warning if it would conflict. It skips the whole runner step with a
+   warning if the checkout is not on `dev`, has uncommitted changes, or a fix
+   is running (the host runner is still rebuilt in place; see #23);
+2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
+   it already exists;
+3. pauses the factory and runs `make build` in the runner checkout, which
+   updates the host runner fix runs use;
+4. points the plist's executable and `PATH`, and `shared_config`, at the
+   release;
+5. runs `doctor`. If it fails, it points them back at the previous release and
+   stops with the factory paused;
+6. runs `launchctl bootout`, waits until the service is gone, and runs
    `launchctl bootstrap` (`launchctl kickstart -k` does not re-read a changed
-   plist);
-5. resumes the factory unless it was already paused before the deploy, and
-   runs one `tick`.
+   plist), confirms the resident is running, and moves `releases/current`;
+7. resumes the factory unless it was already paused before the deploy, and
+   runs one `tick`;
+8. removes releases beyond the newest two (`AGENT_FACTORY_KEEP_RELEASES`), but
+   only while both slots are free, never the live one, and never one a process
+   still uses.
+
+Agent Evals needs no deploy: each eval admission fetches `harness_ref`.
 
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
-by hand before deploying. Supervisors and Fly launchers run in their own
-process groups and survive a restart. To run `tick` by hand from a shell, put
-`~/.agent-factory/agent-factory/.venv/bin` first on `PATH`. `controller.log` is
-stale because `resident` does not write to it.
+by hand before deploying. To run `tick` by hand from a shell, put
+`~/.agent-factory/releases/current/.venv/bin` first on `PATH`.
+`controller.log` is stale because `resident` does not write to it.
 
 ## Configuration pins
 

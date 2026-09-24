@@ -11,7 +11,7 @@ Watch the live factory service, wake on anything that needs a look, triage it, f
 
 - Never print or log tokens, credential files, or anything under `~/.agent-factory/private/`. Filter log output before showing it.
 - Paul merges PRs. Never merge one yourself.
-- The service runs the clone at `~/.agent-factory/agent-factory`. Never edit it or switch its ref except through `scripts/deploy.sh` (see Deploy). Never switch branches in Paul's checkout, `/Users/paul/codagent/agent-factory`. Do all fix work in a separate worktree.
+- The service runs a release under `~/.agent-factory/releases/` (see `AGENTS.md`). Never edit a release or the service clone `~/.agent-factory/agent-factory`; only `scripts/deploy.sh` changes them (see Deploy). Never switch branches in Paul's checkout, `/Users/paul/codagent/agent-factory`. Do all fix work in a separate worktree.
 - Never run `agent-validator clean` to get around the validator's retry limit. Ask Paul instead.
 - Never use bare `git stash`. Use a temporary WIP commit, or a stash with a unique tag that you apply by SHA.
 - Every Fly Machine the factory or you created must end up destroyed. Check `fly machines list -a agent-factory-sandbox` after Fly work.
@@ -66,7 +66,7 @@ Rule these out before calling something a factory defect:
 If the claim still has an automatic retry (recovery or pre-suite relaunch) and the cause may still be present, pause the factory at once so the retry is not wasted:
 
 ```sh
-~/.agent-factory/agent-factory/.venv/bin/agent-factory --config ~/.agent-factory/config.toml pause
+~/.agent-factory/releases/current/.venv/bin/agent-factory --config ~/.agent-factory/config.toml pause
 ```
 
 Pausing stops new admissions and launches. Running supervisors and Fly launchers continue. Resume as soon as the cause is gone.
@@ -131,11 +131,11 @@ Commit with a message explaining the cause and the fix. Push the branch and open
 
 Report only test counts you actually saw. Paul merges.
 
-### 8. Deploy after Paul merges, when nothing is running
+### 8. Deploy after Paul merges
 
 1. Confirm the PR is in `origin/main`.
-2. Confirm no eval is running: `status` shows the eval slot free. Switching code under a running eval or fix is unsafe, and the deploy script refuses. A restart alone is safe, because supervisors and launchers survive it.
-3. Run `scripts/deploy.sh` (see "Deploying" in `AGENTS.md`). It pauses, detaches the service clone at `origin/main`, syncs the venv, runs `doctor`, reloads the LaunchAgent, restores the prior pause state, and ticks.
+2. Deploying while jobs run is safe: each job keeps the release it started from. If a fix is running, the script skips the Agent Runner rebuild, so rerun it once the fix slot is free when the runner changed.
+3. Use the `factory-deploy` skill (`scripts/deploy.sh`; see "Deploying" in `AGENTS.md`). It updates and builds Agent Runner `dev`, builds a release at `origin/main`, pauses, runs `doctor`, reloads the LaunchAgent on the release, restores the prior pause state, ticks, and removes old releases.
 4. Check whether the PR changed the LaunchAgent template (`packaging/launchd/`) or local configuration; apply those too. The script handles dependencies. `doctor` must pass everything the next run needs.
 
 ### 9. Verify
@@ -154,7 +154,7 @@ Never deploy unreviewed or unvalidated code this way.
 
 ## Useful commands
 
-- Manual tick or status: `PATH=~/.agent-factory/agent-factory/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml tick` (or `status`).
+- Manual tick or status: `PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml tick` (or `status`).
 - Board and issue changes: use the `codagent-github-project` skill, which covers the Factory App token and board field IDs.
 - Fly Machines: `fly machines list -a agent-factory-sandbox --json`.
 - Disk: `df -h ~` and `du -sh ~/.agent-factory/*`. Admission needs `minimum_free_gib` (5 GiB).
