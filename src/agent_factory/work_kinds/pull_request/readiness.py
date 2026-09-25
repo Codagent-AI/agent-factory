@@ -40,7 +40,19 @@ def check_readiness(
     definition: PullRequestKind = FIX,
 ) -> list[Diagnostic]:
     """Diagnostics gating fix admission for the configured execution mode only."""
+    if definition.kind == "feature" and shared.feature is None:
+        return []
     if not definition.targets(shared):
+        if definition.kind == "feature":
+            return [
+                Diagnostic(
+                    "feature targets",
+                    False,
+                    "feature work has no configured fix target repositories",
+                    "Configure at least one [[fix.targets]] entry.",
+                    group="feature-host",
+                )
+            ]
         return []
     mode = definition.local(local).execution
     group = definition.doctor_groups[mode]
@@ -59,6 +71,8 @@ def check_readiness(
     )
     diagnostics.append(_credential_diagnostic(local, installation_token, group=group))
     diagnostics.append(_contract_diagnostic(local, shared, definition))
+    if definition.kind == "feature":
+        diagnostics.extend(_openspec_diagnostics(local, shared))
     if definition is not FIX:
         diagnostics = [
             dataclasses.replace(
@@ -68,6 +82,24 @@ def check_readiness(
             )
             for d in diagnostics
         ]
+    return diagnostics
+
+
+def _openspec_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    diagnostics: list[Diagnostic] = []
+    for target in shared.fix.targets:
+        clone = local.repositories.working_clones.get(target.repository)
+        if clone is not None and not (clone / "openspec").is_dir():
+            diagnostics.append(
+                Diagnostic(
+                    f"feature target {target.repository} OpenSpec",
+                    True,
+                    f"{target.repository} has no openspec/ in its working clone; "
+                    "feature preflight will request initialization (informational)",
+                    "",
+                    group="feature-host",
+                )
+            )
     return diagnostics
 
 
@@ -358,22 +390,33 @@ def _session_dir_flag_diagnostic(runner: str) -> Diagnostic:
 def _validate_diagnostic(
     runner: str, shared: SharedConfig, definition: PullRequestKind = FIX
 ) -> Diagnostic:
-    name = "fix host workflow validation"
+    name = f"{definition.kind} host workflow validation"
+    group = definition.doctor_groups["host"]
+    workflow_files = [definition.workflow_file, launch.REVIEW_WORKFLOW_FILE]
+    if definition.kind == "feature":
+        workflow_files.append("factory-define-v1.0.yaml")
     with tempfile.TemporaryDirectory() as tmp:
         catalog = Path(tmp)
         try:
             launch.stage_workflow_into(catalog, definition.contract(shared), definition)
         except ReadinessError as error:
-            return _host_failure(name, str(error), "Reinstall the factory package.")
-        for filename in (definition.workflow_file, launch.REVIEW_WORKFLOW_FILE):
+            return Diagnostic(name, False, str(error), "Reinstall the factory package.", group)
+        for filename in workflow_files:
             _output, failure = _probe((runner, "-validate", str(catalog / filename)))
             if failure is not None:
-                return _host_failure(
-                    name,
-                    f"agent-runner -validate rejected packaged {filename}: {failure}",
-                    "Repair the packaged fix/review workflows or the installed Runner.",
+                prerequisite = (
+                    " (requires core/verify-change)" if definition.kind == "feature" else ""
                 )
-    return _host_pass(name, "packaged fix and review workflows validate")
+                return Diagnostic(
+                    name,
+                    False,
+                    f"agent-runner -validate rejected packaged {filename}{prerequisite}: {failure}",
+                    "Repair the packaged fix/review workflows or the installed Runner.",
+                    group,
+                )
+    return Diagnostic(
+        name, True, f"packaged {definition.kind} and review workflows validate", "", group
+    )
 
 
 def _gh_auth_status_diagnostic(local: LocalConfig) -> Diagnostic:

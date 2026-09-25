@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.config import FixTarget, LocalConfig, SharedConfig
+from agent_factory.config import FeatureConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.github import GitHubApiError, ProjectQueueItem
 from agent_factory.routing import SourceItem
 from agent_factory.store import ClaimDraft, ClaimStore
@@ -113,7 +113,7 @@ def test_ready_bug_assignment_failure_is_isolated_and_logged(
 def test_second_pull_request_kind_uses_its_own_targets_for_handoff_and_snapshot(
     tmp_path: Path,
 ) -> None:
-    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    shared = replace(SharedConfig.from_file(Path("config/codagent.toml")), feature=FeatureConfig())
     local = LocalConfig.from_file(Path("config/local.example.toml"))
 
     def feature_type(_shared: SharedConfig) -> str:

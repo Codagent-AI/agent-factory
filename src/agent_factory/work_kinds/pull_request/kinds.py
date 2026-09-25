@@ -116,5 +116,30 @@ FIX = PullRequestKind(
 )
 
 
+FEATURE = PullRequestKind(
+    kind="feature",
+    unit_key="feature",
+    noun="Feature",
+    item_noun="feature",
+    issue_type=lambda shared: shared.routing.feature_type,
+    workflow_name="factory-feature",
+    workflow_file="factory-feature-v1.0.yaml",
+    staged_files=FEATURE_STAGED_FILES,
+    contract=lambda shared: (
+        shared.feature.contract if shared.feature is not None else "factory-feature/1"
+    ),
+    outcome_file="feature-outcome.json",
+    branch_prefix="factory/feature",
+    sync_marker="feature-sync",
+    allowed_modes=("host",),
+    roles=("lead", "implementor", "tester", "crosscheck"),
+    doctor_groups={"host": "feature-host"},
+    reconcile=ReconcilePolicy.RESUME_FROM_OWN_BRANCH,
+    local=lambda local: local.feature,
+    defaults=lambda shared: shared.feature.defaults if shared.feature is not None else {},
+    targets=lambda shared: shared.fix.targets,
+)
+
+
 def registered() -> tuple[PullRequestKind, ...]:
-    return (FIX,)
+    return (FIX, FEATURE)

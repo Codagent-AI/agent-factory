@@ -1,3 +1,4 @@
+# factory-contract: factory-feature/1
 name: factory-define
 description: "Define and checkpoint one autonomous feature change."
 hidden: true

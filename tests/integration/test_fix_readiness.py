@@ -9,7 +9,14 @@ from unittest import mock
 
 import pytest
 
-from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
+from agent_factory.config import (
+    FeatureConfig,
+    FixBranches,
+    FixConfig,
+    FixTarget,
+    LocalConfig,
+    SharedConfig,
+)
 from agent_factory.operations import Diagnostic
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 from agent_factory.work_kinds.pull_request.kinds import FIX
@@ -114,7 +121,7 @@ def _shared(with_targets: bool = True) -> SharedConfig:
 
 def test_second_kind_readiness_uses_its_own_target_configuration(tmp_path: Path) -> None:
     local = _local(tmp_path, tmp_path / "missing-runner", fix_environment=None)
-    shared = _shared(with_targets=False)
+    shared = dataclasses.replace(_shared(with_targets=False), feature=FeatureConfig())
 
     def feature_targets(_shared: SharedConfig) -> tuple[FixTarget, ...]:
         return (FixTarget("example/features"),)

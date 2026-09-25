@@ -144,6 +144,27 @@ gives up: the separate fix credential and the target repositories' PR-only
 rulesets are conventions the launched process follows, not boundaries an
 autonomous host agent cannot cross.
 
+### Feature work on the host
+
+Add `[feature]` to the shared TOML to enable new Feature claims. Set
+`contract = "factory-feature/1"` and configure `[feature.defaults]` with
+`lead`, `implementor`, `tester`, and `crosscheck` profiles in
+`cli:model:effort` form. Use a separate model family for `crosscheck` when
+available. The feature kind uses `[fix.targets]`, `[fix.branches]`, and
+`credentials.fix_environment`; it needs no separate target or token. The
+Codagent example leaves `[feature]` absent until the later resume and
+recovery work is deployed.
+
+In the local TOML, `[feature] execution = "host"` is the only supported mode.
+Optional `[feature.limits]` defaults are 1800 seconds without progress, 21600
+seconds for execution, and 28800 seconds total. `[feature.schedule]` defaults
+to an always open window; `feature.minimum_free_gib` defaults to the shared
+disk floor. The installed Agent Runner must validate the packaged
+`factory-feature` workflow and provide `core/verify-change`. Run `doctor` and
+check `feature-host` before enabling intake. It also reports a target working
+clone without `openspec/` as informational; the workflow will ask for
+initialization during preflight.
+
 ## Configuration
 
 Copy `config/local.example.toml` to a private location, such as

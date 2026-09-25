@@ -938,11 +938,15 @@ def _launch_agent_path_diagnostic(
             document: object = plistlib.load(handle)
     except (OSError, ValueError, ExpatError) as error:
         return _launch_agent_path_result(
-            config, name, f"cannot read {target}: {error}", f"Repair {target}."
+            config, name, f"cannot read {target}: {error}", f"Repair {target}.", shared=shared
         )
     if not isinstance(document, dict):
         return _launch_agent_path_result(
-            config, name, f"{target} is not a property-list dictionary", f"Repair {target}."
+            config,
+            name,
+            f"{target} is not a property-list dictionary",
+            f"Repair {target}.",
+            shared=shared,
         )
     environment_raw = cast(Mapping[str, object], document).get("EnvironmentVariables", {})
     path_value = ""
@@ -962,6 +966,7 @@ def _launch_agent_path_diagnostic(
         name,
         f"{target} PATH does not resolve: {', '.join(missing)}",
         f"Add the directories containing {', '.join(missing)} to the PATH entry in {target}.",
+        shared=shared,
     )
 
 
@@ -1017,13 +1022,19 @@ def stale_unknown_keychain_diagnostic(*, platform: str | None = None) -> Diagnos
 
 
 def _launch_agent_path_result(
-    config: LocalConfig, name: str, detail: str, action: str
+    config: LocalConfig,
+    name: str,
+    detail: str,
+    action: str,
+    *,
+    shared: SharedConfig | None = None,
 ) -> Diagnostic:
     """Host pull-request kinds run with the LaunchAgent's PATH."""
     host_groups = [
         definition.doctor_groups["host"]
         for definition in registered()
         if definition.local(config).execution == "host"
+        and (definition.kind != "feature" or shared is not None and shared.feature is not None)
     ]
     if not host_groups:
         return Diagnostic(name, True, f"{detail} (informational; host execution is disabled)", "")

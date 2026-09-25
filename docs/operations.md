@@ -199,6 +199,30 @@ other operator action has no invented recovery date. A quota hold on a
 provider that no configured role for a kind uses is reported as not blocking
 that kind's admission.
 
+With `[feature]` configured, `doctor` adds `feature-host`: it checks the feature
+roles, including `crosscheck` CLI authentication, the packaged feature and
+define workflows, the installed Runner's `core/verify-change`, the shared fix
+credential, and the feature disk floor. A target without `openspec/` is listed
+as informational. `status` always shows `feature slot: free` or its holder,
+and lists feature claims even if `[feature]` is later removed. Removing that
+section stops new handoffs and admissions while existing claims continue to
+be reported, synced, cleaned up, and pruned.
+
+### Feature pull requests
+
+Move a writer-authored Feature issue in a configured fix target to Ready to
+request a host feature attempt. Factory verifies the author's repository
+permission before taking ownership. The first attempt starts fresh and freezes
+the target, Runner, and Skills refs and the four role profiles. A successful
+attempt links its pull request, reports red, orange, and yellow review counts,
+and moves the card to Review with `pending-human-review`. A failed product
+outcome moves it to Review with `failed`; exhausted technical recovery uses
+`infra-error`. Feature attempts run on the host with the installed Runner and
+Skills plugin, so the recorded Runner and Skills commits are provenance rather
+than the executed versions. After a human merges the PR, the normal pull
+request sync updates the operator's working clone and closes the issue; Done
+then releases the claim's clones and credential copy.
+
 By default `status` lists only claims that are running, waiting, blocked,
 held, in Review, or pending a merge sync; a claim whose card is Done with
 nothing left pending, and any superseded claim, is hidden, and the header

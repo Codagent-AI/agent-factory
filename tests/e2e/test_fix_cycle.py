@@ -190,8 +190,8 @@ elif '/branches/' in endpoint:
         fail404()
     result = {{'name': branch, 'commit': {{'sha': s['branches'][branch]}}}}
 elif '/pulls?' in endpoint:
-    head = endpoint.split('head=')[1].split('&')[0].replace('%2F', '/').replace('%3A', ':').split(':', 1)[1]
-    result = [{{'html_url': pr['url'], 'number': pr['number'], 'head': {{'sha': pr['sha']}}}} for pr in s['pulls'] if pr['branch'] == head]
+    head = endpoint.split('head=')[1].split('&')[0].replace('%2F', '/').replace('%3A', ':').split(':', 1)[1] if 'head=' in endpoint else None
+    result = [{{'html_url': pr['url'], 'number': pr['number'], 'head': {{'sha': pr['sha'], 'ref': pr['branch']}}, 'body': pr.get('body', ''), 'draft': pr.get('draft', False)}} for pr in s['pulls'] if head is None or pr['branch'] == head]
 else:
     raise Exception('Unexpected gh request ' + repr(args))
 p.write_text(json.dumps(s)); print(json.dumps(result))

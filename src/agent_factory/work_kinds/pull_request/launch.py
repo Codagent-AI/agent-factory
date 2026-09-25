@@ -167,6 +167,18 @@ def check_packaged_workflow(contract: str, definition: PullRequestKind = FIX) ->
             f"the packaged fix workflow hardcodes {CONTAINER_ARTIFACTS} on line(s) "
             f"{', '.join(stray)} instead of using the {ARTIFACT_DIR_PARAM} parameter"
         )
+    if definition.kind == "feature" and contract != REVIEW_CONTRACT:
+        define = (
+            files("agent_factory.work_kinds.pull_request") / "workflow" / "factory-define-v1.0.yaml"
+        )
+        try:
+            lines = define.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError) as error:
+            raise ReadinessError(
+                f"cannot read packaged factory-define workflow: {error}"
+            ) from error
+        if not lines or lines[0].strip() != contract_marker(contract):
+            raise ReadinessError("packaged factory-define workflow has an incompatible contract")
     return text
 
 
@@ -292,13 +304,15 @@ def check_runner_contract(
             )
 
 
-def role_profiles(roles: Mapping[str, object]) -> dict[str, tuple[str, str, str]]:
+def role_profiles(
+    roles: Mapping[str, object], definition: PullRequestKind = FIX
+) -> dict[str, tuple[str, str, str]]:
     profiles: dict[str, tuple[str, str, str]] = {}
-    for role in ("lead", "implementor", "tester"):
+    for role in definition.roles:
         value = roles.get(role)
         match = _PROFILE.match(value) if isinstance(value, str) else None
         if match is None:
-            raise ReadinessError(f"fix role {role} is not a cli:model:effort profile")
+            raise ReadinessError(f"{definition.kind} role {role} is not a cli:model:effort profile")
         profiles[role] = (match.group(1), match.group(2), match.group(3))
     return profiles
 
@@ -604,6 +618,29 @@ def runner_version(executable: str) -> str:
     return text or "unknown"
 
 
+def check_host_runner_workflow(runner: str, workflow: Path, definition: PullRequestKind) -> None:
+    if definition.kind != "feature":
+        return
+    try:
+        completed = subprocess.run(
+            [runner, "-validate", str(workflow)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReadinessError(
+            f"cannot validate feature workflow with installed Runner: {error}"
+        ) from error
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise ReadinessError(
+            "installed Runner cannot validate factory-feature; core/verify-change is required: "
+            f"{detail}"
+        )
+
+
 def gitconfig_text(askpass: Path) -> str:
     """A complete global git configuration for the launched process.
 
@@ -642,6 +679,7 @@ def host_script(
     branch: str,
     contract: str,
     definition: PullRequestKind = FIX,
+    change_name: str = "",
 ) -> str:
     """The bash wrapper that is the host plan's argv target.
 
@@ -661,6 +699,12 @@ def host_script(
             f"--param {ARTIFACT_DIR_PARAM}={shlex.quote(str(evidence))}",
         )
     )
+    if definition.kind == "feature":
+        change_name = change_name or branch.removeprefix("factory/").replace("/", "-")
+        run_command += (
+            f" --param change_name={shlex.quote(change_name)}"
+            " --param resume_from='' --param prior_branch=''"
+        )
     lines = [
         "#!/bin/bash",
         "# Written by agent-factory for one host fix attempt.",
@@ -835,6 +879,7 @@ def build_host_plan(
     branch: str,
     contract: str,
     definition: PullRequestKind = FIX,
+    change_name: str = "",
     recorded_revisions: Mapping[str, object] | None = None,
     runner_executable: str | None = None,
 ) -> ExecutionPlan:
@@ -852,6 +897,7 @@ def build_host_plan(
             branch=branch,
             contract=contract,
             definition=definition,
+            change_name=change_name,
             recorded_revisions=recorded_revisions,
             runner_executable=runner_executable,
         )
@@ -872,10 +918,11 @@ def _assemble_host_plan(
     branch: str,
     contract: str,
     definition: PullRequestKind,
+    change_name: str,
     recorded_revisions: Mapping[str, object] | None,
     runner_executable: str | None,
 ) -> ExecutionPlan:
-    profiles = role_profiles(roles)
+    profiles = role_profiles(roles, definition)
     runner = resolve_runner_executable(runner_executable)
     version = runner_version(runner)
     evidence = evidence.resolve()
@@ -884,6 +931,9 @@ def _assemble_host_plan(
     _refuse_symlinked_staging(repo_clone)
     _refuse_tracked_workflow_files(repo_clone)
     stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract, definition)
+    check_host_runner_workflow(
+        runner, repo_clone / PROJECT_WORKFLOWS / definition.workflow_file, definition
+    )
     config_path = repo_clone / PROJECT_CONFIG
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -909,6 +959,7 @@ def _assemble_host_plan(
             branch=branch,
             contract=contract,
             definition=definition,
+            change_name=change_name,
         ),
         0o700,
     )

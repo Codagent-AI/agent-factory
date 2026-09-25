@@ -71,6 +71,8 @@ class PullRequestGitHub(Protocol):
 
     def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
+    def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
+
 
 class PullRequestHandler:
     """Owns every fix-shaped decision: admission, launch, and outcome mapping."""
@@ -125,7 +127,7 @@ class PullRequestHandler:
         shared: SharedConfig,
         permission_cache: dict[tuple[str, str], str | None],
     ) -> None:
-        if self._github is None:
+        if self._github is None or (self.kind == "feature" and shared.feature is None):
             return
         source = card.source
         factory = shared.project.owner.option("factory")
@@ -156,6 +158,20 @@ class PullRequestHandler:
             )
             return
         if permission_cache[key] not in WRITER_PERMISSIONS:
+            if self.kind == "feature":
+                marker = "<!-- agent-factory-feature-handoff:v1 -->"
+                try:
+                    comments = self._github.list_comment_records(source.repository, source.number)
+                    if not any(marker in comment.body for comment in comments):
+                        self._github.create_comment(
+                            source.repository,
+                            source.number,
+                            f"{marker}\nFeature handoff requires the issue author to have "
+                            "write, maintain, or admin access to this repository. "
+                            "The card remains unassigned.",
+                        )
+                except GitHubApiError as error:
+                    logger.warning("Cannot explain Feature handoff for %s: %s", card.id, error)
             return
         try:
             cast(GitHubClient, self._github).set_single_select_field(
@@ -302,7 +318,10 @@ class PullRequestHandler:
 
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
-            not snapshot.closed
+            (self.kind != "feature" or self._shared.feature is not None)
+            and snapshot.repository
+            in {target.repository for target in self.definition.targets(self._shared)}
+            and not snapshot.closed
             and snapshot.owner == "factory"
             and snapshot.status == "Ready"
             and snapshot.issue_type == self.definition.issue_type(self._shared)
@@ -316,7 +335,8 @@ class PullRequestHandler:
         source = card.source
         targets = {target.repository for target in self.definition.targets(shared)}
         if (
-            source.repository not in targets
+            (self.kind == "feature" and shared.feature is None)
+            or source.repository not in targets
             or source.state.lower() == "closed"
             or source.issue_type != self.definition.issue_type(shared)
             or "needs-input" in source.labels
@@ -371,6 +391,8 @@ class PullRequestHandler:
         store: ClaimStore,
         resolve: object,
     ) -> ClaimDraft | Feedback:
+        if self.kind == "feature" and self._shared.feature is None:
+            return Feedback("feature admission is disabled")
         target = next(
             (
                 t
@@ -562,8 +584,10 @@ class PullRequestHandler:
         revisions = dict(mapping(claim.frozen_spec.get("revisions")))
         resume = mapping(claim.preparation.get("resume"))
         head_sha = resume.get("head_sha")
-        if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH and isinstance(
-            head_sha, str
+        if (
+            self.kind != "feature"
+            and self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH
+            and isinstance(head_sha, str)
         ):
             revisions["target"] = head_sha
             issue["resume"] = dict(resume)
@@ -734,6 +758,7 @@ class PullRequestHandler:
                 branch=branch,
                 contract=workflow_contract,
                 definition=self.definition,
+                change_name=branch.removeprefix("factory/").replace("/", "-"),
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
             )
         launch.stage_workflow(evidence, workflow_contract, self.definition)
@@ -828,7 +853,8 @@ class PullRequestHandler:
             return Outcome("pending-human-review", event_body=_pr_message(latest.result))
         if outcome == "failed":
             return Outcome(
-                "failed", event_body=_failed_message(latest.result, self.definition.noun)
+                "failed",
+                event_body=_failed_message(latest.result, self.definition.noun, claim.repository),
             )
         return None
 
@@ -894,13 +920,19 @@ class PullRequestHandler:
         attempt = run.attempt_number + 1
         outcome = stored_result.get("outcome")
         if stage == "complete" and isinstance(outcome, str):
-            return f"{self.definition.noun} attempt {attempt} finished with outcome `{outcome}`."
+            return _with_host_note(
+                f"{self.definition.noun} attempt {attempt} finished with outcome `{outcome}`.",
+                stored_result,
+            )
         reason = _technical_reason(stored_result)
         if stage == "retry":
-            return (
-                f"{self.definition.noun} attempt {attempt} failed technically ({reason}); "
-                "one recovery attempt "
-                "from fresh clones at the recorded commits follows."
+            return _with_host_note(
+                (
+                    f"{self.definition.noun} attempt {attempt} failed technically ({reason}); "
+                    "one recovery attempt "
+                    "from fresh clones at the recorded commits follows."
+                ),
+                stored_result,
             )
         if stage == "exhausted":
             return _with_host_note(
@@ -948,6 +980,8 @@ class PullRequestHandler:
             f"- {self.kind} branch: `{self.branch_name(claim)}`",
             "- roles: " + ", ".join(f"{role}={profile}" for role, profile in roles.items()),
         ]
+        if self.kind == "feature":
+            lines.append("- attempt 1 starts fresh")
         return "\n".join(lines)
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
@@ -995,10 +1029,16 @@ def _pr_message(result: Mapping[str, object]) -> str:
     pr = mapping(result.get("pr"))
     url = pr.get("url")
     body = f"Pull request opened: {url}" if isinstance(url, str) else "Pull request opened."
+    counts = mapping(result.get("review_attention_counts"))
+    if all(isinstance(counts.get(tier), int) for tier in ("red", "orange", "yellow")):
+        body += (
+            f"\n\n{counts['red']} red flags, {counts['orange']} orange flags, "
+            f"{counts['yellow']} yellow items."
+        )
     return _with_host_note(body, result)
 
 
-def _failed_message(result: Mapping[str, object], noun: str) -> str:
+def _failed_message(result: Mapping[str, object], noun: str, repository: str = "") -> str:
     reasons = _reasons_text(result)
     pr = mapping(result.get("pr"))
     url = pr.get("url")
@@ -1007,4 +1047,6 @@ def _failed_message(result: Mapping[str, object], noun: str) -> str:
         lines.append(reasons)
     if isinstance(url, str):
         lines.append(f"Pull request: {url}")
+    elif repository and isinstance(result.get("branch"), str):
+        lines.append(f"Branch: https://github.com/{repository}/tree/{result['branch']}")
     return _with_host_note("\n\n".join(lines), result)
