@@ -29,8 +29,12 @@ def main() -> None:
     flags = json.loads(path.read_text())
     accepted = flags["accepted_head"]
     later = command("git", "log", "--format=%H", f"{accepted}..HEAD").splitlines()
-    already_covered = set(flags.get("later_commits", []))
-    uncovered = [sha for sha in later if sha not in already_covered]
+    # Acceptance evidence covers only the accepted head, so a later commit is covered
+    # only when an orange item already names it, not merely because it was listed.
+    orange_text = " ".join(
+        f"{item.get('title', '')} {item.get('detail', '')}" for item in flags["orange"]
+    )
+    uncovered = [sha for sha in later if sha[:7] not in orange_text]
     flags["later_commits"] = later
     later_item = next(
         (item for item in flags["orange"] if item.get("title") == "Commits after acceptance"), None

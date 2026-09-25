@@ -46,6 +46,7 @@ steps:
       resume_from: "{{resume_from}}"
       prior_branch: "{{prior_branch}}"
       artifact_dir: "{{artifact_dir}}"
+      change_name: "{{change_name}}"
     capture: effective_resume
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
   - id: create-change
@@ -137,7 +138,8 @@ steps:
       acceptance-findings.md from {{session_dir}}/output/. Also read
       {{artifact_dir}}/resume.json and commits after acceptance.
       Write {{artifact_dir}}/review-attention.json with red, orange, yellow, white
-      arrays of {title, detail, link}, accepted_head SHA, and later_commits SHA array.
+      arrays of {title, detail, link}, accepted_head SHA, and later_commits: every
+      commit after accepted_head, each also named by SHA in an orange item.
       Classify every review item into exactly one tier. Red: each failed or unverified
       acceptance criterion, acceptance that did not complete, every known deviation
       from the specifications, and a resume or continuation that fell back to a

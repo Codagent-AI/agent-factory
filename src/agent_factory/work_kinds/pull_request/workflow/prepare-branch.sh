@@ -7,12 +7,14 @@ if [ "$#" -eq 0 ]; then
   set -- "$@" "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resume_from", ""))')"
   set -- "$@" "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("prior_branch", ""))')"
   set -- "$@" "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("artifact_dir", ""))')"
+  set -- "$@" "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("change_name", ""))')"
 fi
 branch=$1
 target=$2
 resume=${3:-}
 prior=${4:-}
 artifact_dir=$5
+change_name=${6:-}
 mkdir -p "$artifact_dir"
 # The clone starts at the target commit; keep it available even after checkout.
 git cat-file -e "$target^{commit}"
@@ -24,6 +26,16 @@ if [ -n "$prior" ]; then
     if ! git merge --no-edit "$target" >&2; then
       git merge --abort
       fallback='prior branch could not merge the recorded target commit'
+    else
+      # The prior plan lives under the prior claim's change name, derived from its
+      # branch the same way the handler derives change_name; this claim's steps use
+      # its own name, so carry the unarchived change over to it.
+      prior_change=$(printf %s "${prior#factory/}" | tr / -)
+      if [ -n "$change_name" ] && [ "$prior_change" != "$change_name" ] \
+        && [ -d "openspec/changes/$prior_change" ] && [ ! -e "openspec/changes/$change_name" ]; then
+        git mv "openspec/changes/$prior_change" "openspec/changes/$change_name" >&2
+        git commit -q -m "[factory-feature] chore: continue $prior_change as $change_name" >&2
+      fi
     fi
   else
     fallback='prior branch unavailable'

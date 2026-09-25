@@ -200,6 +200,47 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     assert len(flags["later_commits"]) == 1
 
 
+def test_annotate_pr_flags_listed_later_commit_no_orange_item_names(tmp_path: Path) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "later").write_text("fix")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix CI")
+    later = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    attention = {
+        "red": [],
+        "orange": [],
+        "yellow": [],
+        "white": [],
+        "accepted_head": accepted,
+        "later_commits": [later],
+    }
+    (evidence / "review-attention.json").write_text(json.dumps(attention))
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+        "fi\n"
+    )
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    command = [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"]
+    for _ in range(2):
+        result = subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+    flags = json.loads((evidence / "review-attention.json").read_text())
+    assert len(flags["orange"]) == 1
+    assert later[:12] in flags["orange"][0]["detail"]
+    assert flags["orange"][0]["detail"].count(later[:12]) == 1
+
+
 def test_feature_record_outcome_adds_counts_resume_and_branch(tmp_path: Path) -> None:
     counts = {"red": 1, "orange": 2, "yellow": 3, "white": 4}
     payload = {
@@ -384,6 +425,37 @@ def test_prepare_branch_conflict_falls_back_to_fresh(tmp_path: Path) -> None:
     assert result.stdout == ""
     assert git(repo, "rev-parse", "HEAD") == target
     assert json.loads((evidence / "resume.json").read_text())["fallback"]
+
+
+def test_prepare_branch_continuation_carries_prior_change_to_new_name(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "factory/feature-12-aaaaaaaa")
+    prior_change = repo / "openspec" / "changes" / "feature-12-aaaaaaaa"
+    prior_change.mkdir(parents=True)
+    (prior_change / "tasks.md").write_text("- [ ] only task\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "plan")
+    git(repo, "push", "-u", "origin", "factory/feature-12-aaaaaaaa")
+    git(repo, "checkout", "main")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    payload = {
+        "branch_name": "factory/feature-12-bbbbbbbb",
+        "target_head": target,
+        "resume_from": "implement",
+        "prior_branch": "factory/feature-12-aaaaaaaa",
+        "artifact_dir": str(evidence),
+        "change_name": "feature-12-bbbbbbbb",
+    }
+    result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "implement"
+    assert git(repo, "branch", "--show-current") == "factory/feature-12-bbbbbbbb"
+    changes = repo / "openspec" / "changes"
+    assert (changes / "feature-12-bbbbbbbb" / "tasks.md").read_text() == "- [ ] only task\n"
+    assert not (changes / "feature-12-aaaaaaaa").exists()
+    assert git(repo, "status", "--porcelain") == ""
 
 
 def test_prepare_branch_missing_own_branch_clears_resume(tmp_path: Path) -> None:
