@@ -46,6 +46,8 @@ def test_snapshot_writes_the_guest_process_and_network_state(tmp_path: Path) -> 
 
     command, timeout = transport.commands[0]
     assert "/proc" in command and "/proc/net/tcp" in command
+    # A stalled guest's process or TCP table must not fill the supervisor's memory.
+    assert "head -c 1048576" in command
     # A snapshot must never hold up the stop for long.
     assert timeout is not None and timeout <= 60
     text = destination.read_text(encoding="utf-8")

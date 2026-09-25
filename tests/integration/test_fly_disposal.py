@@ -580,6 +580,21 @@ def test_reconciliation_clears_a_kept_machine_record_once_the_machine_is_gone(
     assert cycle.record(run) is None
 
 
+def test_reconciliation_keeps_the_record_of_a_machine_still_being_destroyed(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+    # Fly leaves a destroying Machine out of listings; the destroy may still stall.
+    cycle.api.machines[machine_id]["state"] = "destroying"
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is not None
+
+
 def test_reconciliation_keeps_a_kept_machine_record_while_the_machine_exists(
     cycle: Cycle,
 ) -> None:

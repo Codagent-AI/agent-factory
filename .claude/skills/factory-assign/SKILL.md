@@ -71,7 +71,7 @@ Run one tick rather than waiting up to five minutes for the resident. A tick hol
 PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml tick
 ```
 
-Then rerun the check, or read the claim directly. Do not use `sqlite3 -readonly`: a read-only open fails when no other process has the database open.
+Then rerun the check, or read the claim directly. Do not use `sqlite3 -readonly`. The database uses WAL, and a read-only open fails when its `-wal` and `-shm` files do not exist, which is the case whenever no other process has it open.
 
 ```sh
 sqlite3 ~/.agent-factory/state.sqlite3 "SELECT id, kind, lifecycle, created_at FROM claim WHERE repository='OWNER/REPO' AND issue_number=NUMBER ORDER BY created_at"

@@ -45,18 +45,20 @@ def fly_repository_diagnostic(image: str, app: str) -> Diagnostic:
 
 
 # The guest image need not carry ps or ss, so the snapshot reads /proc directly.
-# The job environment is never read. Of each command line only the program,
-# option names, and absolute paths are kept; every other argument, including
-# every option value, becomes [arg], so no credential is recorded.
+# The job environment is never read. Of each command line only the program's
+# base name and option names are kept; every other argument, including every
+# option value and path, becomes [arg], so no credential is recorded. The whole
+# snapshot is capped at 1 MiB, because the supervisor holds it in memory.
 _SNAPSHOT_COMMAND = r"""
+{
 echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) load: $(cat /proc/loadavg)"
 grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo
 df -h /artifacts /tmp 2>/dev/null
 echo "== processes: pid ppid state elapsed_s sockets wchan cmdline"
-keep='NR == 1 { out = $0; next }
+keep='NR == 1 { n = split($0, part, "/"); name = part[n]
+    out = name ~ /^[A-Za-z0-9._+-]+$/ ? name : "[arg]"; next }
   /^-[A-Za-z]$/ { out = out " " $0; next }
   /^--[a-z][a-z0-9-]*(=|$)/ { sub(/=.*/, "=[arg]"); out = out " " $0; next }
-  /^\// { out = out " " $0; next }
   { out = out " [arg]" }
   END { print out }'
 hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
@@ -72,6 +74,7 @@ for d in /proc/[0-9]*; do
 done
 echo "== tcp connections (/proc/net/tcp, /proc/net/tcp6)"
 cat /proc/net/tcp /proc/net/tcp6 2>/dev/null
+} | head -c 1048576
 exit 0
 """
 _SNAPSHOT_TIMEOUT_SECONDS = 60
@@ -774,8 +777,9 @@ def _clear_machine_record(store: object | None, identity: Mapping[str, object]) 
 
 
 def _confirmed_gone(client: FlyMachinesClient, machine_id: str) -> bool:
+    # A destroying Machine can still stall, so only a finished destroy clears its record.
     try:
-        return is_gone(client.get_machine(machine_id))
+        return client.get_machine(machine_id).get("state") == "destroyed"
     except FlyApiError as error:
         return error.status == 404
 
