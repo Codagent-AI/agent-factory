@@ -1,4 +1,4 @@
-"""Fix work-kind handler: bug admission, sandboxed launch, and outcome mapping."""
+"""Pull-request work-kind handler (fix and feature): admission, launch, and outcome mapping."""
 
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ from agent_factory.work_kinds.base import (
 )
 from agent_factory.work_kinds.pull_request import launch
 from agent_factory.work_kinds.pull_request.cleanup import PullRequestCleanup
-from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, ReconcilePolicy
+from agent_factory.work_kinds.pull_request.kinds import PullRequestKind, ReconcilePolicy
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 from agent_factory.work_kinds.pull_request.readiness import check_readiness
 from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
@@ -92,7 +92,7 @@ class PullRequestGitHub(Protocol):
 
 
 class PullRequestHandler:
-    """Owns every fix-shaped decision: admission, launch, and outcome mapping."""
+    """Owns every pull-request kind decision: admission, launch, and outcome mapping."""
 
     def __init__(
         self,
@@ -117,13 +117,6 @@ class PullRequestHandler:
         self._installation_token: Callable[[], str] | None = None
         self._github: PullRequestGitHub | None = None
 
-    @classmethod
-    def from_config(cls, shared: SharedConfig, local: LocalConfig) -> PullRequestHandler:
-        workspace = PullRequestWorkspace(
-            local.storage_root, local.repositories.agent_runner, local.repositories.agent_skills
-        )
-        return cls(FIX, shared, local, workspace=workspace)
-
     def accepted_message(self) -> str:
         return f"{self.definition.noun} inputs accepted and frozen."
 
@@ -144,7 +137,7 @@ class PullRequestHandler:
         shared: SharedConfig,
         permission_cache: dict[tuple[str, str], str | None],
     ) -> None:
-        if self._github is None or (self.kind == "feature" and shared.feature is None):
+        if self._github is None or not self.definition.enabled(shared):
             return
         source = card.source
         factory = shared.project.owner.option("factory")
@@ -335,7 +328,7 @@ class PullRequestHandler:
 
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
-            (self.kind != "feature" or self._shared.feature is not None)
+            self.definition.enabled(self._shared)
             and snapshot.repository
             in {target.repository for target in self.definition.targets(self._shared)}
             and not snapshot.closed
@@ -352,7 +345,7 @@ class PullRequestHandler:
         source = card.source
         targets = {target.repository for target in self.definition.targets(shared)}
         if (
-            (self.kind == "feature" and shared.feature is None)
+            not self.definition.enabled(shared)
             or source.repository not in targets
             or source.state.lower() == "closed"
             or source.issue_type != self.definition.issue_type(shared)
@@ -408,8 +401,8 @@ class PullRequestHandler:
         store: ClaimStore,
         resolve: object,
     ) -> ClaimDraft | Feedback:
-        if self.kind == "feature" and self._shared.feature is None:
-            return Feedback("feature admission is disabled")
+        if not self.definition.enabled(self._shared):
+            return Feedback(f"{self.kind} admission is disabled")
         target = next(
             (
                 t
@@ -605,13 +598,13 @@ class PullRequestHandler:
         prior_report: Path | None = None
         resume_fallback = ""
         continuation_head = claim.preparation.get("continuation_head")
-        if self.kind == "feature":
+        if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
             own_branch = resume.get("branch")
             previous = next(
                 (
                     item
                     for item in reversed(self._store.claims_for_item(claim.project_item_id))
-                    if item.id != claim.id and item.kind == "feature"
+                    if item.id != claim.id and item.kind == self.kind
                 ),
                 None,
             )
@@ -672,14 +665,6 @@ class PullRequestHandler:
                 and last_result.get("stopped_step") == "preflight"
             ):
                 resume_from = ""
-        head_sha = resume.get("head_sha")
-        if (
-            self.kind != "feature"
-            and self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH
-            and isinstance(head_sha, str)
-        ):
-            revisions["target"] = head_sha
-            issue["resume"] = dict(resume)
         clones = self._workspace.prepare_clones(claim.id, attempt, repository, revisions)
         if self.definition.local(self._local).execution == "host":
             # The recorded Runner commit does not execute on the host, so only the packaged
@@ -690,36 +675,24 @@ class PullRequestHandler:
         launch.check_target_catalog(Path(clones["repo"]))
         recorded = dict(mapping(claim.preparation.get("clones")))
         recorded[f"attempt-{attempt}"] = str(self._workspace.attempt_directory(claim.id, attempt))
+        resume_fields = {
+            "issue": issue,
+            "resume_from": resume_from,
+            "prior_branch": prior_branch,
+            "prior_report": str(prior_report) if prior_report else "",
+            "resume_fallback": resume_fallback,
+            "continuation_head": continuation_head if isinstance(continuation_head, str) else "",
+        }
         self._store.set_preparation(
             claim.id,
             {
                 **claim.preparation,
                 "clones": recorded,
                 "branch_name": self.branch_name(claim),
-                "issue": issue,
-                "resume_from": resume_from,
-                "prior_branch": prior_branch,
-                "prior_report": str(prior_report) if prior_report else "",
-                "resume_fallback": resume_fallback,
-                "continuation_head": continuation_head
-                if isinstance(continuation_head, str)
-                else "",
+                **resume_fields,
             },
         )
-        return Preparation(
-            payload={
-                "clones": clones,
-                "attempt": attempt,
-                "issue": issue,
-                "resume_from": resume_from,
-                "prior_branch": prior_branch,
-                "prior_report": str(prior_report) if prior_report else "",
-                "resume_fallback": resume_fallback,
-                "continuation_head": continuation_head
-                if isinstance(continuation_head, str)
-                else "",
-            }
-        )
+        return Preparation(payload={"clones": clones, "attempt": attempt, **resume_fields})
 
     def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
         """Prepare fresh clones at the observed PR head for a review round."""
@@ -885,7 +858,7 @@ class PullRequestHandler:
                 branch=branch,
                 contract=workflow_contract,
                 definition=self.definition,
-                change_name=branch.removeprefix("factory/").replace("/", "-"),
+                change_name=launch.feature_change_name(branch),
                 resume_from=str(preparation.payload.get("resume_from", "")),
                 prior_branch=str(preparation.payload.get("prior_branch", "")),
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),

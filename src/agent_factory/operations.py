@@ -1033,8 +1033,7 @@ def _launch_agent_path_result(
     host_groups = [
         definition.doctor_groups["host"]
         for definition in registered()
-        if definition.local(config).execution == "host"
-        and (definition.kind != "feature" or shared is not None and shared.feature is not None)
+        if definition.local(config).execution == "host" and definition.enabled(shared)
     ]
     if not host_groups:
         return Diagnostic(name, True, f"{detail} (informational; host execution is disabled)", "")

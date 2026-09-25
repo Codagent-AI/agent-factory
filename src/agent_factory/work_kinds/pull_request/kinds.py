@@ -62,6 +62,8 @@ class PullRequestKind:
     local: Callable[[LocalConfig], KindLocalConfig]
     defaults: Callable[[SharedConfig], Mapping[str, str]]
     targets: Callable[[SharedConfig], tuple[FixTarget, ...]]
+    # Whether the kind's configuration section is present; without shared config, unknown.
+    enabled: Callable[[SharedConfig | None], bool]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "doctor_groups", MappingProxyType(dict(self.doctor_groups)))
@@ -113,6 +115,7 @@ FIX = PullRequestKind(
     local=lambda local: local.fix,
     defaults=lambda shared: shared.fix.defaults,
     targets=lambda shared: shared.fix.targets,
+    enabled=lambda shared: True,
 )
 
 
@@ -138,6 +141,7 @@ FEATURE = PullRequestKind(
     local=lambda local: local.feature,
     defaults=lambda shared: shared.feature.defaults if shared.feature is not None else {},
     targets=lambda shared: shared.fix.targets,
+    enabled=lambda shared: shared is not None and shared.feature is not None,
 )
 
 

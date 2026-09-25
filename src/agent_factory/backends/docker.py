@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory.backends import Disposal, Probe
+from agent_factory.backends.resolve import plan_hints
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.controller import ExecutionPlan
 from agent_factory.operations import Diagnostic
 from agent_factory.store import Run
 from agent_factory.supervisor import (  # pyright: ignore[reportPrivateUsage]
@@ -181,18 +181,13 @@ class DockerContainerBackend:
         return check_memory_headroom(reservation_gib)
 
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None:
-        hints: Mapping[str, object] | None = None
-        if isinstance(plan, ExecutionPlan):
-            hints = plan.ownership_hints
-        elif isinstance(plan, Mapping):
-            value = cast(Mapping[str, object], plan).get("ownership_hints")
-            hints = cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
+        hints = plan_hints(plan)
         process = run.process if isinstance(run, Run) else {}
         progress = run.progress if isinstance(run, Run) else {}
         return {
             "launcher": process,
             "container": progress.get("container"),
-            "artifact_path": hints.get("artifact_path") if isinstance(hints, Mapping) else None,
+            "artifact_path": hints.get("artifact_path"),
         }
 
     def probe(self, identity: Mapping[str, object]) -> Probe:

@@ -172,6 +172,7 @@ steps:
       artifact_dir: "{{artifact_dir}}"
       issue_file: "{{issue_file}}"
       change_name: "{{change_name}}"
+      archived_dir: "{{archived_dir}}"
       session_dir: "{{session_dir}}"
     continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'

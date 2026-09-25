@@ -12,6 +12,16 @@ if TYPE_CHECKING:
     from agent_factory.backends import ExecutionBackend
 
 
+def plan_hints(plan: object) -> Mapping[str, object]:
+    """The ownership hints of a durable or legacy plan, or an empty mapping."""
+    value: object = None
+    if isinstance(plan, ExecutionPlan):
+        value = plan.ownership_hints
+    elif isinstance(plan, Mapping):
+        value = cast(Mapping[str, object], plan).get("ownership_hints")
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
 def backend_name(hints: Mapping[str, object], *, argv: Sequence[str] = ()) -> str | None:
     explicit = hints.get("backend")
     if explicit is not None:

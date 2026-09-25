@@ -684,6 +684,7 @@ def _observe(
     execution_probe: Probe | None = None
     previous_now = wall_anchor
     quota_observed = False
+    is_docker = isinstance(backend, DockerContainerBackend)
     while True:
         run = _required_run(store, run_id)
         # The wall clock is used only to anchor persisted timestamps on attachment.
@@ -692,7 +693,9 @@ def _observe(
         result_read = _load_result(
             _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
         )
-        process_status = _identity_status(identity)
+        # Only Docker needs the launcher's own status before probing; the other backends'
+        # probes check the same process, and their status is taken from the probe below.
+        process_status = _identity_status(identity) if is_docker else ""
         if isinstance(backend, DockerContainerBackend) and (
             now - last_container_probe >= 5 or process_status == "missing"
         ):
@@ -707,15 +710,16 @@ def _observe(
             except (OSError, subprocess.TimeoutExpired, ProcessProbeError) as error:
                 store.report_uncertainty(run_id, str(error))
                 return
-        execution_identity = backend.identity_from_plan(plan, run)
-        if isinstance(backend, DockerContainerBackend):
+        if is_docker:
             execution_identity = {
                 "launcher": identity,
                 "container": progress.get("container"),
                 "artifact_path": "",
             }
+        else:
+            execution_identity = backend.identity_from_plan(plan, run)
         if (
-            isinstance(backend, DockerContainerBackend)
+            is_docker
             and process_status == "alive"
             and execution_probe is not None
             and now - last_execution_probe < 5

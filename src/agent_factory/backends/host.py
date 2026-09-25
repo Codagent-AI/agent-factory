@@ -6,8 +6,8 @@ from collections.abc import Mapping
 from typing import cast
 
 from agent_factory.backends import Disposal, Probe
+from agent_factory.backends.resolve import plan_hints
 from agent_factory.config import LocalConfig, SharedConfig
-from agent_factory.controller import ExecutionPlan
 from agent_factory.operations import Diagnostic
 from agent_factory.store import Run
 
@@ -24,16 +24,9 @@ class HostProcessBackend:
         return []
 
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None:
-        hints: Mapping[str, object] | None = None
-        if isinstance(plan, ExecutionPlan):
-            hints = plan.ownership_hints
-        elif isinstance(plan, Mapping):
-            value = cast(Mapping[str, object], plan).get("ownership_hints")
-            hints = cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
+        hints = plan_hints(plan)
         provenance: dict[str, object] = {
-            key: hints[key]
-            for key in ("runner_executable", "runner_version")
-            if isinstance(hints, Mapping) and key in hints
+            key: hints[key] for key in ("runner_executable", "runner_version") if key in hints
         }
         return {**(run.process if isinstance(run, Run) else {}), **provenance}
 

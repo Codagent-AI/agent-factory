@@ -12,11 +12,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class ExecutionIdentity:
-    values: Mapping[str, object]
-
-
-@dataclass(frozen=True)
 class Probe:
     state: Literal["alive", "stopped", "gone", "mismatch", "unknown"]
     detail: str = ""

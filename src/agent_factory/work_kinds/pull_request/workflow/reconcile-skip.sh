@@ -3,7 +3,8 @@ set -eu
 resume=${1:-}
 prior=${2:-}
 [ -n "$prior" ] && exit 1
-case "$resume" in
-  proposal|proposal-review|specs|design|test-plan|approach-review|write-tasks) exit 1 ;;
-  *) exit 0 ;;
-esac
+# Reconcile (exit 1) only when resuming at a definition step, one that precedes implement.
+if "$(dirname "$0")/factory-resume-skip.sh" implement "$resume"; then
+  exit 1
+fi
+exit 0

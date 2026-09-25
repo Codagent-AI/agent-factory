@@ -19,10 +19,12 @@ def main() -> None:
         artifact_dir = Path(payload["artifact_dir"])
         issue_file = Path(payload["issue_file"])
         change_name = payload["change_name"]
+        archive = Path(payload["archived_dir"])
         session_dir = Path(payload.get("session_dir", artifact_dir))
     else:
         artifact_dir, issue_file = map(Path, sys.argv[1:3])
         change_name = sys.argv[3]
+        archive = Path(sys.argv[4])
         session_dir = artifact_dir
     issue = json.loads(issue_file.read_text())
     path = artifact_dir / "review-attention.json"
@@ -78,13 +80,8 @@ def main() -> None:
         repository = cast(dict[str, object], repository).get("nameWithOwner", "")
     if not isinstance(repository, str):
         repository = ""
-    archive = sorted(Path("openspec/changes/archive").glob(f"*-{change_name}"))
-    if len(archive) != 1:
-        raise SystemExit("expected one archived change")
     prefix = (
-        f"https://github.com/{repository}/blob/{branch}/{archive[0]}"
-        if repository
-        else str(archive[0])
+        f"https://github.com/{repository}/blob/{branch}/{archive}" if repository else str(archive)
     )
     lines = ["# Review first", ""]
     for tier, icon in (("red", "🔴"), ("orange", "🟠"), ("yellow", "🟡")):
@@ -111,7 +108,7 @@ def main() -> None:
             "",
         ]
     )
-    decisions = archive[0] / "decisions.md"
+    decisions = archive / "decisions.md"
     lines.append(decisions.read_text() if decisions.exists() else "No decisions recorded.")
     evidence_dir = session_dir / "output" if (session_dir / "output").exists() else artifact_dir
     assumptions = evidence_dir / "acceptance-assumptions.md"

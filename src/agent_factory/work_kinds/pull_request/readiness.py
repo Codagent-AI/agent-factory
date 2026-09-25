@@ -24,6 +24,7 @@ from agent_factory.operations import (
     read_fix_token,
 )
 from agent_factory.suites.and_scene import ReadinessError
+from agent_factory.work_kinds.base import providers_from_roles
 from agent_factory.work_kinds.pull_request import launch
 from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind
 
@@ -40,7 +41,7 @@ def check_readiness(
     definition: PullRequestKind = FIX,
 ) -> list[Diagnostic]:
     """Diagnostics gating fix admission for the configured execution mode only."""
-    if definition.kind == "feature" and shared.feature is None:
+    if not definition.enabled(shared):
         return []
     if not definition.targets(shared):
         if definition.kind == "feature":
@@ -300,13 +301,7 @@ def _host_diagnostics(
     diagnostics.append(_gh_auth_status_diagnostic(local))
     diagnostics.extend(
         _role_cli_diagnostic(adapter)
-        for adapter in sorted(
-            {
-                str(profile).split(":", 1)[0]
-                for profile in definition.defaults(shared).values()
-                if profile
-            }
-        )
+        for adapter in sorted(providers_from_roles(definition.defaults(shared)))
     )
     diagnostics.append(_runner_settings_diagnostic())
     return diagnostics

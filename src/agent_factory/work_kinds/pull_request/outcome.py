@@ -1,4 +1,4 @@
-"""Parsing and validation of the versioned factory-fix outcome contract."""
+"""Parsing and validation of the versioned pull-request outcome contracts."""
 
 from __future__ import annotations
 

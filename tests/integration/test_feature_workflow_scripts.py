@@ -183,7 +183,13 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     import os
 
     result = subprocess.run(
-        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"],
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
         cwd=repo,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
         text=True,
@@ -231,7 +237,13 @@ def test_annotate_pr_flags_listed_later_commit_no_orange_item_names(tmp_path: Pa
     )
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
-    command = [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"]
+    command = [
+        str(PACKAGE / "annotate-pr.sh"),
+        str(evidence),
+        str(issue),
+        "change",
+        "openspec/changes/archive/2026-09-25-change",
+    ]
     for _ in range(2):
         result = subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True)
         assert result.returncode == 0, result.stderr
@@ -545,7 +557,13 @@ def test_annotation_flags_only_commits_not_already_classified(tmp_path: Path) ->
     import os
 
     result = subprocess.run(
-        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"],
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
         cwd=repo,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
         text=True,
@@ -611,7 +629,13 @@ def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
 
     count = tmp_path / "count"
     result = subprocess.run(
-        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"],
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
         cwd=repo,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_COUNT": str(count)},
         text=True,

@@ -79,6 +79,11 @@ def branch_name(issue_number: int, claim_id: str, prefix: str = FIX.branch_prefi
     return f"{prefix}-{issue_number}-{claim_id[:8]}"
 
 
+def feature_change_name(branch: str) -> str:
+    """The OpenSpec change a feature branch works on; prepare-branch.sh mirrors this rule."""
+    return branch.removeprefix("factory/").replace("/", "-")
+
+
 def validated_credential_copy(local: LocalConfig, destination: Path) -> Path:
     """Copy the single `GH_TOKEN=` line so the sandbox can forward nothing else."""
     source = local.credentials.fix_environment
@@ -702,9 +707,8 @@ def host_script(
         )
     )
     if definition.kind == "feature":
-        change_name = change_name or branch.removeprefix("factory/").replace("/", "-")
         run_command += (
-            f" --param change_name={shlex.quote(change_name)}"
+            f" --param change_name={shlex.quote(change_name or feature_change_name(branch))}"
             f" --param resume_from={shlex.quote(resume_from)}"
             f" --param prior_branch={shlex.quote(prior_branch)}"
         )
