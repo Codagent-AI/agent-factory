@@ -42,7 +42,7 @@ $PY .claude/skills/factory-assign/assign.py OWNER/REPO NUMBER --apply fix     # 
 
 The check prints each requirement as `ok` or `MISSING`. It also prints what the factory's own `snapshot` makes of the card, the cards ranked ahead of it, any claims, and a `result:` line. It exits 0 when the issue is admissible or already claimed.
 
-- If the result is `already claimed`, skip to the report.
+- If the result is `already claimed`, skip to the report. `--apply` refuses such an issue: moving a blocked claim's card to Ready resumes that claim, so do it only when Paul asks.
 - If the check shows a requirement Paul must resolve (closed issue, wrong repository, author without write permission, `needs-input`, or an invalid eval body), stop and report it. `--apply` refuses these too.
 
 `--apply` then does the following, and prints the check again as a read-back:

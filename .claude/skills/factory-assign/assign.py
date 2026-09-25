@@ -194,6 +194,18 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
         sys.exit(f"refused: author {source.author} lacks write permission")
     if kind == "eval" and (problem := factory.eval_problem(source)):
         sys.exit(f"refused: the eval request is invalid: {problem}")
+    with sqlite3.connect(factory.local.state_path) as database:
+        live = database.execute(
+            "SELECT id, lifecycle FROM claim WHERE repository = ? AND issue_number = ?"
+            " AND lifecycle NOT IN ('settled', 'cancelled', 'superseded')",
+            (repository, number),
+        ).fetchone()
+    if live is not None:
+        # Moving a blocked claim's card to Ready is the gesture that resumes it.
+        sys.exit(
+            f"refused: claim {live[0]} is {live[1]}; move its card to Ready by hand "
+            "only to resume that claim"
+        )
     wanted = factory.wanted_type(kind)
     if source.issue_type != wanted:
         if source.issue_type is not None and not retype:
