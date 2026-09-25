@@ -74,9 +74,15 @@ class PullRequestWorkspace:
         return sha
 
     def feature_checkpoint(
-        self, repository: str, branch: str, token: str | None = None
+        self,
+        repository: str,
+        branch: str,
+        token: str | None = None,
+        *,
+        base_sha: str | None = None,
+        exclude_sha: str | None = None,
     ) -> str | None:
-        """Read the latest phase marker from a pushed branch, refreshing the mirror first."""
+        """Read this feature's latest pushed phase, excluding its starting ancestry."""
         mirror = self.mirror_path(repository)
         if not mirror.is_dir():
             raise ReadinessError(f"mirror for {repository} is missing: {mirror}")
@@ -86,6 +92,7 @@ class PullRequestWorkspace:
             ["--git-dir", str(mirror), "fetch", "--quiet", "origin", ref],
             f"cannot fetch pushed feature branch {branch}",
         )
+        exclusions = [f"^{sha}" for sha in (base_sha, exclude_sha) if sha is not None]
         history = _git(
             [
                 "--git-dir",
@@ -93,6 +100,7 @@ class PullRequestWorkspace:
                 "log",
                 "--format=%(trailers:key=Factory-Checkpoint,valueonly)",
                 "FETCH_HEAD",
+                *exclusions,
             ]
         )
         if history.returncode != 0:

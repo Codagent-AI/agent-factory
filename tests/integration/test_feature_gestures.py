@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Mapping
 from dataclasses import replace
@@ -62,6 +63,80 @@ def test_int006_newest_pushed_checkpoint_controls_recovery(tmp_path: Path) -> No
     _git("commit", "-m", "archive", "-m", "Factory-Checkpoint: archived", cwd=work)
     _git("push", "origin", "HEAD", cwd=work)
     assert workspace.feature_checkpoint("example/work", "factory/feature-12-abcd1234") == "archived"
+
+
+def test_int006_checkpoint_does_not_inherit_merged_target_marker(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "old-feature").write_text("already merged")
+    _git("add", "old-feature", cwd=work)
+    _git("commit", "-m", "prior feature", "-m", "Factory-Checkpoint: archived", cwd=work)
+    base_sha = _git("rev-parse", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "-b", "factory/feature-12-new", cwd=work)
+    (work / "current-feature").write_text("no checkpoint yet")
+    _git("add", "current-feature", cwd=work)
+    _git("commit", "-m", "draft", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+    assert (
+        workspace.feature_checkpoint("example/work", "factory/feature-12-new", base_sha=base_sha)
+        is None
+    )
+    (work / "plan").write_text("current plan")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "current plan", "-m", "Factory-Checkpoint: planned", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    assert (
+        workspace.feature_checkpoint("example/work", "factory/feature-12-new", base_sha=base_sha)
+        == "planned"
+    )
+
+
+def test_int006_continued_claim_does_not_inherit_prior_claim_marker(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    target_branch = _git("branch", "--show-current", cwd=work)
+    _git("checkout", "-b", "factory/feature-12-prior", cwd=work)
+    (work / "prior").write_text("prior")
+    _git("add", "prior", cwd=work)
+    _git("commit", "-m", "prior", "-m", "Factory-Checkpoint: archived", cwd=work)
+    prior_head = _git("rev-parse", "HEAD", cwd=work)
+    _git("checkout", target_branch, cwd=work)
+    (work / "target").write_text("target")
+    _git("add", "target", cwd=work)
+    _git("commit", "-m", "target", cwd=work)
+    target_head = _git("rev-parse", "HEAD", cwd=work)
+    _git("checkout", "-b", "factory/feature-12-current", prior_head, cwd=work)
+    _git("merge", "--no-edit", target_head, cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+    assert (
+        workspace.feature_checkpoint(
+            "example/work",
+            "factory/feature-12-current",
+            base_sha=target_head,
+            exclude_sha=prior_head,
+        )
+        is None
+    )
 
 
 def test_int006_host_attempt_passes_resume_and_prior_branch() -> None:
@@ -165,7 +240,10 @@ def test_int006_open_pr_refuses_fresh_claim_and_explains_once(tmp_path: Path) ->
     store.set_claim_lifecycle(
         claim.id,
         "settled",
-        {"verdict": "failed", "pr": {"number": 7, "url": "https://github.com/example/work/pull/7"}},
+        {
+            "verdict": "pending-human-review",
+            "pr": {"number": 7, "url": "https://github.com/example/work/pull/7"},
+        },
     )
     feature = handler.PullRequestHandler(
         FEATURE,
@@ -191,7 +269,7 @@ def test_int006_open_pr_refuses_fresh_claim_and_explains_once(tmp_path: Path) ->
     )
 
 
-def test_int006_handed_off_feature_does_not_start_another_claim(tmp_path: Path) -> None:
+def test_int006_closed_handed_off_feature_can_start_another_claim(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 12, "I12", "P12", "feature", "fp", {}))
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
@@ -210,7 +288,7 @@ def test_int006_handed_off_feature_does_not_start_another_claim(tmp_path: Path) 
     feature.attach_github(GitHub())  # type: ignore[arg-type]
     current = store.get_claim(claim.id)
     assert current is not None
-    assert feature.gesture(current, _card("Ready"), []) is None
+    assert feature.gesture(current, _card("Ready"), []) == "fresh"
 
 
 def test_int006_feature_review_completion_preserves_acceptance_context(tmp_path: Path) -> None:
@@ -343,6 +421,69 @@ def test_int006_archive_recovery_copies_report_and_announces_resume(
     assert any("resumes at verify" in event.body for event in store.pending_events(claim.id))
 
 
+def test_int006_missing_prior_branch_reports_fresh_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            12,
+            "I12",
+            "P12",
+            "feature",
+            "fp",
+            {
+                "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
+            },
+        )
+    )
+    feature = handler.PullRequestHandler(
+        FEATURE,
+        SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n"),
+        LocalConfig.from_toml(_LOCAL_BASE),
+    )
+    feature.attach_store(store)
+    run = store.reserve_run(
+        claim.id, "feature", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+
+    def credential(*_args: object) -> Path:
+        return tmp_path / "token"
+
+    def host_plan(**_kwargs: object) -> ExecutionPlan:
+        return ExecutionPlan(("/bin/true",), str(tmp_path), {}, (), (), {}, False)
+
+    monkeypatch.setattr(launch, "validated_credential_copy", credential)
+    monkeypatch.setattr(launch, "build_host_plan", host_plan)
+    feature.plan(
+        claim,
+        run,
+        Preparation(
+            payload={
+                "clones": {"repo": str(tmp_path), "runner": str(tmp_path), "skills": str(tmp_path)},
+                "issue": {},
+                "resume_from": "",
+                "prior_branch": "",
+                "resume_fallback": "prior branch unavailable",
+            }
+        ),
+    )
+    evidence = tmp_path / "evidence" / "attempt-1"
+    assert (
+        json.loads((evidence / "resume.json").read_text())["fallback"] == "prior branch unavailable"
+    )
+    assert any(
+        "prior branch unavailable" in event.body and "starts fresh" in event.body
+        for event in store.pending_events(claim.id)
+    )
+    assert "prior branch unavailable" in feature.attempt_message(
+        run,
+        {"outcome": "failed", "resume": {"fallback": "prior branch unavailable"}},
+        stage="complete",
+    )
+
+
 def test_int006_review_needs_input_waits_for_pr_feedback(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 12, "I12", "P12", "feature", "fp", {}))
@@ -434,7 +575,13 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
 
     class Workspace(PullRequestWorkspace):
         def feature_checkpoint(
-            self, repository: str, branch: str, token: str | None = None
+            self,
+            repository: str,
+            branch: str,
+            token: str | None = None,
+            *,
+            base_sha: str | None = None,
+            exclude_sha: str | None = None,
         ) -> str | None:
             return "archived"
 
@@ -482,7 +629,10 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
     )
 
 
-def test_int006_failed_claim_continues_prior_planned_branch(tmp_path: Path) -> None:
+@pytest.mark.parametrize("prior_available", [True, False])
+def test_int006_failed_claim_continues_prior_planned_branch(
+    tmp_path: Path, prior_available: bool
+) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     draft = ClaimDraft(
         "example/work",
@@ -513,7 +663,13 @@ def test_int006_failed_claim_continues_prior_planned_branch(tmp_path: Path) -> N
 
     class Workspace(PullRequestWorkspace):
         def feature_checkpoint(
-            self, repository: str, branch: str, token: str | None = None
+            self,
+            repository: str,
+            branch: str,
+            token: str | None = None,
+            *,
+            base_sha: str | None = None,
+            exclude_sha: str | None = None,
         ) -> str | None:
             return "planned"
 
@@ -530,7 +686,9 @@ def test_int006_failed_claim_continues_prior_planned_branch(tmp_path: Path) -> N
 
     class GitHub:
         def get_branch(self, repository: str, branch: str) -> BranchInfo | None:
-            return BranchInfo(branch, "d" * 40) if branch == prior_branch else None
+            return (
+                BranchInfo(branch, "d" * 40) if branch == prior_branch and prior_available else None
+            )
 
         def list_open_pull_requests_for_head(
             self, repository: str, branch: str
@@ -556,8 +714,10 @@ def test_int006_failed_claim_continues_prior_planned_branch(tmp_path: Path) -> N
     feature.attach_github(GitHub())  # type: ignore[arg-type]
     feature._issue_input = lambda _claim: {}  # type: ignore[method-assign]
     prepared = feature.prepare(current)
-    assert prepared.payload["resume_from"] == "implement"
-    assert prepared.payload["prior_branch"] == prior_branch
+    assert prepared.payload["resume_from"] == ("implement" if prior_available else "")
+    assert prepared.payload["prior_branch"] == (prior_branch if prior_available else "")
+    if not prior_available:
+        assert "prior branch unavailable" in str(prepared.payload["resume_fallback"])
 
 
 @pytest.mark.parametrize("enabled", [True, False])

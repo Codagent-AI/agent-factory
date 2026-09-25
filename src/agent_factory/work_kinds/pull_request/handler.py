@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from collections.abc import Callable, Mapping, Sequence
@@ -602,6 +603,8 @@ class PullRequestHandler:
         resume_from = ""
         prior_branch = ""
         prior_report: Path | None = None
+        resume_fallback = ""
+        continuation_head = claim.preparation.get("continuation_head")
         if self.kind == "feature":
             own_branch = resume.get("branch")
             previous = next(
@@ -618,7 +621,14 @@ class PullRequestHandler:
             last_result: Mapping[str, object] = latest.result if latest else {}
             if isinstance(own_branch, str):
                 token = self._installation_token() if self._installation_token else None
-                checkpoint = self._workspace.feature_checkpoint(repository, own_branch, token)
+                base_sha = revisions.get("target")
+                checkpoint = self._workspace.feature_checkpoint(
+                    repository,
+                    own_branch,
+                    token,
+                    base_sha=base_sha if isinstance(base_sha, str) else None,
+                    exclude_sha=(continuation_head if isinstance(continuation_head, str) else None),
+                )
                 resume_from = feature_resume_point(
                     last_result.get("outcome"),
                     last_result.get("stopped_step"),
@@ -644,10 +654,19 @@ class PullRequestHandler:
                     ) from error
                 if exists is not None:
                     token = self._installation_token() if self._installation_token else None
-                    checkpoint = self._workspace.feature_checkpoint(repository, branch, token)
+                    previous_base = mapping(previous.frozen_spec.get("revisions")).get("target")
+                    checkpoint = self._workspace.feature_checkpoint(
+                        repository,
+                        branch,
+                        token,
+                        base_sha=previous_base if isinstance(previous_base, str) else None,
+                    )
                     resume_from = feature_resume_point(None, None, checkpoint, False, True)
                     if resume_from:
                         prior_branch = branch
+                        continuation_head = exists.sha
+                else:
+                    resume_fallback = f"prior branch unavailable: `{branch}`"
             if (
                 last_result.get("outcome") == "needs-input"
                 and last_result.get("stopped_step") == "preflight"
@@ -681,6 +700,10 @@ class PullRequestHandler:
                 "resume_from": resume_from,
                 "prior_branch": prior_branch,
                 "prior_report": str(prior_report) if prior_report else "",
+                "resume_fallback": resume_fallback,
+                "continuation_head": continuation_head
+                if isinstance(continuation_head, str)
+                else "",
             },
         )
         return Preparation(
@@ -691,6 +714,10 @@ class PullRequestHandler:
                 "resume_from": resume_from,
                 "prior_branch": prior_branch,
                 "prior_report": str(prior_report) if prior_report else "",
+                "resume_fallback": resume_fallback,
+                "continuation_head": continuation_head
+                if isinstance(continuation_head, str)
+                else "",
             }
         )
 
@@ -808,6 +835,12 @@ class PullRequestHandler:
         # outcome or log from an earlier attempt must never be read as this one's.
         evidence = attempt_evidence(run)
         evidence.mkdir(parents=True, exist_ok=True)
+        fallback = preparation.payload.get("resume_fallback")
+        if self.kind == "feature" and isinstance(fallback, str) and fallback:
+            (evidence / "resume.json").write_text(
+                json.dumps({"fallback": fallback, "resume_from": ""}) + "\n",
+                encoding="utf-8",
+            )
         (
             evidence
             / ("review-outcome.json" if run.reason == "review" else self.definition.outcome_file)
@@ -866,6 +899,8 @@ class PullRequestHandler:
                     start = f"resumes at {resume_step}"
                 else:
                     start = "starts fresh"
+                if isinstance(fallback, str) and fallback:
+                    start += f"; resume point unavailable ({fallback})"
                 self._store.record_event(
                     claim.id,
                     f"feature-admission:{run.id}",
@@ -1033,8 +1068,6 @@ class PullRequestHandler:
             if card_status(self._shared, card) != "Ready":
                 return None
             if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
-                if claim.outcome.get("verdict") not in {"failed", "infra-error"}:
-                    return None
                 if self._github is None:
                     return None
                 try:
