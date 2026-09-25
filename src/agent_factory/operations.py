@@ -111,6 +111,9 @@ def doctor(
                 "name, not a commit SHA.",
             )
         )
+    from agent_factory.backends.docker import DockerContainerBackend
+    from agent_factory.backends.host import HostProcessBackend
+
     needs_docker = config.eval_execution == "docker" or (
         include_fix and config.fix.execution == "docker"
     )
@@ -119,16 +122,13 @@ def doctor(
     diagnostics.append(_suite_environment(config.credentials.suite_environment))
     docker: Diagnostic | None = None
     if needs_docker:
-        docker = _command_check(
-            "Docker",
-            ("docker", "info"),
-            "Start Docker Desktop, then rerun doctor.",
-            timeout=30,
-            group="eval-sandbox",
+        backend_checks = DockerContainerBackend().readiness(config, cast(SharedConfig, shared))
+        docker = next((d for d in backend_checks if d.name == "Docker"), None)
+        diagnostics.extend(
+            d
+            for d in backend_checks
+            if include_informational or d.name != "Docker reclaimable space"
         )
-        diagnostics.append(docker)
-        if include_informational:
-            diagnostics.append(_docker_reclaimable_diagnostic(docker_available=docker.available))
     profiles = (
         {
             role: str(shared.eval.defaults.get(role, ""))
@@ -165,7 +165,10 @@ def doctor(
         available, detail, action = audit.readiness(shutil.which("agent-runner"))
         diagnostics.append(Diagnostic("post-run audit", available, detail, action))
     if shared is not None and include_fix:
-        diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
+        if config.fix.execution == "host":
+            diagnostics.extend(HostProcessBackend().readiness(config, shared))
+        else:
+            diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
     if shared is not None and config.eval_execution == "fly":
         from agent_factory.fly.backend import FlyMachineBackend
 
@@ -197,7 +200,7 @@ def model_authentication(
             )
         ]
     return [
-        _command_check(
+        command_check(
             (
                 "cursor CLI availability"
                 if command[0] == "cursor"
@@ -744,7 +747,7 @@ def _suite_environment(path: Path) -> Diagnostic:
     )
 
 
-def _command_check(
+def command_check(
     name: str,
     command: tuple[str, ...],
     action: str,
@@ -833,7 +836,7 @@ def check_memory_headroom(reservation_gib: int, *, docker: str = "docker") -> Di
     )
 
 
-def _docker_reclaimable_diagnostic(*, docker_available: bool) -> Diagnostic:
+def docker_reclaimable_diagnostic(*, docker_available: bool) -> Diagnostic:
     """Report reclaimable Docker space without ever running the trim command."""
     name = "Docker reclaimable space"
     action = "Run `docker system prune` / `docker builder prune` to reclaim it."

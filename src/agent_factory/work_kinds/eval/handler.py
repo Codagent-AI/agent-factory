@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
+from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
@@ -305,9 +306,8 @@ class EvalHandler:
                 },
             )
         machine = run.progress.get("machine_provenance")
-        fly_plan = isinstance(run.plan.get("ownership_hints"), Mapping) and (
-            cast(Mapping[str, object], run.plan["ownership_hints"]).get("backend") == "fly-machine"
-        )
+        backend = backend_for(run.plan)
+        fly_plan = backend is not None and backend.name == "fly-machine"
         if isinstance(machine, Mapping) or fly_plan:
             provenance = (
                 dict(cast(Mapping[str, object], machine)) if isinstance(machine, Mapping) else {}
@@ -516,7 +516,8 @@ def plan_attempt(
             and latest.progress.get("checkpoint_seen") is True
         ),
     )
-    if plan.ownership_hints.get("backend") == "fly-machine":
+    backend = backend_for(plan)
+    if backend is not None and backend.name == "fly-machine":
         digest = _claim_image_digest(
             [candidate for candidate in store.runs_for_claim(claim.id) if candidate.id != run.id]
         )

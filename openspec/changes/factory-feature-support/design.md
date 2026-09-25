@@ -198,23 +198,25 @@ instances:
 ```python
 @dataclass(frozen=True)
 class PullRequestKind:
-    kind: str                     # "fix" | "feature": slot, fingerprint prefix, claim.kind
-    unit_key: str                 # "fix" | "feature": evidence dir and run filters
-    noun: str                     # "Fix" | "Feature"  (messages, diagnostic names)
-    item_noun: str                # "bug" | "feature"
-    issue_type: Callable[[SharedConfig], str]         # routing.bug_type | routing.feature_type
-    workflow_name: str            # "factory-fix" | "factory-feature"
-    workflow_file: str            # "factory-fix-v1.0.yaml" | "factory-feature-v1.0.yaml"
-    staged_files: tuple[str, ...] # this kind's workflows, rules, and scripts
-    contract: Callable[[SharedConfig], str]           # fix.contract | feature.contract
-    outcome_file: str             # "fix-outcome.json" | "feature-outcome.json"
-    branch_prefix: str            # "factory/fix" | "factory/feature"
-    sync_marker: str              # "fix-sync" | "feature-sync" (fix keeps its value)
-    allowed_modes: tuple[str, ...]# ("docker", "host") | ("host",)
-    roles: tuple[str, ...]        # ("lead","implementor","tester") | + "crosscheck"
-    doctor_groups: Mapping[str, str]                  # {"docker":"fix-sandbox","host":"fix-host"} | {"host":"feature-host"}
-    reconcile: ReconcilePolicy    # SETTLE_ON_OPEN_PR | RESUME_FROM_OWN_BRANCH
-    local: Callable[[LocalConfig], KindLocalConfig]   # limits, schedule, execution, disk floor
+    kind: str  # "fix" | "feature": slot, fingerprint prefix, claim.kind
+    unit_key: str  # "fix" | "feature": evidence dir and run filters
+    noun: str  # "Fix" | "Feature"  (messages, diagnostic names)
+    item_noun: str  # "bug" | "feature"
+    issue_type: Callable[[SharedConfig], str]  # routing.bug_type | routing.feature_type
+    workflow_name: str  # "factory-fix" | "factory-feature"
+    workflow_file: str  # "factory-fix-v1.0.yaml" | "factory-feature-v1.0.yaml"
+    staged_files: tuple[str, ...]  # this kind's workflows, rules, and scripts
+    contract: Callable[[SharedConfig], str]  # fix.contract | feature.contract
+    outcome_file: str  # "fix-outcome.json" | "feature-outcome.json"
+    branch_prefix: str  # "factory/fix" | "factory/feature"
+    sync_marker: str  # "fix-sync" | "feature-sync" (fix keeps its value)
+    allowed_modes: tuple[str, ...]  # ("docker", "host") | ("host",)
+    roles: tuple[str, ...]  # ("lead","implementor","tester") | + "crosscheck"
+    doctor_groups: Mapping[
+        str, str
+    ]  # {"docker":"fix-sandbox","host":"fix-host"} | {"host":"feature-host"}
+    reconcile: ReconcilePolicy  # SETTLE_ON_OPEN_PR | RESUME_FROM_OWN_BRANCH
+    local: Callable[[LocalConfig], KindLocalConfig]  # limits, schedule, execution, disk floor
     defaults: Callable[[SharedConfig], Mapping[str, str]]  # role profiles
 ```
 

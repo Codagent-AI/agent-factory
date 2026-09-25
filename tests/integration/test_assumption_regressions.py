@@ -76,7 +76,7 @@ def test_wall_clock_jump_does_not_timeout_a_live_attempt(tmp_path: Path) -> None
     claim = store.create_claim(ClaimDraft("org/repo", 1, "I", "P", "eval", "x", {}))
     run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
     store.mark_running(run.id, {})
-    plan = ExecutionPlan(("unused",), str(tmp_path), {}, (), (), {}, False)
+    plan = ExecutionPlan(("unused",), str(tmp_path), {}, (), (), {"backend": "host"}, False)
     result: dict[str, object] = {"evaluation_status": "complete", "product_verdict": "fail"}
     # Only the wall clock jumps by a day; the live monotonic duration is unchanged.
     with (
@@ -87,16 +87,13 @@ def test_wall_clock_jump_does_not_timeout_a_live_attempt(tmp_path: Path) -> None
             side_effect=[10, 10, 10.1, 10.2, 10.3],
         ),
         patch.object(supervisor.time, "sleep"),
-        patch.object(
-            supervisor,
-            "_identity_status",
-            side_effect=["alive", "missing"],
+        patch(
+            "agent_factory.backends.host.HostProcessBackend.probe",
+            side_effect=[supervisor.Probe("alive"), supervisor.Probe("gone")],
         ),
         patch.object(supervisor, "_load_result", return_value=supervisor.ResultRead(result)),
-        patch.object(
-            supervisor,
-            "_terminate",
-            return_value=True,
+        patch(
+            "agent_factory.backends.host.HostProcessBackend.terminate", return_value=True
         ) as terminate,
     ):
         supervisor._observe(store, run.id, plan, supervisor.SupervisionLimits(30, 60, 90), {})  # pyright: ignore[reportPrivateUsage]
@@ -308,18 +305,23 @@ def test_replacement_watcher_uses_persisted_elapsed_time_after_clock_adjustment(
             "idle_seconds": 0,
         },
     )
-    plan = ExecutionPlan(("unused",), str(tmp_path), {}, (), (), {}, False)
+    plan = ExecutionPlan(("unused",), str(tmp_path), {}, (), (), {"backend": "host"}, False)
     with (
         patch.object(supervisor.time, "time", return_value=87400),
         patch.object(supervisor.time, "monotonic", side_effect=[10, 10, 10.1]),
         patch.object(supervisor.time, "sleep"),
-        patch.object(supervisor, "_identity_status", side_effect=["alive", "missing"]),
+        patch(
+            "agent_factory.backends.host.HostProcessBackend.probe",
+            side_effect=[supervisor.Probe("alive"), supervisor.Probe("gone")],
+        ),
         patch.object(
             supervisor,
             "_load_result",
             return_value=supervisor.ResultRead({"evaluation_status": "complete"}),
         ),
-        patch.object(supervisor, "_terminate", return_value=True) as terminate,
+        patch(
+            "agent_factory.backends.host.HostProcessBackend.terminate", return_value=True
+        ) as terminate,
     ):
         supervisor._observe(store, run.id, plan, supervisor.SupervisionLimits(30, 60, 90), {})  # pyright: ignore[reportPrivateUsage]
     assert store.get_run(run.id).status == "completed"  # pyright: ignore[reportOptionalMemberAccess]
@@ -328,6 +330,8 @@ def test_replacement_watcher_uses_persisted_elapsed_time_after_clock_adjustment(
 
 
 def test_container_termination_refuses_wrong_artifact_mount() -> None:
+    from agent_factory.backends import docker as docker_backend
+
     recorded = {"id": "container-id", "image": "sha256:image", "artifact_path": "/expected"}
     observed = {
         "Id": "container-id",
@@ -335,13 +339,13 @@ def test_container_termination_refuses_wrong_artifact_mount() -> None:
         "Mounts": [{"Source": "/different", "Destination": "/artifacts"}],
     }
     with patch.object(
-        supervisor.subprocess,
+        docker_backend.subprocess,
         "run",
         return_value=__import__("subprocess").CompletedProcess(
             ["docker", "inspect"], 0, json.dumps([observed]), ""
         ),
     ) as run:
-        assert not supervisor.stop_owned_container(recorded)  # pyright: ignore[reportUnknownMemberType, reportAttributeAccessIssue]
+        assert not docker_backend.stop_owned_container(recorded)
     assert run.call_count == 1
 
 

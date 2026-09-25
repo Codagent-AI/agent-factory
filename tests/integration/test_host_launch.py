@@ -219,6 +219,7 @@ def test_host_plan_hints_progress_and_provenance(
     assert hints == {
         "artifact_path": str(evidence),
         "sandbox": "host",
+        "backend": "host",
         "branch_name": "factory/fix-7-claim",
         "runner_executable": str(built.runner.resolve()),
         "runner_version": "stub-runner 1.2.3",

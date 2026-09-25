@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory import audit, retention, work_kinds
+from agent_factory.backends.resolve import backend_for
 from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
@@ -31,7 +32,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.operations import Diagnostic, check_memory_headroom, doctor
+from agent_factory.operations import Diagnostic, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     ReadinessError,
@@ -74,14 +75,7 @@ def cycle(state: Path, config_path: Path) -> None:
             factory_login=shared.bot_login,
             artifact_root=local.storage_root / "artifacts",
         )
-        if local.eval_execution == "fly" and local.fly is not None:
-            # Reconciliation is deliberately before result consumption and admission:
-            # cost containment must continue even when every other controller action fails.
-            from agent_factory.fly.backend import FlyMachineBackend
-
-            FlyMachineBackend(
-                app=local.fly.app, token_file=local.fly.token_file, local=local
-            ).reconcile(store)
+        _reconcile_backends(store, local)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
         permission_cache: dict[tuple[str, str], str | None] = {}
@@ -99,7 +93,9 @@ def cycle(state: Path, config_path: Path) -> None:
         # for admission this tick, and its result is cached so it runs at most once.
         @functools.cache
         def sandbox_memory() -> Diagnostic:
-            probed = check_memory_headroom(local.limits.memory_reservation_gib)
+            from agent_factory.backends.docker import DockerContainerBackend
+
+            probed = DockerContainerBackend().memory_readiness(local.limits.memory_reservation_gib)
             store.set_setting(
                 "runtime", "memory", {} if probed.available else {"reason": probed.detail}
             )
@@ -595,18 +591,14 @@ def _consume_results(
                 _hold_for_missing_handler(store, claim, run)
                 continue
             result = handler.read_result(run)
-            observed = run.progress.get("container")
-            if isinstance(observed, Mapping):
-                result = replace(
-                    result,
-                    result={
-                        **result.result,
-                        "container": dict(cast(Mapping[str, object], observed)),
-                    },
-                )
+            backend = backend_for(run.plan)
+            if backend is not None:
+                provenance = backend.provenance(backend.identity_from_plan(run.plan, run) or {})
+                if provenance:
+                    result = replace(result, result={**result.result, **provenance})
             controller.record_result(run.id, result)
             _settle_audit(store, claim, run)
-            _dispose_fly_result(store, handler, run, result, local)
+            _dispose_result(store, handler, run, result, local)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
@@ -637,7 +629,7 @@ def _settle_audit(store: ClaimStore, claim: Claim, run: Run) -> None:
             logger.exception("could not record the post-run audit event for run %s", run.id)
 
 
-def _dispose_fly_result(
+def _dispose_result(
     store: ClaimStore,
     handler: WorkKindHandler,
     run: Run,
@@ -645,13 +637,13 @@ def _dispose_fly_result(
     local: LocalConfig | None,
 ) -> None:
     """Dispose after classification; collection/result normalization has already completed."""
-    hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
-    hint_values = cast(Mapping[str, object], hints) if isinstance(hints, Mapping) else None
-    if hint_values is None or hint_values.get("backend") != "fly-machine":
+    backend = backend_for(run.plan)
+    if backend is None:
         return
-    from agent_factory.fly.backend import FlyMachineBackend
+    if backend.name == "fly-machine":
+        from agent_factory.fly.backend import FlyMachineBackend
 
-    backend = FlyMachineBackend(local=local)
+        backend = FlyMachineBackend(local=local)
     identity = backend.identity_from_plan(run.plan, run)
     if identity is None:
         return
@@ -671,6 +663,32 @@ def _dispose_fly_result(
         # it still owns the matching resource.
         decision = "destroy"
     backend.dispose(identity, decision, store)
+
+
+def _reconcile_backends(store: ClaimStore, local: LocalConfig) -> None:
+    """Reconcile each configured or still-owned backend before admitting work."""
+    names = {"fly-machine" if local.eval_execution == "fly" else "docker", local.fix.execution}
+    for run in store.all_runs():
+        if run.status in NONTERMINAL_RUN_STATUSES or not store.get_setting(
+            "consumed-results", run.id
+        ):
+            backend = backend_for(run.plan)
+            if backend is not None:
+                names.add(backend.name)
+    for name in sorted(names):
+        if name == "fly-machine":
+            from agent_factory.fly.backend import FlyMachineBackend
+
+            fly = local.fly
+            if fly is not None:
+                FlyMachineBackend(app=fly.app, token_file=fly.token_file, local=local).reconcile(
+                    store
+                )
+        else:
+            plan = {"ownership_hints": {"backend": name}}
+            backend = backend_for(plan)
+            if backend is not None:
+                backend.reconcile(store)
 
 
 def _hold_for_missing_handler(store: ClaimStore, claim: Claim, run: Run) -> None:

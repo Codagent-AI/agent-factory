@@ -394,6 +394,10 @@ class ClaimStore:
         ).fetchall()
         return [_run(row) for row in rows]
 
+    def all_runs(self) -> list[Run]:
+        rows = self._connection.execute("SELECT * FROM run ORDER BY started_at").fetchall()
+        return [_run(row) for row in rows]
+
     def mark_running(self, run_id: str, supervisor: Mapping[str, object]) -> None:
         with self._transaction():
             cursor = self._connection.execute(

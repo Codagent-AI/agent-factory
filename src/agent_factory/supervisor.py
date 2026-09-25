@@ -22,7 +22,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from agent_factory.backends import Probe
+from agent_factory.backends import ExecutionBackend, Probe
+from agent_factory.backends.resolve import adoption_action, backend_for
 from agent_factory.controller import ExecutionPlan
 from agent_factory.fly.transport import (
     EXIT_COLLECTION_FAILED,
@@ -143,31 +144,40 @@ def supervise(state_path: Path, run_id: str, nonce: str) -> None:
             except RuntimeError:
                 store.report_uncertainty(run.id, "invalid persisted plan")
                 return
-            if plan.ownership_hints.get("backend") == "fly-machine":
+            backend = backend_for(plan)
+            if backend is None:
+                store.report_uncertainty(run.id, "recorded execution backend is ambiguous")
+                return
+            if backend.supports_attach:
                 _supervise_fly(store, run, plan, limits)
                 return
+            probe = backend.adopt(plan, run, store) if run.status != "reserved" else Probe("gone")
             existing = run.process
-            existing_status = _identity_status(existing)
-            if existing and existing_status == "alive":
+            if run.status != "reserved" and probe.state == "alive":
                 watcher = _supervisor_identity()
                 watcher["process"] = existing
                 store.update_supervisor(run.id, watcher)
-                _observe(store, run.id, plan, limits, existing)
-                return
-            if existing_status == "unknown":
-                store.report_uncertainty(run.id, "recorded execution identity cannot be probed")
-                return
-            if existing:
-                # PID reuse or an unverified vanishing process is deliberately not a
-                # launch signal.  Preserve the global slot for operator reconciliation.
-                store.report_uncertainty(
-                    run.id, "recorded execution identity is no longer verifiable"
-                )
+                _observe(store, run.id, plan, limits, existing, backend=backend)
                 return
             if run.status != "reserved":
-                store.report_uncertainty(run.id, "running run has no recorded execution identity")
+                result = _load_result(_artifact_root(plan, run.evidence_path))
+                action = adoption_action(probe.state, result_present=result.result is not None)
+                if action == "finish-result" and result.result is not None:
+                    store.finish_run(
+                        run.id, execution_status=_result_status(result.result), result=result.result
+                    )
+                elif action == "interrupt":
+                    store.finish_run(
+                        run.id,
+                        execution_status="interrupted",
+                        result={"reason": "execution ended while unsupervised"},
+                    )
+                else:
+                    store.report_uncertainty(
+                        run.id, f"recorded execution ownership is {probe.state}: {probe.detail}"
+                    )
                 return
-            _launch_and_observe(store, run, plan, limits)
+            _launch_and_observe(store, run, plan, limits, backend=backend)
         finally:
             store.close()
 
@@ -178,27 +188,24 @@ _INHERITED_ENVIRONMENT = ("PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "
 
 
 def _launch_and_observe(
-    store: ClaimStore, run: Run, plan: ExecutionPlan, limits: SupervisionLimits
+    store: ClaimStore,
+    run: Run,
+    plan: ExecutionPlan,
+    limits: SupervisionLimits,
+    *,
+    backend: ExecutionBackend | None = None,
 ) -> None:
-    output = Path(run.evidence_path) / "factory-suite.log"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    environment = {key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ}
-    environment.update({str(key): str(value) for key, value in plan.allowed_environment.items()})
+    backend = backend or backend_for(plan)
+    if backend is None:
+        store.report_uncertainty(run.id, "recorded execution backend is ambiguous")
+        return
     try:
-        with output.open("ab", buffering=0) as stream:
-            argv = list(plan.argv)
-            if plan.ownership_hints.get("backend") == "fly-machine":
-                argv = _recording_exit_code(argv, run.evidence_path)
-            child = subprocess.Popen(
-                argv,
-                cwd=plan.working_directory,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                close_fds=True,
-            )
+        argv = (
+            _recording_exit_code(plan.argv, run.evidence_path)
+            if backend.supports_attach
+            else plan.argv
+        )
+        child = launch(plan, argv, run.evidence_path)
     except OSError as error:
         store.finish_run(
             run.id,
@@ -235,10 +242,11 @@ def _launch_and_observe(
         if _identity_status(identity) == "alive":
             _terminate(identity)
         return
-    if plan.ownership_hints.get("backend") == "fly-machine":
+    store.update_progress(run.id, {"backend": backend.name})
+    if backend.supports_attach:
         _supervise_fly(store, _required_run(store, run.id), plan, limits)
     else:
-        _observe(store, run.id, plan, limits, identity)
+        _observe(store, run.id, plan, limits, identity, backend=backend)
 
 
 _IDENTITY_WAIT_SECONDS = 300
@@ -287,10 +295,14 @@ def _supervise_fly(
                     run.id, "Fly Machine identity was not recorded by launcher"
                 )
         else:
-            _finish_fly_launcher_exit(store, run, plan)
+            result = _load_result(_artifact_root(plan, run.evidence_path)).result
+            if result is not None:
+                store.finish_run(run.id, execution_status=_result_status(result), result=result)
+            else:
+                _finish_fly_launcher_exit(store, run, plan)
         return
     progress = dict(run.progress)
-    probe = backend.probe(identity)
+    probe = backend.adopt(plan, run, store)
     progress["machine"] = _machine_progress(identity, probe.state)
     _copy_fly_heartbeat(plan, progress)
     _copy_fly_image_build(plan, progress)
@@ -304,7 +316,13 @@ def _supervise_fly(
             and mismatch.get("machine_id") == identity.get("id")
         ):
             store.compare_and_set_setting("runtime", "fly:mismatch", mismatch, {})
-        store.finish_run(run.id, execution_status="interrupted", result={"reason": "machine lost"})
+        result = _load_result(_artifact_root(plan, run.evidence_path)).result
+        if result is not None:
+            store.finish_run(run.id, execution_status=_result_status(result), result=result)
+        else:
+            store.finish_run(
+                run.id, execution_status="interrupted", result={"reason": "machine lost"}
+            )
         return
     if probe.state == "mismatch":
         store.set_setting(
@@ -333,11 +351,12 @@ def _supervise_fly(
     launcher = run.process
     if _identity_status(launcher) != "alive":
         try:
-            launcher = _spawn_plan_process(
+            launcher_process = launch(
                 plan,
                 tuple(_recording_exit_code(backend.attach_argv(plan, run), run.evidence_path)),
                 run.evidence_path,
             )
+            launcher = _process_identity(launcher_process.pid, plan) or {}
         except OSError as error:
             store.report_uncertainty(run.id, f"Fly Machine attach failed: {error}")
             return
@@ -412,15 +431,14 @@ def _launcher_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
         return None
 
 
-def _spawn_plan_process(
-    plan: ExecutionPlan, argv: tuple[str, ...], evidence_path: str
-) -> Mapping[str, object]:
+def launch(plan: ExecutionPlan, argv: Sequence[str], evidence_path: str) -> subprocess.Popen[bytes]:
+    """Spawn either an initial launcher or a backend attachment in its own session."""
     output = Path(evidence_path) / "factory-suite.log"
     output.parent.mkdir(parents=True, exist_ok=True)
     environment = {key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ}
     environment.update(plan.allowed_environment)
     with output.open("ab", buffering=0) as stream:
-        child = subprocess.Popen(
+        return subprocess.Popen(
             list(argv),
             cwd=plan.working_directory,
             env=environment,
@@ -430,7 +448,6 @@ def _spawn_plan_process(
             start_new_session=True,
             close_fds=True,
         )
-    return _process_identity(child.pid, plan) or {}
 
 
 def _machine_progress(identity: Mapping[str, object], state: str) -> dict[str, object]:
@@ -599,7 +616,15 @@ def _observe(
     plan: ExecutionPlan,
     limits: SupervisionLimits,
     identity: Mapping[str, object],
+    *,
+    backend: ExecutionBackend | None = None,
 ) -> None:
+    backend = backend or backend_for(plan)
+    if backend is None:
+        store.report_uncertainty(run_id, "recorded execution backend is ambiguous")
+        return
+    from agent_factory.backends.docker import DockerContainerBackend
+
     run = _required_run(store, run_id)
     progress: dict[str, object] = dict(run.progress)
     wall_anchor = time.time()
@@ -619,8 +644,10 @@ def _observe(
         plan.progress_sources
     )
     last_persisted = _number(progress.get("persisted_at"), 0)
-    if not progress:
+    if not progress or "started_at" not in progress:
         progress = {
+            **progress,
+            "backend": backend.name,
             "started_at": started,
             "last_progress_at": last_progress,
             "sources": observed_sources,
@@ -632,6 +659,8 @@ def _observe(
         store.update_progress(run_id, progress)
         last_persisted = _number(progress["persisted_at"], 0)
     last_container_probe = float("-inf")
+    last_execution_probe = float("-inf")
+    execution_probe: Probe | None = None
     previous_now = wall_anchor
     quota_observed = False
     while True:
@@ -641,13 +670,13 @@ def _observe(
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
         result_read = _load_result(_artifact_root(plan, run.evidence_path))
         process_status = _identity_status(identity)
-        if _needs_container_discovery(plan, identity) and (
+        if isinstance(backend, DockerContainerBackend) and (
             now - last_container_probe >= 5 or process_status == "missing"
         ):
             try:
                 recorded = progress.get("container")
                 if not isinstance(recorded, Mapping):
-                    discovered = discover_container(_artifact_root(plan, run.evidence_path))
+                    discovered = backend.discover(_artifact_root(plan, run.evidence_path))
                     if discovered is not None:
                         progress["container"] = discovered
                         store.update_progress(run_id, progress)
@@ -655,26 +684,30 @@ def _observe(
             except (OSError, subprocess.TimeoutExpired, ProcessProbeError) as error:
                 store.report_uncertainty(run_id, str(error))
                 return
-        container = progress.get("container")
-        if process_status == "missing" and isinstance(container, Mapping):
-            try:
-                record = cast(Mapping[str, object], container)
-                observed = inspect_container(str(record["id"]))
-                if observed is not None:
-                    if not container_matches_recorded_ownership(record, observed):
-                        raise ProcessProbeError("recorded container ownership changed")
-                    state = observed.get("State")
-                    if (
-                        isinstance(state, Mapping)
-                        and cast(Mapping[str, object], state).get("Running") is True
-                    ):
-                        process_status = "alive"
-            except (OSError, subprocess.TimeoutExpired, ProcessProbeError) as error:
-                store.report_uncertainty(run_id, str(error))
-                return
-        if process_status == "unknown":
-            store.report_uncertainty(run_id, "owned process identity cannot be probed")
+        execution_identity = backend.identity_from_plan(plan, run)
+        if isinstance(backend, DockerContainerBackend):
+            execution_identity = {
+                "launcher": identity,
+                "container": progress.get("container"),
+                "artifact_path": "",
+            }
+        if (
+            isinstance(backend, DockerContainerBackend)
+            and process_status == "alive"
+            and execution_probe is not None
+            and now - last_execution_probe < 5
+        ):
+            probe = execution_probe
+        else:
+            probe = backend.probe(execution_identity or {})
+            execution_probe = probe
+            last_execution_probe = now
+        if probe.state in {"mismatch", "unknown"}:
+            store.report_uncertainty(
+                run_id, probe.detail or "owned execution identity cannot be probed"
+            )
             return
+        process_status = "alive" if probe.state == "alive" else "missing"
         wait_elapsed = _wait_overlap(previous_now, now, quota_until)
         paused_seconds += wait_elapsed
         last_progress += wait_elapsed
@@ -738,7 +771,7 @@ def _observe(
             )
             return
         if run.cancellation_requested:
-            if _terminate_execution(identity, progress.get("container")):
+            if backend.terminate(execution_identity or {}):
                 store.finish_run(
                     run_id, execution_status="cancelled", result={"reason": "cancelled"}
                 )
@@ -747,7 +780,7 @@ def _observe(
             return
         timeout = _timeout(now, started, last_progress, limits, paused_seconds=paused_seconds)
         if timeout is not None:
-            if _terminate_execution(identity, progress.get("container")):
+            if backend.terminate(execution_identity or {}):
                 store.finish_run(run_id, execution_status="timed_out", result={"timeout": timeout})
             else:
                 store.report_uncertainty(
@@ -755,159 +788,6 @@ def _observe(
                 )
             return
         time.sleep(_POLL_SECONDS)
-
-
-def inspect_container(container_id: str) -> dict[str, object] | None:
-    result = subprocess.run(
-        ["docker", "inspect", container_id], capture_output=True, text=True, check=False, timeout=10
-    )
-    if result.returncode != 0:
-        listing = subprocess.run(
-            ["docker", "ps", "-a", "--no-trunc", "-q"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-        if listing.returncode != 0 or container_id in listing.stdout.splitlines():
-            raise ProcessProbeError("container state cannot be verified")
-        return None
-    entries = _inspection_entries(result.stdout)
-    if len(entries) != 1:
-        raise ProcessProbeError("invalid Docker inspection")
-    return entries[0]
-
-
-def _inspection_entries(output: str) -> list[dict[str, object]]:
-    try:
-        values: object = json.loads(output)
-    except json.JSONDecodeError as error:
-        raise ProcessProbeError("invalid Docker inspection") from error
-    if not isinstance(values, list):
-        raise ProcessProbeError("invalid Docker inspection")
-    entries = cast(list[object], values)
-    if not all(isinstance(entry, dict) for entry in entries):
-        raise ProcessProbeError("invalid Docker inspection")
-    return [cast(dict[str, object], entry) for entry in entries]
-
-
-def _discovers_container(plan: ExecutionPlan) -> bool:
-    """Plans that run inside the Docker sandbox are owned through their container too.
-
-    A host-mode plan (``sandbox == "host"``) is owned through its process identity alone:
-    no container is discovered, inspected, or stopped for it, and termination is the
-    process-group kill that also covers the Runner's agent children.
-    """
-    hints = plan.ownership_hints
-    if hints.get("sandbox") == "host":
-        return False
-    return hints.get("suite") == "and-scene" or hints.get("sandbox") == "docker"
-
-
-def _needs_container_discovery(plan: ExecutionPlan, identity: Mapping[str, object]) -> bool:
-    """Avoid probing Docker for an explicitly launched local replacement process.
-
-    A processless observation still needs the conservative discovery path: the wrapper
-    may already have exited after starting its owned container.
-    """
-    if not _discovers_container(plan):
-        return False
-    # A Docker sandbox launcher always owns a container; only an and-scene wrapper can be
-    # swapped for a local process.
-    if plan.ownership_hints.get("sandbox") == "docker":
-        return True
-    return not plan.argv or Path(plan.argv[0]).name == "run.sh" or not identity
-
-
-def discover_container(artifact: str) -> dict[str, object] | None:
-    result = subprocess.run(
-        ["docker", "ps", "--no-trunc", "-q", "--filter", "volume=/artifacts"],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        raise ProcessProbeError("Docker ownership discovery unavailable")
-    identifiers = result.stdout.splitlines()
-    if not identifiers:
-        return None
-    inspection = subprocess.run(
-        ["docker", "inspect", *identifiers],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if inspection.returncode != 0:
-        raise ProcessProbeError("Docker ownership inspection unavailable")
-    matches: list[dict[str, object]] = []
-    for observed in _inspection_entries(inspection.stdout):
-        container_id = observed.get("Id")
-        if container_id not in identifiers:
-            raise ProcessProbeError("unexpected Docker inspection identity")
-        record = {"id": container_id, "image": observed.get("Image"), "artifact_path": artifact}
-        if container_matches_recorded_ownership(record, observed):
-            matches.append(record)
-    if len(matches) > 1:
-        raise ProcessProbeError("multiple containers match the repetition artifact mount")
-    return matches[0] if matches else None
-
-
-def stop_owned_container(recorded: Mapping[str, object]) -> bool:
-    """Stop only the recorded container whose current immutable identity and mount agree."""
-    container_id = recorded.get("id")
-    if not isinstance(container_id, str):
-        return False
-    try:
-        observed = inspect_container(container_id)
-        if observed is None:
-            return True
-        if not container_matches_recorded_ownership(recorded, observed):
-            return False
-        stopped = subprocess.run(
-            ["docker", "stop", "--time", "10", container_id],
-            capture_output=True,
-            check=False,
-            timeout=15,
-        )
-        return stopped.returncode == 0
-    except (OSError, subprocess.TimeoutExpired, ProcessProbeError):
-        return False
-
-
-def _terminate_execution(identity: Mapping[str, object], container: object) -> bool:
-    if isinstance(container, Mapping) and not stop_owned_container(
-        cast(Mapping[str, object], container)
-    ):
-        return False
-    return _terminate(identity)
-
-
-def container_matches_recorded_ownership(
-    recorded: Mapping[str, object], inspect: Mapping[str, object]
-) -> bool:
-    """Require immutable container identity and the exact run artifact mount."""
-    container_id = recorded.get("id")
-    image = recorded.get("image")
-    artifact = recorded.get("artifact_path")
-    if not all(isinstance(value, str) and value for value in (container_id, image, artifact)):
-        return False
-    if inspect.get("Id") != container_id or inspect.get("Image") != image:
-        return False
-    expected = str(Path(cast(str, artifact)).resolve())
-    mounts = inspect.get("Mounts")
-    if not isinstance(mounts, list):
-        return False
-    return any(
-        _mount_matches(cast(Mapping[str, object], mount), expected)
-        for mount in cast(list[object], mounts)
-        if isinstance(mount, Mapping)
-    )
-
-
-def _mount_matches(mount: Mapping[str, object], artifact_path: str) -> bool:
-    return mount.get("Destination") == "/artifacts" and mount.get("Source") == artifact_path
 
 
 def _wait_overlap(previous: float, now: float, deadline: float) -> float:
@@ -1027,6 +907,24 @@ def _load_result(evidence_path: str) -> ResultRead:
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        from agent_factory.work_kinds.fix.outcome import read_outcome
+
+        for contract in ("factory-fix/1", "factory-review/1"):
+            payload = read_outcome(Path(evidence_path), contract)
+            if payload is not None:
+                return ResultRead(dict(payload))
+        for name in ("feature-outcome.json",):
+            outcome = Path(evidence_path) / name
+            try:
+                value = json.loads(outcome.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                continue
+            if (
+                isinstance(value, dict)
+                and isinstance(cast(dict[str, object], value).get("contract"), str)
+                and isinstance(cast(dict[str, object], value).get("outcome"), str)
+            ):
+                return ResultRead(cast(dict[str, object], value))
         return ResultRead(None)
     except OSError as error:
         return ResultRead(None, f"cannot read {path}: {error}")
@@ -1131,6 +1029,11 @@ def _terminate(identity: Mapping[str, object]) -> bool:
     except PermissionError:
         return False
     return True
+
+
+# Backends share the platform process probe and process-group termination rule.
+process_identity_status = _identity_status
+terminate_owned_process = _terminate
 
 
 @contextmanager

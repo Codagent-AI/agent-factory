@@ -356,6 +356,7 @@ def build_plan(
             "artifact_path": str(evidence),
             "image_tag": tag,
             "sandbox": "docker",
+            "backend": "docker",
             "branch_name": branch,
         },
         False,
@@ -916,6 +917,7 @@ def _assemble_host_plan(
         {
             "artifact_path": str(evidence),
             "sandbox": "host",
+            "backend": "host",
             "branch_name": branch,
             "runner_executable": runner,
             "runner_version": version,
