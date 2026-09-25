@@ -379,6 +379,13 @@ class FlyMachineBackend:
                         "reason": "not recorded by local store",
                     }
                 )
+        listed = {machine.get("id") for machine in machines}
+        for machine_id in (pending_destroy | failures.keys()) - listed - {"list"}:
+            # Fly leaves a destroyed Machine out of every listing, so one that went away
+            # after a failed or unconfirmed destroy is only confirmed gone by asking for it.
+            if isinstance(machine_id, str) and _confirmed_gone(client, machine_id):
+                failures.pop(machine_id, None)
+                _clear_machine_record_by_id(store, records, machine_id)
         _set_setting(store, "fly:unknown", {"machines": unknown} if unknown else {})
         _set_setting(
             store, "fly:cleanup-failed", {"machines": list(failures.values())} if failures else {}
@@ -709,6 +716,13 @@ def _clear_machine_record(store: object | None, identity: Mapping[str, object]) 
     run_id = identity.get("run_id")
     if isinstance(run_id, str) and run_id:
         _clear_setting(store, f"fly:machine:{run_id}")
+
+
+def _confirmed_gone(client: FlyMachinesClient, machine_id: str) -> bool:
+    try:
+        return is_gone(client.get_machine(machine_id))
+    except FlyApiError as error:
+        return error.status == 404
 
 
 def _clear_machine_record_by_id(
