@@ -135,7 +135,7 @@ Report only test counts you actually saw. Paul merges.
 
 1. Confirm the PR is in `origin/main`.
 2. Deploying while jobs run is safe: each job keeps the release it started from. If a fix is running, the script skips the Agent Runner rebuild, so rerun it once the fix slot is free when the runner changed.
-3. Use the `factory-deploy` skill (`scripts/deploy.sh`; see "Deploying" in `AGENTS.md`). It updates and builds Agent Runner `dev`, builds a release at `origin/main`, pauses, runs `doctor`, reloads the LaunchAgent on the release, restores the prior pause state, ticks, and removes old releases.
+3. Use the `factory-deploy` skill (`scripts/deploy.sh`; see "Deploying" in `AGENTS.md`). It prepares Agent Runner `dev` and builds a release at `origin/main`, then pauses, pushes and builds Agent Runner `dev`, runs `doctor`, reloads the LaunchAgent on the release, restores the prior pause state, ticks, and removes old releases.
 4. Check whether the PR changed the LaunchAgent template (`packaging/launchd/`) or local configuration; apply those too. The script handles dependencies. `doctor` must pass everything the next run needs.
 
 ### 9. Verify

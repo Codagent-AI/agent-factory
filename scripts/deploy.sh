@@ -139,7 +139,7 @@ fi
 # Build the release. A release is complete only once its marker exists; it is never changed after.
 mkdir -p "$releases"
 if [[ -f $release/.release-complete ]]; then
-  [[ -z $(git -C "$release" status --porcelain) ]] || die "release $release has local changes"
+  [[ -z $(git -C "$release" status --porcelain --untracked-files=no) ]] || die "release $release has local changes"
   say "release $short already built"
 else
   if [[ -e $release ]]; then
@@ -237,6 +237,8 @@ if ! slots_free "$prune_status"; then
 else
   in_use=$(ps -axww -o command=)
   position=0
+  # Markers are listed newest first. The current symlink is skipped: it would
+  # take a keep position, and Git resolves it to the release it points at.
   while IFS= read -r dir; do
     [[ -n $dir ]] || continue
     position=$((position + 1))
@@ -249,7 +251,9 @@ else
     git -C "$base" worktree remove --force "$dir" 2>/dev/null || rm -rf "$dir"
     say "removed release $(basename "$dir")"
   done < <(for marker in "$releases"/*/.release-complete; do
-    [[ -e $marker ]] && printf '%s %s\n' "$(stat -f %m "$marker")" "$(dirname "$marker")"
+    dir=$(dirname "$marker")
+    [[ -e $marker && ! -L $dir ]] || continue
+    printf '%s %s\n' "$(stat -f %m "$marker")" "$dir"
   done | sort -rn | cut -d' ' -f2-)
   git -C "$base" worktree prune
 fi

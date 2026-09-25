@@ -29,15 +29,16 @@ release, and supervisors and Fly launchers survive the resident's restart.
 The script:
 
 1. brings the Agent Runner checkout (`[repositories] agent_runner`, on `dev`)
-   up to `origin/dev`, merges `origin/main` into `dev` (fast-forward or clean
-   merge), and pushes it, because evals build from `dev`. It skips the merge
+   up to `origin/dev` and merges `origin/main` into `dev` (fast-forward or
+   clean merge). It pushes `dev` in step 3, because evals build from `dev`.
+   It skips the merge
    with a warning if it would conflict. It skips the whole runner step with a
    warning if the checkout is not on `dev`, has uncommitted changes, or a fix
    is running (the host runner is still rebuilt in place; see #23);
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
    it already exists;
-3. pauses the factory and runs `make build` in the runner checkout, which
-   updates the host runner fix runs use;
+3. pauses the factory, pushes Agent Runner `dev`, and runs `make build` in the
+   runner checkout, which updates the host runner fix runs use;
 4. points the plist's executable and `PATH`, and `shared_config`, at the
    release;
 5. runs `doctor`. If it fails, it points them back at the previous release and
