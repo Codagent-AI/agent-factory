@@ -549,6 +549,17 @@ def _observe_fly(
         timeout = _timeout(now, started, last_progress, limits)
         cancelling = run.cancellation_requested
         if cancelling or timeout is not None:
+            if timeout == "inactivity" and not cancelling:
+                # Record what the guest was stuck on before stopping it. The run
+                # row says whether that worked, even when the artifact disk did not.
+                snapshot = (
+                    Path(_artifact_root(plan, run.evidence_path))
+                    / ".factory"
+                    / f"inactivity-snapshot-{run_id}.txt"
+                )
+                captured = machine_backend.snapshot(identity, snapshot)
+                progress["inactivity_snapshot"] = {"path": str(snapshot), "captured": captured}
+                store.update_progress(run_id, progress)
             if not machine_backend.terminate(identity):
                 store.report_uncertainty(
                     run_id, "Fly Machine termination ownership could not be verified"
