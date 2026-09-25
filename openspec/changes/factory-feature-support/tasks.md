@@ -1,9 +1,9 @@
-- [ ] [Own every execution through a named backend and settle runs left unsupervised by a restart](tasks/01-execution-backends.md)
-- [ ] [Turn the fix kind into a shared pull-request work kind](tasks/02-shared-pull-request-kind.md)
-- [ ] [Carve `core/verify-change` out of Agent Runner's `core/implement-change`](tasks/03-runner-verify-change.md)
-- [ ] [Package the autonomous `factory-feature` and `factory-define` workflows](tasks/04-feature-workflows.md)
-- [ ] [Configure, admit, run, and report feature work on the host](tasks/05-feature-kind-happy-path.md)
-- [ ] [Stop, resume, continue, and recover feature claims](tasks/06-feature-stops-resumes-recovery.md)
+- [x] [Own every execution through a named backend and settle runs left unsupervised by a restart](tasks/01-execution-backends.md)
+- [x] [Turn the fix kind into a shared pull-request work kind](tasks/02-shared-pull-request-kind.md)
+- [x] [Carve `core/verify-change` out of Agent Runner's `core/implement-change`](tasks/03-runner-verify-change.md)
+- [x] [Package the autonomous `factory-feature` and `factory-define` workflows](tasks/04-feature-workflows.md)
+- [x] [Configure, admit, run, and report feature work on the host](tasks/05-feature-kind-happy-path.md)
+- [x] [Stop, resume, continue, and recover feature claims](tasks/06-feature-stops-resumes-recovery.md)
 
 ## Operator gates (not implementor tasks)
 
