@@ -70,26 +70,28 @@ def test_prepare_branch_fresh_resume_continue_and_missing_fallback(tmp_path: Pat
     script = str(PACKAGE / "prepare-branch.sh")
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    assert run(script, "claim-one", head, "", "", str(evidence), cwd=repo).returncode == 0
+    fresh = run(script, "claim-one", head, "", "", str(evidence), cwd=repo)
+    assert fresh.returncode == 0
+    assert fresh.stdout == ""
     assert git(repo, "branch", "--show-current") == "claim-one"
     (repo / "plan").write_text("plan")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "plan")
     git(repo, "push", "-u", "origin", "claim-one")
     git(repo, "checkout", "main")
-    assert run(script, "claim-one", head, "implement", "", str(evidence), cwd=repo).returncode == 0
+    resumed = run(script, "claim-one", head, "implement", "", str(evidence), cwd=repo)
+    assert resumed.returncode == 0
+    assert resumed.stdout == "implement"
     assert (repo / "plan").exists()
     git(repo, "checkout", "main")
-    assert (
-        run(script, "claim-two", head, "implement", "claim-one", str(evidence), cwd=repo).returncode
-        == 0
-    )
+    continued = run(script, "claim-two", head, "implement", "claim-one", str(evidence), cwd=repo)
+    assert continued.returncode == 0
+    assert continued.stdout == "implement"
     assert (repo / "plan").exists()
     git(repo, "checkout", "main")
-    assert (
-        run(script, "claim-three", head, "implement", "missing", str(evidence), cwd=repo).returncode
-        == 0
-    )
+    missing = run(script, "claim-three", head, "implement", "missing", str(evidence), cwd=repo)
+    assert missing.returncode == 0
+    assert missing.stdout == ""
     assert git(repo, "branch", "--show-current") == "claim-three"
     assert json.loads((evidence / "resume.json").read_text())["fallback"]
 
@@ -114,6 +116,25 @@ def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
     assert outcome["stopped_step"] == "design"
     assert outcome["questions"] == ["Which API?"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+
+
+def test_record_stop_refuses_incomplete_decision_without_push(tmp_path: Path) -> None:
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    stops: tuple[dict[str, object], ...] = (
+        {"step": "design", "questions": [], "direction_summary": "draft"},
+        {"step": "design", "questions": [""], "direction_summary": "draft"},
+        {"step": "design", "questions": ["Which API?"], "direction_summary": ""},
+        {"step": "", "questions": ["Which API?"], "direction_summary": "draft"},
+    )
+    for stop in stops:
+        (evidence / "define-stop.json").write_text(json.dumps(stop))
+        result = run(str(PACKAGE / "record-stop.sh"), str(evidence), "claim", cwd=repo)
+        assert result.returncode != 0
+        assert not (evidence / "feature-outcome.json").exists()
+        assert run("git", "rev-parse", "refs/heads/claim", cwd=remote).returncode != 0
 
 
 def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None:
@@ -282,14 +303,14 @@ def test_checkpoint_is_visible_only_after_push(tmp_path: Path) -> None:
     task = repo / "openspec" / "changes" / "sample" / "tasks.md"
     task.write_text("- [ ] Implement the feature\n")
     script = str(PACKAGE / "checkpoint.sh")
-    assert run(script, "planned", "claim", cwd=repo).returncode == 0
+    assert run(script, "planned", "claim", "sample", cwd=repo).returncode == 0
     planned = git(remote, "rev-parse", "refs/heads/claim")
     assert "Factory-Checkpoint: planned" in git(repo, "log", "-1", "--format=%B")
     (repo / "code.py").write_text("answer = 42\n")
     git(repo, "add", "code.py")
     git(repo, "commit", "-m", "implement")
     assert git(remote, "rev-parse", "refs/heads/claim") == planned
-    assert run(script, "implemented", "claim", cwd=repo).returncode == 0
+    assert run(script, "implemented", "claim", "sample", cwd=repo).returncode == 0
     assert "Factory-Checkpoint: implemented" in git(
         remote, "log", "-1", "--format=%B", "refs/heads/claim"
     )
@@ -299,10 +320,39 @@ def test_checkpoint_is_visible_only_after_push(tmp_path: Path) -> None:
     git(repo, "add", ".")
     git(repo, "commit", "-m", "archive change")
     assert git(remote, "rev-parse", "refs/heads/claim") == implemented
-    assert run(script, "archived", "claim", cwd=repo).returncode == 0
+    assert run(script, "archived", "claim", "sample", cwd=repo).returncode == 0
     assert "Factory-Checkpoint: archived" in git(
         remote, "log", "-1", "--format=%B", "refs/heads/claim"
     )
+
+
+def test_implemented_checkpoint_only_completes_its_change(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    changes = repo / "openspec" / "changes"
+    for name in ("target", "unrelated"):
+        path = changes / name
+        path.mkdir(parents=True)
+        (path / "tasks.md").write_text(f"- [ ] {name} task\n")
+    result = run(str(PACKAGE / "checkpoint.sh"), "implemented", "claim", "target", cwd=repo)
+    assert result.returncode == 0, result.stderr
+    assert (changes / "target" / "tasks.md").read_text() == "- [x] target task\n"
+    assert (changes / "unrelated" / "tasks.md").read_text() == "- [ ] unrelated task\n"
+    assert "openspec/changes/unrelated/tasks.md" not in git(
+        repo, "ls-tree", "-r", "--name-only", "HEAD"
+    )
+
+
+def test_implemented_checkpoint_rejects_multiple_open_tasks(tmp_path: Path) -> None:
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    task = repo / "openspec" / "changes" / "target" / "tasks.md"
+    task.parent.mkdir(parents=True)
+    task.write_text("- [ ] first\n- [ ] second\n")
+    result = run(str(PACKAGE / "checkpoint.sh"), "implemented", "claim", "target", cwd=repo)
+    assert result.returncode != 0
+    assert run("git", "rev-parse", "refs/heads/claim", cwd=remote).returncode != 0
+    assert task.read_text() == "- [ ] first\n- [ ] second\n"
 
 
 def test_prepare_branch_conflict_falls_back_to_fresh(tmp_path: Path) -> None:
@@ -331,7 +381,27 @@ def test_prepare_branch_conflict_falls_back_to_fresh(tmp_path: Path) -> None:
         cwd=repo,
     )
     assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
     assert git(repo, "rev-parse", "HEAD") == target
+    assert json.loads((evidence / "resume.json").read_text())["fallback"]
+
+
+def test_prepare_branch_missing_own_branch_clears_resume(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = run(
+        str(PACKAGE / "prepare-branch.sh"),
+        "missing-claim",
+        target,
+        "design",
+        "",
+        str(evidence),
+        cwd=repo,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
     assert json.loads((evidence / "resume.json").read_text())["fallback"]
 
 
@@ -362,3 +432,118 @@ def test_feature_outcome_rejects_failure_without_reasons(tmp_path: Path) -> None
         json.dumps({"contract": "factory-feature/1", "outcome": "failed", "branch": "claim"})
     )
     assert read_interpreted_outcome(tmp_path, "factory-feature/1").outcome is None
+
+
+def test_annotation_flags_only_commits_not_already_classified(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    archive = repo / "openspec" / "changes" / "archive" / "2026-09-25-change"
+    archive.mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "first").write_text("first")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "first repair")
+    first = git(repo, "rev-parse", "HEAD")
+    (repo / "second").write_text("second")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "second repair")
+    second = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [],
+                "orange": [{"title": "Prior repair", "detail": first, "link": "#prior"}],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [first],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+        "else exit 0; fi\n"
+    )
+    stub.chmod(0o755)
+    import os
+
+    result = subprocess.run(
+        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    flags = json.loads((evidence / "review-attention.json").read_text())
+    later_item = next(
+        item for item in flags["orange"] if item["title"] == "Commits after acceptance"
+    )
+    assert second[:12] in later_item["detail"]
+    assert first[:12] not in later_item["detail"]
+    assert set(flags["later_commits"]) == {first, second}
+
+
+def test_annotation_failure_records_failed_outcome(tmp_path: Path) -> None:
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(tmp_path / "feature-outcome.json"),
+        "validator_status": "passed",
+        "ci_status": "passed",
+        "annotation_status": "failed",
+        "branch_name": "claim",
+        "pr_details": json.dumps({"number": 9, "url": "https://example.test/pull/9"}),
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    value = json.loads((tmp_path / "feature-outcome.json").read_text())
+    assert value["outcome"] == "failed"
+    assert value["pr"]["number"] == 9
+    assert "annotation" in value["reasons"][0]
+
+
+def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": git(repo, "rev-parse", "HEAD"),
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "$2" = list ]; then echo \'[{"number":9}]\'; exit 0; fi\n'
+        'count=0; [ ! -f "$GH_COUNT" ] || count=$(cat "$GH_COUNT")\n'
+        'count=$((count + 1)); echo "$count" > "$GH_COUNT"\n'
+        '[ "$count" -gt 1 ]\n'
+    )
+    stub.chmod(0o755)
+    import os
+
+    count = tmp_path / "count"
+    result = subprocess.run(
+        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change"],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_COUNT": str(count)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert count.read_text().strip() == "2"

@@ -17,10 +17,11 @@ mkdir -p "$artifact_dir"
 # The clone starts at the target commit; keep it available even after checkout.
 git cat-file -e "$target^{commit}"
 fallback=''
+effective_resume=$resume
 if [ -n "$prior" ]; then
   if git fetch origin "refs/heads/$prior:refs/remotes/origin/$prior" 2>/dev/null; then
-    git checkout -B "$branch" "refs/remotes/origin/$prior"
-    if ! git merge --no-edit "$target"; then
+    git checkout -B "$branch" "refs/remotes/origin/$prior" >&2
+    if ! git merge --no-edit "$target" >&2; then
       git merge --abort
       fallback='prior branch could not merge the recorded target commit'
     fi
@@ -29,16 +30,16 @@ if [ -n "$prior" ]; then
   fi
 elif [ -n "$resume" ]; then
   if git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
-    git checkout -B "$branch" "refs/remotes/origin/$branch"
+    git checkout -B "$branch" "refs/remotes/origin/$branch" >&2
   else
     fallback='resume branch unavailable'
   fi
 fi
 if [ -z "$resume" ] && [ -z "$prior" ] || [ -n "$fallback" ]; then
-  git checkout -B "$branch" "$target"
+  git checkout -B "$branch" "$target" >&2
 fi
 if [ -n "$fallback" ]; then
-  resume_if_available=''
+  effective_resume=''
   python3 - "$artifact_dir/resume.json" "$fallback" <<'PY'
 import json, sys
 with open(sys.argv[1], 'w') as handle:
@@ -46,4 +47,4 @@ with open(sys.argv[1], 'w') as handle:
     handle.write('\n')
 PY
 fi
-printf '%s' "${resume_if_available:-$resume}"
+printf '%s' "$effective_resume"

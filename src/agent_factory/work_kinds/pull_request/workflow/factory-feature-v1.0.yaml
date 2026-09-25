@@ -86,6 +86,7 @@ steps:
     script_inputs:
       phase: implemented
       branch_name: "{{branch_name}}"
+      change_name: "{{change_name}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
   - id: archive
     workflow: builtin:openspec/archive-change-v1.0.yaml
@@ -137,8 +138,13 @@ steps:
       {{artifact_dir}}/resume.json and commits after acceptance.
       Write {{artifact_dir}}/review-attention.json with red, orange, yellow, white
       arrays of {title, detail, link}, accepted_head SHA, and later_commits SHA array.
-      Red is unverifiable acceptance, orange is decision-bearing or rejected high/medium
-      findings or revised artifacts, yellow is assumptions, and white is passed evidence.
+      Classify every review item into exactly one tier. Red: each failed or unverified
+      acceptance criterion, acceptance that did not complete, every known deviation
+      from the specifications, and a resume or continuation that fell back to a
+      fresh start in resume.json. Orange: decision-bearing assumptions, plan revisions
+      made in response to human comments, rejected high or medium review findings,
+      and commits added after acceptance that its evidence does not cover. Yellow:
+      every other recorded assumption. White: passed acceptance criteria with evidence.
   - id: verify-classification
     command: python3 .agent-runner/workflows/verify-classification.py "{{artifact_dir}}/review-attention.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
@@ -155,6 +161,9 @@ steps:
     command: printf failed
     capture: ci_status
     skip_if: previous_success
+  - id: seed-annotation-status
+    command: printf passed
+    capture: annotation_status
   - id: annotate-pr
     script: annotate-pr.sh
     script_inputs:
@@ -164,6 +173,10 @@ steps:
       session_dir: "{{session_dir}}"
     continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: mark-annotation-failed
+    command: printf failed
+    capture: annotation_status
+    skip_if: previous_success
   - id: pr-details
     command: |
       gh pr list --head "{{branch_name}}" --state open --json url,number,headRefOid --limit 1 | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin) or [{}])[0]))'
@@ -177,6 +190,7 @@ steps:
       outcome_path: "{{artifact_dir}}/feature-outcome.json"
       validator_status: "{{validator_status}}"
       ci_status: "{{ci_status}}"
+      annotation_status: "{{annotation_status}}"
       branch_name: "{{branch_name}}"
       pr_details: "{{pr_details}}"
       review_attention_counts: "{{artifact_dir}}/review-attention.json"

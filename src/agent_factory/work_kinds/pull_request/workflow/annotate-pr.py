@@ -4,6 +4,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import cast
 
@@ -28,13 +29,15 @@ def main() -> None:
     flags = json.loads(path.read_text())
     accepted = flags["accepted_head"]
     later = command("git", "log", "--format=%H", f"{accepted}..HEAD").splitlines()
+    already_covered = set(flags.get("later_commits", []))
+    uncovered = [sha for sha in later if sha not in already_covered]
     flags["later_commits"] = later
     later_item = next(
         (item for item in flags["orange"] if item.get("title") == "Commits after acceptance"), None
     )
-    if later:
+    if uncovered:
         detail = ", ".join(
-            f"{sha[:12]} ({command('git', 'log', '-1', '--format=%s', sha)})" for sha in later
+            f"{sha[:12]} ({command('git', 'log', '-1', '--format=%s', sha)})" for sha in uncovered
         )
         if later_item is None:
             flags["orange"].append(
@@ -45,9 +48,7 @@ def main() -> None:
                 }
             )
         else:
-            later_item["detail"] = detail
-    elif later_item is not None:
-        flags["orange"].remove(later_item)
+            later_item["detail"] = f"{later_item['detail']}, {detail}"
     path.write_text(json.dumps(flags, indent=2) + "\n")
     branch = command("git", "branch", "--show-current")
     pr = json.loads(
@@ -135,7 +136,17 @@ def main() -> None:
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
-    subprocess.run(["gh", "pr", "edit", str(number), "--body-file", str(body)], check=True)
+    edit = ["gh", "pr", "edit", str(number), "--body-file", str(body)]
+    last_returncode = 1
+    for attempt in range(3):
+        result = subprocess.run(edit, check=False)
+        last_returncode = result.returncode
+        if result.returncode == 0:
+            break
+        if attempt < 2:
+            time.sleep(attempt + 1)
+    else:
+        raise subprocess.CalledProcessError(last_returncode, edit)
 
 
 if __name__ == "__main__":

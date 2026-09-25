@@ -12,7 +12,14 @@ python3 - "$artifact_dir/define-stop.json" <<'PY'
 import json, sys
 from pathlib import Path
 stop = json.loads(Path(sys.argv[1]).read_text())
-if not isinstance(stop.get('step'), str) or not isinstance(stop.get('questions'), list) or not isinstance(stop.get('direction_summary'), str):
+questions = stop.get('questions')
+if (
+    not isinstance(stop.get('step'), str) or not stop['step'].strip()
+    or not isinstance(questions, list) or not questions
+    or not all(isinstance(question, str) and question.strip() for question in questions)
+    or not isinstance(stop.get('direction_summary'), str)
+    or not stop['direction_summary'].strip()
+):
     raise SystemExit('invalid definition stop')
 PY
 git add -A -- . ':(exclude).agent-runner'

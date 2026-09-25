@@ -30,6 +30,7 @@ if not isinstance(contract, str) or not contract or not isinstance(outcome_path,
     sys.exit(2)
 validator_status = parsed.get("validator_status") or "failed"
 ci_status = parsed.get("ci_status") or ""
+annotation_status = parsed.get("annotation_status") or "passed"
 branch_name = parsed.get("branch_name") or ""
 
 # A malformed structured input means an upstream step produced something this
@@ -81,6 +82,15 @@ elif not pr_url:
         "outcome": "failed",
         "reasons": reasons or ["failed to push the branch or open a pull request"],
         "validator": {"status": "passed"},
+    }
+elif annotation_status != "passed":
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": reasons or ["pull request annotation failed"],
+        "pr": pr_reference(),
+        "validator": {"status": "passed"},
+        "ci": {"status": ci_status or "failed"},
     }
 elif ci_status == "passed":
     outcome = {
