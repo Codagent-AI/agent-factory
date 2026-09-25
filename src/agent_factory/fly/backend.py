@@ -330,11 +330,13 @@ class FlyMachineBackend:
         # A listing that succeeds resolves any earlier failed listing.
         failures.pop("list", None)
         self._refresh_stopped_deadlines(store, client, records, failures)
-        known_ids = {
+        recorded = {
             value.get("machine_id")
             for value in records.values()
             if isinstance(value.get("machine_id"), str)
-        } | _live_machine_ids(store)
+        }
+        live = _live_machine_ids(store)
+        known_ids = recorded | live
         # Disposal already chose to destroy these, verified as owned, but Fly did not confirm it.
         pending_destroy = {
             value.get("machine_id")
@@ -380,9 +382,11 @@ class FlyMachineBackend:
                     }
                 )
         listed = {machine.get("id") for machine in machines}
-        for machine_id in (pending_destroy | failures.keys()) - listed - {"list"}:
+        for machine_id in (recorded | failures.keys()) - listed - live - {"list"}:
             # Fly leaves a destroyed Machine out of every listing, so one that went away
-            # after a failed or unconfirmed destroy is only confirmed gone by asking for it.
+            # outside this record's own disposal (an unconfirmed destroy, or a recovery
+            # attempt that reused and destroyed a kept Machine) is only confirmed gone
+            # by asking for it.
             if isinstance(machine_id, str) and _confirmed_gone(client, machine_id):
                 failures.pop(machine_id, None)
                 _clear_machine_record_by_id(store, records, machine_id)

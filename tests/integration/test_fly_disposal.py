@@ -564,6 +564,36 @@ def test_reconciliation_clears_a_failed_destroy_once_fly_no_longer_lists_the_mac
     assert "blocking condition" not in status(cycle.store, cycle.local)
 
 
+def test_reconciliation_clears_a_kept_machine_record_once_the_machine_is_gone(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+    assert cycle.record(run) is not None
+    # The recovery attempt reused the Machine and destroyed it under its own run id.
+    cycle.api.machines[machine_id]["state"] = "destroyed"
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is None
+
+
+def test_reconciliation_keeps_a_kept_machine_record_while_the_machine_exists(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, _machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+
+    assert cycle.reconcile() == []
+
+    record = cycle.record(run)
+    assert record is not None and record["decision"] == "keep"
+
+
 def test_reconciliation_keeps_a_failed_destroy_while_fly_cannot_confirm_the_machine_is_gone(
     cycle: Cycle,
 ) -> None:
