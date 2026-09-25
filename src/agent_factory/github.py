@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import socket
 import ssl
 import subprocess
@@ -43,6 +44,8 @@ class PullRequestInfo:
     url: str
     number: int
     head_sha: str
+    is_draft: bool = False
+    branch: str = ""
 
 
 _PRIORITY_ORDER = ("urgent", "high", "medium", "low")
@@ -339,9 +342,53 @@ class GitHubClient:
                 url=_required_string(entry, "html_url"),
                 number=_required_int(entry, "number"),
                 head_sha=_required_string(_object(entry.get("head")), "sha"),
+                is_draft=entry.get("draft") is True,
+                branch=str(_object(entry.get("head")).get("ref") or ""),
             )
             for entry in (_object(item) for item in _json_list(response))
         ]
+
+    def list_open_factory_pull_requests_for_issue(
+        self, repository: str, number: int
+    ) -> list[PullRequestInfo]:
+        """Find open factory branches whose PR description references an issue."""
+        matches: list[PullRequestInfo] = []
+        page = 1
+        while True:
+            response = self._request(
+                [
+                    "api",
+                    f"repos/{repository}/pulls?state=open&per_page=100&page={page}",
+                    "--method",
+                    "GET",
+                ],
+                None,
+            )
+            entries = _json_list(response)
+            for raw in entries:
+                entry = _object(raw)
+                head = _object(entry.get("head"))
+                branch = head.get("ref")
+                body = entry.get("body")
+                if not isinstance(branch, str) or not branch.startswith("factory/"):
+                    continue
+                if not isinstance(body, str) or not re.search(
+                    rf"(?i)\b(?:refs|closes)\s+#{number}\b", body
+                ):
+                    continue
+                matches.append(
+                    PullRequestInfo(
+                        _required_string(entry, "html_url"),
+                        _required_int(entry, "number"),
+                        _required_string(head, "sha"),
+                        entry.get("draft") is True,
+                        branch,
+                    )
+                )
+            if len(entries) < 100:
+                break
+            page += 1
+        return matches
 
     def get_pull_request(self, repository: str, number: int) -> PullRequestState:
         response = self._request(

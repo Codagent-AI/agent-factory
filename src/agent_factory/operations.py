@@ -16,7 +16,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, cast
 from xml.parsers.expat import ExpatError
 
 from agent_factory import audit
@@ -30,20 +30,20 @@ from agent_factory.github import (
 )
 from agent_factory.store import Claim, ClaimStore, Event
 from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
+from agent_factory.work_kinds.pull_request.kinds import FIX, registered
 
 if TYPE_CHECKING:
     from agent_factory.store import Run
 
 
-DiagnosticGroup = Literal["shared", "eval", "eval-sandbox", "eval-fly", "fix-sandbox", "fix-host"]
+DiagnosticGroup = str
 
 _GROUP_ORDER: tuple[DiagnosticGroup, ...] = (
     "shared",
     "eval",
     "eval-sandbox",
     "eval-fly",
-    "fix-sandbox",
-    "fix-host",
+    *(group for definition in registered() for group in definition.doctor_groups.values()),
 )
 
 # host mode -> executable each configured role CLI adapter needs on PATH.
@@ -62,7 +62,14 @@ HOST_BASE_EXECUTABLES: tuple[str, ...] = (
 
 def configured_adapters(shared: SharedConfig) -> list[str]:
     """The CLI adapters the configured fix roles select, in a stable order."""
-    return sorted({str(value).split(":", 1)[0] for value in shared.fix.defaults.values() if value})
+    return sorted(
+        {
+            str(value).split(":", 1)[0]
+            for definition in registered()
+            for value in definition.defaults(shared).values()
+            if value
+        }
+    )
 
 
 def host_executables(shared: SharedConfig | None) -> list[str]:
@@ -115,7 +122,8 @@ def doctor(
     from agent_factory.backends.host import HostProcessBackend
 
     needs_docker = config.eval_execution == "docker" or (
-        include_fix and config.fix.execution == "docker"
+        include_fix
+        and any(definition.local(config).execution == "docker" for definition in registered())
     )
     diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
     diagnostics.extend(_repository_checks(config, include_sandbox=needs_docker))
@@ -165,10 +173,17 @@ def doctor(
         available, detail, action = audit.readiness(shutil.which("agent-runner"))
         diagnostics.append(Diagnostic("post-run audit", available, detail, action))
     if shared is not None and include_fix:
-        if config.fix.execution == "host":
-            diagnostics.extend(HostProcessBackend().readiness(config, shared))
-        else:
-            diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
+        for definition in registered():
+            if definition is not FIX:
+                from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+
+                diagnostics.extend(
+                    PullRequestHandler(definition, shared, config).readiness(config, shared)
+                )
+            elif definition.local(config).execution == "host":
+                diagnostics.extend(HostProcessBackend().readiness(config, shared))
+            else:
+                diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
     if shared is not None and config.eval_execution == "fly":
         from agent_factory.fly.backend import FlyMachineBackend
 
@@ -305,7 +320,7 @@ def status(
             number = (
                 cast(Mapping[str, object], pr).get("number") if isinstance(pr, Mapping) else "?"
             )
-            lines.append(f"waiting review: PR #{number} awaits the fix slot")
+            lines.append(f"waiting review: PR #{number} awaits the {claim.kind} slot")
         lines.extend(_blocked_lines(store, claim))
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
@@ -500,7 +515,7 @@ def _fix_diagnostics(
     """Fix-kind readiness, kept visibly distinct from shared and eval diagnostics."""
     if not shared.fix.targets:
         return []
-    from agent_factory.work_kinds.fix.readiness import check_readiness
+    from agent_factory.work_kinds.pull_request.readiness import check_readiness
 
     group = fix_group(local)
     # Readiness diagnostics already carry the "fix " prefix in their names.
@@ -1004,10 +1019,15 @@ def stale_unknown_keychain_diagnostic(*, platform: str | None = None) -> Diagnos
 def _launch_agent_path_result(
     config: LocalConfig, name: str, detail: str, action: str
 ) -> Diagnostic:
-    """Only host fixes run with the LaunchAgent's PATH, so only they are gated by it."""
-    if config.fix.execution != "host":
-        return Diagnostic(name, True, f"{detail} (informational; fix execution is not host)", "")
-    return Diagnostic(name, False, detail, action, group="fix-host")
+    """Host pull-request kinds run with the LaunchAgent's PATH."""
+    host_groups = [
+        definition.doctor_groups["host"]
+        for definition in registered()
+        if definition.local(config).execution == "host"
+    ]
+    if not host_groups:
+        return Diagnostic(name, True, f"{detail} (informational; host execution is disabled)", "")
+    return Diagnostic(name, False, detail, action, group=host_groups[0])
 
 
 def fix_floor_gib(config: LocalConfig) -> float:
@@ -1056,7 +1076,7 @@ def _current_line(claim: Claim, run: Run) -> str:
 
 def _slot_lines(store: ClaimStore) -> list[str]:
     lines: list[str] = []
-    for kind in ("eval", "fix"):
+    for kind in ("eval", *(definition.kind for definition in registered())):
         runs = store.nonterminal_runs(kind=kind)
         run = runs[0] if runs else None
         claim = store.get_claim(run.claim_id) if run is not None else None
@@ -1074,9 +1094,14 @@ def _blocked_lines(store: ClaimStore, claim: Claim) -> list[str]:
     if claim.lifecycle != "blocked":
         return []
     reason = "needs input"
-    fix_runs = [run for run in store.runs_for_claim(claim.id) if run.unit_key == "fix"]
-    if fix_runs:
-        latest_key = f"{fix_runs[-1].id}:needs-input"
+    definition = next((item for item in registered() if item.kind == claim.kind), None)
+    kind_runs = [
+        run
+        for run in store.runs_for_claim(claim.id)
+        if definition is not None and run.unit_key == definition.unit_key
+    ]
+    if kind_runs:
+        latest_key = f"{kind_runs[-1].id}:needs-input"
         for event in _events(claim):
             if event.key == latest_key:
                 body = event.body.removeprefix("Needs input.\n\n").strip()
@@ -1113,7 +1138,13 @@ def _kind_providers(config: LocalConfig | None) -> dict[str, set[str]]:
 
     from agent_factory.work_kinds.base import providers_from_roles as providers_of
 
-    return {"eval": providers_of(shared.eval.defaults), "fix": providers_of(shared.fix.defaults)}
+    return {
+        "eval": providers_of(shared.eval.defaults),
+        **{
+            definition.kind: providers_of(definition.defaults(shared))
+            for definition in registered()
+        },
+    }
 
 
 def _progress_lines(run: Run) -> list[str]:
@@ -1230,9 +1261,9 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
         "delivery_failures"
     ):
         return True
-    from agent_factory.work_kinds.fix.sync import pending_sync
+    from agent_factory.work_kinds.pull_request.sync import pending_sync
 
-    if pending_sync(store, claim):
+    if any(pending_sync(store, claim, definition) for definition in registered()):
         return True
     if claim.cleanup.get("last_error") is not None:
         return True
@@ -1240,9 +1271,11 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
 
 
 def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
-    from agent_factory.work_kinds.fix.sync import pending_sync, sync_state
+    from agent_factory.work_kinds.pull_request.sync import pending_sync, sync_state
 
-    if claim.lifecycle != "settled" or not pending_sync(store, claim):
+    if claim.lifecycle != "settled" or not any(
+        pending_sync(store, claim, definition) for definition in registered()
+    ):
         return []
     reason = sync_state(claim).get("blocked_reason")
     detail = reason if isinstance(reason, str) else "awaiting merge"

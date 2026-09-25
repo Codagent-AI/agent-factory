@@ -14,7 +14,7 @@ import pytest
 
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.supervisor import _plan_document  # pyright: ignore[reportPrivateUsage]
-from agent_factory.work_kinds.fix import launch
+from agent_factory.work_kinds.pull_request import launch
 
 TOKEN = "dummy-fix-token"
 CONTRACT = "factory-fix/1"

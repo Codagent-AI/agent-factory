@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -19,14 +20,12 @@ from agent_factory.operations import (
     HOST_BASE_EXECUTABLES,
     Diagnostic,
     DiagnosticGroup,
-    configured_adapters,
-    fix_floor_gib,
-    fix_group,
     free_space,
     read_fix_token,
 )
 from agent_factory.suites.and_scene import ReadinessError
-from agent_factory.work_kinds.fix import launch
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind
 
 _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
 _PROBE_TIMEOUT = 15
@@ -38,19 +37,37 @@ def check_readiness(
     *,
     installation_token: str | None = None,
     docker_diagnostic: Diagnostic | None = None,
+    definition: PullRequestKind = FIX,
 ) -> list[Diagnostic]:
     """Diagnostics gating fix admission for the configured execution mode only."""
     if not shared.fix.targets:
         return []
-    group = fix_group(local)
+    mode = definition.local(local).execution
+    group = definition.doctor_groups[mode]
     diagnostics: list[Diagnostic] = []
-    if local.fix.execution == "host":
-        diagnostics.extend(_host_diagnostics(local, shared))
+    if mode == "host":
+        diagnostics.extend(_host_diagnostics(local, shared, definition))
     else:
         diagnostics.append(_launch_diagnostic(local, shared, docker_diagnostic=docker_diagnostic))
-    diagnostics.append(free_space(local, floor_gib=fix_floor_gib(local), group=group))
+    floor = definition.local(local).minimum_free_gib
+    diagnostics.append(
+        free_space(
+            local,
+            floor_gib=floor if floor is not None else local.limits.minimum_free_gib,
+            group=group,
+        )
+    )
     diagnostics.append(_credential_diagnostic(local, installation_token, group=group))
-    diagnostics.append(_contract_diagnostic(local, shared))
+    diagnostics.append(_contract_diagnostic(local, shared, definition))
+    if definition is not FIX:
+        diagnostics = [
+            dataclasses.replace(
+                d,
+                name=d.name.replace(FIX.kind, definition.kind).replace(FIX.noun, definition.noun),
+                group=group if d.group in FIX.doctor_groups.values() else d.group,
+            )
+            for d in diagnostics
+        ]
     return diagnostics
 
 
@@ -164,20 +181,22 @@ def _credential_diagnostic(
     )
 
 
-def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic:
+def _contract_diagnostic(
+    local: LocalConfig, shared: SharedConfig, definition: PullRequestKind = FIX
+) -> Diagnostic:
     """The packaged workflow declares the contract and, in Docker mode, the recorded Runner
     branch head can run it. Host admission never depends on the recorded Runner commit,
     because that commit does not execute on the host."""
     name = "fix workflow contract"
-    group = fix_group(local)
+    group = definition.doctor_groups[definition.local(local).execution]
     # The review workflow ships beside the fix workflow and is checked the same way.
     for contract, filename in (
-        (shared.fix.contract, launch.WORKFLOW_FILE),
+        (definition.contract(shared), definition.workflow_file),
         (launch.REVIEW_CONTRACT, launch.REVIEW_WORKFLOW_FILE),
     ):
         marker = launch.contract_marker(contract)
         try:
-            launch.check_packaged_workflow(contract)
+            launch.check_packaged_workflow(contract, definition)
         except ReadinessError as error:
             return Diagnostic(
                 name,
@@ -188,11 +207,12 @@ def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic
                 f"{launch.ARTIFACT_DIR_PARAM} parameter.",
                 group=group,
             )
-    if local.fix.execution == "host":
+    if definition.local(local).execution == "host":
         return Diagnostic(
             name,
             True,
-            f"workflow contracts {shared.fix.contract} and {launch.REVIEW_CONTRACT} are packaged "
+            f"workflow contracts {definition.contract(shared)} and {launch.REVIEW_CONTRACT} "
+            "are packaged "
             f"with {launch.ARTIFACT_DIR_PARAM}",
             "",
             group=group,
@@ -224,13 +244,15 @@ def _contract_diagnostic(local: LocalConfig, shared: SharedConfig) -> Diagnostic
     return Diagnostic(
         name,
         True,
-        f"workflow contract {shared.fix.contract} is packaged and runnable at {where}",
+        f"workflow contract {definition.contract(shared)} is packaged and runnable at {where}",
         "",
         group=group,
     )
 
 
-def _host_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+def _host_diagnostics(
+    local: LocalConfig, shared: SharedConfig, definition: PullRequestKind = FIX
+) -> list[Diagnostic]:
     """Everything host-mode fixes need: the installed Runner, host CLIs, and Runner settings."""
     diagnostics: list[Diagnostic] = []
     runner = shutil.which("agent-runner")
@@ -239,12 +261,21 @@ def _host_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnost
     else:
         diagnostics.append(_runner_version_diagnostic(runner))
         diagnostics.append(_session_dir_flag_diagnostic(runner))
-        diagnostics.append(_validate_diagnostic(runner, shared))
+        diagnostics.append(_validate_diagnostic(runner, shared, definition))
     for executable in HOST_BASE_EXECUTABLES:
         if executable != "agent-runner":
             diagnostics.append(_which_diagnostic(executable))
     diagnostics.append(_gh_auth_status_diagnostic(local))
-    diagnostics.extend(_role_cli_diagnostic(adapter) for adapter in configured_adapters(shared))
+    diagnostics.extend(
+        _role_cli_diagnostic(adapter)
+        for adapter in sorted(
+            {
+                str(profile).split(":", 1)[0]
+                for profile in definition.defaults(shared).values()
+                if profile
+            }
+        )
+    )
     diagnostics.append(_runner_settings_diagnostic())
     return diagnostics
 
@@ -324,15 +355,17 @@ def _session_dir_flag_diagnostic(runner: str) -> Diagnostic:
     return _host_pass(name, "installed agent-runner supports --session-dir")
 
 
-def _validate_diagnostic(runner: str, shared: SharedConfig) -> Diagnostic:
+def _validate_diagnostic(
+    runner: str, shared: SharedConfig, definition: PullRequestKind = FIX
+) -> Diagnostic:
     name = "fix host workflow validation"
     with tempfile.TemporaryDirectory() as tmp:
         catalog = Path(tmp)
         try:
-            launch.stage_workflow_into(catalog, shared.fix.contract)
+            launch.stage_workflow_into(catalog, definition.contract(shared), definition)
         except ReadinessError as error:
             return _host_failure(name, str(error), "Reinstall the factory package.")
-        for filename in (launch.WORKFLOW_FILE, launch.REVIEW_WORKFLOW_FILE):
+        for filename in (definition.workflow_file, launch.REVIEW_WORKFLOW_FILE):
             _output, failure = _probe((runner, "-validate", str(catalog / filename)))
             if failure is not None:
                 return _host_failure(

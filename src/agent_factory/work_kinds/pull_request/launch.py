@@ -17,10 +17,11 @@ from pathlib import Path
 from agent_factory.config import LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
+from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, registered
 
-WORKFLOW_NAME = "factory-fix"
-WORKFLOW_FILE = "factory-fix-v1.0.yaml"
-WORKFLOW_SCRIPTS = ("record-triage.sh", "record-outcome.sh")
+WORKFLOW_NAME = FIX.workflow_name
+WORKFLOW_FILE = FIX.workflow_file
+WORKFLOW_SCRIPTS = tuple(name for name in FIX.staged_files if name.endswith(".sh"))
 REVIEW_CONTRACT = "factory-review/1"
 REVIEW_WORKFLOW_NAME = "factory-review"
 REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
@@ -28,12 +29,15 @@ IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
 REVIEW_WORKFLOW_SCRIPTS = ("record-review-triage.sh", "record-review-outcome.sh")
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
-STAGED_FILES = (
-    WORKFLOW_FILE,
-    REVIEW_WORKFLOW_FILE,
-    IMPLEMENT_WORKFLOW_FILE,
-    *WORKFLOW_SCRIPTS,
-    *REVIEW_WORKFLOW_SCRIPTS,
+STAGED_FILES = tuple(
+    dict.fromkeys(
+        (
+            *(name for definition in registered() for name in definition.staged_files),
+            REVIEW_WORKFLOW_FILE,
+            IMPLEMENT_WORKFLOW_FILE,
+            *REVIEW_WORKFLOW_SCRIPTS,
+        )
+    )
 )
 # The Runner finds user-level workflows under $HOME/.agent-runner/workflows; the sandbox
 # links $HOME/.agent-runner to /artifacts/agent-runner, so staging under the evidence
@@ -71,8 +75,8 @@ def image_tag(run_id: str) -> str:
     return f"{IMAGE_PREFIX}:{run_id}"
 
 
-def branch_name(issue_number: int, claim_id: str) -> str:
-    return f"factory/fix-{issue_number}-{claim_id[:8]}"
+def branch_name(issue_number: int, claim_id: str, prefix: str = FIX.branch_prefix) -> str:
+    return f"{prefix}-{issue_number}-{claim_id[:8]}"
 
 
 def validated_credential_copy(local: LocalConfig, destination: Path) -> Path:
@@ -118,10 +122,10 @@ def contract_marker(contract: str) -> str:
     return f"# factory-contract: {contract}"
 
 
-def packaged_workflow_text(contract: str) -> str:
+def packaged_workflow_text(contract: str, definition: PullRequestKind = FIX) -> str:
     """The fix workflow shipped with this package; it must declare ``contract`` first."""
-    filename = REVIEW_WORKFLOW_FILE if contract == REVIEW_CONTRACT else WORKFLOW_FILE
-    resource = files("agent_factory.work_kinds.fix") / "workflow" / filename
+    filename = REVIEW_WORKFLOW_FILE if contract == REVIEW_CONTRACT else definition.workflow_file
+    resource = files("agent_factory.work_kinds.pull_request") / "workflow" / filename
     try:
         text = resource.read_text(encoding="utf-8")
     except (OSError, UnicodeError) as error:
@@ -142,11 +146,11 @@ _ARTIFACT_DIR_DEFAULT_LINE = re.compile(
 )
 
 
-def check_packaged_workflow(contract: str) -> str:
+def check_packaged_workflow(contract: str, definition: PullRequestKind = FIX) -> str:
     """The packaged workflow must declare the contract and take its artifact directory as a
     parameter: one workflow serves the sandbox (``/artifacts``) and the host (the attempt's
     evidence directory), so a hardcoded container path would break host attempts."""
-    text = packaged_workflow_text(contract)
+    text = packaged_workflow_text(contract, definition)
     if _ARTIFACT_DIR_DECLARATION.search(text) is None:
         raise ReadinessError(
             f"the packaged fix workflow does not declare the {ARTIFACT_DIR_PARAM} parameter "
@@ -166,16 +170,18 @@ def check_packaged_workflow(contract: str) -> str:
     return text
 
 
-def stage_workflow(evidence: Path, contract: str) -> Path:
+def stage_workflow(evidence: Path, contract: str, definition: PullRequestKind = FIX) -> Path:
     """Copy the packaged workflow and its scripts where the sandboxed Runner looks them up."""
-    return stage_workflow_into(evidence / STAGED_WORKFLOWS, contract)
+    return stage_workflow_into(evidence / STAGED_WORKFLOWS, contract, definition)
 
 
-def stage_workflow_into(destination: Path, contract: str) -> Path:
+def stage_workflow_into(
+    destination: Path, contract: str, definition: PullRequestKind = FIX
+) -> Path:
     """Copy the packaged workflow and its scripts into a Runner workflow catalog directory."""
-    packaged_workflow_text(contract)
+    packaged_workflow_text(contract, definition)
     destination.mkdir(parents=True, exist_ok=True)
-    package = files("agent_factory.work_kinds.fix") / "workflow"
+    package = files("agent_factory.work_kinds.pull_request") / "workflow"
     for name in STAGED_FILES:
         with as_file(package / name) as source:
             target = destination / name
@@ -220,8 +226,8 @@ def finalize_pr_accepts_fix_cycles(text: str) -> bool:
     return any(_PARAM_NAME.search(line) for line in block)
 
 
-def workflow_name(contract: str) -> str:
-    return REVIEW_WORKFLOW_NAME if contract == REVIEW_CONTRACT else WORKFLOW_NAME
+def workflow_name(contract: str, definition: PullRequestKind = FIX) -> str:
+    return REVIEW_WORKFLOW_NAME if contract == REVIEW_CONTRACT else definition.workflow_name
 
 
 def input_parameter(contract: str, evidence: str) -> str:
@@ -241,7 +247,11 @@ def check_target_catalog(repo_clone: Path) -> None:
     catalog = repo_clone / ".agent-runner" / "workflows"
     shadows = sorted(
         path.name
-        for name in (WORKFLOW_NAME, REVIEW_WORKFLOW_NAME, "factory-implement")
+        for name in {
+            Path(filename).stem.rsplit("-v", 1)[0]
+            for filename in STAGED_FILES
+            if filename.endswith(".yaml")
+        }
         for path in catalog.glob(f"{name}-v*")
         if path.is_file() and path.suffix in {".yaml", ".yml"}
     )
@@ -252,9 +262,11 @@ def check_target_catalog(repo_clone: Path) -> None:
         )
 
 
-def check_runner_contract(runner_clone: Path, contract: str) -> None:
+def check_runner_contract(
+    runner_clone: Path, contract: str, definition: PullRequestKind = FIX
+) -> None:
     """The packaged workflow must declare the contract and the Runner clone must support it."""
-    check_packaged_workflow(contract)
+    check_packaged_workflow(contract, definition)
     finalize = runner_clone / FINALIZE_PR_PATH
     try:
         text = finalize.read_text(encoding="utf-8")
@@ -300,6 +312,7 @@ def build_plan(
     roles: Mapping[str, object],
     branch: str,
     contract: str,
+    definition: PullRequestKind = FIX,
     bootstrap_skills: bool = True,
 ) -> ExecutionPlan:
     profiles = role_profiles(roles)
@@ -332,6 +345,7 @@ def build_plan(
                 profiles,
                 branch=branch,
                 contract=contract,
+                definition=definition,
                 bootstrap_skills=bootstrap_skills,
                 config_text=staged_config_text(tracked_config_text(Path(clones["repo"])), profiles),
             ),
@@ -375,6 +389,7 @@ def container_script(
     *,
     branch: str,
     contract: str,
+    definition: PullRequestKind = FIX,
     bootstrap_skills: bool = True,
     config_text: str | None = None,
 ) -> str:
@@ -411,7 +426,7 @@ def container_script(
             bootstrap.append("cursor plugins install /workspace/skills")
     run_command = " ".join(
         (
-            f"agent-runner run {workflow_name(contract)}",
+            f"agent-runner run {workflow_name(contract, definition)}",
             f"--profile {FACTORY_PROFILE}",
             f"--param {input_parameter(contract, CONTAINER_ARTIFACTS)}",
             f"--param branch_name={shlex.quote(branch)}",
@@ -626,6 +641,7 @@ def host_script(
     askpass: Path,
     branch: str,
     contract: str,
+    definition: PullRequestKind = FIX,
 ) -> str:
     """The bash wrapper that is the host plan's argv target.
 
@@ -636,7 +652,7 @@ def host_script(
     session_dir = evidence / SESSION_DIR_NAME
     run_command = " ".join(
         (
-            f"{shlex.quote(runner)} run {workflow_name(contract)}",
+            f"{shlex.quote(runner)} run {workflow_name(contract, definition)}",
             f"--profile {FACTORY_PROFILE}",
             f"--session-dir {shlex.quote(str(session_dir))}",
             f"--param {input_parameter(contract, shlex.quote(str(evidence)))}",
@@ -818,6 +834,7 @@ def build_host_plan(
     roles: Mapping[str, object],
     branch: str,
     contract: str,
+    definition: PullRequestKind = FIX,
     recorded_revisions: Mapping[str, object] | None = None,
     runner_executable: str | None = None,
 ) -> ExecutionPlan:
@@ -834,6 +851,7 @@ def build_host_plan(
             roles=roles,
             branch=branch,
             contract=contract,
+            definition=definition,
             recorded_revisions=recorded_revisions,
             runner_executable=runner_executable,
         )
@@ -853,6 +871,7 @@ def _assemble_host_plan(
     roles: Mapping[str, object],
     branch: str,
     contract: str,
+    definition: PullRequestKind,
     recorded_revisions: Mapping[str, object] | None,
     runner_executable: str | None,
 ) -> ExecutionPlan:
@@ -864,7 +883,7 @@ def _assemble_host_plan(
     (evidence / "logs").mkdir(parents=True, exist_ok=True)
     _refuse_symlinked_staging(repo_clone)
     _refuse_tracked_workflow_files(repo_clone)
-    stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract)
+    stage_workflow_into(repo_clone / PROJECT_WORKFLOWS, contract, definition)
     config_path = repo_clone / PROJECT_CONFIG
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(
@@ -889,6 +908,7 @@ def _assemble_host_plan(
             askpass=askpass,
             branch=branch,
             contract=contract,
+            definition=definition,
         ),
         0o700,
     )

@@ -20,7 +20,7 @@ from agent_factory.github import (
 from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
 from agent_factory.suites.and_scene import ReadinessError, WorktreeError
 from agent_factory.work_kinds.base import Preparation
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
 
 def _parse_timestamp(value: str) -> datetime | None:
@@ -62,7 +62,7 @@ def eligible_comments(
 def process_blocked_claim(
     store: ClaimStore,
     client: GitHubClient,
-    handler: FixHandler,
+    handler: PullRequestHandler,
     shared: SharedConfig,
     local: LocalConfig,
     card: ProjectQueueItem,
@@ -84,7 +84,7 @@ def process_blocked_claim(
     # unblock could actually be admitted this cycle.
     if (
         store.is_paused()
-        or store.nonterminal_runs(kind="fix")
+        or store.nonterminal_runs(kind=handler.kind)
         or not handler.window(local).allows_admission(now)
     ):
         return None
@@ -151,9 +151,9 @@ def process_blocked_claim(
     try:
         run = store.reserve_run(
             claim.id,
-            "fix",
+            handler.definition.unit_key,
             reason="unblock",
-            evidence_path=str(artifact_root / f"{claim.id}-fix-unblock"),
+            evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-unblock"),
         )
     except NonterminalRunError:
         _discard_clones(store, claim, preparation)

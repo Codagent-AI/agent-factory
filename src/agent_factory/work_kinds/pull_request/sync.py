@@ -16,6 +16,7 @@ from typing import Protocol, cast
 from agent_factory.config import LocalConfig
 from agent_factory.github import IssueComment
 from agent_factory.store import Claim, ClaimStore
+from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind
 
 AGENT_RUNNER_REPOSITORY = "Codagent-AI/agent-runner"
 
@@ -40,14 +41,15 @@ def sync_claim(
     *,
     bot_login: str,
     card_done: bool,
+    definition: PullRequestKind = FIX,
 ) -> None:
     """Run one post-merge sync attempt for a settled fix claim with a recorded PR."""
-    if claim.kind != "fix" or claim.lifecycle != "settled":
+    if claim.kind != definition.kind or claim.lifecycle != "settled":
         return
     sync = claim.reporting.get("sync")
     if isinstance(sync, Mapping) and cast(Mapping[str, object], sync).get("completed"):
         return
-    pr = _find_pr(store, claim)
+    pr = _find_pr(store, claim, definition)
     if pr is None:
         return
     number, _url = pr
@@ -64,9 +66,17 @@ def sync_claim(
         else "the operator's working clone is not configured"
     )
     if reason is not None:
-        _report_blocked(store, client, claim, reason, bot_login=bot_login, card_done=card_done)
+        _report_blocked(
+            store,
+            client,
+            claim,
+            reason,
+            bot_login=bot_login,
+            card_done=card_done,
+            definition=definition,
+        )
         return
-    _report_success(store, client, claim, bot_login=bot_login)
+    _report_success(store, client, claim, bot_login=bot_login, definition=definition)
 
 
 def sync_state(claim: Claim) -> Mapping[str, object]:
@@ -75,22 +85,28 @@ def sync_state(claim: Claim) -> Mapping[str, object]:
     return cast(Mapping[str, object], sync) if isinstance(sync, Mapping) else {}
 
 
-def pending_sync(store: ClaimStore, claim: Claim) -> bool:
+def pending_sync(store: ClaimStore, claim: Claim, definition: PullRequestKind = FIX) -> bool:
     """Whether a settled fix claim with a PR still awaits its post-merge sync.
 
     Only settled claims are ever synced, so a cancelled or superseded claim that recorded a
     PR never waits on one."""
-    if claim.kind != "fix" or claim.lifecycle != "settled" or _find_pr(store, claim) is None:
+    if (
+        claim.kind != definition.kind
+        or claim.lifecycle != "settled"
+        or _find_pr(store, claim, definition) is None
+    ):
         return False
     return not sync_state(claim).get("completed")
 
 
-def _find_pr(store: ClaimStore, claim: Claim) -> tuple[int, str] | None:
+def _find_pr(
+    store: ClaimStore, claim: Claim, definition: PullRequestKind = FIX
+) -> tuple[int, str] | None:
     candidates: list[object] = [claim.outcome.get("pr")]
     candidates.extend(
         run.result.get("pr")
         for run in reversed(store.runs_for_claim(claim.id))
-        if run.unit_key == "fix"
+        if run.unit_key == definition.unit_key
     )
     for pr in candidates:
         if isinstance(pr, Mapping):
@@ -266,8 +282,9 @@ def _report_blocked(
     *,
     bot_login: str,
     card_done: bool,
+    definition: PullRequestKind = FIX,
 ) -> None:
-    marker = f"<!-- agent-factory:fix-sync:{claim.id}:blocked:{_digest(reason)} -->"
+    marker = f"<!-- agent-factory:{definition.sync_marker}:{claim.id}:blocked:{_digest(reason)} -->"
     comment_id = _deliver_marker(
         client, claim, bot_login, marker, f"Post-merge sync is blocked: {reason}."
     )
@@ -279,9 +296,16 @@ def _report_blocked(
     )
 
 
-def _report_success(store: ClaimStore, client: SyncClient, claim: Claim, *, bot_login: str) -> None:
+def _report_success(
+    store: ClaimStore,
+    client: SyncClient,
+    claim: Claim,
+    *,
+    bot_login: str,
+    definition: PullRequestKind = FIX,
+) -> None:
     client.close_issue(claim.repository, claim.issue_number)
-    marker = f"<!-- agent-factory:fix-sync:{claim.id}:completed -->"
+    marker = f"<!-- agent-factory:{definition.sync_marker}:{claim.id}:completed -->"
     comment_id = _deliver_marker(
         client,
         claim,

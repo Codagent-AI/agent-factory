@@ -5,10 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory import runtime
-from agent_factory.config import SharedConfig
+from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.github import GitHubApiError, ProjectQueueItem
 from agent_factory.routing import SourceItem
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
 
 
 class PermissionClient:
@@ -53,9 +54,13 @@ def test_ready_bug_permission_is_cached_per_author() -> None:
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
     client = PermissionClient()
     cache: dict[tuple[str, str], str | None] = {}
+    handler = PullRequestHandler(
+        FIX, shared, LocalConfig.from_file(Path("config/local.example.toml"))
+    )
+    handler.attach_github(client)  # pyright: ignore[reportArgumentType]
 
-    runtime._assign_ready_bug(client, shared, _card(shared, "card-1"), cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
-    runtime._assign_ready_bug(client, shared, _card(shared, "card-2"), cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+    handler.ready_handoff(_card(shared, "card-1"), shared, cache)
+    handler.ready_handoff(_card(shared, "card-2"), shared, cache)
 
     assert client.permission_calls == 1
     assert client.assignments == ["card-1", "card-2"]
@@ -67,10 +72,14 @@ def test_ready_bug_permission_failure_is_isolated_and_logged(
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
     client = PermissionClient(fail=True)
     cache: dict[tuple[str, str], str | None] = {}
+    handler = PullRequestHandler(
+        FIX, shared, LocalConfig.from_file(Path("config/local.example.toml"))
+    )
+    handler.attach_github(client)  # pyright: ignore[reportArgumentType]
 
     with caplog.at_level(logging.WARNING):
-        runtime._assign_ready_bug(client, shared, _card(shared, "card-1"), cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
-        runtime._assign_ready_bug(client, shared, _card(shared, "card-2"), cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+        handler.ready_handoff(_card(shared, "card-1"), shared, cache)
+        handler.ready_handoff(_card(shared, "card-2"), shared, cache)
 
     assert client.permission_calls == 1
     assert client.assignments == []
@@ -83,10 +92,14 @@ def test_ready_bug_assignment_failure_is_isolated_and_logged(
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
     client = PermissionClient(assignment_fail=True)
     cache: dict[tuple[str, str], str | None] = {}
+    handler = PullRequestHandler(
+        FIX, shared, LocalConfig.from_file(Path("config/local.example.toml"))
+    )
+    handler.attach_github(client)  # pyright: ignore[reportArgumentType]
     card = _card(shared, "card-1")
 
     with caplog.at_level(logging.WARNING):
-        runtime._assign_ready_bug(client, shared, card, cache)  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+        handler.ready_handoff(card, shared, cache)
 
     assert client.permission_calls == 1
     assert client.assignments == []

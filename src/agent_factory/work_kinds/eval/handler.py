@@ -117,6 +117,48 @@ class EvalHandler:
         if self._manager is not None:
             self._worktree_cleanup = WorktreeCleanup(store, self._manager)
 
+    def attach_github(self, client: GitHubClient, token_provider: object = None) -> None:
+        pass
+
+    def resolve_request(self, request: object) -> tuple[str, ...]:
+        if self.sources is None or not isinstance(request, ParsedRequest):
+            raise ReadinessError("eval handler cannot resolve pinned revisions")
+        return resolve_revisions(self.sources, request)
+
+    def execution_mode(self, local: LocalConfig) -> str:
+        return local.eval_execution
+
+    def needs_sandbox_memory(self, local: LocalConfig) -> bool:
+        return local.eval_execution == "docker"
+
+    def ready_handoff(
+        self,
+        card: ProjectQueueItem,
+        shared: SharedConfig,
+        permission_cache: dict[tuple[str, str], str | None],
+    ) -> None:
+        pass
+
+    def unblock(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def review_round(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def merge_sync(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    def pending_sync(self, claim: Claim) -> bool:
+        return False
+
+    def retention_targets(self, run: Run) -> list[Path]:
+        from agent_factory.retention import eval_rep_targets
+
+        return eval_rep_targets(run)
+
+    def blocked_reason(self, claim: Claim) -> str:
+        return "needs input"
+
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
             not snapshot.closed
@@ -213,7 +255,13 @@ class EvalHandler:
             self.sources.evals, self._harness_ref
         )
 
-    def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    def readiness(
+        self,
+        local: LocalConfig,
+        shared: SharedConfig,
+        *,
+        docker_diagnostic: Diagnostic | None = None,
+    ) -> list[Diagnostic]:
         return []
 
     def prepare(self, claim: Claim) -> Preparation:
@@ -729,3 +777,13 @@ def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
         if result.get(key) is not None:
             lines.append(f"{key}: {text(result[key])}")
     return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
+
+
+def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, str]:
+    """Resolve the evaluation's Runner and Skills refs at admission."""
+    from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
+
+    return (
+        _resolve_revision(sources.runner, str(request.settings["agent_runner_ref"])),
+        _resolve_revision(sources.skills, str(request.settings["agent_skills_ref"])),
+    )

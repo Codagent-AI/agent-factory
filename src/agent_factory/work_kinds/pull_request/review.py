@@ -20,7 +20,7 @@ from agent_factory.github import (
 from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
 from agent_factory.suites.and_scene import ReadinessError, WorktreeError
 from agent_factory.work_kinds.base import Preparation
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
 
 def _timestamp(value: str) -> datetime | None:
@@ -74,7 +74,7 @@ def has_eligible_review(activity: dict[str, list[dict[str, object]]]) -> bool:
 def process_review_claim(
     store: ClaimStore,
     client: GitHubClient,
-    handler: FixHandler,
+    handler: PullRequestHandler,
     claim: Claim,
     *,
     bot_login: str,
@@ -94,7 +94,7 @@ def process_review_claim(
     if not isinstance(raw_pr, dict):
         # Claims settled before the PR record was kept on the outcome still
         # carry it on their latest run result.
-        raw_pr = handler._prior_pull_request(claim)  # pyright: ignore[reportPrivateUsage]
+        raw_pr = handler.prior_pull_request(claim)
     if not isinstance(raw_pr, dict):
         return None
     pr = cast(dict[str, object], raw_pr)
@@ -132,7 +132,7 @@ def process_review_claim(
     claim = store.get_claim(claim.id) or claim
     if (
         store.is_paused()
-        or store.nonterminal_runs(kind="fix")
+        or store.nonterminal_runs(kind=handler.kind)
         or not memory_available
         or not handler.window(local).allows_admission(now)
         or not readiness()
@@ -175,6 +175,7 @@ def process_review_claim(
         "title": title,
         "body": body,
         "claim_id": claim.id,
+        "kind": claim.kind,
         "pull_request": pr,
         "branch": branch,
         "head_sha": head.sha,
@@ -191,9 +192,9 @@ def process_review_claim(
     try:
         run = store.reserve_run(
             claim.id,
-            "fix",
+            handler.definition.unit_key,
             reason="review",
-            evidence_path=str(artifact_root / f"{claim.id}-fix-review"),
+            evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-review"),
         )
     except (NonterminalRunError, OSError):
         return None

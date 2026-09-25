@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from agent_factory.github import IssueComment, ReviewActivity, ReviewThread
-from agent_factory.work_kinds.fix import launch
-from agent_factory.work_kinds.fix.outcome import read_outcome
-from agent_factory.work_kinds.fix.review import eligible_review_activity
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.outcome import read_outcome
+from agent_factory.work_kinds.pull_request.review import eligible_review_activity
 
 
 def test_eligible_review_activity_keeps_writer_pr_comments_after_checkpoint() -> None:

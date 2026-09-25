@@ -22,7 +22,7 @@ esac
 """
 
 
-class FixWorkspace:
+class PullRequestWorkspace:
     """Owns `<root>/mirrors` and `<root>/clones/<claim>/<attempt>` for the fix kind."""
 
     def __init__(self, storage_root: Path, runner_checkout: Path, skills_checkout: Path) -> None:

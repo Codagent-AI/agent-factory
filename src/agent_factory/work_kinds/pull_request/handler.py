@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,16 +41,18 @@ from agent_factory.work_kinds.base import (
     mapping,
     providers_from_roles,
 )
-from agent_factory.work_kinds.fix import launch
-from agent_factory.work_kinds.fix.cleanup import FixCleanup
-from agent_factory.work_kinds.fix.outcome import read_interpreted_outcome
-from agent_factory.work_kinds.fix.readiness import check_readiness
-from agent_factory.work_kinds.fix.workspace import FixWorkspace
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.cleanup import PullRequestCleanup
+from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, ReconcilePolicy
+from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
+from agent_factory.work_kinds.pull_request.readiness import check_readiness
+from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
 
 Resolver = Callable[[FixTarget], tuple[str, str, str]]
+logger = logging.getLogger(__name__)
 
 
-class FixGitHub(Protocol):
+class PullRequestGitHub(Protocol):
     """The GitHub calls the handler needs for reconciliation and issue input."""
 
     def get_permission(self, repository: str, login: str) -> str | None: ...
@@ -60,48 +63,227 @@ class FixGitHub(Protocol):
         self, repository: str, branch: str
     ) -> list[PullRequestInfo]: ...
 
+    def list_open_factory_pull_requests_for_issue(
+        self, repository: str, number: int
+    ) -> list[PullRequestInfo]: ...
+
     def get_source_item(self, repository: str, number: int) -> SourceItem: ...
 
     def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
 
 
-class FixHandler:
+class PullRequestHandler:
     """Owns every fix-shaped decision: admission, launch, and outcome mapping."""
-
-    kind = "fix"
-
-    @staticmethod
-    def accepted_message() -> str:
-        return "Fix inputs accepted and frozen."
 
     def __init__(
         self,
+        definition: PullRequestKind,
         shared: SharedConfig,
         local: LocalConfig,
         *,
         resolver: Resolver | None = None,
-        workspace: FixWorkspace | None = None,
+        workspace: PullRequestWorkspace | None = None,
     ) -> None:
+        self.definition = definition
+        self.kind = definition.kind
         self._shared = shared
         self._local = local
-        self._contract = shared.fix.contract
+        self._contract = definition.contract(shared)
         self._resolver = resolver
-        self._workspace = workspace
-        self._store: ClaimStore | None = None
-        self._cleanup: FixCleanup | None = None
-        self._installation_token: Callable[[], str] | None = None
-        self._github: FixGitHub | None = None
-
-    @classmethod
-    def from_config(cls, shared: SharedConfig, local: LocalConfig) -> FixHandler:
-        workspace = FixWorkspace(
+        self._workspace = workspace or PullRequestWorkspace(
             local.storage_root, local.repositories.agent_runner, local.repositories.agent_skills
         )
-        return cls(shared, local, workspace=workspace)
+        self._store: ClaimStore | None = None
+        self._cleanup: PullRequestCleanup | None = None
+        self._installation_token: Callable[[], str] | None = None
+        self._github: PullRequestGitHub | None = None
+
+    @classmethod
+    def from_config(cls, shared: SharedConfig, local: LocalConfig) -> PullRequestHandler:
+        workspace = PullRequestWorkspace(
+            local.storage_root, local.repositories.agent_runner, local.repositories.agent_skills
+        )
+        return cls(FIX, shared, local, workspace=workspace)
+
+    def accepted_message(self) -> str:
+        return f"{self.definition.noun} inputs accepted and frozen."
+
+    def resolve_request(self, request: object) -> tuple[str, ...]:
+        if not isinstance(request, FixTarget):
+            raise ReadinessError(f"{self.kind} handler cannot resolve a non-target request")
+        return self.resolve(request)
+
+    def execution_mode(self, local: LocalConfig) -> str:
+        return self.definition.local(local).execution
+
+    def needs_sandbox_memory(self, local: LocalConfig) -> bool:
+        return self.execution_mode(local) == "docker"
+
+    def ready_handoff(
+        self,
+        card: ProjectQueueItem,
+        shared: SharedConfig,
+        permission_cache: dict[tuple[str, str], str | None],
+    ) -> None:
+        if self._github is None:
+            return
+        source = card.source
+        factory = shared.project.owner.option("factory")
+        if (
+            source.repository not in {target.repository for target in shared.fix.targets}
+            or source.pull_request
+            or source.state.lower() == "closed"
+            or source.issue_type != self.definition.issue_type(shared)
+            or card_status(shared, card) != "Ready"
+            or card.fields.get(shared.project.owner.id) == factory
+        ):
+            return
+        key = (source.repository, source.author)
+        try:
+            if key not in permission_cache:
+                permission_cache[key] = self._github.get_permission(*key)
+        except GitHubApiError as error:
+            permission_cache[key] = None
+            logger.warning(
+                "Cannot verify Ready %s author permission; retrying next cycle "
+                "(repository=%s author=%s card=%s): %s",
+                self.definition.noun,
+                source.repository,
+                source.author,
+                card.id,
+                error,
+            )
+            return
+        if permission_cache[key] not in WRITER_PERMISSIONS:
+            return
+        try:
+            cast(GitHubClient, self._github).set_single_select_field(
+                shared.project.id, card.id, shared.project.owner.id, factory
+            )
+        except GitHubApiError as error:
+            logger.warning(
+                "Cannot assign Ready %s to Factory; retrying next cycle "
+                "(repository=%s author=%s card=%s): %s",
+                self.definition.noun,
+                source.repository,
+                source.author,
+                card.id,
+                error,
+            )
+            return
+        card.fields[shared.project.owner.id] = factory
+
+    def unblock(
+        self,
+        store: ClaimStore,
+        client: GitHubClient,
+        shared: SharedConfig,
+        local: LocalConfig,
+        card: ProjectQueueItem,
+        claim: Claim,
+        *,
+        bot_login: str,
+        artifact_root: Path,
+        now: datetime,
+        memory_available: bool = True,
+    ) -> tuple[Run, Preparation] | None:
+        from agent_factory.work_kinds.pull_request.blocked import process_blocked_claim
+
+        return process_blocked_claim(
+            store,
+            client,
+            self,
+            shared,
+            local,
+            card,
+            claim,
+            bot_login=bot_login,
+            artifact_root=artifact_root,
+            now=now,
+            memory_available=memory_available,
+        )
+
+    def review_round(
+        self,
+        store: ClaimStore,
+        client: GitHubClient,
+        claim: Claim,
+        *,
+        bot_login: str,
+        artifact_root: Path,
+        now: datetime,
+        local: LocalConfig,
+        readiness: Callable[[], bool],
+        memory_available: bool = True,
+    ) -> tuple[Run, Preparation] | None:
+        from agent_factory.work_kinds.pull_request.review import process_review_claim
+
+        return process_review_claim(
+            store,
+            client,
+            self,
+            claim,
+            bot_login=bot_login,
+            artifact_root=artifact_root,
+            now=now,
+            local=local,
+            readiness=readiness,
+            memory_available=memory_available,
+        )
+
+    def merge_sync(
+        self,
+        store: ClaimStore,
+        client: GitHubClient,
+        local: LocalConfig,
+        claim: Claim,
+        *,
+        bot_login: str,
+        card_done: bool,
+    ) -> None:
+        from agent_factory.work_kinds.pull_request.sync import sync_claim
+
+        sync_claim(
+            store,
+            client,
+            local,
+            claim,
+            bot_login=bot_login,
+            card_done=card_done,
+            definition=self.definition,
+        )
+
+    def pending_sync(self, claim: Claim) -> bool:
+        from agent_factory.work_kinds.pull_request.sync import pending_sync
+
+        return self._store is not None and pending_sync(self._store, claim, self.definition)
+
+    def retention_targets(self, run: Run) -> list[Path]:
+        from agent_factory.retention import pull_request_attempt_targets
+
+        return pull_request_attempt_targets(run)
+
+    def blocked_reason(self, claim: Claim) -> str:
+        if self._store is None:
+            return "needs input"
+        runs = [
+            run
+            for run in self._store.runs_for_claim(claim.id)
+            if run.unit_key == self.definition.unit_key
+        ]
+        if not runs:
+            return "needs input"
+        event = mapping(mapping(claim.reporting.get("events")).get(f"{runs[-1].id}:needs-input"))
+        body = event.get("body")
+        return (
+            body.removeprefix("Needs input.\n\n").strip()
+            if isinstance(body, str)
+            else "needs input"
+        )
 
     def attach_store(self, store: ClaimStore) -> None:
         self._store = store
-        self._cleanup = FixCleanup(
+        self._cleanup = PullRequestCleanup(
             store, private_root=self._local.storage_root.expanduser() / "private"
         )
 
@@ -109,16 +291,20 @@ class FixHandler:
         """Let readiness reject a fix credential that is really the App installation token."""
         self._installation_token = provider
 
-    def attach_github(self, client: FixGitHub) -> None:
+    def attach_github(
+        self, client: PullRequestGitHub, token_provider: Callable[[], str] | None = None
+    ) -> None:
         """Give reconciliation and issue-input construction the controller's read client."""
         self._github = client
+        if token_provider is not None:
+            self._installation_token = token_provider
 
     def handles(self, snapshot: RequestSnapshot) -> bool:
         return (
             not snapshot.closed
             and snapshot.owner == "factory"
             and snapshot.status == "Ready"
-            and snapshot.issue_type == "Bug"
+            and snapshot.issue_type == self.definition.issue_type(self._shared)
             and "needs-input" not in snapshot.labels
             and snapshot.author_permission in WRITER_PERMISSIONS
         )
@@ -131,7 +317,7 @@ class FixHandler:
         if (
             source.repository not in targets
             or source.state.lower() == "closed"
-            or source.issue_type != "Bug"
+            or source.issue_type != self.definition.issue_type(shared)
             or "needs-input" in source.labels
             or card.fields.get(shared.project.owner.id) != shared.project.owner.option("factory")
             or card_status(shared, card) != "Ready"
@@ -148,7 +334,7 @@ class FixHandler:
             card.id,
             source.author,
             permission,
-            "Bug",
+            self.definition.issue_type(shared),
             source.labels,
             "Ready",
             "factory",
@@ -158,14 +344,12 @@ class FixHandler:
         )
 
     def request_fingerprint(self, snapshot: RequestSnapshot) -> str | Feedback:
-        return f"fix:{snapshot.repository}#{snapshot.issue_number}"
+        return f"{self.kind}:{snapshot.repository}#{snapshot.issue_number}"
 
     def resolve(self, target: FixTarget) -> tuple[str, str, str]:
         """Fetch the target mirror and resolve the three configured branches to commits."""
         if self._resolver is not None:
             return self._resolver(target)
-        if self._workspace is None:
-            raise ReadinessError("fix handler has no workspace for mirrors and clones")
         from agent_factory import runtime
 
         token = self._installation_token() if self._installation_token is not None else None
@@ -190,19 +374,19 @@ class FixHandler:
             (t for t in self._shared.fix.targets if t.repository == snapshot.repository), None
         )
         if target is None:
-            return Feedback(f"{snapshot.repository} is not a configured fix target")
+            return Feedback(f"{snapshot.repository} is not a configured {self.kind} target")
         resolver = cast(Resolver, resolve)
         target_sha, runner_sha, skills_sha = resolver(target)
         frozen: dict[str, object] = {
             "version": 1,
-            "kind": "fix",
+            "kind": self.kind,
             "target": {"repository": target.repository, "branch": target.branch},
             "branches": {
                 "runner": self._shared.fix.branches.runner,
                 "skills": self._shared.fix.branches.skills,
             },
             "revisions": {"target": target_sha, "runner": runner_sha, "skills": skills_sha},
-            "roles": dict(self._shared.fix.defaults),
+            "roles": dict(self.definition.defaults(self._shared)),
             "contract": self._contract,
         }
         fingerprint = self.request_fingerprint(snapshot)
@@ -234,30 +418,35 @@ class FixHandler:
                 # distinct from it, so readiness reports the failure as a diagnostic
                 # instead of skipping the check or crashing the readiness pass.
                 minting_failure = Diagnostic(
-                    "fix credential",
+                    f"{self.kind} credential",
                     False,
-                    f"cannot mint the App installation token to validate the fix credential: "
+                    f"cannot mint the App installation token to validate the "
+                    f"{self.kind} credential: "
                     f"{error}",
                     "Repair the GitHub App key or installation, then rerun doctor.",
                 )
         diagnostics = check_readiness(
-            local, shared, installation_token=token, docker_diagnostic=docker_diagnostic
+            local,
+            shared,
+            installation_token=token,
+            docker_diagnostic=docker_diagnostic,
+            definition=self.definition,
         )
         if minting_failure is not None:
             diagnostics = [
-                minting_failure if d.name == "fix credential" else d for d in diagnostics
+                minting_failure if d.name == f"{self.kind} credential" else d for d in diagnostics
             ]
         return diagnostics
 
     # -- launch -----------------------------------------------------------------
 
     def branch_name(self, claim: Claim) -> str:
-        return launch.branch_name(claim.issue_number, claim.id)
+        return launch.branch_name(claim.issue_number, claim.id, self.definition.branch_prefix)
 
     def reconcile(self, claim: Claim) -> PullRequestInfo | None:
         """Look for a branch or open PR from an earlier attempt before launching anything."""
         if self._github is None or self._store is None:
-            raise ReadinessError("fix handler has no GitHub client for side-effect reconciliation")
+            raise ReadinessError(f"{self.kind} handler has no GitHub client for reconciliation")
         branch = self.branch_name(claim)
         try:
             existing = self._github.get_branch(claim.repository, branch)
@@ -266,6 +455,31 @@ class FixHandler:
             raise ReadinessError(
                 f"cannot establish whether an earlier attempt pushed {branch}: {error}"
             ) from error
+        if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+            if len(pulls) > 1:
+                raise ReadinessError(f"ambiguous open pull requests for {branch}")
+            try:
+                others = self._github.list_open_factory_pull_requests_for_issue(
+                    claim.repository, claim.issue_number
+                )
+            except (GitHubApiError, OSError) as error:
+                raise ReadinessError(
+                    f"cannot establish open factory pull requests: {error}"
+                ) from error
+            completed = {pr.number: pr for pr in (*pulls, *others) if not pr.is_draft}
+            if len(completed) > 1:
+                raise ReadinessError("ambiguous open factory pull requests for issue")
+            if completed:
+                pulls = list(completed.values())
+            elif pulls:
+                self._store.set_preparation(
+                    claim.id,
+                    {
+                        **claim.preparation,
+                        "resume": {"branch": branch, "head_sha": pulls[0].head_sha},
+                    },
+                )
+                return None
         if pulls:
             pull = pulls[0]
             self._store.set_claim_lifecycle(
@@ -276,7 +490,7 @@ class FixHandler:
                     "pr": {
                         "url": pull.url,
                         "number": pull.number,
-                        "branch": branch,
+                        "branch": pull.branch or branch,
                         "head_sha": pull.head_sha,
                     },
                 },
@@ -289,19 +503,34 @@ class FixHandler:
             )
             return pull
         if existing is not None:
+            if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+                self._store.set_preparation(
+                    claim.id,
+                    {
+                        **claim.preparation,
+                        "resume": {"branch": branch, "head_sha": existing.sha},
+                    },
+                )
+                return None
             self._store.record_event(
                 claim.id,
                 f"reconcile:branch:{existing.sha[:7]}",
                 f"Branch `{branch}` already exists at {existing.sha[:7]} without an open pull "
                 "request; the next attempt pushes over it or fails loudly.",
             )
+        elif self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+            self._store.set_preparation(
+                claim.id,
+                {key: value for key, value in claim.preparation.items() if key != "resume"},
+            )
         return None
 
     def prepare(self, claim: Claim) -> Preparation:
-        if self._store is None or self._workspace is None or self._github is None:
-            raise ReadinessError("fix handler is not wired for launch")
+        if self._store is None or self._github is None:
+            raise ReadinessError(f"{self.kind} handler is not wired for launch")
         if self.reconcile(claim) is not None:
             return Preparation()
+        claim = self._store.get_claim(claim.id) or claim
         roles = mapping(claim.frozen_spec.get("roles"))
         failures = [
             check.detail
@@ -313,20 +542,32 @@ class FixHandler:
         if self._local.credentials.fix_environment is None:
             raise ReadinessError("credentials.fix_environment is not configured")
         issue = self._issue_input(claim)
-        attempt = len([r for r in self._store.runs_for_claim(claim.id) if r.unit_key == "fix"])
+        attempt = len(
+            [
+                r
+                for r in self._store.runs_for_claim(claim.id)
+                if r.unit_key == self.definition.unit_key
+            ]
+        )
         target = mapping(claim.frozen_spec.get("target"))
         repository = target.get("repository")
         if not isinstance(repository, str):
             raise ReadinessError("claim has no recorded target repository")
-        clones = self._workspace.prepare_clones(
-            claim.id, attempt, repository, mapping(claim.frozen_spec.get("revisions"))
-        )
-        if self._local.fix.execution == "host":
+        revisions = dict(mapping(claim.frozen_spec.get("revisions")))
+        resume = mapping(claim.preparation.get("resume"))
+        head_sha = resume.get("head_sha")
+        if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH and isinstance(
+            head_sha, str
+        ):
+            revisions["target"] = head_sha
+            issue["resume"] = dict(resume)
+        clones = self._workspace.prepare_clones(claim.id, attempt, repository, revisions)
+        if self.definition.local(self._local).execution == "host":
             # The recorded Runner commit does not execute on the host, so only the packaged
             # workflow is checked here; the installed Runner is checked by host readiness.
-            launch.check_packaged_workflow(self._contract)
+            launch.check_packaged_workflow(self._contract, self.definition)
         else:
-            launch.check_runner_contract(Path(clones["runner"]), self._contract)
+            launch.check_runner_contract(Path(clones["runner"]), self._contract, self.definition)
         launch.check_target_catalog(Path(clones["repo"]))
         recorded = dict(mapping(claim.preparation.get("clones")))
         recorded[f"attempt-{attempt}"] = str(self._workspace.attempt_directory(claim.id, attempt))
@@ -343,12 +584,18 @@ class FixHandler:
 
     def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
         """Prepare fresh clones at the observed PR head for a review round."""
-        if self._store is None or self._workspace is None:
-            raise ReadinessError("fix handler is not wired for review launch")
+        if self._store is None:
+            raise ReadinessError(f"{self.kind} handler is not wired for review launch")
         branch, head_sha = review.get("branch"), review.get("head_sha")
         if not isinstance(branch, str) or not isinstance(head_sha, str):
             raise ReadinessError("review input lacks the PR branch or head commit")
-        attempt = len([r for r in self._store.runs_for_claim(claim.id) if r.unit_key == "fix"])
+        attempt = len(
+            [
+                r
+                for r in self._store.runs_for_claim(claim.id)
+                if r.unit_key == self.definition.unit_key
+            ]
+        )
         target = mapping(claim.frozen_spec.get("target"))
         repository = target.get("repository")
         if not isinstance(repository, str):
@@ -364,17 +611,19 @@ class FixHandler:
             branch=branch,
             head_sha=head_sha,
         )
-        if self._local.fix.execution == "host":
-            launch.check_packaged_workflow(launch.REVIEW_CONTRACT)
+        if self.definition.local(self._local).execution == "host":
+            launch.check_packaged_workflow(launch.REVIEW_CONTRACT, self.definition)
         else:
-            launch.check_runner_contract(Path(clones["runner"]), self._contract)
+            launch.check_runner_contract(
+                Path(clones["runner"]), launch.REVIEW_CONTRACT, self.definition
+            )
         launch.check_target_catalog(Path(clones["repo"]))
         return Preparation(payload={"clones": clones, "attempt": attempt, "review": dict(review)})
 
     def _issue_input(self, claim: Claim) -> dict[str, object]:
         """Current issue fields plus the writer comments a new attempt may rely on."""
         assert self._github is not None
-        from agent_factory.work_kinds.fix.blocked import eligible_comments
+        from agent_factory.work_kinds.pull_request.blocked import eligible_comments
 
         github = self._github
         try:
@@ -403,7 +652,7 @@ class FixHandler:
             bot_login=self._shared.bot_login,
             permission=permission,
         )
-        prior = self._prior_pull_request(claim)
+        prior = self.prior_pull_request(claim)
         return {
             "repository": claim.repository,
             "number": claim.issue_number,
@@ -417,7 +666,7 @@ class FixHandler:
             ],
         }
 
-    def _prior_pull_request(self, claim: Claim) -> dict[str, object] | None:
+    def prior_pull_request(self, claim: Claim) -> dict[str, object] | None:
         if self._store is None:
             return None
         for run in reversed(self._store.runs_for_claim(claim.id)):
@@ -427,28 +676,29 @@ class FixHandler:
         return None
 
     def next_unit(self, claim: Claim, runs: Sequence[Run]) -> tuple[str | None, str]:
-        unit_runs = [run for run in runs if run.unit_key == "fix"]
+        unit_runs = [run for run in runs if run.unit_key == self.definition.unit_key]
         if not unit_runs:
-            return "fix", "initial"
+            return self.definition.unit_key, "initial"
         latest = unit_runs[-1]
         if latest.status in NONTERMINAL_RUN_STATUSES:
             return None, "initial"
         if latest.result.get("failure_stage") == "pre-suite":
-            return "fix", latest.reason
+            return self.definition.unit_key, latest.reason
         if _needs_recovery(latest) and latest.reason != "recovery":
-            return "fix", "recovery"
+            return self.definition.unit_key, "recovery"
         return None, "initial"
 
     def plan(self, claim: Claim, run: Run, preparation: Preparation) -> ExecutionPlan:
         clones = mapping(preparation.payload.get("clones"))
         if not all(isinstance(clones.get(name), str) for name in ("repo", "runner", "skills")):
-            raise ReadinessError("fix execution plan is missing prepared clones")
+            raise ReadinessError(f"{self.kind} execution plan is missing prepared clones")
         # Each attempt gets its own artifact directory: there is no resume, and a stale
         # outcome or log from an earlier attempt must never be read as this one's.
         evidence = attempt_evidence(run)
         evidence.mkdir(parents=True, exist_ok=True)
         (
-            evidence / ("review-outcome.json" if run.reason == "review" else "fix-outcome.json")
+            evidence
+            / ("review-outcome.json" if run.reason == "review" else self.definition.outcome_file)
         ).unlink(missing_ok=True)
         if run.reason == "review":
             review = dict(mapping(preparation.payload.get("review")))
@@ -466,9 +716,10 @@ class FixHandler:
             issue["reason"] = run.reason
             launch.write_issue_input(evidence, issue)
         credential = launch.validated_credential_copy(
-            self._local, self._local.storage_root.expanduser() / "private" / run.id / "fix.env"
+            self._local,
+            self._local.storage_root.expanduser() / "private" / run.id / f"{self.kind}.env",
         )
-        if self._local.fix.execution == "host":
+        if self.definition.local(self._local).execution == "host":
             return launch.build_host_plan(
                 evidence=evidence,
                 repo_clone=Path(str(clones["repo"])),
@@ -476,9 +727,10 @@ class FixHandler:
                 roles=mapping(claim.frozen_spec.get("roles")),
                 branch=branch,
                 contract=workflow_contract,
+                definition=self.definition,
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
             )
-        launch.stage_workflow(evidence, workflow_contract)
+        launch.stage_workflow(evidence, workflow_contract, self.definition)
         return launch.build_plan(
             run_id=run.id,
             evidence=evidence,
@@ -487,6 +739,7 @@ class FixHandler:
             roles=mapping(claim.frozen_spec.get("roles")),
             branch=branch,
             contract=workflow_contract,
+            definition=self.definition,
         )
 
     # -- results ----------------------------------------------------------------
@@ -515,6 +768,7 @@ class FixHandler:
         interpreted = read_interpreted_outcome(
             attempt_evidence(run),
             launch.REVIEW_CONTRACT if run.reason == "review" else self._contract,
+            "review-outcome.json" if run.reason == "review" else self.definition.outcome_file,
         ).outcome
         if interpreted is None:
             return base
@@ -534,7 +788,7 @@ class FixHandler:
     def settle(self, claim: Claim, runs: Sequence[Run]) -> Outcome | None:
         if claim.lifecycle in {"settled", "blocked"}:
             return None
-        unit_runs = [run for run in runs if run.unit_key == "fix"]
+        unit_runs = [run for run in runs if run.unit_key == self.definition.unit_key]
         if not unit_runs:
             return None
         latest = unit_runs[-1]
@@ -567,7 +821,9 @@ class FixHandler:
         if outcome == "pull-request":
             return Outcome("pending-human-review", event_body=_pr_message(latest.result))
         if outcome == "failed":
-            return Outcome("failed", event_body=_failed_message(latest.result))
+            return Outcome(
+                "failed", event_body=_failed_message(latest.result, self.definition.noun)
+            )
         return None
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
@@ -600,6 +856,10 @@ class FixHandler:
         self, claim: Claim, card: ProjectQueueItem, comments: Sequence[IssueComment]
     ) -> Gesture | None:
         if claim.lifecycle == "settled":
+            if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH and isinstance(
+                claim.outcome.get("pr"), Mapping
+            ):
+                return None
             return "fresh" if card_status(self._shared, card) == "Ready" else None
         if claim.lifecycle == "blocked":
             if comments or card_status(self._shared, card) == "Ready":
@@ -608,15 +868,17 @@ class FixHandler:
         return None
 
     def limits(self, local: LocalConfig) -> SupervisionLimits:
+        settings = self.definition.local(local)
         return SupervisionLimits(
-            local.fix.limits.inactivity_seconds,
-            local.fix.limits.execution_seconds,
-            local.fix.limits.total_seconds,
+            settings.limits.inactivity_seconds,
+            settings.limits.execution_seconds,
+            settings.limits.total_seconds,
         )
 
     def window(self, local: LocalConfig) -> ScheduleConfig:
-        if local.fix.schedule is not None:
-            return local.fix.schedule
+        schedule = self.definition.local(local).schedule
+        if schedule is not None:
+            return schedule
         return ScheduleConfig.always(local.schedule.timezone, local.schedule.poll_seconds)
 
     def providers(self, claim: Claim) -> set[str]:
@@ -626,20 +888,22 @@ class FixHandler:
         attempt = run.attempt_number + 1
         outcome = stored_result.get("outcome")
         if stage == "complete" and isinstance(outcome, str):
-            return f"Fix attempt {attempt} finished with outcome `{outcome}`."
+            return f"{self.definition.noun} attempt {attempt} finished with outcome `{outcome}`."
         reason = _technical_reason(stored_result)
         if stage == "retry":
             return (
-                f"Fix attempt {attempt} failed technically ({reason}); one recovery attempt "
+                f"{self.definition.noun} attempt {attempt} failed technically ({reason}); "
+                "one recovery attempt "
                 "from fresh clones at the recorded commits follows."
             )
         if stage == "exhausted":
             return _with_host_note(
-                f"Fix attempt {attempt} failed technically ({reason}); the recovery attempt is "
-                "used up, so this bug is handed back with `infra-error`.",
+                f"{self.definition.noun} attempt {attempt} failed technically ({reason}); "
+                "the recovery attempt is "
+                f"used up, so this {self.definition.item_noun} is handed back with `infra-error`.",
                 stored_result,
             )
-        return f"Fix attempt {attempt} settled."
+        return f"{self.definition.noun} attempt {attempt} settled."
 
     def refs_text(self, claim: Claim) -> str | None:
         revisions = mapping(claim.frozen_spec.get("revisions"))
@@ -669,13 +933,13 @@ class FixHandler:
             return value[:7] if isinstance(value, str) else "unknown"
 
         lines = [
-            "Fix inputs frozen for this claim:",
+            f"{self.definition.noun} inputs frozen for this claim:",
             "",
             f"- target: {target.get('repository')} branch `{target.get('branch')}` "
             f"at {commit('target')}",
             f"- Agent Runner: branch `{branches.get('runner', 'main')}` at {commit('runner')}",
             f"- Agent Skills: branch `{branches.get('skills', 'main')}` at {commit('skills')}",
-            f"- fix branch: `{self.branch_name(claim)}`",
+            f"- {self.kind} branch: `{self.branch_name(claim)}`",
             "- roles: " + ", ".join(f"{role}={profile}" for role, profile in roles.items()),
         ]
         return "\n".join(lines)
@@ -728,11 +992,11 @@ def _pr_message(result: Mapping[str, object]) -> str:
     return _with_host_note(body, result)
 
 
-def _failed_message(result: Mapping[str, object]) -> str:
+def _failed_message(result: Mapping[str, object], noun: str) -> str:
     reasons = _reasons_text(result)
     pr = mapping(result.get("pr"))
     url = pr.get("url")
-    lines = ["Fix attempt failed."]
+    lines = [f"{noun} attempt failed."]
     if reasons:
         lines.append(reasons)
     if isinstance(url, str):

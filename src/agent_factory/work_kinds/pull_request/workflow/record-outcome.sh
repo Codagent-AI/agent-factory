@@ -22,7 +22,11 @@ if not isinstance(parsed, dict):
     print("record-outcome: input must be a JSON object", file=sys.stderr)
     sys.exit(2)
 
-outcome_path = parsed.get("outcome_path") or "/artifacts/fix-outcome.json"
+contract = parsed.get("contract")
+outcome_path = parsed.get("outcome_path")
+if not isinstance(contract, str) or not contract or not isinstance(outcome_path, str) or not outcome_path:
+    print("record-outcome: contract and outcome_path are required strings", file=sys.stderr)
+    sys.exit(2)
 validator_status = parsed.get("validator_status") or "failed"
 ci_status = parsed.get("ci_status") or ""
 branch_name = parsed.get("branch_name") or ""
@@ -65,21 +69,21 @@ def pr_reference():
 
 if validator_status != "passed":
     outcome = {
-        "contract": "factory-fix/1",
+        "contract": contract,
         "outcome": "failed",
         "reasons": reasons or ["validator did not pass within its repair cycles"],
         "validator": {"status": "failed"},
     }
 elif not pr_url:
     outcome = {
-        "contract": "factory-fix/1",
+        "contract": contract,
         "outcome": "failed",
         "reasons": reasons or ["failed to push the branch or open a pull request"],
         "validator": {"status": "passed"},
     }
 elif ci_status == "passed":
     outcome = {
-        "contract": "factory-fix/1",
+        "contract": contract,
         "outcome": "pull-request",
         "pr": pr_reference(),
         "validator": {"status": "passed"},
@@ -87,13 +91,31 @@ elif ci_status == "passed":
     }
 else:
     outcome = {
-        "contract": "factory-fix/1",
+        "contract": contract,
         "outcome": "failed",
         "reasons": reasons or ["CI did not pass within its fix cycle"],
         "pr": pr_reference(),
         "validator": {"status": "passed"},
         "ci": {"status": ci_status or "failed"},
     }
+
+for key in ("stopped_step", "review_attention_counts", "resume"):
+    if key not in parsed or parsed[key] in (None, ""):
+        continue
+    value = parsed[key]
+    if key != "stopped_step" and isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            print(f"record-outcome: {key} is not valid JSON: {exc}", file=sys.stderr)
+            sys.exit(2)
+    if key == "stopped_step" and not isinstance(value, str):
+        print("record-outcome: stopped_step must be a string", file=sys.stderr)
+        sys.exit(2)
+    if key != "stopped_step" and not isinstance(value, dict):
+        print(f"record-outcome: {key} must be a JSON object", file=sys.stderr)
+        sys.exit(2)
+    outcome[key] = value
 
 out_dir = os.path.dirname(outcome_path)
 if out_dir:

@@ -17,7 +17,7 @@ from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore
 from agent_factory.work_kinds.images import remove_images, run_image_tags
 
 
-class FixCleanup:
+class PullRequestCleanup:
     """Mirrors WorktreeCleanup's Review-then-Done gate for fix clones and image tags."""
 
     def __init__(self, store: ClaimStore, *, private_root: Path | None = None) -> None:

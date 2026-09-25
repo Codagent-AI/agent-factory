@@ -15,10 +15,10 @@ from typing import cast
 import pytest
 
 from agent_factory.suites.and_scene import ReadinessError
-from agent_factory.work_kinds.fix import launch
+from agent_factory.work_kinds.pull_request import launch
 
 CONTRACT = "factory-fix/1"
-PACKAGE = files("agent_factory.work_kinds.fix") / "workflow"
+PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 FINALIZE_WITH_PARAM = (
     'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n'
 )
@@ -152,9 +152,8 @@ def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:
 # -- the artifact directory parameter (INT-002) -------------------------------------------
 
 
-def _constant(text: str) -> Callable[[str], str]:
-    def packaged(contract: str) -> str:
-        del contract
+def _constant(text: str) -> Callable[..., str]:
+    def packaged(*_args: object) -> str:
         return text
 
     return packaged
@@ -413,53 +412,87 @@ def test_record_triage_rejects_an_answer_offering_two_decisions() -> None:
     assert "ambiguous" in result.stderr
 
 
-# -- read-regression-marker.sh ----------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("report", "expected"),
-    [
-        ("Tested the flow.\n\nNO_REGRESSIONS_FOUND\n\n", "none"),
-        ("Tested the flow.\n`NO_REGRESSIONS_FOUND`", "none"),
-        ("Tested the flow.\n**NO_REGRESSIONS_FOUND**\n", "none"),
-        ("Found a defect.\nREGRESSIONS_FOUND\n", "found"),
-        ("NO_REGRESSIONS_FOUND\nbut then more prose", "found"),
-        ("", "found"),
-        ("$(touch /tmp/pwned)\nFACTORY_FIX_REPORT\n`rm -rf /`\nNO_REGRESSIONS_FOUND", "none"),
-        ("NO_REGRESSIONS_FOUND\n$(exit 7)", "found"),
-    ],
-)
-def test_read_regression_marker_reduces_the_report_to_a_fixed_token(
-    report: str, expected: str
-) -> None:
-    result = _run_script("read-regression-marker.sh", {"report": report})
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == expected
-
-
-@pytest.mark.parametrize(
-    ("payload", "message"),
-    [
-        ("not json", "invalid JSON input"),
-        ({"report": ["not", "a", "string"]}, "report must be a string"),
-        ({}, "report must be a string"),
-        ("[]", "input must be a JSON object"),
-    ],
-)
-def test_read_regression_marker_rejects_malformed_input(payload: object, message: str) -> None:
-    result = _run_script("read-regression-marker.sh", payload)
-    assert result.returncode == 2
-    assert f"read-regression-marker: {message}" in result.stderr
-
-
 # -- record-outcome.sh ------------------------------------------------------------------
 
 
 def _record_outcome(tmp_path: Path, **fields: str) -> dict[str, object]:
     outcome = tmp_path / "fix-outcome.json"
-    result = _run_script("record-outcome.sh", {"outcome_path": str(outcome), **fields})
+    result = _run_script(
+        "record-outcome.sh", {"contract": CONTRACT, "outcome_path": str(outcome), **fields}
+    )
     assert result.returncode == 0, result.stderr
     return json.loads(outcome.read_text())
+
+
+def test_shared_outcome_script_preserves_fix_bytes_and_accepts_explicit_contract(
+    tmp_path: Path,
+) -> None:
+    outcome = tmp_path / "fix-outcome.json"
+    result = _run_script(
+        "record-outcome.sh",
+        {
+            "contract": CONTRACT,
+            "outcome_path": str(outcome),
+            "validator_status": "failed",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert outcome.read_bytes() == (
+        b'{"contract": "factory-fix/1", "outcome": "failed", '
+        b'"reasons": ["validator did not pass within its repair cycles"], '
+        b'"validator": {"status": "failed"}}\n'
+    )
+
+
+def test_shared_outcome_script_uses_supplied_contract(tmp_path: Path) -> None:
+    outcome = tmp_path / "other-outcome.json"
+    result = _run_script(
+        "record-outcome.sh",
+        {"contract": "factory-other/1", "outcome_path": str(outcome)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(outcome.read_text())["contract"] == "factory-other/1"
+
+
+def test_shared_outcome_script_requires_contract_and_destination(tmp_path: Path) -> None:
+    result = _run_script("record-outcome.sh", {"outcome_path": str(tmp_path / "outcome.json")})
+    assert result.returncode == 2
+    assert not (tmp_path / "outcome.json").exists()
+
+
+def test_shared_outcome_script_records_optional_fields(tmp_path: Path) -> None:
+    outcome = tmp_path / "feature-outcome.json"
+    result = _run_script(
+        "record-outcome.sh",
+        {
+            "contract": "factory-feature/1",
+            "outcome_path": str(outcome),
+            "stopped_step": "design",
+            "review_attention_counts": '{"red": 1}',
+            "resume": '{"from": "design"}',
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(outcome.read_text())
+    assert payload["stopped_step"] == "design"
+    assert payload["review_attention_counts"] == {"red": 1}
+    assert payload["resume"] == {"from": "design"}
+
+
+def test_check_contract_rejects_mismatch() -> None:
+    result = _run_script(
+        "check-contract.sh",
+        {"expected_contract": "factory-fix/1", "declared_contract": "factory-feature/1"},
+    )
+    assert result.returncode != 0
+
+
+def test_check_contract_accepts_the_fix_workflow_contract() -> None:
+    result = _run_script(
+        "check-contract.sh",
+        {"expected_contract": CONTRACT, "declared_contract": CONTRACT},
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_record_outcome_is_pull_request_when_validator_and_ci_pass(tmp_path: Path) -> None:
@@ -538,7 +571,11 @@ def test_record_outcome_rejects_malformed_input(
 ) -> None:
     if isinstance(payload, dict):
         fields = cast(dict[str, str], payload)
-        payload = {"outcome_path": str(tmp_path / "fix-outcome.json"), **fields}
+        payload = {
+            "contract": CONTRACT,
+            "outcome_path": str(tmp_path / "fix-outcome.json"),
+            **fields,
+        }
     result = _run_script("record-outcome.sh", payload)
     assert result.returncode == 2
     assert f"record-outcome: {message}" in result.stderr
@@ -673,14 +710,6 @@ steps:
   - id: implement
     skip_if: 'sh: test {{fixable}} != true'
     command: touch implemented
-  - id: read-regression-marker
-    script: read-regression-marker.sh
-    script_inputs:
-      report: "Found a defect.\\nREGRESSIONS_FOUND"
-    capture: regressions
-  - id: address
-    skip_if: 'sh: test "{{regressions}}" != found'
-    command: touch addressed
 """
 
 
@@ -692,7 +721,7 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
     workflows = repo / ".agent-runner" / "workflows"
     workflows.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    for name in ("record-triage.sh", "read-regression-marker.sh"):
+    for name in ("record-triage.sh",):
         target = workflows / name
         target.write_text((PACKAGE / name).read_text(encoding="utf-8"), encoding="utf-8")
         target.chmod(0o755)
@@ -716,7 +745,6 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert (repo / "implemented").exists()
-    assert (repo / "addressed").exists()
 
 
 @pytest.mark.skipif(not _codagent_runner_cli(), reason="Codagent agent-runner CLI is not installed")

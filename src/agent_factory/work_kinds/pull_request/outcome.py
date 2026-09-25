@@ -11,6 +11,20 @@ from typing import cast
 _VALID_OUTCOMES = frozenset({"pull-request", "needs-input", "failed"})
 
 
+def _valid_feature_extra(key: str, item: object) -> bool:
+    if key == "stopped_step":
+        return isinstance(item, str) and bool(item)
+    if not isinstance(item, dict):
+        return False
+    if key == "review_attention_counts":
+        counts = cast(dict[str, object], item)
+        return all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in counts.values()
+        )
+    return True
+
+
 @dataclass(frozen=True)
 class InterpretedOutcome:
     execution_status: str
@@ -24,19 +38,16 @@ class OutcomeRead:
     error: str | None = None
 
 
-def _outcome_path(evidence_path: Path, contract: str) -> Path:
-    if contract == "factory-review/1":
-        name = "review-outcome.json"
-    elif contract == "factory-feature/1":
-        name = "feature-outcome.json"
-    else:
-        name = "fix-outcome.json"
+def _outcome_path(evidence_path: Path, contract: str, outcome_file: str | None) -> Path:
+    name = outcome_file or f"{contract.split('/', 1)[0].removeprefix('factory-')}-outcome.json"
     return evidence_path / name
 
 
-def read_interpreted_outcome(evidence_path: Path, contract: str) -> OutcomeRead:
+def read_interpreted_outcome(
+    evidence_path: Path, contract: str, outcome_file: str | None = None
+) -> OutcomeRead:
     """Read the same contract and verdict used by the work-kind result handler."""
-    path = _outcome_path(evidence_path, contract)
+    path = _outcome_path(evidence_path, contract, outcome_file)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -48,6 +59,12 @@ def read_interpreted_outcome(evidence_path: Path, contract: str) -> OutcomeRead:
     value = cast(dict[str, object], payload)
     if value.get("contract") != contract or value.get("outcome") not in _VALID_OUTCOMES:
         return OutcomeRead(None, f"invalid contract or outcome in {path}")
+    if contract == "factory-feature/1":
+        for key in ("stopped_step", "review_attention_counts", "resume"):
+            if key in value and not _valid_feature_extra(key, value[key]):
+                return OutcomeRead(None, f"invalid {key} in {path}")
+    elif any(key in value for key in ("stopped_step", "review_attention_counts", "resume")):
+        return OutcomeRead(None, f"unsupported extra outcome field in {path}")
     verdict = cast(str, value["outcome"])
     return OutcomeRead(InterpretedOutcome("completed", verdict, value))
 

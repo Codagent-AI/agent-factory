@@ -940,7 +940,7 @@ def _load_result(
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        from agent_factory.work_kinds.fix.outcome import read_interpreted_outcome
+        from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 
         contracts: tuple[str, ...]
         if kind == "fix":

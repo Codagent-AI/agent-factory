@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from agent_factory.backends import Probe
+from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.fly.backend import FlyMachineBackend
 from agent_factory.store import ClaimDraft, ClaimStore
@@ -26,7 +27,8 @@ from agent_factory.supervisor import (
 from agent_factory.supervisor import (
     _plan_document as plan_document,  # pyright: ignore[reportPrivateUsage]
 )
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
 
 
 @pytest.mark.darwin
@@ -282,7 +284,11 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
         assert settled is not None
         assert settled.status == ("completed" if writes_outcome else "interrupted")
         assert len(store.runs_for_claim(claim.id)) == 1
-        handler = object.__new__(FixHandler)
+        handler = PullRequestHandler(
+            FIX,
+            SharedConfig.from_file(Path("config/codagent.toml")),
+            LocalConfig.from_file(Path("config/local.example.toml")),
+        )
         current_claim = store.get_claim(claim.id)
         assert current_claim is not None
         next_unit, reason = handler.next_unit(current_claim, store.runs_for_claim(claim.id))

@@ -61,7 +61,7 @@ both to run concurrently: free disk for two sets of clones and per-run images,
 plus enough Docker memory allowance for one eval and one fix attempt at once
 (`limits.memory_reservation_gib` in the local TOML gates admission on this;
 raise it if you increase Docker's memory allocation). The fix workflow ships
-with the factory package (`agent_factory/work_kinds/fix/workflow/`) and declares
+with the factory package (`agent_factory/work_kinds/pull_request/workflow/`) and declares
 its contract version (`# factory-contract: factory-fix/1`) on its first line.
 Each attempt stages it into the attempt's artifact directory, where the
 sandboxed Runner resolves `agent-runner run factory-fix` from its user-level

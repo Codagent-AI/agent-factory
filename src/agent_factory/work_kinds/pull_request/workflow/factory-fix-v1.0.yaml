@@ -26,11 +26,10 @@ sessions:
 
 steps:
   - id: check-contract
-    command: |
-      if [ "{{contract_version}}" != "factory-fix/1" ]; then
-        echo "unsupported contract version: {{contract_version}} (expected factory-fix/1)" >&2
-        exit 1
-      fi
+    script: check-contract.sh
+    script_inputs:
+      expected_contract: factory-fix/1
+      declared_contract: "{{contract_version}}"
 
   - id: check-clean-tree
     command: |
@@ -338,6 +337,7 @@ steps:
     script: record-outcome.sh
     skip_if: 'sh: test {{fixable}} != true'
     script_inputs:
+      contract: factory-fix/1
       outcome_path: "{{artifact_dir}}/fix-outcome.json"
       validator_status: "{{validator_status}}"
       ci_status: "{{ci_status}}"

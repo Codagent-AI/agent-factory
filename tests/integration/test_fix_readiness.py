@@ -11,8 +11,9 @@ import pytest
 
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic
-from agent_factory.work_kinds.fix.handler import FixHandler
-from agent_factory.work_kinds.fix.readiness import check_readiness
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
+from agent_factory.work_kinds.pull_request.readiness import check_readiness
 
 _SHARED_BASE = """\
 [github]
@@ -275,7 +276,7 @@ def test_launch_requires_a_sandbox_script_that_contains_the_credential(tmp_path:
     )
     git(checkout, "update-ref", "refs/remotes/origin/main", "HEAD")
     with mock.patch(
-        "agent_factory.work_kinds.fix.readiness.shutil.which", return_value="/bin/docker"
+        "agent_factory.work_kinds.pull_request.readiness.shutil.which", return_value="/bin/docker"
     ):
         diagnostics = check_readiness(local, _shared())
     launch = next(d for d in diagnostics if d.name == "fix sandbox launch")
@@ -295,14 +296,14 @@ def test_present_workflow_contract_passes(tmp_path: Path) -> None:
 
 
 def test_handler_readiness_uses_attached_installation_token(tmp_path: Path) -> None:
-    from agent_factory.work_kinds.fix.handler import FixHandler
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
     checkout = _runner_checkout(tmp_path, with_contract=True)
     env = tmp_path / "fix.env"
     env.write_text("GH_TOKEN=shared-token\n")
     env.chmod(0o600)
     local = _local(tmp_path, checkout, fix_environment=env)
-    handler = FixHandler(_shared(), local)
+    handler = PullRequestHandler(FIX, _shared(), local)
     handler.attach_installation_token(lambda: "shared-token")
     credential = next(d for d in handler.readiness(local, _shared()) if d.name == "fix credential")
     assert credential.available is False
@@ -310,14 +311,14 @@ def test_handler_readiness_uses_attached_installation_token(tmp_path: Path) -> N
 
 def test_handler_readiness_fails_closed_when_the_token_provider_fails(tmp_path: Path) -> None:
     from agent_factory.github import GitHubApiError
-    from agent_factory.work_kinds.fix.handler import FixHandler
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
     checkout = _runner_checkout(tmp_path, with_contract=True)
     env = tmp_path / "fix.env"
     env.write_text("GH_TOKEN=abc123\n")
     env.chmod(0o600)
     local = _local(tmp_path, checkout, fix_environment=env)
-    handler = FixHandler(_shared(), local)
+    handler = PullRequestHandler(FIX, _shared(), local)
 
     def _broken() -> str:
         raise GitHubApiError("cannot mint")
@@ -329,14 +330,14 @@ def test_handler_readiness_fails_closed_when_the_token_provider_fails(tmp_path: 
 
 
 def test_handler_readiness_fails_closed_on_unexpected_provider_errors(tmp_path: Path) -> None:
-    from agent_factory.work_kinds.fix.handler import FixHandler
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
     checkout = _runner_checkout(tmp_path, with_contract=True)
     env = tmp_path / "fix.env"
     env.write_text("GH_TOKEN=abc123\n")
     env.chmod(0o600)
     local = _local(tmp_path, checkout, fix_environment=env)
-    handler = FixHandler(_shared(), local)
+    handler = PullRequestHandler(FIX, _shared(), local)
 
     def _broken() -> str:
         raise RuntimeError("transport wrapper exploded")
@@ -348,7 +349,7 @@ def test_handler_readiness_fails_closed_on_unexpected_provider_errors(tmp_path: 
 
 
 def _check_plugin_installed(output: str, plugin_name: str, *, json_format: bool) -> bool:
-    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+    from agent_factory.work_kinds.pull_request.readiness import (  # noqa: PLC0415
         _plugin_installed,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -357,7 +358,7 @@ def _check_plugin_installed(output: str, plugin_name: str, *, json_format: bool)
 
 def _check_role_cli_diagnostics(shared: SharedConfig) -> list[Diagnostic]:
     from agent_factory.operations import configured_adapters  # noqa: PLC0415
-    from agent_factory.work_kinds.fix.readiness import (  # noqa: PLC0415
+    from agent_factory.work_kinds.pull_request.readiness import (  # noqa: PLC0415
         _role_cli_diagnostic,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -434,8 +435,8 @@ def test_role_cli_diagnostics_fails_when_plugin_only_mentioned_not_installed(
             )
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
-    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_factory.work_kinds.pull_request.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.pull_request.readiness.subprocess.run", fake_run)
 
     diagnostics = _check_role_cli_diagnostics(shared)
     claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
@@ -462,8 +463,8 @@ def test_role_cli_diagnostics_passes_with_authenticated_installed_plugin(
             return subprocess.CompletedProcess(command, 0, "codagent\n", "")
         raise AssertionError(f"unexpected command: {command}")
 
-    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.shutil.which", fake_which)
-    monkeypatch.setattr("agent_factory.work_kinds.fix.readiness.subprocess.run", fake_run)
+    monkeypatch.setattr("agent_factory.work_kinds.pull_request.readiness.shutil.which", fake_which)
+    monkeypatch.setattr("agent_factory.work_kinds.pull_request.readiness.subprocess.run", fake_run)
 
     diagnostics = _check_role_cli_diagnostics(shared)
     claude = next(d for d in diagnostics if d.name == "fix host claude CLI")
@@ -682,15 +683,15 @@ def test_host_readiness_holds_admission_in_the_runtime_without_launching(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _host_environment(tmp_path, monkeypatch, executables={"agent-runner": _RUNNER_NO_SESSION_DIR})
-    handler = FixHandler(
-        _host_shared(), _host_local(tmp_path, fix_environment=_host_credential(tmp_path))
+    handler = PullRequestHandler(
+        FIX, _host_shared(), _host_local(tmp_path, fix_environment=_host_credential(tmp_path))
     )
     diagnostics = handler.readiness(handler._local, handler._shared)  # pyright: ignore[reportPrivateUsage]
     assert any(not d.available and "--session-dir" in d.detail for d in diagnostics)
 
 
 def test_runner_user_settings_parses_top_level_scalars_only() -> None:
-    from agent_factory.work_kinds.fix.readiness import runner_user_settings
+    from agent_factory.work_kinds.pull_request.readiness import runner_user_settings
 
     parsed = runner_user_settings(
         _SETTINGS_OK + "onboarding:\n    dismissed: 2026-05-29\n# comment\nquoted: 'x'\n"

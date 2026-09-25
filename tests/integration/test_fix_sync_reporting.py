@@ -11,9 +11,10 @@ import pytest
 from agent_factory.config import LocalConfig, RepositoryConfig, SharedConfig
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore, Run
-from agent_factory.work_kinds.fix import launch, sync
-from agent_factory.work_kinds.fix.handler import FixHandler
-from agent_factory.work_kinds.fix.sync import sync_claim
+from agent_factory.work_kinds.pull_request import launch, sync
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
+from agent_factory.work_kinds.pull_request.sync import sync_claim
 
 _LOCAL_BASE = """\
 shared_config = "/opt/agent-factory/config/codagent.toml"
@@ -258,9 +259,9 @@ def test_successful_merge_closes_issue_and_records_completion(tmp_path: Path) ->
 # -- the host note on outcome comments (INT-008) ---------------------------------------------
 
 
-def _handler(tmp_path: Path) -> tuple[FixHandler, ClaimStore]:
+def _handler(tmp_path: Path) -> tuple[PullRequestHandler, ClaimStore]:
     shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
-    handler = FixHandler(shared, _local())
+    handler = PullRequestHandler(FIX, shared, _local())
     store = ClaimStore(tmp_path / "state.sqlite3")
     handler.attach_store(store)
     return handler, store
