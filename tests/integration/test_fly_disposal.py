@@ -542,6 +542,95 @@ def test_failed_destroy_keeps_the_record_and_reconciliation_retries_it(cycle: Cy
     assert cycle.store.get_setting("runtime", "fly:unknown") == {}
 
 
+@pytest.mark.parametrize("gone", ["destroyed", "deleted"])
+def test_reconciliation_clears_a_failed_destroy_once_fly_no_longer_lists_the_machine(
+    cycle: Cycle, gone: str
+) -> None:
+    claim = cycle.claim()
+    run, machine_id = cycle.finished_run(claim, "rep-1", _reviewable())
+    cycle.api.delete_failures.append(500)
+    cycle.consume()
+    assert cycle.record(run) is not None
+    # The Machine went away on its own, so no listing will name it again.
+    if gone == "destroyed":
+        cycle.api.machines[machine_id]["state"] = "destroyed"
+    else:
+        del cycle.api.machines[machine_id]
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is None
+    assert cycle.store.get_setting("runtime", "fly:cleanup-failed") == {}
+    assert "blocking condition" not in status(cycle.store, cycle.local)
+
+
+def test_reconciliation_clears_a_kept_machine_record_once_the_machine_is_gone(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+    assert cycle.record(run) is not None
+    # The recovery attempt reused the Machine and destroyed it under its own run id.
+    cycle.api.machines[machine_id]["state"] = "destroyed"
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is None
+
+
+def test_reconciliation_keeps_the_record_of_a_machine_still_being_destroyed(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+    # Fly leaves a destroying Machine out of listings; the destroy may still stall.
+    cycle.api.machines[machine_id]["state"] = "destroying"
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is not None
+
+
+def test_reconciliation_keeps_a_kept_machine_record_while_the_machine_exists(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    technical = AttemptResult("failed", None, {"reason": "suite crashed"})
+    run, _machine_id = cycle.finished_run(claim, "rep-1", technical)
+    cycle.consume()
+
+    assert cycle.reconcile() == []
+
+    record = cycle.record(run)
+    assert record is not None and record["decision"] == "keep"
+
+
+def test_reconciliation_keeps_a_failed_destroy_while_fly_cannot_confirm_the_machine_is_gone(
+    cycle: Cycle,
+) -> None:
+    claim = cycle.claim()
+    run, machine_id = cycle.finished_run(claim, "rep-1", _reviewable())
+    cycle.api.delete_failures.append(500)
+    cycle.consume()
+    del cycle.api.machines[machine_id]
+    cycle.api.get_failures.append(500)
+
+    assert cycle.reconcile() == []
+
+    assert cycle.record(run) is not None
+    assert machine_id in {
+        entry["machine_id"]
+        for entry in cast(
+            list[dict[str, object]],
+            (cycle.store.get_setting("runtime", "fly:cleanup-failed") or {})["machines"],
+        )
+    }
+
+
 def test_reconciliation_clears_a_cleanup_failure_once_the_machine_is_destroyed(
     cycle: Cycle,
 ) -> None:

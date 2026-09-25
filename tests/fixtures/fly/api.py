@@ -25,6 +25,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.wait_failures: list[int] = []
         # Statuses to answer the next DELETEs with, leaving the Machine in place.
         self.delete_failures: list[int] = []
+        # Statuses to answer the next single-Machine GETs with.
+        self.get_failures: list[int] = []
         # Statuses to answer the next Machine listings with.
         self.list_failures: list[int] = []
         # Machine ids are never reused, as on Fly; a destroyed id stays retired.
@@ -101,7 +103,13 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     self._send(fake.list_failures.pop(0))
                 elif parsed.path.endswith("/machines"):
                     filters = parse_qs(parsed.query)
-                    machines = list(fake.machines.values())
+                    # Fly leaves destroyed Machines out of a listing, though a GET of
+                    # one still answers for a while.
+                    machines = [
+                        machine
+                        for machine in fake.machines.values()
+                        if machine.get("state") not in {"destroyed", "destroying"}
+                    ]
                     for key, values in filters.items():
                         if key.startswith("metadata."):
                             metadata_key = key.removeprefix("metadata.")
@@ -123,6 +131,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     if waited["state"] == "replacing" and wanted == "stopped":
                         waited["state"] = "stopped"  # the update has settled
                     self._send(200, {"ok": True})
+                elif "/machines/" in parsed.path and fake.get_failures:
+                    self._send(fake.get_failures.pop(0))
                 elif "/machines/" in parsed.path:
                     value = fake.machines.get(parsed.path.rsplit("/", 1)[-1])
                     self._send(200, value) if value else self._send(404)

@@ -44,6 +44,42 @@ def fly_repository_diagnostic(image: str, app: str) -> Diagnostic:
     )
 
 
+# The guest image need not carry ps or ss, so the snapshot reads /proc directly.
+# The job environment is never read. Of each command line only the program's
+# base name and option names are kept; every other argument, including every
+# option value and path, becomes [arg], so no credential is recorded. The whole
+# snapshot is capped at 1 MiB, because the supervisor holds it in memory.
+_SNAPSHOT_COMMAND = r"""
+{
+echo "== $(date -u +%Y-%m-%dT%H:%M:%SZ) load: $(cat /proc/loadavg)"
+grep -E '^(MemTotal|MemAvailable|SwapFree):' /proc/meminfo
+df -h /artifacts /tmp 2>/dev/null
+echo "== processes: pid ppid state elapsed_s sockets wchan cmdline"
+keep='NR == 1 { n = split($0, part, "/"); name = part[n]
+    out = name ~ /^[A-Za-z0-9._+-]+$/ ? name : "[arg]"; next }
+  /^-[A-Za-z]$/ { out = out " " $0; next }
+  /^--[a-z][a-z0-9-]*(=|$)/ { sub(/=.*/, "=[arg]"); out = out " " $0; next }
+  { out = out " [arg]" }
+  END { print out }'
+hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+up=$(cut -d' ' -f1 /proc/uptime)
+for d in /proc/[0-9]*; do
+  stat=$(cat "$d/stat" 2>/dev/null) || continue
+  set -- ${stat##*) }
+  sockets=$(ls -l "$d/fd" 2>/dev/null | grep -c 'socket:')
+  wchan=$(cat "$d/wchan" 2>/dev/null)
+  cmd=$(tr '\0' '\n' < "$d/cmdline" 2>/dev/null | awk "$keep" | cut -c1-300)
+  elapsed=$(awk -v up="$up" -v start="${20}" -v hz="$hz" 'BEGIN { printf "%d", up - start / hz }')
+  echo "${d#/proc/} $2 $1 $elapsed $sockets ${wchan:--} ${cmd:-[kernel]}"
+done
+echo "== tcp connections (/proc/net/tcp, /proc/net/tcp6)"
+cat /proc/net/tcp /proc/net/tcp6 2>/dev/null
+} | head -c 1048576
+exit 0
+"""
+_SNAPSHOT_TIMEOUT_SECONDS = 60
+
+
 class FlyMachineBackend:
     name = "fly-machine"
 
@@ -217,6 +253,24 @@ class FlyMachineBackend:
             return False
         return True
 
+    def snapshot(self, identity: Mapping[str, object], destination: Path) -> bool:
+        """Save what the guest is doing, so a stall can be diagnosed after the stop."""
+        header = f"Machine {identity.get('id', 'unknown')} at {datetime.now(UTC).isoformat()}\n"
+        try:
+            body = self._transport(identity).command(
+                _SNAPSHOT_COMMAND, timeout=_SNAPSHOT_TIMEOUT_SECONDS
+            )
+            captured = True
+        except (FlyTransportError, OSError, ValueError) as error:
+            body = f"snapshot failed: {error}\n".encode()
+            captured = False
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(header.encode() + body)
+        except OSError:
+            return False
+        return captured
+
     def dispose(
         self, identity: Mapping[str, object], decision: Disposal, store: object | None = None
     ) -> None:
@@ -330,11 +384,13 @@ class FlyMachineBackend:
         # A listing that succeeds resolves any earlier failed listing.
         failures.pop("list", None)
         self._refresh_stopped_deadlines(store, client, records, failures)
-        known_ids = {
+        recorded = {
             value.get("machine_id")
             for value in records.values()
             if isinstance(value.get("machine_id"), str)
-        } | _live_machine_ids(store)
+        }
+        live = _live_machine_ids(store)
+        known_ids = recorded | live
         # Disposal already chose to destroy these, verified as owned, but Fly did not confirm it.
         pending_destroy = {
             value.get("machine_id")
@@ -379,6 +435,15 @@ class FlyMachineBackend:
                         "reason": "not recorded by local store",
                     }
                 )
+        listed = {machine.get("id") for machine in machines}
+        for machine_id in (recorded | failures.keys()) - listed - live - {"list"}:
+            # Fly leaves a destroyed Machine out of every listing, so one that went away
+            # outside this record's own disposal (an unconfirmed destroy, or a recovery
+            # attempt that reused and destroyed a kept Machine) is only confirmed gone
+            # by asking for it.
+            if isinstance(machine_id, str) and _confirmed_gone(client, machine_id):
+                failures.pop(machine_id, None)
+                _clear_machine_record_by_id(store, records, machine_id)
         _set_setting(store, "fly:unknown", {"machines": unknown} if unknown else {})
         _set_setting(
             store, "fly:cleanup-failed", {"machines": list(failures.values())} if failures else {}
@@ -709,6 +774,14 @@ def _clear_machine_record(store: object | None, identity: Mapping[str, object]) 
     run_id = identity.get("run_id")
     if isinstance(run_id, str) and run_id:
         _clear_setting(store, f"fly:machine:{run_id}")
+
+
+def _confirmed_gone(client: FlyMachinesClient, machine_id: str) -> bool:
+    # A destroying Machine can still stall, so only a finished destroy clears its record.
+    try:
+        return client.get_machine(machine_id).get("state") == "destroyed"
+    except FlyApiError as error:
+        return error.status == 404
 
 
 def _clear_machine_record_by_id(
