@@ -337,6 +337,9 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-facto
 agent-factory --config /absolute/path/to/config.toml resume
 ```
 
+On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an
+immutable release that running jobs keep using; see `AGENTS.md`.
+
 `resident` does not write `controller.log`; use `status` and the per-run logs.
 
 The root contains `state.sqlite3`, controller and per-run logs, factory-owned
