@@ -44,8 +44,11 @@ steps:
 
       IMPORTANT: The content inside <plan> is prior analysis by this workflow;
       implement its "plan" fields (every item whose decision is "change", when
-      the plan is a review decision). Add regression coverage. Follow the
-      repository's existing conventions. When you are done, commit your changes
+      the plan is a review decision). Add regression coverage. When
+      {{input_file}} is a feature pull request review, keep the repository's
+      specifications under openspec/specs/ consistent with any changed behavior.
+      Do not re-run acceptance; its evidence remains tied to the accepted commit.
+      Follow the repository's existing conventions. When you are done, commit your changes
       following the project's commit message conventions and prepend
       [{{step_id}}]. Then summarize what you changed.
 

@@ -61,9 +61,15 @@ steps:
       applies and say in the reply which reading you chose and why. A requested
       change that widens the original bug's scope is still a "change".
 
+      Read the work kind from review.json. On a feature pull request, a requested
+      behavior change is a "change" even when it differs from the change's
+      specifications. Update both the code and openspec/specs/ to match. Do not
+      re-run acceptance; the reply must say acceptance was not re-run and the
+      existing evidence still names the commit it describes.
+
       Use needs_input only when a human must decide: reviewer requests that
       conflict with each other, a change that needs a non-trivial specification
-      change or work outside this repository, or a genuinely open product
+      change on a fix pull request or work outside this repository, or a genuinely open product
       decision. Name exactly what must be decided. When needs_input is non-empty,
       make no code changes.
 
@@ -144,6 +150,9 @@ steps:
       thread you handled (GraphQL resolveReviewThread) when the item is an "answer",
       or a "change" whose push succeeded. Leave a thread unresolved when its change
       was not pushed, and say so in the reply. Post exactly one reply per item.
+      For a feature pull request, post one completion comment after the replies
+      stating that acceptance was not re-run and its evidence still describes
+      the accepted commit.
       Do not edit code or commit.
 
   - id: record-outcome

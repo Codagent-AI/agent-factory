@@ -67,6 +67,27 @@ class PullRequestKind:
         object.__setattr__(self, "doctor_groups", MappingProxyType(dict(self.doctor_groups)))
 
 
+FEATURE_STAGED_FILES = (
+    "factory-feature-v1.0.yaml",
+    "factory-define-v1.0.yaml",
+    "factory-define-rules.md",
+    "prepare-branch.sh",
+    "factory-resume-skip.sh",
+    "record-stop.sh",
+    "checkpoint.sh",
+    "reconcile-skip.sh",
+    "locate-archive.py",
+    "check-openspec.sh",
+    "record-validation-failure.sh",
+    "verify-classification.py",
+    "verify-feature-outcome.py",
+    "annotate-pr.sh",
+    "annotate-pr.py",
+    "check-contract.sh",
+    "record-outcome.sh",
+)
+
+
 FIX = PullRequestKind(
     kind="fix",
     unit_key="fix",

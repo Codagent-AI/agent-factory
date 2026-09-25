@@ -63,6 +63,51 @@ def read_interpreted_outcome(
         for key in ("stopped_step", "review_attention_counts", "resume"):
             if key in value and not _valid_feature_extra(key, value[key]):
                 return OutcomeRead(None, f"invalid {key} in {path}")
+        if value["outcome"] == "pull-request":
+            pr_raw = value.get("pr")
+            pr = cast(dict[str, object], pr_raw) if isinstance(pr_raw, dict) else None
+            counts = value.get("review_attention_counts")
+            if (
+                not isinstance(pr, dict)
+                or not isinstance(pr.get("url"), str)
+                or not pr["url"]
+                or not isinstance(pr.get("number"), int)
+                or not isinstance(pr.get("branch"), str)
+                or not isinstance(counts, dict)
+                or not all(tier in counts for tier in ("red", "orange", "yellow"))
+            ):
+                return OutcomeRead(None, f"invalid pull-request outcome in {path}")
+        if value["outcome"] == "needs-input":
+            questions = value.get("questions")
+            if (
+                not isinstance(value.get("stopped_step"), str)
+                or not isinstance(questions, list)
+                or not questions
+                or not all(
+                    isinstance(question, str) and question
+                    for question in cast(list[object], questions)
+                )
+                or not isinstance(value.get("direction_summary"), str)
+                or not value["direction_summary"]
+                or (
+                    value["stopped_step"] != "preflight"
+                    and not isinstance(value.get("branch"), str)
+                )
+                or "pr" in value
+            ):
+                return OutcomeRead(None, f"invalid needs-input outcome in {path}")
+        if value["outcome"] == "failed":
+            reasons = value.get("reasons")
+            if (
+                not isinstance(reasons, list)
+                or not reasons
+                or not all(
+                    isinstance(reason, str) and reason for reason in cast(list[object], reasons)
+                )
+                or not isinstance(value.get("branch"), str)
+                or not value["branch"]
+            ):
+                return OutcomeRead(None, f"invalid failed outcome in {path}")
     elif any(key in value for key in ("stopped_step", "review_attention_counts", "resume")):
         return OutcomeRead(None, f"unsupported extra outcome field in {path}")
     verdict = cast(str, value["outcome"])

@@ -11,6 +11,7 @@ PAYLOAD="$payload" python3 - <<'PY'
 import json
 import os
 import sys
+from pathlib import Path
 
 try:
     parsed = json.loads(os.environ["PAYLOAD"])
@@ -104,6 +105,15 @@ for key in ("stopped_step", "review_attention_counts", "resume"):
         continue
     value = parsed[key]
     if key != "stopped_step" and isinstance(value, str):
+        if value.startswith("/"):
+            source = Path(value)
+            if not source.exists():
+                if key == "resume" or (key == "review_attention_counts" and outcome["outcome"] == "failed"):
+                    continue
+            if not source.is_file():
+                print(f"record-outcome: {key} file is missing: {source}", file=sys.stderr)
+                sys.exit(2)
+            value = source.read_text()
         try:
             value = json.loads(value)
         except json.JSONDecodeError as exc:
@@ -115,7 +125,12 @@ for key in ("stopped_step", "review_attention_counts", "resume"):
     if key != "stopped_step" and not isinstance(value, dict):
         print(f"record-outcome: {key} must be a JSON object", file=sys.stderr)
         sys.exit(2)
+    if key == "review_attention_counts" and all(isinstance(value.get(tier), list) for tier in ("red", "orange", "yellow", "white")):
+        value = {tier: len(value[tier]) for tier in ("red", "orange", "yellow", "white")}
     outcome[key] = value
+
+if contract == "factory-feature/1" and outcome["outcome"] == "failed" and branch_name:
+    outcome["branch"] = branch_name
 
 out_dir = os.path.dirname(outcome_path)
 if out_dir:
