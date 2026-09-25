@@ -5,16 +5,21 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from importlib.resources import files
 from pathlib import Path
 
 import pytest
 
 from agent_factory.config import ConfigurationError, FixConfig, FixTarget, LocalConfig, SharedConfig
+from agent_factory.github import IssueComment, ReviewActivity
+from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds import handlers
 from agent_factory.work_kinds.pull_request import kinds, readiness
 from agent_factory.work_kinds.pull_request.readiness import _validate_diagnostic, check_readiness
+from agent_factory.work_kinds.pull_request.review import process_review_claim
 from tests.integration.test_fix_config import _LOCAL_BASE, _SHARED_BASE
+from tests.integration.test_fix_gestures import FakeReviewGitHub, _ReviewPreparedHandler
 
 
 def test_feature_settings_load_and_share_fix_targets() -> None:
@@ -43,6 +48,19 @@ def test_feature_settings_load_and_share_fix_targets() -> None:
     assert local.feature.minimum_free_gib == 2
 
 
+def test_codagent_deployment_enables_feature_with_distinct_crosscheck_family() -> None:
+    shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
+    assert shared.feature is not None
+    assert shared.feature.contract == "factory-feature/1"
+    assert shared.feature.defaults["lead"] == shared.fix.defaults["lead"]
+    assert shared.feature.defaults["implementor"] == shared.fix.defaults["implementor"]
+    assert shared.feature.defaults["tester"] == shared.fix.defaults["tester"]
+    assert (
+        shared.feature.defaults["crosscheck"].split(":", 1)[0]
+        != shared.feature.defaults["lead"].split(":", 1)[0]
+    )
+
+
 def test_feature_registration_survives_disabled_configuration() -> None:
     shared = SharedConfig.from_toml(_SHARED_BASE)
     local = LocalConfig.from_toml(_LOCAL_BASE)
@@ -51,6 +69,54 @@ def test_feature_registration_survives_disabled_configuration() -> None:
     assert local.feature.limits.inactivity_seconds == 1800
     assert local.feature.limits.execution_seconds == 21600
     assert local.feature.limits.total_seconds == 28800
+
+
+def test_removed_feature_section_still_allows_existing_claim_review_round(tmp_path: Path) -> None:
+    shared = SharedConfig.from_toml(_SHARED_BASE)
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    assert shared.feature is None
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 64, "I64", "P64", "feature", "fp", {}))
+    store.set_claim_lifecycle(
+        claim.id,
+        "settled",
+        {
+            "verdict": "pending-human-review",
+            "pr": {
+                "number": 7,
+                "url": "https://github.com/example/work/pull/7",
+                "branch": "factory/feature-64-abcd",
+                "head_sha": "a" * 40,
+            },
+            "review_checkpoint": "2026-01-01T00:00:00Z",
+        },
+    )
+    store.set_preparation(claim.id, {"issue": {"title": "Feature", "body": "Body"}})
+    feature = _ReviewPreparedHandler(kinds.FEATURE, shared, local)
+    feature.attach_store(store)
+    client = FakeReviewGitHub(
+        ReviewActivity(
+            reviews=(),
+            threads=(),
+            comments=(IssueComment("c1", "Please revise", "writer", "2099-01-01T00:00:00Z"),),
+        ),
+        {"writer": "write"},
+    )
+    current = store.get_claim(claim.id)
+    assert current is not None
+    admitted = process_review_claim(
+        store,
+        client,  # pyright: ignore[reportArgumentType]
+        feature,
+        current,
+        bot_login="example-factory[bot]",
+        artifact_root=tmp_path,
+        now=datetime(2099, 1, 2, tzinfo=UTC),
+        local=local,
+        readiness=lambda: True,
+    )
+    assert admitted is not None
+    assert admitted[0].kind == "feature"
 
 
 @pytest.mark.parametrize("mode", ["docker", "fly"])
