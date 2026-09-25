@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from agent_factory.config import LocalConfig, SharedConfig
+from agent_factory.config import FixTarget, LocalConfig, SharedConfig
 from agent_factory.github import GitHubApiError, ProjectQueueItem
 from agent_factory.routing import SourceItem
+from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 from agent_factory.work_kinds.pull_request.kinds import FIX
 
@@ -106,3 +108,48 @@ def test_ready_bug_assignment_failure_is_isolated_and_logged(
     assert card.fields.get(shared.project.owner.id) is None
     assert "repository=Codagent-AI/agent-runner author=writer card=card-1" in caplog.text
     assert "assignment failed" in caplog.text
+
+
+def test_second_pull_request_kind_uses_its_own_targets_for_handoff_and_snapshot(
+    tmp_path: Path,
+) -> None:
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    local = LocalConfig.from_file(Path("config/local.example.toml"))
+
+    def feature_type(_shared: SharedConfig) -> str:
+        return "Feature"
+
+    def feature_targets(_shared: SharedConfig) -> tuple[FixTarget, ...]:
+        return (FixTarget("example/features"),)
+
+    other = replace(
+        FIX,
+        kind="feature",
+        noun="Feature",
+        issue_type=feature_type,
+        targets=feature_targets,
+    )
+    handler = PullRequestHandler(other, shared, local)
+    client = PermissionClient()
+    handler.attach_github(client)  # pyright: ignore[reportArgumentType]
+    original = _card(shared, "card-feature")
+    card = replace(
+        original,
+        source=replace(original.source, repository="example/features", issue_type="Feature"),
+    )
+
+    handler.ready_handoff(card, shared, {})
+
+    assert client.assignments == ["card-feature"]
+    snapshot = handler.snapshot(card, client, shared)
+    assert snapshot is not None
+    targets: list[FixTarget] = []
+
+    def resolve(target: FixTarget) -> tuple[str, str, str]:
+        targets.append(target)
+        return ("target-sha", "runner-sha", "skills-sha")
+
+    draft = handler.accept(snapshot, ClaimStore(tmp_path / "state.db"), resolve)
+    assert isinstance(draft, ClaimDraft)
+    assert targets == [FixTarget("example/features")]
+    assert draft.frozen_spec["target"] == {"repository": "example/features", "branch": "main"}

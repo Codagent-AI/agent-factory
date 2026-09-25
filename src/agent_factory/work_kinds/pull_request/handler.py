@@ -130,7 +130,8 @@ class PullRequestHandler:
         source = card.source
         factory = shared.project.owner.option("factory")
         if (
-            source.repository not in {target.repository for target in shared.fix.targets}
+            source.repository
+            not in {target.repository for target in self.definition.targets(shared)}
             or source.pull_request
             or source.state.lower() == "closed"
             or source.issue_type != self.definition.issue_type(shared)
@@ -313,7 +314,7 @@ class PullRequestHandler:
         self, card: ProjectQueueItem, client: object, shared: SharedConfig
     ) -> RequestSnapshot | None:
         source = card.source
-        targets = {target.repository for target in shared.fix.targets}
+        targets = {target.repository for target in self.definition.targets(shared)}
         if (
             source.repository not in targets
             or source.state.lower() == "closed"
@@ -371,7 +372,12 @@ class PullRequestHandler:
         resolve: object,
     ) -> ClaimDraft | Feedback:
         target = next(
-            (t for t in self._shared.fix.targets if t.repository == snapshot.repository), None
+            (
+                t
+                for t in self.definition.targets(self._shared)
+                if t.repository == snapshot.repository
+            ),
+            None,
         )
         if target is None:
             return Feedback(f"{snapshot.repository} is not a configured {self.kind} target")

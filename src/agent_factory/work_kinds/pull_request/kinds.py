@@ -8,7 +8,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
 
-from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
+from agent_factory.config import FixTarget, LocalConfig, ScheduleConfig, SharedConfig
 
 
 class KindLimits(Protocol):
@@ -61,6 +61,7 @@ class PullRequestKind:
     reconcile: ReconcilePolicy
     local: Callable[[LocalConfig], KindLocalConfig]
     defaults: Callable[[SharedConfig], Mapping[str, str]]
+    targets: Callable[[SharedConfig], tuple[FixTarget, ...]]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "doctor_groups", MappingProxyType(dict(self.doctor_groups)))
@@ -90,6 +91,7 @@ FIX = PullRequestKind(
     reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
     local=lambda local: local.fix,
     defaults=lambda shared: shared.fix.defaults,
+    targets=lambda shared: shared.fix.targets,
 )
 
 

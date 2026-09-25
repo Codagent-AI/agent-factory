@@ -40,7 +40,7 @@ def check_readiness(
     definition: PullRequestKind = FIX,
 ) -> list[Diagnostic]:
     """Diagnostics gating fix admission for the configured execution mode only."""
-    if not shared.fix.targets:
+    if not definition.targets(shared):
         return []
     mode = definition.local(local).execution
     group = definition.doctor_groups[mode]

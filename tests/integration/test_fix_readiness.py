@@ -112,6 +112,26 @@ def _shared(with_targets: bool = True) -> SharedConfig:
     )
 
 
+def test_second_kind_readiness_uses_its_own_target_configuration(tmp_path: Path) -> None:
+    local = _local(tmp_path, tmp_path / "missing-runner", fix_environment=None)
+    shared = _shared(with_targets=False)
+
+    def feature_targets(_shared: SharedConfig) -> tuple[FixTarget, ...]:
+        return (FixTarget("example/features"),)
+
+    other = dataclasses.replace(
+        FIX,
+        kind="feature",
+        noun="Feature",
+        targets=feature_targets,
+    )
+
+    diagnostics = check_readiness(local, shared, definition=other)
+
+    assert diagnostics
+    assert any(d.name == "feature credential" for d in diagnostics)
+
+
 def _local(tmp_path: Path, runner_checkout: Path, *, fix_environment: Path | None) -> LocalConfig:
     text = f'''\
 shared_config = "/opt/agent-factory/config/codagent.toml"
