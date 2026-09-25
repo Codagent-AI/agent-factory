@@ -64,6 +64,17 @@ def test_resume_skip_order() -> None:
     assert run(script, "implement", "verify", cwd=repo).returncode != 0
 
 
+def test_reconcile_runs_for_definition_resumes_and_continuations_only() -> None:
+    script = str(PACKAGE / "reconcile-skip.sh")
+    repo = Path.cwd()
+    # Exit 1 runs reconcile-artifacts; exit 0 skips it.
+    for step in ("proposal", "specs", "write-tasks"):
+        assert run(script, step, "", cwd=repo).returncode == 1
+    for step in ("", "implement", "archive", "verify", "finalize"):
+        assert run(script, step, "", cwd=repo).returncode == 0
+        assert run(script, step, "factory/feature-1-prior", cwd=repo).returncode == 1
+
+
 def test_prepare_branch_fresh_resume_continue_and_missing_fallback(tmp_path: Path) -> None:
     repo, _ = repository(tmp_path)
     head = git(repo, "rev-parse", "HEAD")
