@@ -393,7 +393,12 @@ class Controller:
         outcome = handler.settle(claim, self._store.runs_for_claim(claim.id))
         if outcome is None:
             return
-        self._store.set_claim_lifecycle(claim.id, "settled", {"verdict": outcome.verdict})
+        latest = self._store.runs_for_claim(claim.id)[-1]
+        pr = latest.result.get("pr") or claim.outcome.get("pr")
+        settled: dict[str, object] = {"verdict": outcome.verdict}
+        if isinstance(pr, dict):
+            settled["pr"] = pr
+        self._store.set_claim_lifecycle(claim.id, "settled", settled)
         self._store.record_event(claim.id, outcome.event_key, outcome.event_body)
 
     def _handler_for_snapshot(self, snapshot: RequestSnapshot) -> WorkKindHandler | None:

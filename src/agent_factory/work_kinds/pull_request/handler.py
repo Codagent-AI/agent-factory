@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -50,6 +51,21 @@ from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
 
 Resolver = Callable[[FixTarget], tuple[str, str, str]]
 logger = logging.getLogger(__name__)
+
+
+def feature_resume_point(
+    outcome: object, stopped_step: object, checkpoint: str | None, draft: bool, continuing: bool
+) -> str:
+    """Choose the first workflow step that has no durable completed checkpoint."""
+    if continuing:
+        return "implement" if checkpoint in {"planned", "implemented", "archived"} else ""
+    if outcome == "needs-input":
+        return stopped_step if isinstance(stopped_step, str) and stopped_step != "preflight" else ""
+    if draft:
+        return "verify"
+    return {"planned": "implement", "implemented": "archive", "archived": "verify"}.get(
+        checkpoint or "", ""
+    )
 
 
 class PullRequestGitHub(Protocol):
@@ -504,7 +520,7 @@ class PullRequestHandler:
                     claim.id,
                     {
                         **claim.preparation,
-                        "resume": {"branch": branch, "head_sha": pulls[0].head_sha},
+                        "resume": {"branch": branch, "head_sha": pulls[0].head_sha, "draft": True},
                     },
                 )
                 return None
@@ -583,6 +599,60 @@ class PullRequestHandler:
             raise ReadinessError("claim has no recorded target repository")
         revisions = dict(mapping(claim.frozen_spec.get("revisions")))
         resume = mapping(claim.preparation.get("resume"))
+        resume_from = ""
+        prior_branch = ""
+        prior_report: Path | None = None
+        if self.kind == "feature":
+            own_branch = resume.get("branch")
+            previous = next(
+                (
+                    item
+                    for item in reversed(self._store.claims_for_item(claim.project_item_id))
+                    if item.id != claim.id and item.kind == "feature"
+                ),
+                None,
+            )
+            previous_runs = self._store.runs_for_claim(previous.id) if previous else []
+            own_runs = self._store.runs_for_claim(claim.id)
+            latest = own_runs[-1] if own_runs else None
+            last_result: Mapping[str, object] = latest.result if latest else {}
+            if isinstance(own_branch, str):
+                token = self._installation_token() if self._installation_token else None
+                checkpoint = self._workspace.feature_checkpoint(repository, own_branch, token)
+                resume_from = feature_resume_point(
+                    last_result.get("outcome"),
+                    last_result.get("stopped_step"),
+                    checkpoint,
+                    resume.get("draft") is True,
+                    False,
+                )
+                if latest is not None:
+                    prior_report = attempt_evidence(latest)
+            elif last_result.get("outcome") == "needs-input":
+                # Let prepare-branch try the recorded resume point and write resume.json
+                # if the pushed branch vanished since the stop.
+                resume_from = feature_resume_point(
+                    "needs-input", last_result.get("stopped_step"), None, False, False
+                )
+            elif previous is not None and previous_runs:
+                branch = self.branch_name(previous)
+                try:
+                    exists = self._github.get_branch(repository, branch)
+                except (GitHubApiError, OSError) as error:
+                    raise ReadinessError(
+                        f"cannot check prior feature branch {branch}: {error}"
+                    ) from error
+                if exists is not None:
+                    token = self._installation_token() if self._installation_token else None
+                    checkpoint = self._workspace.feature_checkpoint(repository, branch, token)
+                    resume_from = feature_resume_point(None, None, checkpoint, False, True)
+                    if resume_from:
+                        prior_branch = branch
+            if (
+                last_result.get("outcome") == "needs-input"
+                and last_result.get("stopped_step") == "preflight"
+            ):
+                resume_from = ""
         head_sha = resume.get("head_sha")
         if (
             self.kind != "feature"
@@ -608,9 +678,21 @@ class PullRequestHandler:
                 "clones": recorded,
                 "branch_name": self.branch_name(claim),
                 "issue": issue,
+                "resume_from": resume_from,
+                "prior_branch": prior_branch,
+                "prior_report": str(prior_report) if prior_report else "",
             },
         )
-        return Preparation(payload={"clones": clones, "attempt": attempt, "issue": issue})
+        return Preparation(
+            payload={
+                "clones": clones,
+                "attempt": attempt,
+                "issue": issue,
+                "resume_from": resume_from,
+                "prior_branch": prior_branch,
+                "prior_report": str(prior_report) if prior_report else "",
+            }
+        )
 
     def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
         """Prepare fresh clones at the observed PR head for a review round."""
@@ -745,12 +827,24 @@ class PullRequestHandler:
             issue["attempt"] = run.attempt_number + 1
             issue["reason"] = run.reason
             launch.write_issue_input(evidence, issue)
+            if self.kind == "feature" and preparation.payload.get("resume_from") in {
+                "archive",
+                "verify",
+                "finalize",
+            }:
+                source = preparation.payload.get("prior_report")
+                if isinstance(source, str) and source:
+                    output = Path(source) / launch.SESSION_DIR_NAME / "output"
+                    destination = evidence / launch.SESSION_DIR_NAME / "output"
+                    for report in output.glob("*session-report*.out"):
+                        destination.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(report, destination / report.name)
         credential = launch.validated_credential_copy(
             self._local,
             self._local.storage_root.expanduser() / "private" / run.id / f"{self.kind}.env",
         )
         if self.definition.local(self._local).execution == "host":
-            return launch.build_host_plan(
+            plan = launch.build_host_plan(
                 evidence=evidence,
                 repo_clone=Path(str(clones["repo"])),
                 credential_copy=credential,
@@ -759,8 +853,26 @@ class PullRequestHandler:
                 contract=workflow_contract,
                 definition=self.definition,
                 change_name=branch.removeprefix("factory/").replace("/", "-"),
+                resume_from=str(preparation.payload.get("resume_from", "")),
+                prior_branch=str(preparation.payload.get("prior_branch", "")),
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
             )
+            if self.kind == "feature" and run.reason != "review" and self._store is not None:
+                resume_step = preparation.payload.get("resume_from")
+                prior_branch = preparation.payload.get("prior_branch")
+                if isinstance(prior_branch, str) and prior_branch:
+                    start = f"continues prior claim's branch `{prior_branch}` at {resume_step}"
+                elif isinstance(resume_step, str) and resume_step:
+                    start = f"resumes at {resume_step}"
+                else:
+                    start = "starts fresh"
+                self._store.record_event(
+                    claim.id,
+                    f"feature-admission:{run.id}",
+                    f"Feature attempt {run.attempt_number + 1} {start}. "
+                    f"Resolved refs: {self.refs_text(claim) or 'unavailable'}.",
+                )
+            return plan
         launch.stage_workflow(evidence, workflow_contract, self.definition)
         return launch.build_plan(
             run_id=run.id,
@@ -844,17 +956,47 @@ class PullRequestHandler:
                         }
                     )
                 self._store.set_claim_lifecycle(claim.id, "blocked", blocked)
-                body = f"Needs input.\n\n{reasons}"
+                body = (
+                    _feature_stop_message(latest.result, claim.repository)
+                    if self.kind == "feature" and latest.reason != "review"
+                    else f"Needs input.\n\n{reasons}"
+                )
                 self._store.record_event(
                     claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
                 )
             return None
         if outcome == "pull-request":
+            if latest.reason == "review" and self.kind == "feature":
+                pr = mapping(claim.outcome.get("pr"))
+                url = pr.get("url")
+                answered_raw = latest.result.get("answered")
+                changed_raw = latest.result.get("changed")
+                answered = (
+                    cast(list[object], answered_raw) if isinstance(answered_raw, list) else []
+                )
+                changed = cast(list[object], changed_raw) if isinstance(changed_raw, list) else []
+                body = (
+                    f"Feature review round completed for {url}. "
+                    f"Answered: {', '.join(map(str, answered)) if answered else 'none'}. "
+                    f"Changed: {', '.join(map(str, changed)) if changed else 'none'}. "
+                    "acceptance was not re-run."
+                )
+                return Outcome(
+                    "pending-human-review",
+                    f"review-complete:{latest.id}",
+                    _with_host_note(body, latest.result),
+                )
             return Outcome("pending-human-review", event_body=_pr_message(latest.result))
         if outcome == "failed":
+            result = latest.result
+            event_key = "handoff"
+            if latest.reason == "review" and self.kind == "feature":
+                result = {**result, "pr": claim.outcome.get("pr")}
+                event_key = f"review-failed:{latest.id}"
             return Outcome(
                 "failed",
-                event_body=_failed_message(latest.result, self.definition.noun, claim.repository),
+                event_key=event_key,
+                event_body=_failed_message(result, self.definition.noun, claim.repository),
             )
         return None
 
@@ -888,12 +1030,38 @@ class PullRequestHandler:
         self, claim: Claim, card: ProjectQueueItem, comments: Sequence[IssueComment]
     ) -> Gesture | None:
         if claim.lifecycle == "settled":
-            if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH and isinstance(
-                claim.outcome.get("pr"), Mapping
-            ):
+            if card_status(self._shared, card) != "Ready":
                 return None
-            return "fresh" if card_status(self._shared, card) == "Ready" else None
+            if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+                if claim.outcome.get("verdict") not in {"failed", "infra-error"}:
+                    return None
+                if self._github is None:
+                    return None
+                try:
+                    open_pulls = self._github.list_open_factory_pull_requests_for_issue(
+                        claim.repository, claim.issue_number
+                    )
+                except (GitHubApiError, OSError) as error:
+                    if self._store is not None:
+                        self._store.record_event(
+                            claim.id,
+                            f"open-pr-lookup:{error}",
+                            f"Cannot check open pull requests before retry: {error}",
+                        )
+                    return None
+                if open_pulls:
+                    if self._store is not None:
+                        self._store.record_event(
+                            claim.id,
+                            "open-pr-retry",
+                            "This feature already has an open factory pull request. "
+                            "Comment on that pull request to continue it through a review round.",
+                        )
+                    return None
+            return "fresh"
         if claim.lifecycle == "blocked":
+            if claim.outcome.get("blocked_by") == "review":
+                return None
             if comments or card_status(self._shared, card) == "Ready":
                 return "unblock"
             return None
@@ -920,8 +1088,15 @@ class PullRequestHandler:
         attempt = run.attempt_number + 1
         outcome = stored_result.get("outcome")
         if stage == "complete" and isinstance(outcome, str):
+            fallback = mapping(stored_result.get("resume")).get("fallback")
+            detail = (
+                f" Resume point unavailable ({fallback}); this attempt started fresh."
+                if self.kind == "feature" and isinstance(fallback, str)
+                else ""
+            )
             return _with_host_note(
-                f"{self.definition.noun} attempt {attempt} finished with outcome `{outcome}`.",
+                f"{self.definition.noun} attempt {attempt} finished with outcome "
+                f"`{outcome}`.{detail}",
                 stored_result,
             )
         reason = _technical_reason(stored_result)
@@ -1016,6 +1191,22 @@ def _reasons_text(result: Mapping[str, object]) -> str:
     if isinstance(reasons, list):
         return "\n".join(f"- {reason}" for reason in cast(list[object], reasons))
     return ""
+
+
+def _feature_stop_message(result: Mapping[str, object], repository: str) -> str:
+    questions = result.get("questions")
+    lines = ["Needs input."]
+    if isinstance(questions, list):
+        lines.extend(f"- {question}" for question in cast(list[object], questions))
+    summary = result.get("direction_summary")
+    if isinstance(summary, str):
+        lines.append(f"Direction drafted so far: {summary}")
+    branch = result.get("branch")
+    if result.get("stopped_step") == "preflight":
+        lines.append("No branch was created; the next attempt starts fresh.")
+    elif isinstance(branch, str):
+        lines.append(f"Branch: https://github.com/{repository}/tree/{branch}")
+    return "\n\n".join(lines)
 
 
 def _with_host_note(body: str, result: Mapping[str, object]) -> str:

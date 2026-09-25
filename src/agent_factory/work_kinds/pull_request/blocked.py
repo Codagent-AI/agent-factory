@@ -78,7 +78,7 @@ def process_blocked_claim(
     Without memory headroom the eligible claim is still reconciled against an earlier
     attempt's branch or pull request, but no clones are cut and no run is reserved.
     """
-    if claim.lifecycle != "blocked":
+    if claim.lifecycle != "blocked" or claim.outcome.get("blocked_by") == "review":
         return None
     # Cheap SQLite gates first; the paginated comment listing only runs when an
     # unblock could actually be admitted this cycle.
@@ -138,8 +138,10 @@ def process_blocked_claim(
         else:
             handler.reconcile(claim)
     except (ReadinessError, WorktreeError) as error:
+        store.set_hold(claim.id, "readiness", {"reason": str(error)})
         store.record_event(claim.id, f"unblock-readiness:{error}", f"Cannot re-admit yet: {error}")
         return None
+    store.clear_setting("claim-hold", f"{claim.id}:readiness")
     refreshed = store.get_claim(claim.id)
     if refreshed is None or refreshed.lifecycle != "blocked":
         # Reconciliation found an earlier attempt's pull request and settled the claim.

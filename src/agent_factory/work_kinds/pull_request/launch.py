@@ -680,6 +680,8 @@ def host_script(
     contract: str,
     definition: PullRequestKind = FIX,
     change_name: str = "",
+    resume_from: str = "",
+    prior_branch: str = "",
 ) -> str:
     """The bash wrapper that is the host plan's argv target.
 
@@ -703,7 +705,8 @@ def host_script(
         change_name = change_name or branch.removeprefix("factory/").replace("/", "-")
         run_command += (
             f" --param change_name={shlex.quote(change_name)}"
-            " --param resume_from='' --param prior_branch=''"
+            f" --param resume_from={shlex.quote(resume_from)}"
+            f" --param prior_branch={shlex.quote(prior_branch)}"
         )
     lines = [
         "#!/bin/bash",
@@ -880,6 +883,8 @@ def build_host_plan(
     contract: str,
     definition: PullRequestKind = FIX,
     change_name: str = "",
+    resume_from: str = "",
+    prior_branch: str = "",
     recorded_revisions: Mapping[str, object] | None = None,
     runner_executable: str | None = None,
 ) -> ExecutionPlan:
@@ -898,6 +903,8 @@ def build_host_plan(
             contract=contract,
             definition=definition,
             change_name=change_name,
+            resume_from=resume_from,
+            prior_branch=prior_branch,
             recorded_revisions=recorded_revisions,
             runner_executable=runner_executable,
         )
@@ -919,6 +926,8 @@ def _assemble_host_plan(
     contract: str,
     definition: PullRequestKind,
     change_name: str,
+    resume_from: str,
+    prior_branch: str,
     recorded_revisions: Mapping[str, object] | None,
     runner_executable: str | None,
 ) -> ExecutionPlan:
@@ -960,6 +969,8 @@ def _assemble_host_plan(
             contract=contract,
             definition=definition,
             change_name=change_name,
+            resume_from=resume_from,
+            prior_branch=prior_branch,
         ),
         0o700,
     )

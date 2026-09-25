@@ -223,6 +223,23 @@ than the executed versions. After a human merges the PR, the normal pull
 request sync updates the operator's working clone and closes the issue; Done
 then releases the claim's clones and credential copy.
 
+When definition needs a decision, Factory leaves the card in Running with
+`needs-input` and comments with the questions, drafted direction, and branch
+link. Answer in a new issue comment as a repository writer, or drag the card
+from Running to Ready. The same claim resumes at the stopped definition step;
+a preflight stop for a repository without `openspec/` starts fresh after it is
+initialized. Bot and non-writer comments do not resume work. A technical
+failure resumes from the latest pushed checkpoint when one is available.
+
+To continue a settled failed feature, drag its card from Review to Ready.
+Factory creates a new claim and, when the earlier branch has a plan checkpoint,
+continues from that branch at implementation using newly resolved target,
+Runner, and Skills commits. If the feature has an open factory pull request,
+the card returns to Review and no new claim starts. Comment on that pull
+request as a repository writer to request a review round through the feature
+slot. A review round can still run when new feature admissions have been
+disabled by removing `[feature]`; it does not repeat acceptance.
+
 By default `status` lists only claims that are running, waiting, blocked,
 held, in Review, or pending a merge sync; a claim whose card is Done with
 nothing left pending, and any superseded claim, is hidden, and the header

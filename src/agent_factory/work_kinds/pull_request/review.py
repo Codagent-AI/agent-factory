@@ -212,5 +212,24 @@ def process_review_claim(
     # The run is already reserved; a label hiccup must not strand it unlaunched.
     with contextlib.suppress(GitHubApiError, OSError):
         client.set_attention_label(claim.repository, claim.issue_number, False)
-    store.record_event(claim.id, f"review:{run.id}", "Review round started for writer feedback.")
+    if handler.kind == "feature":
+        ids = [
+            str(item["id"])
+            for group in ("reviews", "comments")
+            for item in eligible[group]
+            if "id" in item
+        ]
+        ids.extend(
+            str(comment["id"])
+            for thread in eligible["threads"]
+            for comment in cast(list[dict[str, object]], thread.get("comments", []))
+            if "id" in comment
+        )
+        body = (
+            f"Feature review round started for {pr.get('url')}. "
+            f"Addressing feedback: {', '.join(ids)}."
+        )
+    else:
+        body = "Review round started for writer feedback."
+    store.record_event(claim.id, f"review:{run.id}", body)
     return run, preparation

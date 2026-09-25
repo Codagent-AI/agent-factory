@@ -73,6 +73,39 @@ class PullRequestWorkspace:
             )
         return sha
 
+    def feature_checkpoint(
+        self, repository: str, branch: str, token: str | None = None
+    ) -> str | None:
+        """Read the latest phase marker from a pushed branch, refreshing the mirror first."""
+        mirror = self.mirror_path(repository)
+        if not mirror.is_dir():
+            raise ReadinessError(f"mirror for {repository} is missing: {mirror}")
+        ref = f"refs/heads/{branch}"
+        self._authenticated_git(
+            token,
+            ["--git-dir", str(mirror), "fetch", "--quiet", "origin", ref],
+            f"cannot fetch pushed feature branch {branch}",
+        )
+        history = _git(
+            [
+                "--git-dir",
+                str(mirror),
+                "log",
+                "--format=%(trailers:key=Factory-Checkpoint,valueonly)",
+                "FETCH_HEAD",
+            ]
+        )
+        if history.returncode != 0:
+            raise ReadinessError(f"cannot read feature checkpoints on {branch}: {history.stderr}")
+        return next(
+            (
+                line.strip()
+                for line in history.stdout.splitlines()
+                if line.strip() in {"planned", "implemented", "archived"}
+            ),
+            None,
+        )
+
     def attempt_directory(self, claim_id: str, attempt: int) -> Path:
         return self._root / "clones" / _safe(claim_id) / str(attempt)
 
