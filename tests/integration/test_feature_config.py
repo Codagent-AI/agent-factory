@@ -48,17 +48,16 @@ def test_feature_settings_load_and_share_fix_targets() -> None:
     assert local.feature.minimum_free_gib == 2
 
 
-def test_codagent_deployment_enables_feature_with_distinct_crosscheck_family() -> None:
+def test_codagent_deployment_enables_feature_with_every_role() -> None:
     shared = SharedConfig.from_toml(Path("config/codagent.toml").read_text())
     assert shared.feature is not None
     assert shared.feature.contract == "factory-feature/1"
     assert shared.feature.defaults["lead"] == shared.fix.defaults["lead"]
     assert shared.feature.defaults["implementor"] == shared.fix.defaults["implementor"]
     assert shared.feature.defaults["tester"] == shared.fix.defaults["tester"]
-    assert (
-        shared.feature.defaults["crosscheck"].split(":", 1)[0]
-        != shared.feature.defaults["lead"].split(":", 1)[0]
-    )
+    # The crosscheck family is an operator choice (the design recommends, not requires, a
+    # different family from lead); the deployment only needs a valid profile for it.
+    assert readiness._role_profiles_diagnostic(shared, kinds.FEATURE).available
 
 
 def test_feature_registration_survives_disabled_configuration() -> None:
