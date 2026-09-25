@@ -298,6 +298,32 @@ sandbox loads lives outside the artifacts, under `<storage_root>/private/<run>/`
 owner-readable only, and is deleted with the clones and images when the card
 reaches Done.
 
+## Post-run audits
+
+Every factory run is audited, and its step-value observations go to the metrics Sheet
+configured by `agent-runner audit setup`. Agent Runner audits only `openspec/` and
+`spec-driven/` workflows by itself, so the factory starts the audit for its own runs:
+
+- A host fix or review attempt runs `python -m agent_factory.audit host` in its launch
+  wrapper after the workflow ends, whatever the result. It replays the audit with
+  `agent-runner audit replay <session-dir> --session <id> --project <clone>` while the
+  factory profile is still staged, waits for the audit, and retries delivery once.
+- An eval audits inside its sandbox, which has no reporting connection. When the
+  resident consumes the attempt, it delivers the collected reports from the Mac with
+  `agent-runner audit retry`, using the Mac's Sheet as the destination.
+
+Each attempt records `audit.json` in its evidence. An audit that did not deliver never
+changes the attempt's result. It is posted as a `post-run-audit` issue event and listed by
+`agent-factory status` for seven days. `doctor` checks that the installed Runner has
+development audits and `audit replay --project`, and that the connection file is private.
+
+To recover an attempt, run this from an Agent Runner checkout:
+
+```sh
+scripts/recover-development-audits.sh --execute \
+  --session <evidence>/agent-runner-session:<execution-session-id>:<clone>
+```
+
 ## Service management and storage
 
 Restart the controller without touching independent supervisors. `kickstart -k`
@@ -310,6 +336,9 @@ launchctl bootout gui/$(id -u)/com.codagent.agent-factory
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-factory.plist
 agent-factory --config /absolute/path/to/config.toml resume
 ```
+
+On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an
+immutable release that running jobs keep using; see `AGENTS.md`.
 
 `resident` does not write `controller.log`; use `status` and the per-run logs.
 
