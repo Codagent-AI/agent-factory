@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import re
 import shutil
@@ -668,22 +669,45 @@ def _dispose_result(
 def _reconcile_backends(store: ClaimStore, local: LocalConfig) -> None:
     """Reconcile each configured or still-owned backend before admitting work."""
     names = {"fly-machine" if local.eval_execution == "fly" else "docker", local.fix.execution}
-    for run in store.all_runs():
-        if run.status in NONTERMINAL_RUN_STATUSES or not store.get_setting(
-            "consumed-results", run.id
-        ):
-            backend = backend_for(run.plan)
-            if backend is not None:
-                names.add(backend.name)
+    fly_sources: set[tuple[str, Path]] = set()
+    if local.fly is not None and local.eval_execution == "fly":
+        fly_sources.add((local.fly.app, local.fly.token_file))
+    for run in store.runs_requiring_backend_reconciliation():
+        backend = backend_for(run.plan)
+        if backend is None:
+            continue
+        names.add(backend.name)
+        if backend.name == "fly-machine":
+            hints = run.plan.get("ownership_hints")
+            artifact = (
+                cast(Mapping[str, object], hints).get("artifact_path")
+                if isinstance(hints, Mapping)
+                else None
+            )
+            path = Path(artifact) if isinstance(artifact, str) else Path(run.evidence_path)
+            try:
+                manifest = json.loads((path / ".factory" / "manifest.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            fly = (
+                cast(Mapping[str, object], manifest).get("fly")
+                if isinstance(manifest, dict)
+                else None
+            )
+            if isinstance(fly, dict):
+                values = cast(Mapping[str, object], fly)
+                app = values.get("app")
+                token = values.get("token_file")
+                if isinstance(app, str) and app and isinstance(token, str) and token:
+                    fly_sources.add((app, Path(token)))
     for name in sorted(names):
         if name == "fly-machine":
             from agent_factory.fly.backend import FlyMachineBackend
 
-            fly = local.fly
-            if fly is not None:
-                FlyMachineBackend(app=fly.app, token_file=fly.token_file, local=local).reconcile(
-                    store
-                )
+            for app, token_file in sorted(fly_sources):
+                FlyMachineBackend(app=app, token_file=token_file, local=local).reconcile(store)
+            if not fly_sources:
+                FlyMachineBackend(local=local).reconcile(store)
         else:
             plan = {"ownership_hints": {"backend": name}}
             backend = backend_for(plan)

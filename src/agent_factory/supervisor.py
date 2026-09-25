@@ -60,6 +60,9 @@ class SupervisionLimits:
 class ResultRead:
     result: dict[str, object] | None
     error: str | None = None
+    execution_status: str | None = None
+    product_verdict: str | None = None
+    uncertain: bool = False
 
 
 def launch_supervisor(
@@ -160,11 +163,18 @@ def supervise(state_path: Path, run_id: str, nonce: str) -> None:
                 _observe(store, run.id, plan, limits, existing, backend=backend)
                 return
             if run.status != "reserved":
-                result = _load_result(_artifact_root(plan, run.evidence_path))
+                result = _load_result(
+                    _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+                )
+                if result.error is not None:
+                    store.report_uncertainty(run.id, result.error)
+                    return
                 action = adoption_action(probe.state, result_present=result.result is not None)
                 if action == "finish-result" and result.result is not None:
                     store.finish_run(
-                        run.id, execution_status=_result_status(result.result), result=result.result
+                        run.id,
+                        execution_status=result.execution_status or _result_status(result.result),
+                        result=result.result,
                     )
                 elif action == "interrupt":
                     store.finish_run(
@@ -295,7 +305,9 @@ def _supervise_fly(
                     run.id, "Fly Machine identity was not recorded by launcher"
                 )
         else:
-            result = _load_result(_artifact_root(plan, run.evidence_path)).result
+            result = _load_result(
+                _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+            ).result
             if result is not None:
                 store.finish_run(run.id, execution_status=_result_status(result), result=result)
             else:
@@ -316,13 +328,18 @@ def _supervise_fly(
             and mismatch.get("machine_id") == identity.get("id")
         ):
             store.compare_and_set_setting("runtime", "fly:mismatch", mismatch, {})
-        result = _load_result(_artifact_root(plan, run.evidence_path)).result
+        result = _load_result(
+            _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+        ).result
         if result is not None:
             store.finish_run(run.id, execution_status=_result_status(result), result=result)
         else:
-            store.finish_run(
-                run.id, execution_status="interrupted", result={"reason": "machine lost"}
+            reason = (
+                "execution ended while unsupervised"
+                if _identity_status(run.process) != "alive"
+                else "machine lost"
             )
+            store.finish_run(run.id, execution_status="interrupted", result={"reason": reason})
         return
     if probe.state == "mismatch":
         store.set_setting(
@@ -516,7 +533,9 @@ def _observe_fly(
         changed, sources = _progress_changed(plan.progress_sources, sources)
         if changed:
             last_progress = now
-        result = _load_result(_artifact_root(plan, run.evidence_path))
+        result = _load_result(
+            _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+        )
         launcher_missing = _identity_status(launcher) == "missing"
         # A probe is a REST round trip; like the container probe below it runs on
         # an interval, and at once when the launcher has gone away.
@@ -578,7 +597,9 @@ def _observe_fly(
                 _terminate(launcher)
                 result_value: dict[str, object] = {"collection": "failed", "reason": "machine lost"}
             else:
-                collected = _load_result(_artifact_root(plan, run.evidence_path)).result
+                collected = _load_result(
+                    _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+                ).result
                 result_value = (
                     dict(collected)
                     if collected is not None
@@ -668,7 +689,9 @@ def _observe(
         # The wall clock is used only to anchor persisted timestamps on attachment.
         # All decisions during this watcher lifetime advance by monotonic elapsed time.
         now = wall_anchor + (time.monotonic() - monotonic_anchor)
-        result_read = _load_result(_artifact_root(plan, run.evidence_path))
+        result_read = _load_result(
+            _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+        )
         process_status = _identity_status(identity)
         if isinstance(backend, DockerContainerBackend) and (
             now - last_container_probe >= 5 or process_status == "missing"
@@ -708,6 +731,11 @@ def _observe(
             )
             return
         process_status = "alive" if probe.state == "alive" else "missing"
+        if process_status == "missing" and result_read.result is None and result_read.error is None:
+            # The result can be written between the first read and the ownership probe.
+            result_read = _load_result(
+                _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+            )
         wait_elapsed = _wait_overlap(previous_now, now, quota_until)
         paused_seconds += wait_elapsed
         last_progress += wait_elapsed
@@ -752,16 +780,19 @@ def _observe(
         if result_read.result is not None and process_status == "missing":
             store.finish_run(
                 run_id,
-                execution_status=_result_status(result_read.result),
+                execution_status=result_read.execution_status or _result_status(result_read.result),
                 result=result_read.result,
             )
             return
         if result_read.error is not None and process_status == "missing":
-            store.finish_run(
-                run_id,
-                execution_status="failed",
-                result={"reason": "invalid result.json", "error": result_read.error},
-            )
+            if result_read.uncertain:
+                store.report_uncertainty(run_id, result_read.error)
+            else:
+                store.finish_run(
+                    run_id,
+                    execution_status="failed",
+                    result={"reason": "invalid result.json", "error": result_read.error},
+                )
             return
         if process_status == "missing":
             store.finish_run(
@@ -902,29 +933,35 @@ def _artifact_root(plan: ExecutionPlan, fallback: str) -> str:
     return artifact if isinstance(artifact, str) and artifact.strip() else fallback
 
 
-def _load_result(evidence_path: str) -> ResultRead:
+def _load_result(
+    evidence_path: str, *, kind: str | None = None, reason: str | None = None
+) -> ResultRead:
     path = Path(evidence_path) / "result.json"
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        from agent_factory.work_kinds.fix.outcome import read_outcome
+        from agent_factory.work_kinds.fix.outcome import read_interpreted_outcome
 
-        for contract in ("factory-fix/1", "factory-review/1"):
-            payload = read_outcome(Path(evidence_path), contract)
-            if payload is not None:
-                return ResultRead(dict(payload))
-        for name in ("feature-outcome.json",):
-            outcome = Path(evidence_path) / name
-            try:
-                value = json.loads(outcome.read_text(encoding="utf-8"))
-            except (FileNotFoundError, OSError, json.JSONDecodeError):
-                continue
-            if (
-                isinstance(value, dict)
-                and isinstance(cast(dict[str, object], value).get("contract"), str)
-                and isinstance(cast(dict[str, object], value).get("outcome"), str)
-            ):
-                return ResultRead(cast(dict[str, object], value))
+        contracts: tuple[str, ...]
+        if kind == "fix":
+            contracts = ("factory-review/1",) if reason == "review" else ("factory-fix/1",)
+        elif kind == "feature":
+            contracts = ("factory-feature/1",)
+        elif kind is None:
+            contracts = ("factory-fix/1", "factory-review/1", "factory-feature/1")
+        else:
+            contracts = ()
+        for contract in contracts:
+            read = read_interpreted_outcome(Path(evidence_path), contract)
+            interpreted = read.outcome
+            if interpreted is not None:
+                return ResultRead(
+                    interpreted.result,
+                    execution_status=interpreted.execution_status,
+                    product_verdict=interpreted.product_verdict,
+                )
+            if contract == "factory-feature/1" and read.error is not None:
+                return ResultRead(None, read.error, uncertain=True)
         return ResultRead(None)
     except OSError as error:
         return ResultRead(None, f"cannot read {path}: {error}")

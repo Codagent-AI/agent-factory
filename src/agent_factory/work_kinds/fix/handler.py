@@ -42,7 +42,7 @@ from agent_factory.work_kinds.base import (
 )
 from agent_factory.work_kinds.fix import launch
 from agent_factory.work_kinds.fix.cleanup import FixCleanup
-from agent_factory.work_kinds.fix.outcome import read_outcome
+from agent_factory.work_kinds.fix.outcome import read_interpreted_outcome
 from agent_factory.work_kinds.fix.readiness import check_readiness
 from agent_factory.work_kinds.fix.workspace import FixWorkspace
 
@@ -512,15 +512,16 @@ class FixHandler:
         )
         if run.status == "timed_out":
             return base
-        payload = read_outcome(
+        interpreted = read_interpreted_outcome(
             attempt_evidence(run),
             launch.REVIEW_CONTRACT if run.reason == "review" else self._contract,
-        )
-        if payload is None:
+        ).outcome
+        if interpreted is None:
             return base
-        outcome = payload.get("outcome")
         return AttemptResult(
-            "completed", outcome if isinstance(outcome, str) else None, {**payload, **extra}
+            interpreted.execution_status,
+            interpreted.product_verdict,
+            {**interpreted.result, **extra},
         )
 
     def classify(self, run: Run, result: AttemptResult) -> Classification:

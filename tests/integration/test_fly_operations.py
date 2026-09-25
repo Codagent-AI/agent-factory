@@ -203,6 +203,23 @@ def test_codagent_shared_defaults_select_opus_lead_and_luna_implementor_and_test
 # -- doctor --------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("evals", "fixes", "required", "absent"),
+    [
+        ("docker", "host", {"eval-sandbox", "fix-host"}, {"eval-fly", "fix-sandbox"}),
+        ("fly", "host", {"eval-fly", "fix-host"}, {"eval-sandbox", "fix-sandbox"}),
+        ("fly", "docker", {"eval-fly", "eval-sandbox", "fix-sandbox"}, {"fix-host"}),
+    ],
+)
+def test_doctor_dispatches_to_each_configured_backend(
+    site: Site, evals: str, fixes: str, required: set[str], absent: set[str]
+) -> None:
+    site.stub("docker", exit_code=0)
+    groups = {item.group for item in doctor(site.config(evals=evals, fixes=fixes))}
+    assert required <= groups
+    assert not absent & groups
+
+
 def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
     site: Site,
 ) -> None:
