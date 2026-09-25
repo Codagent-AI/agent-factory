@@ -22,12 +22,18 @@ The factory SHALL run the packaged `factory-feature` workflow, with its `factory
 
 ### Requirement: Require an OpenSpec repository
 
-Before defining a change, the feature workflow SHALL check that the target clone contains an `openspec/` directory. When it does not, the workflow SHALL return `needs-input` stating that the repository is not initialized for OpenSpec, with the stopped step recorded as `preflight`, and SHALL push no branch and open no pull request. An attempt re-admitted after a `preflight` stop SHALL start a fresh definition.
+Before defining a change, the feature workflow SHALL check that the target clone contains an `openspec/` directory and an Agent Validator configuration (`.validator/config.yml`). When either is missing, the workflow SHALL return `needs-input` naming what is missing (OpenSpec initialization or Agent Validator configuration), with the stopped step recorded as `preflight`, and SHALL push no branch and open no pull request. An attempt re-admitted after a `preflight` stop SHALL start a fresh definition.
 
 #### Scenario: Hand off a feature in a repository without OpenSpec
 
 - **WHEN** a feature is admitted for a configured target that has no `openspec/` directory
 - **THEN** the workflow returns `needs-input` naming the missing OpenSpec initialization with stopped step `preflight`
+- **AND** it pushes no branch and opens no pull request
+
+#### Scenario: Hand off a feature in a repository without Agent Validator configuration
+
+- **WHEN** a feature is admitted for a configured target that has `openspec/` but no `.validator/config.yml`
+- **THEN** the workflow returns `needs-input` naming the missing Agent Validator configuration with stopped step `preflight`
 - **AND** it pushes no branch and opens no pull request
 
 #### Scenario: Re-admit after OpenSpec is initialized
@@ -72,7 +78,7 @@ Any definition step, from the proposal through the approach review, SHALL stop t
 
 ### Requirement: Resume and continue feature work
 
-A resumed attempt on a blocked claim SHALL check out the claim's branch and continue at the definition step that stopped. A new claim supplied with a prior claim's branch SHALL start its branch from the prior branch, merge in the target's recorded commit, and continue at implementation with the prior committed plan. An attempt resumed after a definition stop, or a new claim continuing a prior claim, SHALL first check the existing artifacts against the current issue and the eligible comments and revise them where that input warrants, recording each revision; because such an attempt resumes at or before implementation, every revision is implemented, archived, and verified. A technical recovery retry SHALL NOT revise existing artifacts. When the resume point is missing or cannot be used, including an unresolvable merge, the workflow SHALL start a fresh definition and state in its outcome that it did so. A technical failure SHALL receive at most one automatic recovery retry, launched from fresh clones at the recorded commits after side-effect reconciliation, which continues after the last completed phase found on the claim's pushed branch, and from its draft pull request when one is open; a phase whose checkpoint commit was not pushed SHALL be redone. Exhausted recovery SHALL settle the claim with `infra-error`. Quota waits and unavailable prerequisites SHALL NOT consume the retry.
+A resumed attempt on a blocked claim SHALL check out the claim's branch and continue at the definition step that stopped. A new claim supplied with a prior claim's branch SHALL start its branch from the prior branch, merge in the target's recorded commit, and continue at implementation with the prior committed plan; when the prior branch's last pushed phase is `archived`, the new claim SHALL instead continue at verification of the archived change. An attempt resumed after a definition stop, or a new claim continuing a prior claim at implementation, SHALL first check the existing artifacts against the current issue and the eligible comments and revise them where that input warrants, recording each revision; because such an attempt resumes at or before implementation, every revision is implemented, archived, and verified. A new claim continuing at verification SHALL NOT revise the archived artifacts. A technical recovery retry SHALL NOT revise existing artifacts. When the resume point is missing or cannot be used, including an unresolvable merge, the workflow SHALL start a fresh definition and state in its outcome that it did so. A technical failure SHALL receive at most one automatic recovery retry, launched from fresh clones at the recorded commits after side-effect reconciliation, which continues after the last completed phase found on the claim's pushed branch, and from its draft pull request when one is open; a phase whose checkpoint commit was not pushed SHALL be redone. Exhausted recovery SHALL settle the claim with `infra-error`. Quota waits and unavailable prerequisites SHALL NOT consume the retry.
 
 #### Scenario: Resume after answering a definition question
 
@@ -84,6 +90,12 @@ A resumed attempt on a blocked claim SHALL check out the claim's branch and cont
 - **WHEN** a new claim is supplied with the branch of a prior claim that failed after its plan commit
 - **THEN** the workflow merges the target's recorded commit into that branch and starts at implementation with the prior plan
 - **AND** it revises the plan first when the current issue or eligible comments warrant it
+
+#### Scenario: Continue a feature whose prior claim failed after archival
+
+- **WHEN** a new claim is supplied with the branch of a prior claim that failed after pushing its `archived` checkpoint
+- **THEN** the workflow merges the target's recorded commit into that branch and continues at verification of the archived change
+- **AND** it does not revise the archived plan or its artifacts
 
 #### Scenario: Continue when the prior branch is gone
 
@@ -142,7 +154,7 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 
 After the plan commit the feature workflow SHALL NOT stop for human input. Whether or not acceptance completed, and whether or not assumption review left decision-bearing assumptions, the workflow SHALL continue to finalization. Before finalizing, it SHALL classify every item a reviewer may need to examine into exactly one tier:
 
-- red: an acceptance criterion that failed or could not be verified, acceptance that did not complete, any known deviation from the specifications, and a resume or continuation that fell back to a fresh start;
+- red: an acceptance criterion that failed or could not be verified, acceptance that did not complete, a validator that stayed red after an acceptance fix, any known deviation from the specifications, and a resume or continuation that fell back to a fresh start;
 - orange: decision-bearing assumptions, whose alternative a reasonable reviewer might choose and which shape behavior; plan revisions made in response to human comments; and commits added after acceptance ran, including those the finalization loop adds after classification, which acceptance evidence does not cover;
 - yellow: every other recorded assumption;
 - white: acceptance criteria that passed, with their evidence.
@@ -153,6 +165,11 @@ The classification SHALL be recorded in the attempt's evidence and used by `fact
 
 - **WHEN** acceptance preparation ends without completing
 - **THEN** the workflow continues to finalization and classifies the unmet criteria and the incomplete acceptance as red
+
+#### Scenario: Validator stays red after an acceptance fix
+
+- **WHEN** the validator remains red after its bounded repair in an acceptance round
+- **THEN** acceptance and finalization continue, and the pull request lists the red validator, with its failing checks, as a red item
 
 #### Scenario: A decision-bearing assumption remains
 

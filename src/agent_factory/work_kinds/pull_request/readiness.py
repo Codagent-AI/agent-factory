@@ -72,6 +72,7 @@ def check_readiness(
     )
     diagnostics.append(_credential_diagnostic(local, installation_token, group=group))
     diagnostics.append(_contract_diagnostic(local, shared, definition))
+    diagnostics.append(_role_profiles_diagnostic(shared, definition, group=group))
     if definition.kind == "feature":
         diagnostics.extend(_openspec_diagnostics(local, shared))
     if definition is not FIX:
@@ -86,17 +87,51 @@ def check_readiness(
     return diagnostics
 
 
+def _role_profiles_diagnostic(
+    shared: SharedConfig, definition: PullRequestKind, *, group: str = ""
+) -> Diagnostic:
+    """Every role must have a profile before admission freezes the roles onto a claim."""
+    name = f"{definition.kind} role profiles"
+    section = f"{definition.kind}.defaults"
+    try:
+        launch.role_profiles(definition.defaults(shared), definition)
+    except ReadinessError as error:
+        return Diagnostic(
+            name,
+            False,
+            str(error),
+            f"Set every role ({', '.join(definition.roles)}) in [{section}] "
+            "as a cli:model:effort profile.",
+            group=group or next(iter(definition.doctor_groups.values())),
+        )
+    return Diagnostic(name, True, ", ".join(definition.roles), "", group=group)
+
+
 def _openspec_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]:
+    """Targets the feature preflight would stop on, reported as informational."""
     diagnostics: list[Diagnostic] = []
     for target in shared.fix.targets:
         clone = local.repositories.working_clones.get(target.repository)
-        if clone is not None and not (clone / "openspec").is_dir():
+        if clone is None:
+            continue
+        if not (clone / "openspec").is_dir():
             diagnostics.append(
                 Diagnostic(
                     f"feature target {target.repository} OpenSpec",
                     True,
                     f"{target.repository} has no openspec/ in its working clone; "
                     "feature preflight will request initialization (informational)",
+                    "",
+                    group="feature-host",
+                )
+            )
+        if not (clone / ".validator" / "config.yml").is_file():
+            diagnostics.append(
+                Diagnostic(
+                    f"feature target {target.repository} Agent Validator",
+                    True,
+                    f"{target.repository} has no .validator/config.yml in its working clone; "
+                    "feature preflight will request Agent Validator configuration (informational)",
                     "",
                     group="feature-host",
                 )

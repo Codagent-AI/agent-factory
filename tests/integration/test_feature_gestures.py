@@ -165,7 +165,10 @@ def test_int006_resume_point_follows_stop_checkpoint_or_continuation() -> None:
     assert feature_resume_point(None, None, "implemented", False, False) == "archive"
     assert feature_resume_point(None, None, "archived", False, False) == "verify"
     assert feature_resume_point(None, None, None, True, False) == "verify"
-    assert feature_resume_point(None, None, "archived", False, True) == "implement"
+    assert feature_resume_point(None, None, "planned", False, True) == "implement"
+    assert feature_resume_point(None, None, "implemented", False, True) == "implement"
+    # A prior claim that archived its change continues at verification: its plan is spent.
+    assert feature_resume_point(None, None, "archived", False, True) == "verify"
     assert feature_resume_point(None, None, None, False, False) == ""
 
 
@@ -629,9 +632,12 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
     )
 
 
-@pytest.mark.parametrize("prior_available", [True, False])
+@pytest.mark.parametrize(
+    ("prior_available", "checkpoint"),
+    [(True, "planned"), (False, "planned"), (True, "archived")],
+)
 def test_int006_failed_claim_continues_prior_planned_branch(
-    tmp_path: Path, prior_available: bool
+    tmp_path: Path, prior_available: bool, checkpoint: str
 ) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     draft = ClaimDraft(
@@ -671,7 +677,7 @@ def test_int006_failed_claim_continues_prior_planned_branch(
             base_sha: str | None = None,
             exclude_sha: str | None = None,
         ) -> str | None:
-            return "planned"
+            return checkpoint
 
         def prepare_clones(
             self,
@@ -714,8 +720,11 @@ def test_int006_failed_claim_continues_prior_planned_branch(
     feature.attach_github(GitHub())  # type: ignore[arg-type]
     feature._issue_input = lambda _claim: {}  # type: ignore[method-assign]
     prepared = feature.prepare(current)
-    assert prepared.payload["resume_from"] == ("implement" if prior_available else "")
+    expected_resume = {"planned": "implement", "archived": "verify"}[checkpoint]
+    assert prepared.payload["resume_from"] == (expected_resume if prior_available else "")
     assert prepared.payload["prior_branch"] == (prior_branch if prior_available else "")
+    # Verification reviews the prior claim's session reports when it skips implementation.
+    assert bool(prepared.payload["prior_report"]) == (checkpoint == "archived")
     if not prior_available:
         assert "prior branch unavailable" in str(prepared.payload["resume_fallback"])
 

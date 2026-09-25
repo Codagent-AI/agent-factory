@@ -13,6 +13,26 @@ def command(*args: str) -> str:
     return subprocess.check_output(args, text=True).strip()
 
 
+RED_VALIDATOR_TITLE = "Validator red after acceptance fixes"
+
+
+def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result: Path) -> None:
+    """A red validator after an acceptance fix does not block finalization, so flag it red."""
+    lines = result.read_text().splitlines() if result.is_file() else []
+    if not lines or lines[0].strip() != "FAIL":
+        return
+    if any(item.get("title") == RED_VALIDATOR_TITLE for item in flags["red"]):
+        return
+    failures = "; ".join(line.strip() for line in lines[1:] if line.strip())
+    flags["red"].append(
+        {
+            "title": RED_VALIDATOR_TITLE,
+            "detail": failures or "the validator stayed red after its bounded repair",
+            "link": "#acceptance-evidence",
+        }
+    )
+
+
 def main() -> None:
     if sys.argv[1] == "--json":
         payload = json.loads(sys.argv[2])
@@ -27,8 +47,10 @@ def main() -> None:
         archive = Path(sys.argv[4])
         session_dir = artifact_dir
     issue = json.loads(issue_file.read_text())
+    evidence_dir = session_dir / "output" if (session_dir / "output").exists() else artifact_dir
     path = artifact_dir / "review-attention.json"
     flags = json.loads(path.read_text())
+    flag_red_acceptance_validator(flags, evidence_dir / "acceptance-validator-result.txt")
     accepted = flags["accepted_head"]
     later = command("git", "log", "--format=%H", f"{accepted}..HEAD").splitlines()
     # Acceptance evidence covers only the accepted head, so a later commit is covered
@@ -110,7 +132,6 @@ def main() -> None:
     )
     decisions = archive / "decisions.md"
     lines.append(decisions.read_text() if decisions.exists() else "No decisions recorded.")
-    evidence_dir = session_dir / "output" if (session_dir / "output").exists() else artifact_dir
     assumptions = evidence_dir / "acceptance-assumptions.md"
     if assumptions.exists():
         lines.append(assumptions.read_text())

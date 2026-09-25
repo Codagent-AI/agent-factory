@@ -6,6 +6,7 @@ import json
 import subprocess
 from importlib.resources import files
 from pathlib import Path
+from typing import Any
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
@@ -72,7 +73,11 @@ def test_reconcile_runs_for_definition_resumes_and_continuations_only() -> None:
         assert run(script, step, "", cwd=repo).returncode == 1
     for step in ("", "implement", "archive", "verify", "finalize"):
         assert run(script, step, "", cwd=repo).returncode == 0
-        assert run(script, step, "factory/feature-1-prior", cwd=repo).returncode == 1
+    # A continuation revises the prior plan before implementing it, but not when the
+    # prior change was already archived and the continuation resumes at verification.
+    assert run(script, "implement", "factory/feature-1-prior", cwd=repo).returncode == 1
+    assert run(script, "", "factory/feature-1-prior", cwd=repo).returncode == 1
+    assert run(script, "verify", "factory/feature-1-prior", cwd=repo).returncode == 0
 
 
 def test_prepare_branch_fresh_resume_continue_and_missing_fallback(tmp_path: Path) -> None:
@@ -229,7 +234,7 @@ def test_annotate_pr_flags_listed_later_commit_no_orange_item_names(tmp_path: Pa
     later = git(repo, "rev-parse", "HEAD")
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    attention = {
+    attention: dict[str, object] = {
         "red": [],
         "orange": [],
         "yellow": [],
@@ -262,6 +267,54 @@ def test_annotate_pr_flags_listed_later_commit_no_orange_item_names(tmp_path: Pa
     assert len(flags["orange"]) == 1
     assert later[:12] in flags["orange"][0]["detail"]
     assert flags["orange"][0]["detail"].count(later[:12]) == 1
+
+
+def test_annotate_pr_flags_red_acceptance_validator_once(tmp_path: Path) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    attention: dict[str, object] = {
+        "red": [],
+        "orange": [],
+        "yellow": [],
+        "white": [],
+        "accepted_head": accepted,
+        "later_commits": [],
+    }
+    (evidence / "review-attention.json").write_text(json.dumps(attention))
+    (evidence / "acceptance-validator-result.txt").write_text("FAIL\ntest: 2 failing\n")
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+        "fi\n"
+    )
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    command = [
+        str(PACKAGE / "annotate-pr.sh"),
+        str(evidence),
+        str(issue),
+        "change",
+        "openspec/changes/archive/2026-09-25-change",
+    ]
+    for _ in range(2):
+        result = subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+    flags = json.loads((evidence / "review-attention.json").read_text())
+    assert len(flags["red"]) == 1
+    assert "test: 2 failing" in flags["red"][0]["detail"]
+    (evidence / "acceptance-validator-result.txt").write_text("PASS\n")
+    (evidence / "review-attention.json").write_text(json.dumps(attention))
+    result = subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "review-attention.json").read_text())["red"] == []
 
 
 def test_feature_record_outcome_adds_counts_resume_and_branch(tmp_path: Path) -> None:
@@ -479,6 +532,67 @@ def test_prepare_branch_continuation_carries_prior_change_to_new_name(tmp_path: 
     assert (changes / "feature-12-bbbbbbbb" / "tasks.md").read_text() == "- [ ] only task\n"
     assert not (changes / "feature-12-aaaaaaaa").exists()
     assert git(repo, "status", "--porcelain") == ""
+
+
+def test_prepare_branch_continuation_carries_prior_archive_to_new_name(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "factory/feature-12-aaaaaaaa")
+    archive = repo / "openspec" / "changes" / "archive"
+    (archive / "2026-09-24-feature-12-aaaaaaaa").mkdir(parents=True)
+    (archive / "2026-09-24-feature-12-aaaaaaaa" / "tasks.md").write_text("- [x] only task\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "archived")
+    git(repo, "push", "-u", "origin", "factory/feature-12-aaaaaaaa")
+    git(repo, "checkout", "main")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    payload = {
+        "branch_name": "factory/feature-12-bbbbbbbb",
+        "target_head": target,
+        "resume_from": "verify",
+        "prior_branch": "factory/feature-12-aaaaaaaa",
+        "artifact_dir": str(evidence),
+        "change_name": "feature-12-bbbbbbbb",
+    }
+    result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "verify"
+    assert (archive / "2026-09-24-feature-12-bbbbbbbb" / "tasks.md").exists()
+    assert not (archive / "2026-09-24-feature-12-aaaaaaaa").exists()
+    assert git(repo, "status", "--porcelain") == ""
+    located = run(str(PACKAGE / "locate-archive.py"), "feature-12-bbbbbbbb", cwd=repo)
+    assert located.returncode == 0, located.stderr
+
+
+def test_check_openspec_requires_openspec_and_validator_config(tmp_path: Path) -> None:
+    script = str(PACKAGE / "check-openspec.sh")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    evidence = tmp_path / "evidence"
+
+    def stop() -> dict[str, Any] | None:
+        outcome = evidence / "feature-outcome.json"
+        if outcome.exists():
+            value = json.loads(outcome.read_text())
+            outcome.unlink()
+            return value
+        return None
+
+    assert run(script, str(evidence), cwd=repo).returncode == 0
+    missing_both = stop()
+    assert missing_both is not None and missing_both["stopped_step"] == "preflight"
+    assert "OpenSpec" in " ".join(missing_both["reasons"])
+    (repo / "openspec").mkdir()
+    assert run(script, str(evidence), cwd=repo).returncode == 0
+    missing_validator = stop()
+    assert missing_validator is not None and missing_validator["stopped_step"] == "preflight"
+    assert "Agent Validator" in " ".join(missing_validator["reasons"])
+    assert "branch" not in missing_validator
+    (repo / ".validator").mkdir()
+    (repo / ".validator" / "config.yml").write_text("entry_points: []\n")
+    assert run(script, str(evidence), cwd=repo).returncode == 0
+    assert stop() is None
 
 
 def test_prepare_branch_missing_own_branch_clears_resume(tmp_path: Path) -> None:

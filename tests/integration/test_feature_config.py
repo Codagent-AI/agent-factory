@@ -172,10 +172,40 @@ def test_feature_doctor_reports_missing_openspec_as_informational(tmp_path: Path
         ),
     )
     checks = readiness._openspec_diagnostics(local, shared)
-    assert len(checks) == 1
-    assert checks[0].available
-    assert checks[0].group == "feature-host"
+    assert len(checks) == 2
+    assert all(check.available and check.group == "feature-host" for check in checks)
     assert "openspec/" in checks[0].detail
+    assert ".validator/config.yml" in checks[1].detail
+    (tmp_path / "openspec").mkdir()
+    (tmp_path / ".validator").mkdir()
+    (tmp_path / ".validator" / "config.yml").write_text("entry_points: []\n")
+    assert readiness._openspec_diagnostics(local, shared) == []
+
+
+@pytest.mark.parametrize(
+    ("definition", "section"),
+    [(kinds.FEATURE, "feature.defaults"), (kinds.FIX, "fix.defaults")],
+)
+def test_doctor_fails_when_a_kind_lacks_a_role_profile(
+    definition: kinds.PullRequestKind, section: str
+) -> None:
+    complete = {role: "claude:opus:high" for role in definition.roles}
+    shared = SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n")
+    field = "feature" if definition is kinds.FEATURE else "fix"
+    roles = getattr(shared, field)
+
+    def with_roles(values: dict[str, str]) -> SharedConfig:
+        return replace(shared, **{field: replace(roles, defaults=values)})
+
+    passing = readiness._role_profiles_diagnostic(with_roles(complete), definition)
+    assert passing.available
+    missing = dict(complete)
+    missing.pop(definition.roles[-1])
+    failing = readiness._role_profiles_diagnostic(with_roles(missing), definition)
+    assert not failing.available
+    assert definition.roles[-1] in failing.detail and section in failing.action
+    malformed = {**complete, definition.roles[0]: "claude"}
+    assert not readiness._role_profiles_diagnostic(with_roles(malformed), definition).available
 
 
 def test_packaged_define_workflow_declares_feature_contract() -> None:

@@ -59,7 +59,11 @@ def feature_resume_point(
 ) -> str:
     """Choose the first workflow step that has no durable completed checkpoint."""
     if continuing:
-        return "implement" if checkpoint in {"planned", "implemented", "archived"} else ""
+        # An archived prior change has been implemented and merged into the living specs,
+        # so the continuation verifies it rather than implementing its plan again.
+        if checkpoint == "archived":
+            return "verify"
+        return "implement" if checkpoint in {"planned", "implemented"} else ""
     if outcome == "needs-input":
         return stopped_step if isinstance(stopped_step, str) and stopped_step != "preflight" else ""
     if draft:
@@ -658,6 +662,8 @@ class PullRequestHandler:
                     if resume_from:
                         prior_branch = branch
                         continuation_head = exists.sha
+                    if resume_from == "verify":
+                        prior_report = attempt_evidence(previous_runs[-1])
                 else:
                     resume_fallback = f"prior branch unavailable: `{branch}`"
             if (

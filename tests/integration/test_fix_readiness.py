@@ -589,7 +589,12 @@ def _host_shared() -> SharedConfig:
     return dataclasses.replace(
         shared,
         fix=dataclasses.replace(
-            shared.fix, defaults={"lead": "cursor:m:high", "tester": "cursor:m:low"}
+            shared.fix,
+            defaults={
+                "lead": "cursor:m:high",
+                "implementor": "cursor:m:medium",
+                "tester": "cursor:m:low",
+            },
         ),
     )
 

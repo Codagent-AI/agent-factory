@@ -31,10 +31,19 @@ if [ -n "$prior" ]; then
       # branch the same way the handler derives change_name; this claim's steps use
       # its own name, so carry the unarchived change over to it.
       prior_change=$(printf %s "${prior#factory/}" | tr / -)
-      if [ -n "$change_name" ] && [ "$prior_change" != "$change_name" ] \
-        && [ -d "openspec/changes/$prior_change" ] && [ ! -e "openspec/changes/$change_name" ]; then
-        git mv "openspec/changes/$prior_change" "openspec/changes/$change_name" >&2
-        git commit -q -m "[factory-feature] chore: continue $prior_change as $change_name" >&2
+      if [ -n "$change_name" ] && [ "$prior_change" != "$change_name" ]; then
+        if [ -d "openspec/changes/$prior_change" ] && [ ! -e "openspec/changes/$change_name" ]; then
+          git mv "openspec/changes/$prior_change" "openspec/changes/$change_name" >&2
+        fi
+        # An archived prior change keeps its date prefix under this claim's name.
+        for archived in openspec/changes/archive/*-"$prior_change"; do
+          [ -d "$archived" ] || continue
+          renamed="${archived%"$prior_change"}$change_name"
+          [ -e "$renamed" ] || git mv "$archived" "$renamed" >&2
+        done
+        if ! git diff --cached --quiet; then
+          git commit -q -m "[factory-feature] chore: continue $prior_change as $change_name" >&2
+        fi
       fi
     fi
   else
