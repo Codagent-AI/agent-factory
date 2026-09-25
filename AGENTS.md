@@ -68,9 +68,12 @@ validator's end-to-end tests. Commit any pin through a PR.
 ## Code and models each kind of work uses
 
 - Evals use Agent Evals `harness_ref` (`main`) and Agent Runner
-  `agent_runner_ref` (`dev`). Fixes use Agent Runner and Skills from
-  `[fix.branches]` (`main`). An Agent Runner change that evals need, such as a
-  Fly Dockerfile fix, must reach `dev`, not only `main`.
+  `agent_runner_ref` (`main`). Fixes clone Agent Runner and Skills from
+  `[fix.branches]` (`main`), but run the `agent-runner` installed on `PATH`,
+  which `make build` last built from the Agent Runner checkout, whatever
+  branch it is on. Agent Runner `dev` is no longer used; `scripts/deploy.sh`
+  still expects it (below) and skips its runner step when the checkout is on
+  another branch, so run `make build` there by hand.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
