@@ -120,7 +120,16 @@ def report(factory: Factory, repository: str, number: int, kind: str | None) -> 
     print(f"author: {source.author} ({permission}) [{mark(permission in WRITER_PERMISSIONS)}]")
     print(f"priority: {card.priority if card else 'unknown (no board item)'}")
     if card is None:
-        print("board item: none [MISSING]")
+        # The queue listing leaves out some cards, for example untyped issues.
+        item = factory.app.find_project_item(shared.project.id, detail.id)
+        if item is None:
+            print("board item: none [MISSING]")
+        else:
+            owner = item.fields.get(shared.project.owner.id)
+            status = item.fields.get(shared.project.status.id)
+            print(f"board item: {item.id} (not in the factory's queue) [MISSING]")
+            print(f"status is Ready: [{mark(status == shared.project.status.option('ready'))}]")
+            print(f"owner is factory: [{mark(owner == shared.project.owner.option('factory'))}]")
     else:
         owner = card.fields.get(shared.project.owner.id)
         owner_name = next((k for k, v in shared.project.owner.options.items() if v == owner), None)
