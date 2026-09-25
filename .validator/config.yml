@@ -6,7 +6,7 @@ cli:
     claude:
       model: opus
       allow_tool_use: false
-      thinking_budget: medium
+      thinking_budget: low
 
 # entry_points configured by /validator-setup
 entry_points:

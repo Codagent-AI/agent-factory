@@ -125,12 +125,15 @@ def _openspec_diagnostics(local: LocalConfig, shared: SharedConfig) -> list[Diag
                     group="feature-host",
                 )
             )
-        if not (clone / ".validator" / "config.yml").is_file():
+        validator_config = clone / ".validator" / "config.yml"
+        # Matches preflight's `test -s`: a missing or empty configuration stops the attempt.
+        if not (validator_config.is_file() and validator_config.stat().st_size > 0):
             diagnostics.append(
                 Diagnostic(
                     f"feature target {target.repository} Agent Validator",
                     True,
-                    f"{target.repository} has no .validator/config.yml in its working clone; "
+                    f"{target.repository} has no or an empty .validator/config.yml in its "
+                    "working clone; "
                     "feature preflight will request Agent Validator configuration (informational)",
                     "",
                     group="feature-host",

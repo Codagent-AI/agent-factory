@@ -177,6 +177,9 @@ def test_feature_doctor_reports_missing_openspec_as_informational(tmp_path: Path
     assert ".validator/config.yml" in checks[1].detail
     (tmp_path / "openspec").mkdir()
     (tmp_path / ".validator").mkdir()
+    # An empty configuration also stops preflight, so doctor reports it too.
+    (tmp_path / ".validator" / "config.yml").write_text("")
+    assert len(readiness._openspec_diagnostics(local, shared)) == 1
     (tmp_path / ".validator" / "config.yml").write_text("entry_points: []\n")
     assert readiness._openspec_diagnostics(local, shared) == []
 
