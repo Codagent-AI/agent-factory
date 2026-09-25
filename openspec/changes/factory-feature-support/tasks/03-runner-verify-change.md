@@ -150,3 +150,14 @@ pull request carries its own tests. Add, test-first, in the Runner repository:
 - A pull request against Agent Runner `main` is open, describing the carve-out, the
   acceptance loop, and the removal of `call_agent` and prompt-driven validation from the
   tail, and noting that `core/finalize-pr` restructuring is a follow-up.
+
+## Delivery
+
+This task's code lives in Agent Runner, so it has no Agent Factory commit of its own:
+
+- https://github.com/Codagent-AI/agent-runner/pull/155 (merged): the `core/verify-change`
+  carve-out, the bounded acceptance loop, and removal of `call_agent` and prompt-driven
+  validation from the tail.
+- https://github.com/Codagent-AI/agent-runner/pull/156: stop `verify-change` before opening a
+  pull request when the validator stays red after repair (the "Stay red after validator
+  repair" scenario), and read `run-validator.sh` inputs once.
