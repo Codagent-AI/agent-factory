@@ -26,7 +26,11 @@ REVIEW_CONTRACT = "factory-review/1"
 REVIEW_WORKFLOW_NAME = "factory-review"
 REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
 IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
-REVIEW_WORKFLOW_SCRIPTS = ("record-review-triage.sh", "record-review-outcome.sh")
+REVIEW_WORKFLOW_SCRIPTS = (
+    "record-review-triage.sh",
+    "record-review-outcome.sh",
+    "review-description.sh",
+)
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
 STAGED_FILES = tuple(

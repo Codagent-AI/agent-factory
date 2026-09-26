@@ -116,12 +116,31 @@ steps:
     capture: changes_needed
     skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
 
+  # Finalization may rewrite the description; a feature PR's annotated one is restored.
+  - id: save-description
+    script: review-description.sh
+    script_inputs:
+      mode: save
+      review_file: "{{review_file}}"
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{changes_needed}}" != true'
+    continue_on_failure: true
+
   - id: implement
     workflow: factory-implement-v1.0.yaml
     params:
       input_file: "{{review_file}}"
       plan_json: "{{review_decision}}"
       result_path: "{{artifact_dir}}/implement-result.json"
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{changes_needed}}" != true'
+    continue_on_failure: true
+
+  - id: restore-description
+    script: review-description.sh
+    script_inputs:
+      mode: restore
+      review_file: "{{review_file}}"
       artifact_dir: "{{artifact_dir}}"
     skip_if: 'sh: test "{{changes_needed}}" != true'
     continue_on_failure: true
@@ -152,7 +171,8 @@ steps:
       was not pushed, and say so in the reply. Post exactly one reply per item.
       For a feature pull request, post one completion comment after the replies
       stating that acceptance was not re-run and its evidence still describes
-      the accepted commit.
+      the accepted commit. If {{artifact_dir}}/description-restore-failed exists,
+      also say in that comment that the description could not be restored, quoting it.
       Do not edit code or commit.
 
   - id: record-outcome

@@ -222,7 +222,9 @@ def test_record_review_triage_requires_one_decision_per_review_item(tmp_path: Pa
 def test_review_workflow_passes_the_review_file_to_both_triage_gates() -> None:
     text = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
 
-    assert text.count('review_file: "{{review_file}}"') == 2
+    gates = [step for step in text.split("\n  - id: ") if "script: record-review-triage.sh" in step]
+    assert len(gates) == 2
+    assert all('review_file: "{{review_file}}"' in step for step in gates)
 
 
 def test_record_review_outcome_maps_answers_changes_and_needs_input(tmp_path: Path) -> None:
@@ -276,3 +278,70 @@ def test_record_review_outcome_maps_answers_changes_and_needs_input(tmp_path: Pa
     assert done.returncode == 0, done.stderr
     written = json.loads(outcome_path.read_text())
     assert written["outcome"] == "needs-input" and written["reasons"] == ["choose"]
+
+
+def run_review_description(
+    tmp_path: Path, mode: str, kind: str, body: Path, edit_fails: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run review-description.sh with a gh stub whose PR body lives in ``body``."""
+    import os
+
+    staged = launch.stage_workflow(tmp_path / "stage", "factory-review/1")
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": kind, "pull_request": {"number": 4}}))
+    stub = tmp_path / "bin" / "gh"
+    stub.parent.mkdir(exist_ok=True)
+    stub.write_text(
+        '#!/bin/sh\nif [ "$2" = view ]; then cat "$PR_BODY"\n'
+        'elif [ "$2" = edit ]; then [ -z "$EDIT_FAILS" ] || exit 1; cat "$5" > "$PR_BODY"; fi\n'
+    )
+    stub.chmod(0o755)
+    result = subprocess.run(
+        [str(staged / "review-description.sh")],
+        input=json.dumps({"mode": mode, "review_file": str(review), "artifact_dir": str(tmp_path)}),
+        env={
+            **os.environ,
+            "PATH": f"{stub.parent}:{os.environ['PATH']}",
+            "PR_BODY": str(body),
+            "EDIT_FAILS": "1" if edit_fails else "",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert edit_fails or result.returncode == 0, result.stderr
+    return result
+
+
+@pytest.mark.parametrize(("kind", "restored"), [("feature", True), ("fix", False)])
+def test_review_round_keeps_the_factory_owned_feature_description(
+    tmp_path: Path, kind: str, restored: bool
+) -> None:
+    """Finalization may rewrite the description; a feature PR's annotated layout is
+    restored after the round, and a fix PR's description is left as finalization wrote it."""
+    body = tmp_path / "body.md"
+    annotated = "**Feature for #2:** Add cleanup\n\n# Review first\n"
+    body.write_text(annotated)
+    run_review_description(tmp_path, "save", kind, body)
+    rewritten = "## Review update\n\n" + annotated + "\n----\nabc123 commit\n"
+    body.write_text(rewritten)
+    run_review_description(tmp_path, "restore", kind, body)
+    assert (body.read_text() == annotated) is restored
+    overwritten = tmp_path / "pr-description-overwritten.md"
+    assert (overwritten.read_text() == rewritten) if restored else not overwritten.exists()
+
+
+def test_a_failed_description_restore_is_recorded_for_the_completion_comment(
+    tmp_path: Path,
+) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("**Feature for #2:** Add cleanup\n\n# Review first\n")
+    run_review_description(tmp_path, "save", "feature", body)
+    body.write_text("rewritten by finalization\n")
+    result = run_review_description(tmp_path, "restore", "feature", body, edit_fails=True)
+    assert result.returncode != 0
+    assert "pull request #4" in (tmp_path / "description-restore-failed").read_text()
+    text = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    respond = text.split("  - id: respond\n", 1)[1].split("\n  - id: ")[0]
+    assert "description-restore-failed" in respond
+    save = text.split("  - id: save-description\n", 1)[1].split("\n  - id: ")[0]
+    assert "continue_on_failure: true" in save
