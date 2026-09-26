@@ -317,6 +317,89 @@ def test_annotate_pr_flags_red_acceptance_validator_once(tmp_path: Path) -> None
     assert json.loads((evidence / "review-attention.json").read_text())["red"] == []
 
 
+def test_annotate_pr_links_items_to_github_or_the_evidence_section(tmp_path: Path) -> None:
+    """The classifier writes whatever path it read; a reviewer on GitHub can open only
+    committed files, so every other local path points at the acceptance evidence."""
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    (repo / "docs" / "gate.md").write_text("gate")
+    (repo / "docs" / "my gate (v2).md").write_text("gate")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "docs")
+    (repo / "scratch.log").write_text("untracked")
+    accepted = git(repo, "rev-parse", "HEAD")
+    branch = git(repo, "branch", "--show-current")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "acceptance-flow-evidence.md").write_text("flows")
+
+    def item(title: str, link: str) -> dict[str, str]:
+        return {"title": title, "detail": "d", "link": link}
+
+    attention: dict[str, object] = {
+        "red": [
+            item("absolute tracked", str(repo.resolve() / "docs" / "gate.md")),
+            item("relative tracked", "docs/gate.md"),
+            item("tracked directory", "docs/"),
+            item("line", "docs/gate.md:3"),
+            item("line range", "docs/gate.md:3-5"),
+            item("fragment", "docs/gate.md#requirement-gate"),
+            item("needs encoding", "docs/my gate (v2).md"),
+        ],
+        "orange": [
+            item("evidence file", str(evidence / "acceptance-flow-evidence.md")),
+            item("untracked in clone", str(repo / "scratch.log")),
+            item("missing", "no/such/file.md"),
+        ],
+        "yellow": [item("url", "https://example.test/x"), item("anchor", "#acceptance-evidence")],
+        "white": [],
+        "accepted_head": accepted,
+        "later_commits": [],
+    }
+    (evidence / "review-attention.json").write_text(json.dumps(attention))
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+        'else cat "$5" > "$GH_BODY"; fi\n'
+    )
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    rendered = body.read_text()
+    blob = f"https://github.com/o/r/blob/{branch}"
+    assert f"[absolute tracked]({blob}/docs/gate.md)" in rendered
+    assert f"[relative tracked]({blob}/docs/gate.md)" in rendered
+    assert f"[tracked directory]({blob}/docs)" in rendered
+    assert f"[line]({blob}/docs/gate.md#L3)" in rendered
+    assert f"[line range]({blob}/docs/gate.md#L3-L5)" in rendered
+    assert f"[fragment]({blob}/docs/gate.md#requirement-gate)" in rendered
+    assert f"[needs encoding]({blob}/docs/my%20gate%20%28v2%29.md)" in rendered
+    for title in ("evidence file", "untracked in clone", "missing"):
+        assert f"[{title}](#acceptance-evidence)" in rendered
+    assert "[url](https://example.test/x)" in rendered
+    assert "[anchor](#acceptance-evidence)" in rendered
+    assert str(tmp_path) not in rendered.split("## Change summary")[0]
+
+
 def test_feature_record_outcome_adds_counts_resume_and_branch(tmp_path: Path) -> None:
     counts = {"red": 1, "orange": 2, "yellow": 3, "white": 4}
     payload = {

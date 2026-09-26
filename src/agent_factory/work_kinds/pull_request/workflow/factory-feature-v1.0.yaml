@@ -139,7 +139,9 @@ steps:
       {{artifact_dir}}/resume.json and commits after acceptance.
       Write {{artifact_dir}}/review-attention.json with red, orange, yellow, white
       arrays of {title, detail, link}, accepted_head SHA, and later_commits: every
-      commit after accepted_head, each also named by SHA in an orange item.
+      commit after accepted_head, each also named by SHA in an orange item. A link is
+      a repository-relative path of a committed file or a URL; any other path is
+      shown as a link to the acceptance evidence.
       Classify every review item into exactly one tier. Red: each failed or unverified
       acceptance criterion, acceptance that did not complete, every known deviation
       from the specifications, and a resume or continuation that fell back to a

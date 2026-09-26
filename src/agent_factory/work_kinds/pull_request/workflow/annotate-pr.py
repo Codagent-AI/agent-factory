@@ -2,11 +2,13 @@
 """Render review attention into the existing feature pull request description."""
 
 import json
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import cast
+from urllib.parse import quote
 
 
 def command(*args: str) -> str:
@@ -31,6 +33,40 @@ def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result
             "link": "#acceptance-evidence",
         }
     )
+
+
+EVIDENCE_LINK = "#acceptance-evidence"
+LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
+
+
+def item_link(link: str, repository: str, branch: str, root: Path) -> str:
+    """A GitHub reader can open only files committed on the branch; any other local path
+    the classifier cited (session evidence, untracked files) points at the evidence section.
+    A cited line (`file:12`, `file:12-14`) or anchor (`file#section`) is kept."""
+    if link.startswith(("http://", "https://", "#")):
+        return link
+    base, _, fragment = link.partition("#")
+    lines = LINE_SUFFIX.search(base)
+    if lines:
+        base = base[: lines.start()]
+        first, last = lines.group(1), lines.group(2)
+        fragment = f"L{first}-L{last}" if last else f"L{first}"
+    path = Path(base)
+    if path.is_absolute():
+        try:
+            path = path.resolve().relative_to(root)
+        except ValueError:
+            return EVIDENCE_LINK
+    relative = path.as_posix()
+    if not repository or not base or relative == "." or ".." in path.parts:
+        return EVIDENCE_LINK
+    tracked = subprocess.run(
+        ["git", "cat-file", "-e", f"HEAD:{relative}"], capture_output=True, check=False
+    )
+    if tracked.returncode != 0:
+        return EVIDENCE_LINK
+    url = f"https://github.com/{repository}/blob/{quote(branch, safe='/')}/{quote(relative)}"
+    return f"{url}#{quote(fragment, safe='-')}" if fragment else url
 
 
 def main() -> None:
@@ -105,6 +141,10 @@ def main() -> None:
     prefix = (
         f"https://github.com/{repository}/blob/{branch}/{archive}" if repository else str(archive)
     )
+    root = Path(command("git", "rev-parse", "--show-toplevel")).resolve()
+    for tier in ("red", "orange", "yellow", "white"):
+        for item in flags[tier]:
+            item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
     lines = ["# Review first", ""]
     for tier, icon in (("red", "🔴"), ("orange", "🟠"), ("yellow", "🟡")):
         items = flags[tier]
