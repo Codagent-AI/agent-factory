@@ -602,6 +602,31 @@ def test_list_open_pull_requests_for_head_raises_on_lookup_failure() -> None:
         client.list_open_pull_requests_for_head("example/repository", "factory/fix-212-1a2b3c4d")
 
 
+def test_factory_pr_lookup_scans_all_pages_and_filters_by_issue() -> None:
+    unrelated = {
+        "html_url": "https://example.test/pr/1",
+        "number": 1,
+        "head": {"ref": "factory/feature-old", "sha": "a" * 40},
+        "body": "Refs #41",
+        "draft": False,
+    }
+    match = {
+        "html_url": "https://example.test/pr/2",
+        "number": 2,
+        "head": {"ref": "factory/feature-new", "sha": "b" * 40},
+        "body": "Refs #42",
+        "draft": False,
+    }
+    gh = RecordingGh([json.dumps([unrelated] * 100), json.dumps([match])])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    pulls = client.list_open_factory_pull_requests_for_issue("example/repository", 42)
+
+    assert [pull.number for pull in pulls] == [2]
+    assert pulls[0].branch == "factory/feature-new"
+    assert "page=2" in gh.calls[1].arguments[1]
+
+
 def test_get_pull_request_reads_state_and_merged_at() -> None:
     gh = RecordingGh([json.dumps({"state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z"})])
     client = GitHubClient(gh, lambda: "installation-token")

@@ -7,12 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
+    from agent_factory.config import LocalConfig, SharedConfig
     from agent_factory.operations import Diagnostic
-
-
-@dataclass(frozen=True)
-class ExecutionIdentity:
-    values: Mapping[str, object]
 
 
 @dataclass(frozen=True)
@@ -26,10 +22,12 @@ Disposal = Literal["destroy", "stop", "keep"]
 
 class ExecutionBackend(Protocol):
     name: str
+    supports_attach: bool
 
-    def readiness(self, local: object, shared: object) -> list[Diagnostic]: ...
+    def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]: ...
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None: ...
     def probe(self, identity: Mapping[str, object]) -> Probe: ...
+    def adopt(self, plan: object, run: object, store: object) -> Probe: ...
     def terminate(self, identity: Mapping[str, object]) -> bool: ...
     def dispose(
         self, identity: Mapping[str, object], decision: Disposal, store: object | None = None

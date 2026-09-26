@@ -234,9 +234,7 @@ def test_doctor_helpers_report_local_io_and_spawn_failures(tmp_path: Path) -> No
     assert "regular file" in private.detail
 
     with patch("agent_factory.operations.subprocess.run", side_effect=PermissionError("denied")):
-        command = operations._command_check(  # pyright: ignore[reportPrivateUsage]
-            "Docker", ("docker", "info"), "Start Docker."
-        )
+        command = operations.command_check("Docker", ("docker", "info"), "Start Docker.")
     assert not command.available
     assert "could not run" in command.detail
 

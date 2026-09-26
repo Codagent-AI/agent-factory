@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import re
 import shutil
@@ -15,7 +16,8 @@ from pathlib import Path
 from typing import cast
 
 from agent_factory import audit, retention, work_kinds
-from agent_factory.config import FixTarget, LocalConfig, SharedConfig
+from agent_factory.backends.resolve import backend_for
+from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
     Controller,
@@ -23,30 +25,22 @@ from agent_factory.controller import (
     quota_deadline,
 )
 from agent_factory.github import (
-    WRITER_PERMISSIONS,
     AppCredentials,
-    GitHubApiError,
     GitHubClient,
     InstallationTokenProvider,
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.operations import Diagnostic, check_memory_headroom, doctor
+from agent_factory.operations import Diagnostic, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     ReadinessError,
     RecoveryStateError,
-    SourceRepositories,
     WorktreeError,
 )
 from agent_factory.supervisor import launch_supervisor
 from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler, card_status
-from agent_factory.work_kinds.eval import ParsedRequest
 from agent_factory.work_kinds.eval.publication import publish_eval_results
-from agent_factory.work_kinds.fix.blocked import process_blocked_claim
-from agent_factory.work_kinds.fix.handler import FixHandler
-from agent_factory.work_kinds.fix.review import process_review_claim
-from agent_factory.work_kinds.fix.sync import sync_claim
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +56,8 @@ def cycle(state: Path, config_path: Path) -> None:
     )
     client = GitHubClient(runner, token_provider)
     registered = work_kinds.handlers(shared, local)
-    fix_handler = registered.get("fix")
-    if isinstance(fix_handler, FixHandler):
-        fix_handler.attach_installation_token(token_provider)
-        fix_handler.attach_github(client)
+    for handler in registered.values():
+        handler.attach_github(client, token_provider)
     with advisory_lock(state, "cycle"), closing(ClaimStore(state)) as store:
         controller = Controller(
             store,
@@ -74,19 +66,13 @@ def cycle(state: Path, config_path: Path) -> None:
             factory_login=shared.bot_login,
             artifact_root=local.storage_root / "artifacts",
         )
-        if local.eval_execution == "fly" and local.fly is not None:
-            # Reconciliation is deliberately before result consumption and admission:
-            # cost containment must continue even when every other controller action fails.
-            from agent_factory.fly.backend import FlyMachineBackend
-
-            FlyMachineBackend(
-                app=local.fly.app, token_file=local.fly.token_file, local=local
-            ).reconcile(store)
+        _reconcile_backends(store, local)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
         permission_cache: dict[tuple[str, str], str | None] = {}
         for card in cards:
-            _assign_ready_bug(client, shared, card, permission_cache)
+            for handler in registered.values():
+                handler.ready_handoff(card, shared, permission_cache)
         _consume_results(store, controller, local)
         # Results are captured whether or not anyone reviews them; a failure is
         # reported on the item and retried next tick, never blocking the cycle.
@@ -99,7 +85,9 @@ def cycle(state: Path, config_path: Path) -> None:
         # for admission this tick, and its result is cached so it runs at most once.
         @functools.cache
         def sandbox_memory() -> Diagnostic:
-            probed = check_memory_headroom(local.limits.memory_reservation_gib)
+            from agent_factory.backends.docker import DockerContainerBackend
+
+            probed = DockerContainerBackend().memory_readiness(local.limits.memory_reservation_gib)
             store.set_setting(
                 "runtime", "memory", {} if probed.available else {"reason": probed.detail}
             )
@@ -137,22 +125,23 @@ def cycle(state: Path, config_path: Path) -> None:
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
             for claim in claims:
-                retention.reconcile(store, local, claim, card_status(shared, card), now)
+                handler = controller.handler(claim.kind)
+                retention.reconcile(
+                    store, local, claim, card_status(shared, card), now, handler=handler
+                )
                 claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "superseded":
                     continue
-                handler = controller.handler(claim.kind)
                 if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
                     claim = store.get_claim(claim.id) or claim
-                if claim.lifecycle == "blocked" and isinstance(handler, FixHandler):
-                    fix_memory_available = (
-                        True if local.fix.execution == "host" else sandbox_memory().available
+                if claim.lifecycle == "blocked" and handler is not None:
+                    memory_available = (
+                        not handler.needs_sandbox_memory(local) or sandbox_memory().available
                     )
-                    admitted = process_blocked_claim(
+                    admitted = handler.unblock(
                         store,
                         client,
-                        handler,
                         shared,
                         local,
                         card,
@@ -160,7 +149,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
-                        memory_available=fix_memory_available,
+                        memory_available=memory_available,
                     )
                     claim = store.get_claim(claim.id) or claim
                     if admitted is not None:
@@ -179,8 +168,8 @@ def cycle(state: Path, config_path: Path) -> None:
                         except (WorktreeError, ReadinessError) as error:
                             _hold_for_readiness(store, claim.id, error)
                         claim = store.get_claim(claim.id) or claim
-                if claim.kind == "fix" and claim.lifecycle == "settled":
-                    sync_claim(
+                if handler is not None and claim.lifecycle == "settled":
+                    handler.merge_sync(
                         store,
                         client,
                         local,
@@ -189,18 +178,17 @@ def cycle(state: Path, config_path: Path) -> None:
                         card_done=card_status(shared, card) == "Done",
                     )
                     claim = store.get_claim(claim.id) or claim
-                if isinstance(handler, FixHandler):
-                    admitted = process_review_claim(
+                if handler is not None:
+                    admitted = handler.review_round(
                         store,
                         client,
-                        handler,
                         claim,
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
                         local=local,
                         memory_available=(
-                            True if local.fix.execution == "host" else sandbox_memory().available
+                            not handler.needs_sandbox_memory(local) or sandbox_memory().available
                         ),
                         readiness=lambda selected=handler: kind_ready(selected),
                     )
@@ -259,7 +247,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
                 claim = controller.accept(
                     snapshot,
-                    resolve=lambda request, chosen=handler: _resolve_for(chosen, request),
+                    resolve=handler.resolve_request,
                     fresh=fresh,
                 )
             except ReadinessError as error:
@@ -341,25 +329,7 @@ def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
     return None
 
 
-def _resolve_for(handler: WorkKindHandler, request: object) -> tuple[str, ...]:
-    if isinstance(handler, FixHandler):
-        if not isinstance(request, FixTarget):
-            raise ReadinessError("fix handler cannot resolve a non-target request")
-        return handler.resolve(request)
-    sources = getattr(handler, "sources", None)
-    if not isinstance(sources, SourceRepositories) or not isinstance(request, ParsedRequest):
-        raise ReadinessError("eval handler cannot resolve pinned revisions")
-    return _resolve(sources, request)
-
-
-def _resolve(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, str]:
-    return (
-        _resolve_revision(sources.runner, str(request.settings["agent_runner_ref"])),
-        _resolve_revision(sources.skills, str(request.settings["agent_skills_ref"])),
-    )
-
-
-def _resolve_revision(source: Path, revision: str, *, fetch: bool = True) -> str:
+def _resolve_revision(source: Path, revision: str, *, fetch: bool = True) -> str:  # pyright: ignore[reportUnusedFunction]
     try:
         if fetch:
             fetched = subprocess.run(
@@ -461,57 +431,6 @@ def _repair_unclaimed(
         store.set_setting("status-repair", card.id, {"complete": True})
 
 
-def _assign_ready_bug(
-    client: GitHubClient,
-    shared: SharedConfig,
-    card: ProjectQueueItem,
-    permission_cache: dict[tuple[str, str], str | None],
-) -> None:
-    """Treat placing an eligible Bug in Ready as an explicit handoff to Factory."""
-    source = card.source
-    targets = {target.repository for target in shared.fix.targets}
-    factory = shared.project.owner.option("factory")
-    if (
-        source.repository not in targets
-        or source.pull_request
-        or source.state.lower() == "closed"
-        or source.issue_type != shared.routing.bug_type
-        or card_status(shared, card) != "Ready"
-        or card.fields.get(shared.project.owner.id) == factory
-    ):
-        return
-    permission_key = (source.repository, source.author)
-    try:
-        if permission_key not in permission_cache:
-            permission_cache[permission_key] = client.get_permission(*permission_key)
-    except GitHubApiError as error:
-        permission_cache[permission_key] = None
-        logger.warning(
-            "Cannot verify Ready Bug author permission; retrying next cycle "
-            "(repository=%s author=%s card=%s): %s",
-            source.repository,
-            source.author,
-            card.id,
-            error,
-        )
-        return
-    if permission_cache[permission_key] not in WRITER_PERMISSIONS:
-        return
-    try:
-        client.set_single_select_field(shared.project.id, card.id, shared.project.owner.id, factory)
-    except GitHubApiError as error:
-        logger.warning(
-            "Cannot assign Ready Bug to Factory; retrying next cycle "
-            "(repository=%s author=%s card=%s): %s",
-            source.repository,
-            source.author,
-            card.id,
-            error,
-        )
-        return
-    card.fields[shared.project.owner.id] = factory
-
-
 def _fly_mismatch_diagnostic(store: ClaimStore, local: LocalConfig) -> Diagnostic | None:
     """A saved mismatch holds evals only under Fly, where reconciliation can clear it."""
     if getattr(local, "eval_execution", "docker") != "fly":
@@ -556,7 +475,7 @@ def _kind_failures(
         memory = sandbox_memory()
         return failures + ([memory] if not memory.available else [])
     failures = [d for d in diagnostics if d.group == "shared" and not d.available]
-    if not (isinstance(handler, FixHandler) and local.fix.execution == "docker"):
+    if not handler.needs_sandbox_memory(local):
         return failures + [d for d in handler.readiness(local, shared) if not d.available]
     docker_diagnostic = next((d for d in diagnostics if d.name == "Docker"), None)
     if docker_diagnostic is not None and not docker_diagnostic.available:
@@ -595,18 +514,14 @@ def _consume_results(
                 _hold_for_missing_handler(store, claim, run)
                 continue
             result = handler.read_result(run)
-            observed = run.progress.get("container")
-            if isinstance(observed, Mapping):
-                result = replace(
-                    result,
-                    result={
-                        **result.result,
-                        "container": dict(cast(Mapping[str, object], observed)),
-                    },
-                )
+            backend = backend_for(run.plan)
+            if backend is not None:
+                provenance = backend.provenance(backend.identity_from_plan(run.plan, run) or {})
+                if provenance:
+                    result = replace(result, result={**result.result, **provenance})
             controller.record_result(run.id, result)
             _settle_audit(store, claim, run)
-            _dispose_fly_result(store, handler, run, result, local)
+            _dispose_result(store, handler, run, result, local)
             for event in handler.report_events(claim, run, result):
                 store.record_event(claim.id, event.key, event.body)
             store.set_setting("consumed-results", run.id, {"complete": True})
@@ -637,7 +552,7 @@ def _settle_audit(store: ClaimStore, claim: Claim, run: Run) -> None:
             logger.exception("could not record the post-run audit event for run %s", run.id)
 
 
-def _dispose_fly_result(
+def _dispose_result(
     store: ClaimStore,
     handler: WorkKindHandler,
     run: Run,
@@ -645,13 +560,13 @@ def _dispose_fly_result(
     local: LocalConfig | None,
 ) -> None:
     """Dispose after classification; collection/result normalization has already completed."""
-    hints = cast(Mapping[str, object], run.plan).get("ownership_hints")
-    hint_values = cast(Mapping[str, object], hints) if isinstance(hints, Mapping) else None
-    if hint_values is None or hint_values.get("backend") != "fly-machine":
+    backend = backend_for(run.plan)
+    if backend is None:
         return
-    from agent_factory.fly.backend import FlyMachineBackend
+    if backend.name == "fly-machine":
+        from agent_factory.fly.backend import FlyMachineBackend
 
-    backend = FlyMachineBackend(local=local)
+        backend = FlyMachineBackend(local=local)
     identity = backend.identity_from_plan(run.plan, run)
     if identity is None:
         return
@@ -671,6 +586,55 @@ def _dispose_fly_result(
         # it still owns the matching resource.
         decision = "destroy"
     backend.dispose(identity, decision, store)
+
+
+def _reconcile_backends(store: ClaimStore, local: LocalConfig) -> None:
+    """Reconcile each configured or still-owned backend before admitting work."""
+    names = {"fly-machine" if local.eval_execution == "fly" else "docker", local.fix.execution}
+    fly_sources: set[tuple[str, Path]] = set()
+    if local.fly is not None and local.eval_execution == "fly":
+        fly_sources.add((local.fly.app, local.fly.token_file))
+    for run in store.runs_requiring_backend_reconciliation():
+        backend = backend_for(run.plan)
+        if backend is None:
+            continue
+        names.add(backend.name)
+        if backend.name == "fly-machine":
+            hints = run.plan.get("ownership_hints")
+            artifact = (
+                cast(Mapping[str, object], hints).get("artifact_path")
+                if isinstance(hints, Mapping)
+                else None
+            )
+            path = Path(artifact) if isinstance(artifact, str) else Path(run.evidence_path)
+            try:
+                manifest = json.loads((path / ".factory" / "manifest.json").read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            fly = (
+                cast(Mapping[str, object], manifest).get("fly")
+                if isinstance(manifest, dict)
+                else None
+            )
+            if isinstance(fly, dict):
+                values = cast(Mapping[str, object], fly)
+                app = values.get("app")
+                token = values.get("token_file")
+                if isinstance(app, str) and app and isinstance(token, str) and token:
+                    fly_sources.add((app, Path(token)))
+    for name in sorted(names):
+        if name == "fly-machine":
+            from agent_factory.fly.backend import FlyMachineBackend
+
+            for app, token_file in sorted(fly_sources):
+                FlyMachineBackend(app=app, token_file=token_file, local=local).reconcile(store)
+            if not fly_sources:
+                FlyMachineBackend(local=local).reconcile(store)
+        else:
+            plan = {"ownership_hints": {"backend": name}}
+            backend = backend_for(plan)
+            if backend is not None:
+                backend.reconcile(store)
 
 
 def _hold_for_missing_handler(store: ClaimStore, claim: Claim, run: Run) -> None:

@@ -437,6 +437,7 @@ class AndSceneAdapter:
                 "artifact_path": str(artifact),
                 "suite": "and-scene",
                 "sandbox": "docker",
+                "backend": "docker",
             },
             resume,
         )

@@ -286,10 +286,18 @@ def test_stale_unknown_keychain_item_is_informational() -> None:
 
 def test_fix_and_eval_acceptance_use_kind_specific_wording() -> None:
     from agent_factory.work_kinds.eval.handler import EvalHandler
-    from agent_factory.work_kinds.fix.handler import FixHandler
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
     assert EvalHandler.accepted_message() == "Evaluation inputs accepted and frozen."
-    assert FixHandler.accepted_message() == "Fix inputs accepted and frozen."
+    from agent_factory.config import LocalConfig, SharedConfig
+    from agent_factory.work_kinds.pull_request.kinds import FIX
+
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    local = LocalConfig.from_file(Path("config/local.example.toml"))
+    assert (
+        PullRequestHandler(FIX, shared, local).accepted_message()
+        == "Fix inputs accepted and frozen."
+    )
 
 
 def test_registry_lookup_uses_get_for_fresh_tag(tmp_path: Path) -> None:

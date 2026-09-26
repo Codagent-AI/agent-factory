@@ -15,7 +15,8 @@ from agent_factory.controller import Controller, ExecutionPlan, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimStore, Run
 from agent_factory.supervisor import launch_supervisor
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
 
 _SHARED = """\
 [github]
@@ -160,7 +161,7 @@ def _plan(program: Path, artifact: Path) -> ExecutionPlan:
 
 def test_fix_window_admits_outside_the_eval_window() -> None:
     local = LocalConfig.from_toml(_LOCAL)
-    handler = FixHandler(_shared(), local)
+    handler = PullRequestHandler(FIX, _shared(), local)
     evening = datetime(2026, 1, 1, 18, 0, tzinfo=UTC)
     assert local.schedule.allows_admission(evening) is False
     assert handler.window(local).allows_admission(evening) is True
@@ -168,7 +169,7 @@ def test_fix_window_admits_outside_the_eval_window() -> None:
 
 def test_run_records_fix_limits_not_eval_limits(tmp_path: Path) -> None:
     local = LocalConfig.from_toml(_LOCAL)
-    handler = FixHandler(_shared(), local, resolver=_resolver)
+    handler = PullRequestHandler(FIX, _shared(), local, resolver=_resolver)
     store = ClaimStore(tmp_path / "state.sqlite3")
     controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
     claim = controller.accept(_snapshot(), resolve=_resolver)
@@ -200,7 +201,7 @@ def test_each_fix_limit_stops_the_attempt_and_names_itself(
     tmp_path: Path, behaviour: str, limits: tuple[float, float, float], expected: str
 ) -> None:
     local = LocalConfig.from_toml(_LOCAL)
-    handler = FixHandler(_shared(), local, resolver=_resolver)
+    handler = PullRequestHandler(FIX, _shared(), local, resolver=_resolver)
     store = ClaimStore(tmp_path / "state.sqlite3")
     controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
     claim = controller.accept(_snapshot(), resolve=_resolver)
@@ -231,7 +232,7 @@ def test_each_fix_limit_stops_the_attempt_and_names_itself(
 
 def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path) -> None:
     local = LocalConfig.from_toml(_LOCAL)
-    handler = FixHandler(_shared(), local, resolver=_resolver)
+    handler = PullRequestHandler(FIX, _shared(), local, resolver=_resolver)
     store = ClaimStore(tmp_path / "state.sqlite3")
     controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
     claim = controller.accept(_snapshot(), resolve=_resolver)
@@ -272,7 +273,7 @@ def test_equal_fix_schedule_hours_keep_the_fix_window_always_open() -> None:
     local = LocalConfig.from_toml(
         _LOCAL + '\n[fix.schedule]\ntimezone = "UTC"\nstart_hour = 9\nstop_hour = 9\n'
     )
-    handler = FixHandler(_shared(), local)
+    handler = PullRequestHandler(FIX, _shared(), local)
     for hour in (0, 9, 23):
         moment = datetime(2026, 1, 1, hour, 30, tzinfo=UTC)
         assert handler.window(local).allows_admission(moment) is True

@@ -14,9 +14,9 @@ import pytest
 
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.supervisor import SupervisionLimits, launch_supervisor
-from agent_factory.work_kinds.fix import launch
-from agent_factory.work_kinds.fix.workspace import FixWorkspace
 from agent_factory.work_kinds.images import remove_images
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
 
 TEST_WORKFLOW = """# factory-contract: factory-fix/1
 name: factory-fix
@@ -110,7 +110,7 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
             str(storage / "mirrors" / "example__work.git"),
         ]
     )
-    workspace = FixWorkspace(storage, runner, skills)
+    workspace = PullRequestWorkspace(storage, runner, skills)
     credential = tmp_path / "fix.env"
     credential.write_text("GH_TOKEN=dummy-fix-token\n")
     credential.chmod(0o600)

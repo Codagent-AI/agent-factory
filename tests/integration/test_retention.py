@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from agent_factory import retention
 from agent_factory.config import LocalConfig
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
@@ -204,6 +206,25 @@ def test_prunes_fix_attempt_evidence_after_retention_period(tmp_path: Path) -> N
     assert _retention(claim)["pruned_at"] is not None
 
 
+def test_prunes_feature_evidence_but_keeps_outcome_and_input(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "feature", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    (evidence / "attempt-1" / "fix-outcome.json").rename(
+        evidence / "attempt-1" / "feature-outcome.json"
+    )
+    _reserve_and_finish(store, claim.id, "feature", evidence)
+    _settle_with_cleanup_complete(store, claim.id)
+    start = datetime.now(UTC)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start)
+    retention.reconcile(store, local, _get(store, claim.id), "Done", start + timedelta(days=14))
+    for path in _removed_paths(evidence, kind="fix"):
+        assert not path.exists()
+    assert (evidence / "attempt-1" / "feature-outcome.json").exists()
+    assert (evidence / "attempt-1" / "input" / "issue.json").exists()
+
+
 def test_prunes_eval_repetition_evidence_after_retention_period(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     local = _local(tmp_path)
@@ -366,12 +387,13 @@ def test_session_dir_outside_the_evidence_tree_is_never_deleted(tmp_path: Path) 
     assert (outside / "do-not-delete.txt").exists()
 
 
-def test_incomplete_sync_leaves_evidence_untouched(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["fix", "feature"])
+def test_incomplete_sync_leaves_evidence_untouched(tmp_path: Path, kind: str) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     local = _local(tmp_path)
-    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", kind, "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(evidence))
     store.finish_run(
         run.id,
         execution_status="completed",

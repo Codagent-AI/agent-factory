@@ -1,12 +1,12 @@
 # Ordered list of CLI agents to try for reviews
 cli:
   default_preference:
-    - codex
+    - claude
   adapters:
-    codex:
-      model: gpt-6-sol
+    claude:
+      model: opus
       allow_tool_use: false
-      thinking_budget: medium
+      thinking_budget: low
 
 # entry_points configured by /validator-setup
 entry_points:

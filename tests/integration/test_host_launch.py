@@ -14,7 +14,7 @@ import pytest
 
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.supervisor import _plan_document  # pyright: ignore[reportPrivateUsage]
-from agent_factory.work_kinds.fix import launch
+from agent_factory.work_kinds.pull_request import launch
 
 TOKEN = "dummy-fix-token"
 CONTRACT = "factory-fix/1"
@@ -219,6 +219,7 @@ def test_host_plan_hints_progress_and_provenance(
     assert hints == {
         "artifact_path": str(evidence),
         "sandbox": "host",
+        "backend": "host",
         "branch_name": "factory/fix-7-claim",
         "runner_executable": str(built.runner.resolve()),
         "runner_version": "stub-runner 1.2.3",

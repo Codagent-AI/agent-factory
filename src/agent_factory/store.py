@@ -394,6 +394,16 @@ class ClaimStore:
         ).fetchall()
         return [_run(row) for row in rows]
 
+    def runs_requiring_backend_reconciliation(self) -> list[Run]:
+        """Select active attempts and terminal results still awaiting disposal in one query."""
+        rows = self._connection.execute(
+            "SELECT run.* FROM run LEFT JOIN settings AS consumed "
+            "ON consumed.namespace = 'consumed-results' AND consumed.key = run.id "
+            "WHERE run.status IN ('reserved', 'running', 'observing') "
+            "OR consumed.key IS NULL"
+        ).fetchall()
+        return [_run(row) for row in rows]
+
     def mark_running(self, run_id: str, supervisor: Mapping[str, object]) -> None:
         with self._transaction():
             cursor = self._connection.execute(

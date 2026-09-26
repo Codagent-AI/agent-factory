@@ -98,5 +98,14 @@ repository = "Codagent-AI/agent-factory"
 
 [fix.defaults]
 lead = "claude:opus:high"
-implementor = "codex:gpt-6-sol:medium"
-tester = "codex:gpt-6-luna:medium"
+implementor = "claude:opus:medium"
+tester = "claude:sonnet:medium"
+
+[feature]
+contract = "factory-feature/1"
+
+[feature.defaults]
+lead = "claude:opus:high"
+implementor = "claude:opus:medium"
+tester = "claude:sonnet:medium"
+crosscheck = "claude:opus:medium"

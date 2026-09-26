@@ -2,27 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from agent_factory.controller import ExecutionPlan
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees
 from agent_factory.work_kinds.eval.handler import plan_attempt
-
-
-@dataclass
-class _Plan:
-    ownership_hints: dict[str, object] = field(default_factory=lambda: {"backend": "fly-machine"})
 
 
 class _RecordingAdapter:
     def __init__(self) -> None:
         self.calls: list[dict[str, object]] = []
 
-    def plan(self, *args: object, **kwargs: object) -> _Plan:
+    def plan(self, *args: object, **kwargs: object) -> ExecutionPlan:
         self.calls.append(kwargs)
-        return _Plan()
+        return ExecutionPlan(("run.sh",), "/tmp", {}, (), (), {"backend": "fly-machine"}, False)
 
 
 def test_recovery_uses_the_previous_attempt_of_its_own_repetition(tmp_path: Path) -> None:
