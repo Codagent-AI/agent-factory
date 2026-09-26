@@ -22,22 +22,26 @@ saved = artifacts / "pr-description-before-review.md"
 
 
 def body() -> str:
-    return subprocess.run(
-        ["gh", "pr", "view", number, "--json", "body", "-q", ".body"],
-        capture_output=True, text=True, check=True,
-    ).stdout
+    # Parsed from JSON: "-q .body" would add a newline to the restored description.
+    return json.loads(
+        subprocess.run(
+            ["gh", "pr", "view", number, "--json", "body"],
+            capture_output=True, text=True, check=True,
+        ).stdout
+    )["body"]
 
 
+# newline="" keeps a description's CRLF line endings as they are on both sides.
 if payload["mode"] == "save":
-    saved.write_text(body())
-elif saved.is_file() and (original := saved.read_text()).strip():
+    saved.write_text(body(), newline="")
+elif saved.is_file() and (original := saved.open(newline="").read()).strip():
     try:
         current = body()
         if current != original:
             # Keep what is replaced, so an edit made during the round can be recovered.
-            (artifacts / "pr-description-overwritten.md").write_text(current)
+            (artifacts / "pr-description-overwritten.md").write_text(current, newline="")
             subprocess.run(["gh", "pr", "edit", number, "--body-file", str(saved)], check=True)
-    except subprocess.CalledProcessError as error:
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
         message = f"could not restore the description of pull request #{number}: {error}"
         (artifacts / "description-restore-failed").write_text(message + "\n")
         raise SystemExit(message) from error

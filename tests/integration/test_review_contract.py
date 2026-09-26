@@ -281,7 +281,7 @@ def test_record_review_outcome_maps_answers_changes_and_needs_input(tmp_path: Pa
 
 
 def run_review_description(
-    tmp_path: Path, mode: str, kind: str, body: Path, edit_fails: bool = False
+    tmp_path: Path, mode: str, kind: str, body: Path, edit_fails: bool = False, view: str = ""
 ) -> subprocess.CompletedProcess[str]:
     """Run review-description.sh with a gh stub whose PR body lives in ``body``."""
     import os
@@ -292,7 +292,13 @@ def run_review_description(
     stub = tmp_path / "bin" / "gh"
     stub.parent.mkdir(exist_ok=True)
     stub.write_text(
-        '#!/bin/sh\nif [ "$2" = view ]; then cat "$PR_BODY"\n'
+        # Like gh: "-q .body" prints the body plus a newline; "--json body" prints JSON.
+        '#!/bin/sh\nif [ -n "$VIEW" ] && [ "$2" = view ]; then echo "$VIEW"\n'
+        'elif [ "$2" = view ]; then\n'
+        '  case "$*" in *" -q "*) cat "$PR_BODY"; echo ;;\n'
+        "  *) python3 -c 'import json,sys; "
+        'print(json.dumps({"body": open(sys.argv[1], newline="").read()}))\''
+        ' "$PR_BODY" ;; esac\n'
         'elif [ "$2" = edit ]; then [ -z "$EDIT_FAILS" ] || exit 1; cat "$5" > "$PR_BODY"; fi\n'
     )
     stub.chmod(0o755)
@@ -304,6 +310,7 @@ def run_review_description(
             "PATH": f"{stub.parent}:{os.environ['PATH']}",
             "PR_BODY": str(body),
             "EDIT_FAILS": "1" if edit_fails else "",
+            "VIEW": view,
         },
         text=True,
         capture_output=True,
@@ -345,3 +352,23 @@ def test_a_failed_description_restore_is_recorded_for_the_completion_comment(
     assert "description-restore-failed" in respond
     save = text.split("  - id: save-description\n", 1)[1].split("\n  - id: ")[0]
     assert "continue_on_failure: true" in save
+
+
+def test_an_unchanged_crlf_description_is_left_alone(tmp_path: Path) -> None:
+    body = tmp_path / "body.md"
+    body.write_bytes(b"**Feature for #2:** Add cleanup\r\n\r\n# Review first\r\n")
+    run_review_description(tmp_path, "save", "feature", body)
+    run_review_description(tmp_path, "restore", "feature", body)
+    assert not (tmp_path / "pr-description-overwritten.md").exists()
+    assert body.read_bytes() == b"**Feature for #2:** Add cleanup\r\n\r\n# Review first\r\n"
+
+
+def test_unreadable_gh_output_is_recorded_as_a_failed_restore(tmp_path: Path) -> None:
+    body = tmp_path / "body.md"
+    body.write_text("# Review first\n")
+    run_review_description(tmp_path, "save", "feature", body)
+    result = run_review_description(
+        tmp_path, "restore", "feature", body, edit_fails=True, view="warning: not JSON"
+    )
+    assert result.returncode != 0
+    assert (tmp_path / "description-restore-failed").is_file()
