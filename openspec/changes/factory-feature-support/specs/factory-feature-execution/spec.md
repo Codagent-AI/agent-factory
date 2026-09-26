@@ -155,11 +155,11 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 After the plan commit the feature workflow SHALL NOT stop for human input. Whether or not acceptance completed, and whether or not assumption review left decision-bearing assumptions, the workflow SHALL continue to finalization. Before finalizing, it SHALL classify every item a reviewer may need to examine into exactly one tier:
 
 - red: an acceptance criterion that failed or could not be verified, acceptance that did not complete, a validator that stayed red after an acceptance fix, any known deviation from the specifications, and a resume or continuation that fell back to a fresh start;
-- orange: decision-bearing assumptions, whose alternative a reasonable reviewer might choose and which shape behavior; plan revisions made in response to human comments; and commits added after acceptance ran, including those the finalization loop adds after classification, which acceptance evidence does not cover;
-- yellow: every other recorded assumption;
+- orange: decision-bearing assumptions, which settle a choice the issue left open in a way that changes scope, weakens a guarantee, affects other callers, or is costly to reverse; plan revisions made in response to human comments; and commits added after acceptance ran, including those the finalization loop adds after classification, which acceptance evidence does not cover;
+- yellow: every other recorded assumption or decision;
 - white: acceptance criteria that passed, with their evidence.
 
-The classification SHALL be recorded in the attempt's evidence and used by `factory-feature-reporting`. After finalization, the workflow SHALL add an orange item for any commits made after acceptance that the classification did not cover, and the tier counts in the outcome SHALL be those of the final classification.
+Related orange assumptions SHALL be grouped into one item per topic that cites the decisions behind it, and orange items SHALL be ordered most important first. Each item SHALL cite the committed file, and the line or range within it where one applies, or the evidence that shows it. The classification SHALL be recorded in the attempt's evidence and used by `factory-feature-reporting`. After finalization, the workflow SHALL add an orange item for any commits made after acceptance that the classification did not cover, and the tier counts in the outcome SHALL be those of the final classification.
 
 #### Scenario: Acceptance does not converge
 

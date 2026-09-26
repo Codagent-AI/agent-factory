@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from urllib.parse import quote
 
 
@@ -16,6 +16,9 @@ def command(*args: str) -> str:
 
 
 RED_VALIDATOR_TITLE = "Validator red after acceptance fixes"
+LATER_COMMITS_TITLE = "Commits after acceptance"
+# The "Review first" section shows at most this many orange items; the rest are collapsed.
+ORANGE_SHOWN = 5
 
 
 def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result: Path) -> None:
@@ -37,6 +40,10 @@ def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result
 
 EVIDENCE_LINK = "#acceptance-evidence"
 LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
+
+
+def plural(number: int, noun: str) -> str:
+    return f"{number} {noun}{'' if number == 1 else 's'}"
 
 
 def item_link(link: str, repository: str, branch: str, root: Path) -> str:
@@ -97,7 +104,7 @@ def main() -> None:
     uncovered = [sha for sha in later if sha[:7] not in orange_text]
     flags["later_commits"] = later
     later_item = next(
-        (item for item in flags["orange"] if item.get("title") == "Commits after acceptance"), None
+        (item for item in flags["orange"] if item.get("title") == LATER_COMMITS_TITLE), None
     )
     if uncovered:
         detail = ", ".join(
@@ -106,7 +113,7 @@ def main() -> None:
         if later_item is None:
             flags["orange"].append(
                 {
-                    "title": "Commits after acceptance",
+                    "title": LATER_COMMITS_TITLE,
                     "detail": detail,
                     "link": "#acceptance-evidence",
                 }
@@ -145,16 +152,42 @@ def main() -> None:
     for tier in ("red", "orange", "yellow", "white"):
         for item in flags[tier]:
             item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
-    lines = ["# Review first", ""]
-    for tier, icon in (("red", "🔴"), ("orange", "🟠"), ("yellow", "🟡")):
-        items = flags[tier]
-        lines.append(f"### {icon} {tier.title()} ({len(items)})")
+    title = issue.get("title")
+    lines = [
+        f"**Feature for #{issue['number']}:** {title}"
+        if title
+        else f"**Feature for #{issue['number']}**",
+        "",
+        "# Review first",
+        "",
+    ]
+
+    # Commits after acceptance are never cut: acceptance evidence does not cover them.
+    def names_later(item: dict[str, Any]) -> bool:
+        text = f"{item.get('title', '')} {item.get('detail', '')}"
+        return item.get("title") == LATER_COMMITS_TITLE or any(sha[:7] in text for sha in later)
+
+    pinned = [item for item in flags["orange"] if names_later(item)]
+    rest = [item for item in flags["orange"] if not names_later(item)]
+    room = max(ORANGE_SHOWN - len(pinned), 0)
+    shown, hidden = pinned + rest[:room], rest[room:]
+    for tier, icon, items, count in (
+        ("red", "🔴", flags["red"], len(flags["red"])),
+        ("orange", "🟠", shown, len(flags["orange"])),
+    ):
+        lines.append(f"### {icon} {tier.title()} ({count})")
         if items:
             for item in items:
                 lines.append(f"- [{item['title']}]({item['link']}): {item['detail']}")
         else:
             lines.append(f"- No {tier} items.")
         lines.append("")
+    others = (
+        f"{plural(len(hidden), 'more orange item')} and "
+        f"{plural(len(flags['yellow']), 'yellow item')}"
+    )
+    if hidden or flags["yellow"]:
+        lines.extend([f"{others} are collapsed below the change summary.", ""])
     lines.extend(
         [
             f"Refs #{issue['number']}",
@@ -166,6 +199,19 @@ def main() -> None:
             f"[Specifications]({prefix}/specs/) · [Design]({prefix}/design.md) · "
             f"[Test plan]({prefix}/test-plan.md)",
             "",
+        ]
+    )
+    if hidden or flags["yellow"]:
+        lines.extend([f"<details><summary>{others}</summary>", ""])
+        for tier, icon, items in (("orange", "🟠", hidden), ("yellow", "🟡", flags["yellow"])):
+            if items:
+                lines.append(f"### {icon} {tier.title()} ({len(items)})")
+                for item in items:
+                    lines.append(f"- [{item['title']}]({item['link']}): {item['detail']}")
+                lines.append("")
+        lines.extend(["</details>", ""])
+    lines.extend(
+        [
             "<details><summary>Assumptions and decisions</summary>",
             "",
         ]

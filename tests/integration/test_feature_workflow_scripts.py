@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -398,6 +399,141 @@ def test_annotate_pr_links_items_to_github_or_the_evidence_section(tmp_path: Pat
     assert "[url](https://example.test/x)" in rendered
     assert "[anchor](#acceptance-evidence)" in rendered
     assert str(tmp_path) not in rendered.split("## Change summary")[0]
+
+
+def review_item(title: str, detail: str = "d") -> dict[str, str]:
+    return {"title": title, "detail": detail, "link": "#acceptance-evidence"}
+
+
+def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, object]]) -> str:
+    """Annotate a pull request whose branch has one commit ("fix CI") after acceptance.
+
+    `build` receives the accepted and the later commit SHA and returns review-attention.json.
+    """
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "later").write_text("fix")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix CI")
+    later = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(json.dumps(build(accepted, later)))
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "title": "Add a flag"}))
+    stub = tmp_path / "gh"
+    stub.write_text(
+        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+        'else cat "$5" > "$GH_BODY"; fi\n'
+    )
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    return body.read_text()
+
+
+def shown_review_items(rendered: str) -> list[str]:
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    return [
+        line.split("]")[0].removeprefix("- [")
+        for line in review_first.splitlines()
+        if line.startswith("- [")
+    ]
+
+
+def test_annotate_pr_opens_with_issue_and_shows_only_red_and_top_orange(
+    tmp_path: Path,
+) -> None:
+    """A reviewer reads the issue line, every red item and at most five orange items;
+    later commits stay visible, and the rest of orange and all yellow are collapsed."""
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, _later: {
+            "red": [review_item("red one")],
+            "orange": [review_item(f"orange {n}") for n in range(1, 7)],
+            "yellow": [review_item("yellow one"), review_item("yellow two")],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [],
+        },
+    )
+    assert rendered.startswith("**Feature for #7:** Add a flag\n")
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    assert "### 🟠 Orange (7)" in review_first
+    assert shown_review_items(rendered) == [
+        "red one",
+        "Commits after acceptance",
+        "orange 1",
+        "orange 2",
+        "orange 3",
+        "orange 4",
+    ]
+    assert "2 more orange items and 2 yellow items" in review_first
+    assert "yellow one" not in review_first
+    collapsed = rendered[rendered.index("<details><summary>2 more orange") :]
+    for title in ("orange 5", "orange 6", "yellow one", "yellow two"):
+        assert f"[{title}]" in collapsed
+
+
+def test_annotate_pr_keeps_a_classifier_item_naming_later_commits_visible(
+    tmp_path: Path,
+) -> None:
+    """Commits after acceptance stay visible whatever title the classifier gives them."""
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, later: {
+            "red": [],
+            "orange": [review_item(f"orange {n}") for n in range(1, 7)]
+            + [review_item("CI repair", f"{later[:7]} fixed CI")],
+            "yellow": [review_item("yellow one")],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [later],
+        },
+    )
+    assert shown_review_items(rendered) == [
+        "CI repair",
+        "orange 1",
+        "orange 2",
+        "orange 3",
+        "orange 4",
+    ]
+    assert "2 more orange items and 1 yellow item " in rendered
+
+
+def test_annotate_pr_never_collapses_items_naming_later_commits(tmp_path: Path) -> None:
+    """Every item naming a commit after acceptance stays visible, even beyond the cap."""
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, later: {
+            "red": [],
+            "orange": [review_item(f"repair {n}", f"{later[:7]} part {n}") for n in range(1, 7)]
+            + [review_item("orange 1")],
+            "yellow": [],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [later],
+        },
+    )
+    assert shown_review_items(rendered) == [f"repair {n}" for n in range(1, 7)]
+    assert "1 more orange item and 0 yellow items " in rendered
 
 
 def test_feature_record_outcome_adds_counts_resume_and_branch(tmp_path: Path) -> None:
