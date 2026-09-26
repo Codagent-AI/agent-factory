@@ -66,6 +66,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "{{effective_resume}}"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: define
     workflow: factory-define-v1.0.yaml
@@ -100,10 +101,10 @@ steps:
       phase: archived
       branch_name: "{{branch_name}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
+  # Unguarded: classify's skip_if reads validator_status even after a definition stop.
   - id: seed-verify-status
     command: printf passed
     capture: validator_status
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
   - id: locate-archive
     command: python3 .agent-runner/workflows/locate-archive.py "{{change_name}}"
     capture: archived_dir

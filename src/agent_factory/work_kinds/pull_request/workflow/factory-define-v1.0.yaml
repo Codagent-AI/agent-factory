@@ -34,6 +34,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "proposal"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: proposal-review
     session: proposal-reviewer
@@ -46,6 +47,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "proposal-review"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: apply-proposal-review
     session: lead-agent
@@ -60,6 +62,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "proposal-review"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: specs
     session: lead-agent
@@ -74,6 +77,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "specs"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: design
     session: lead-agent
@@ -88,6 +92,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "design"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: test-plan
     session: lead-agent
@@ -102,6 +107,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "test-plan"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: approach-review
     session: approach-reviewer
@@ -114,6 +120,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "approach-review"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: apply-approach-review
     session: lead-agent
@@ -128,6 +135,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "approach-review"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: write-tasks
     session: lead-agent
@@ -142,6 +150,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
+      step: "write-tasks"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: validate-openspec
     command: openspec validate --type change "{{change_name}}" --strict >"{{artifact_dir}}/validation.log" 2>&1 && touch "{{artifact_dir}}/validation-ok"

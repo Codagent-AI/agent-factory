@@ -92,3 +92,37 @@ def test_feature_launch_refuses_incompatible_define_contract(
     monkeypatch.setattr(launch, "files", package_files)
     with pytest.raises(ReadinessError, match="factory-define"):
         launch.check_packaged_workflow("factory-feature/1", FEATURE)
+
+
+@pytest.mark.parametrize(
+    ("contract", "workflow_file"),
+    [
+        ("factory-feature/1", "factory-feature-v1.0.yaml"),
+        ("factory-review/1", "factory-review-v1.0.yaml"),
+    ],
+)
+def test_feature_host_command_passes_only_params_its_workflow_declares(
+    contract: str, workflow_file: str
+) -> None:
+    """The Runner rejects an undeclared --param, so a feature review round must not
+    receive the feature workflow's change_name, resume_from, or prior_branch."""
+    import re
+
+    command = launch.host_script(
+        runner="/bin/agent-runner",
+        repo_clone=Path("/repo"),
+        evidence=Path("/evidence"),
+        credential_copy=Path("/private/feature.env"),
+        gitconfig=Path("/private/gitconfig"),
+        askpass=Path("/private/askpass.sh"),
+        branch="factory/feature-42-abcd1234",
+        contract=contract,
+        definition=FEATURE,
+        change_name="feature-42-abcd1234",
+    )
+    text = (files("agent_factory.work_kinds.pull_request") / "workflow" / workflow_file).read_text()
+    params_block = re.search(r"^params:\n((?:[ -].*\n)+)", text, re.MULTILINE)
+    assert params_block is not None
+    declared = set(re.findall(r"^  - name: (\w+)", params_block.group(1), re.MULTILINE))
+    passed = set(re.findall(r"--param (\w+)=", command))
+    assert passed <= declared, passed - declared

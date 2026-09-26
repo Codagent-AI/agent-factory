@@ -706,7 +706,8 @@ def host_script(
             f"--param {ARTIFACT_DIR_PARAM}={shlex.quote(str(evidence))}",
         )
     )
-    if definition.kind == "feature":
+    # Only the feature workflow declares these; factory-review rejects them.
+    if definition.kind == "feature" and contract != REVIEW_CONTRACT:
         run_command += (
             f" --param change_name={shlex.quote(change_name or feature_change_name(branch))}"
             f" --param resume_from={shlex.quote(resume_from)}"

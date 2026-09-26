@@ -135,6 +135,61 @@ def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
 
 
+def test_record_stop_records_the_workflow_step_not_the_agents_name(tmp_path: Path) -> None:
+    """The resume point comes from the workflow: an agent may name its step loosely."""
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "define-stop.json").write_text(
+        json.dumps({"step": "propose", "questions": ["A or B?"], "direction_summary": "Draft"})
+    )
+    payload = json.dumps(
+        {"artifact_dir": str(evidence), "branch_name": "claim", "step": "proposal"}
+    )
+    result = run(str(PACKAGE / "record-stop.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "feature-outcome.json").read_text())["stopped_step"] == "proposal"
+
+
+def test_record_stop_falls_back_to_the_agents_step_when_the_workflow_names_none(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "define-stop.json").write_text(
+        json.dumps({"step": "design", "questions": ["A or B?"], "direction_summary": "Draft"})
+    )
+    payload = json.dumps({"artifact_dir": str(evidence), "branch_name": "claim", "step": None})
+    result = run(str(PACKAGE / "record-stop.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "feature-outcome.json").read_text())["stopped_step"] == "design"
+
+
+def test_every_definition_stop_records_the_resume_key_of_its_step() -> None:
+    """Each record-stop step names the key that factory-resume-skip.sh resumes at, the one
+    the lead step before it skips on; reconciliation stops resume where the run resumed."""
+    import re
+
+    define = (PACKAGE / "factory-define-v1.0.yaml").read_text()
+    steps = re.split(r"\n  - id: ", "\n" + define.split("\nsteps:\n", 1)[1])[1:]
+    resume_key = ""
+    recorded = 0
+    for step in steps:
+        key = re.search(r'factory-resume-skip.sh "{{resume_from}}" ([\w-]+)', step)
+        if key:
+            resume_key = key.group(1)
+        if step.startswith("record-stop"):
+            assert f'step: "{resume_key}"' in step or f"step: {resume_key}\n" in step, step
+            recorded += 1
+    assert recorded == 9
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    reconcile = feature.split("  - id: record-stop-reconcile\n", 1)[1].split("\n  - id: ")[0]
+    assert 'step: "{{effective_resume}}"' in reconcile
+
+
 def test_record_stop_refuses_incomplete_decision_without_push(tmp_path: Path) -> None:
     repo, remote = repository(tmp_path)
     git(repo, "checkout", "-b", "claim")
@@ -534,6 +589,23 @@ def test_annotate_pr_never_collapses_items_naming_later_commits(tmp_path: Path) 
     )
     assert shown_review_items(rendered) == [f"repair {n}" for n in range(1, 7)]
     assert "1 more orange item and 0 yellow items " in rendered
+
+
+def test_annotate_pr_keeps_each_review_item_on_one_line(tmp_path: Path) -> None:
+    """A multi-line detail must not add bullets or paragraphs to the one-line list."""
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, _later: {
+            "red": [],
+            "orange": [review_item("Split\ntitle", "First line.\n- second\n\n- third")],
+            "yellow": [review_item("Yellow", "a\nb")],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [],
+        },
+    )
+    assert "- [Split title](#acceptance-evidence): First line. - second - third\n" in rendered
+    assert "- [Yellow](#acceptance-evidence): a b\n" in rendered
 
 
 def test_feature_record_outcome_adds_counts_resume_and_branch(tmp_path: Path) -> None:
@@ -987,3 +1059,26 @@ def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert count.read_text().strip() == "2"
+
+
+def test_feature_workflow_skip_conditions_read_only_variables_defined_on_a_stop() -> None:
+    """The Runner evaluates every skip_if, even after a definition stop has written the
+    outcome, and fails the run on an undefined variable. So each variable a skip_if reads
+    must be a parameter or be captured before any stop can happen or by an unguarded step."""
+    import re
+
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    params = set(re.findall(r"^  - name: (\w+)", text.split("\nsessions:")[0], re.MULTILINE))
+    steps = re.split(r"\n  - id: ", "\n" + text.split("\nsteps:\n", 1)[1])[1:]
+    defined = set(params)
+    stop_reached = False
+    for step in steps:
+        step_id = step.split("\n", 1)[0]
+        stop_reached = stop_reached or step_id.startswith("record-stop")
+        skip = re.search(r"^    skip_if: (.*)$", step, re.MULTILINE)
+        if skip:
+            undefined = set(re.findall(r"{{(\w+)}}", skip.group(1))) - defined
+            assert not undefined, f"{step_id} skip_if reads {undefined} undefined on a stop"
+        capture = re.search(r"^    capture: (\w+)", step, re.MULTILINE)
+        if capture and (not stop_reached or not skip):
+            defined.add(capture.group(1))

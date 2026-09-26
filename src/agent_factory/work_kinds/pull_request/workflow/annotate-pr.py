@@ -42,6 +42,12 @@ EVIDENCE_LINK = "#acceptance-evidence"
 LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
 
 
+def review_line(item: dict[str, Any]) -> str:
+    """One list line per item: a multi-line title or detail would break the list."""
+    title, detail = (" ".join(str(item.get(key, "")).split()) for key in ("title", "detail"))
+    return f"- [{title}]({item['link']}): {detail}"
+
+
 def plural(number: int, noun: str) -> str:
     return f"{number} {noun}{'' if number == 1 else 's'}"
 
@@ -178,7 +184,7 @@ def main() -> None:
         lines.append(f"### {icon} {tier.title()} ({count})")
         if items:
             for item in items:
-                lines.append(f"- [{item['title']}]({item['link']}): {item['detail']}")
+                lines.append(review_line(item))
         else:
             lines.append(f"- No {tier} items.")
         lines.append("")
@@ -207,7 +213,7 @@ def main() -> None:
             if items:
                 lines.append(f"### {icon} {tier.title()} ({len(items)})")
                 for item in items:
-                    lines.append(f"- [{item['title']}]({item['link']}): {item['detail']}")
+                    lines.append(review_line(item))
                 lines.append("")
         lines.extend(["</details>", ""])
     lines.extend(
@@ -240,7 +246,7 @@ def main() -> None:
         if evidence.exists():
             lines.extend(["", evidence.read_text()])
     for item in flags["white"]:
-        lines.append(f"- [{item['title']}]({item['link']}): {item['detail']}")
+        lines.append(review_line(item))
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
