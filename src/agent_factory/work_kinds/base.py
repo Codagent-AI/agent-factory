@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
     from agent_factory.controller import (
         AttemptResult,
@@ -84,7 +86,13 @@ class WorkKindHandler(Protocol):
         resolve: object,
     ) -> ClaimDraft | Feedback: ...
 
-    def readiness(self, local: LocalConfig, shared: SharedConfig) -> list[Diagnostic]: ...
+    def readiness(
+        self,
+        local: LocalConfig,
+        shared: SharedConfig,
+        *,
+        docker_diagnostic: Diagnostic | None = None,
+    ) -> list[Diagnostic]: ...
 
     def prepare(self, claim: Claim) -> Preparation: ...
 
@@ -125,6 +133,33 @@ class WorkKindHandler(Protocol):
     def frozen_inputs_event(self, claim: Claim) -> str | None: ...
 
     def accepted_message(self) -> str: ...
+
+    def attach_github(self, client: Any, token_provider: Any = None) -> None: ...
+
+    def resolve_request(self, request: object) -> tuple[str, ...]: ...
+
+    def execution_mode(self, local: LocalConfig) -> str: ...
+
+    def needs_sandbox_memory(self, local: LocalConfig) -> bool: ...
+
+    def ready_handoff(
+        self,
+        card: ProjectQueueItem,
+        shared: SharedConfig,
+        permission_cache: dict[tuple[str, str], str | None],
+    ) -> None: ...
+
+    def unblock(self, *args: Any, **kwargs: Any) -> tuple[Run, Preparation] | None: ...
+
+    def review_round(self, *args: Any, **kwargs: Any) -> tuple[Run, Preparation] | None: ...
+
+    def merge_sync(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def pending_sync(self, claim: Claim) -> bool: ...
+
+    def retention_targets(self, run: Run) -> list[Path]: ...
+
+    def blocked_reason(self, claim: Claim) -> str: ...
 
 
 def card_status(shared: SharedConfig, card: ProjectQueueItem) -> str:

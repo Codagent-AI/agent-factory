@@ -151,6 +151,7 @@ def test_late_container_is_discovered_when_wrapper_exits(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from agent_factory import supervisor
+    from agent_factory.backends import docker as docker_backend
 
     artifact = tmp_path / "artifacts"
     artifact.mkdir()
@@ -164,6 +165,12 @@ def test_late_container_is_discovered_when_wrapper_exits(
         return next(identity_states)
 
     monkeypatch.setattr(supervisor, "_identity_status", identity_status)
+    backend_states = iter(["alive", "missing", "missing"])
+
+    def backend_identity(_identity: object) -> str:
+        return next(backend_states)
+
+    monkeypatch.setattr(docker_backend, "_identity_status", backend_identity)
     discovered: dict[str, object] = {
         "id": "owned",
         "image": "sha256:image",
@@ -177,7 +184,7 @@ def test_late_container_is_discovered_when_wrapper_exits(
             store.request_cancellation(run.id)
         return result
 
-    monkeypatch.setattr(supervisor, "discover_container", discover)
+    monkeypatch.setattr(docker_backend, "discover_container", discover)
 
     def inspection(_container: str) -> dict[str, object]:
         return {
@@ -187,14 +194,14 @@ def test_late_container_is_discovered_when_wrapper_exits(
             "Mounts": [{"Source": str(artifact), "Destination": "/artifacts"}],
         }
 
-    monkeypatch.setattr(supervisor, "inspect_container", inspection)
+    monkeypatch.setattr(docker_backend, "inspect_container", inspection)
     stopped: list[object] = []
 
     def terminate(_identity: object, container: object) -> bool:
         stopped.append(container)
         return True
 
-    monkeypatch.setattr(supervisor, "_terminate_execution", terminate)
+    monkeypatch.setattr(docker_backend, "_terminate_execution", terminate)
     supervisor._observe(  # pyright: ignore[reportPrivateUsage]
         store,
         run.id,
@@ -212,7 +219,7 @@ def test_container_discovery_batches_inspection_and_filters_source(tmp_path: Pat
     import json
     from unittest.mock import patch
 
-    from agent_factory.supervisor import discover_container
+    from agent_factory.backends.docker import discover_container
 
     observed = [
         {
@@ -225,7 +232,7 @@ def test_container_discovery_batches_inspection_and_filters_source(tmp_path: Pat
         for name, source in [("decoy", tmp_path / "other"), ("owned", tmp_path)]
     ]
     with patch(
-        "agent_factory.supervisor.subprocess.run",
+        "agent_factory.backends.docker.subprocess.run",
         side_effect=[
             subprocess.CompletedProcess([], 0, "decoy\nowned\n", ""),
             subprocess.CompletedProcess([], 0, json.dumps(observed), ""),
@@ -240,6 +247,7 @@ def test_unchanged_quota_log_is_not_reparsed_each_poll(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     from agent_factory import supervisor
+    from agent_factory.backends import docker as docker_backend
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path))
@@ -260,7 +268,7 @@ def test_unchanged_quota_log_is_not_reparsed_each_poll(
         return None
 
     monkeypatch.setattr(supervisor, "_identity_status", identity)
-    monkeypatch.setattr(supervisor, "discover_container", discover)
+    monkeypatch.setattr(docker_backend, "discover_container", discover)
     monkeypatch.setattr(supervisor, "bounded_quota_deadline", quota)
     supervisor._observe(  # pyright: ignore[reportPrivateUsage]
         store,
@@ -342,6 +350,7 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
     from unittest.mock import patch
 
     from agent_factory import supervisor
+    from agent_factory.backends import docker as docker_backend
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(
@@ -353,7 +362,7 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
     with (
         patch.object(supervisor, "_process_identity", side_effect=_wait_for_child_exit),
         patch.object(
-            supervisor,
+            docker_backend,
             "discover_container",
             side_effect=supervisor.ProcessProbeError("Docker ownership discovery unavailable"),
         ),
@@ -368,12 +377,12 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
     store.close()
 
 
-def test_docker_sandbox_launcher_keeps_container_discovery_with_a_live_process(
+def test_docker_sandbox_launcher_resolves_with_a_live_process(
     tmp_path: Path,
 ) -> None:
     from dataclasses import replace
 
-    from agent_factory import supervisor
+    from agent_factory.backends.resolve import backend_for
 
     plan = _plan(tmp_path, "")
     docker = replace(
@@ -382,12 +391,9 @@ def test_docker_sandbox_launcher_keeps_container_discovery_with_a_live_process(
         ownership_hints={"sandbox": "docker"},
     )
     local = replace(plan, ownership_hints={"suite": "and-scene"})
-    identity = {"pid": 1, "start_time": "now"}
-
-    needs = supervisor._needs_container_discovery  # pyright: ignore[reportPrivateUsage]
-    assert needs(docker, identity)
-    assert not needs(local, identity)
-    assert needs(local, {})
+    assert backend_for(docker).name == "docker"  # type: ignore[union-attr]
+    assert backend_for(local) is None
+    assert backend_for(replace(local, argv=())) is not None
 
 
 # -- host-mode attempts are owned by process only (INT-004) --------------------------------

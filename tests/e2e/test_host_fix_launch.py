@@ -19,8 +19,9 @@ import pytest
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.supervisor import SupervisionLimits, launch_supervisor
-from agent_factory.work_kinds.fix import launch
-from agent_factory.work_kinds.fix.handler import FixHandler
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
 
 TOKEN = "dummy-fix-token"
 CONTRACT = "factory-fix/1"
@@ -294,7 +295,7 @@ def test_e2e_001_host_launch_runs_the_installed_runner_without_touching_home(
             "[limits]\nminimum_free_gib = 0\ninactivity_seconds = 1\nexecution_seconds = 1\ntotal_seconds = 1\ncodex_reset_fallback_seconds = 1\n"
             f'[credentials]\ngithub_app_key = "{tmp_path}"\nsuite_environment = "{tmp_path}"\n'
         )
-        result = FixHandler(shared, local).read_result(finished)
+        result = PullRequestHandler(FIX, shared, local).read_result(finished)
     assert result.product_verdict == "failed"
     assert result.result["sandbox"] == "host"
     assert result.result["runner_executable"] == os.path.abspath(fixture.runner)

@@ -203,6 +203,23 @@ def test_codagent_shared_defaults_select_opus_lead_and_luna_implementor_and_test
 # -- doctor --------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("evals", "fixes", "required", "absent"),
+    [
+        ("docker", "host", {"eval-sandbox", "fix-host"}, {"eval-fly", "fix-sandbox"}),
+        ("fly", "host", {"eval-fly", "fix-host"}, {"eval-sandbox", "fix-sandbox"}),
+        ("fly", "docker", {"eval-fly", "eval-sandbox", "fix-sandbox"}, {"fix-host"}),
+    ],
+)
+def test_doctor_dispatches_to_each_configured_backend(
+    site: Site, evals: str, fixes: str, required: set[str], absent: set[str]
+) -> None:
+    site.stub("docker", exit_code=0)
+    groups = {item.group for item in doctor(site.config(evals=evals, fixes=fixes))}
+    assert required <= groups
+    assert not absent & groups
+
+
 def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
     site: Site,
 ) -> None:
@@ -391,13 +408,19 @@ def test_status_shows_machine_id_state_and_deadline_for_an_active_run(
 
         # The watcher records the Machine, then would attach and observe; the
         # transport and the observation loop are out of scope here.
-        def no_launcher(*_: object) -> dict[str, object]:
-            return {}
+        def no_launcher(*_: object) -> object:
+            from types import SimpleNamespace
+
+            return SimpleNamespace(pid=0)
 
         def no_observation(*_: object) -> None:
             return None
 
-        monkeypatch.setattr(supervisor, "_spawn_plan_process", no_launcher)
+        def no_identity(*_: object) -> dict[str, object]:
+            return {}
+
+        monkeypatch.setattr(supervisor, "launch", no_launcher)
+        monkeypatch.setattr(supervisor, "_process_identity", no_identity)
         monkeypatch.setattr(supervisor, "_observe_fly", no_observation)
         supervisor._supervise_fly(  # pyright: ignore[reportPrivateUsage]
             store,

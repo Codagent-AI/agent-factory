@@ -3,10 +3,9 @@
 ## Purpose
 TBD - created by archiving change iteration-1. Update Purpose after archive.
 ## Requirements
-
 ### Requirement: Keep lifecycle behavior independent of work kind
 
-Core scheduling, claim/run persistence, retries, cancellation, restart recovery, and durable reporting SHALL remain independent of Codagent identities and eval-specific parsing or scoring. Work kinds SHALL supply request interpretation, execution planning, result interpretation, report presentation, admission-time input resolution, kind-specific readiness checks, and the kind's fresh-attempt and unblock gestures through one handler interface that the controller and runtime use for every kind. The eval handler SHALL own repetition semantics and suite integration; the fix handler SHALL own bug eligibility, branch resolution, workflow invocation, and outcome mapping. The generic core SHALL NOT interpret a score out of 70, Runner/Skills fields, an `and-scene` command path, a pull-request outcome, or the blocked state's label. Extracting this interface from the existing eval-shaped controller SHALL preserve all existing eval behavior.
+Core scheduling, claim/run persistence, retries, cancellation, restart recovery, and durable reporting SHALL remain independent of Codagent identities and eval-specific parsing or scoring. Work kinds SHALL supply request interpretation, execution planning, result interpretation, report presentation, admission-time input resolution, kind-specific readiness checks, and the kind's fresh-attempt and unblock gestures through one handler interface that the controller and runtime use for every kind. The eval handler SHALL own repetition semantics and suite integration; the pull-request handler, configured per kind for fix and feature work, SHALL own eligibility for its issue type, branch resolution, workflow invocation, and outcome mapping. The generic core SHALL NOT interpret a score out of 70, Runner/Skills fields, an `and-scene` command path, a pull-request outcome, or the blocked state's label. Extracting this interface from the existing eval-shaped controller SHALL preserve all existing eval behavior.
 
 #### Scenario: Integrate another work kind later
 
@@ -36,7 +35,7 @@ The factory SHALL persist accepted requests as claims in local SQLite, including
 
 ### Requirement: Prevent overlapping execution
 
-The factory SHALL execute at most one attempt per work kind at a time across the service and manual execution commands: one eval repetition and one fix attempt. Per-kind slots SHALL be enforced atomically in SQLite so two admission paths cannot both reserve the same kind's slot. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of either kind. A blocked fix claim SHALL NOT occupy a slot. Status and pause controls SHALL remain usable while execution is active.
+The factory SHALL execute at most one attempt per work kind at a time across the service and manual execution commands: one eval repetition, one fix attempt, and one feature attempt. Per-kind slots SHALL be enforced atomically in SQLite so two admission paths cannot both reserve the same kind's slot. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of any kind. A blocked fix or feature claim SHALL NOT occupy a slot. Status and pause controls SHALL remain usable while execution is active.
 
 #### Scenario: Attempt simultaneous dispatch
 
@@ -55,9 +54,14 @@ The factory SHALL execute at most one attempt per work kind at a time across the
 - **THEN** it migrates the schema to per-kind slots in one transaction without losing claim, run, or settings history
 - **AND** the existing quota hold continues to apply to the provider it was recorded for
 
+#### Scenario: Run a feature beside a fix and an eval
+
+- **WHEN** an eval repetition and a fix attempt are running and an eligible feature is admitted
+- **THEN** the feature attempt starts in its own slot and the other attempts continue unaffected
+
 ### Requirement: Correct status edits that contradict factory execution
 
-For factory-owned requests, the factory SHALL reconcile Project Status against saved lifecycle state, verified execution, and available results on each successful GitHub poll. Moving an idle request to Running SHALL NOT establish that execution exists or bypass normal admission; the factory SHALL restore the appropriate queued or handoff status according to its lifecycle. A fix claim blocked by bug triage SHALL be an exception: its card remains in Running with the `needs-input` label without execution and SHALL NOT be moved to a queued status; such a blocked card moved to Review or Done SHALL be restored to Running, while a blocked card moved to Ready SHALL be treated as the fix handler's unblock gesture. A fix claim blocked by a review round's `needs-input` SHALL instead remain in Review with the `needs-input` label; moved to Running or Done it SHALL be restored to Review, and moved to Ready it SHALL be treated as the fresh-claim gesture. Moving a request with verified active execution to Ready, Review, or Done SHALL restore Running and continue that same execution without restarting it or admitting overlapping work. Such status changes SHALL NOT cancel execution. Issue closure SHALL retain its defined cancellation behavior and take precedence over restoring Running. A drag that the request's work-kind handler recognizes as a fresh-attempt gesture SHALL be honored rather than corrected.
+For factory-owned requests, the factory SHALL reconcile Project Status against saved lifecycle state, verified execution, and available results on each successful GitHub poll. Moving an idle request to Running SHALL NOT establish that execution exists or bypass normal admission; the factory SHALL restore the appropriate queued or handoff status according to its lifecycle. A fix claim blocked by bug triage, or a feature claim blocked during definition, SHALL be an exception: its card remains in Running with the `needs-input` label without execution and SHALL NOT be moved to a queued status; such a blocked card moved to Review or Done SHALL be restored to Running, while a blocked card moved to Ready SHALL be treated as its handler's unblock gesture. A fix or feature claim blocked by a review round's `needs-input` SHALL instead remain in Review with the `needs-input` label; moved to Running or Done it SHALL be restored to Review, and moved to Ready it SHALL be treated as the fresh-claim gesture. Moving a request with verified active execution to Ready, Review, or Done SHALL restore Running and continue that same execution without restarting it or admitting overlapping work. Such status changes SHALL NOT cancel execution. Issue closure SHALL retain its defined cancellation behavior and take precedence over restoring Running. A drag that the request's work-kind handler recognizes as a fresh-attempt gesture SHALL be honored rather than corrected.
 
 The factory SHALL leave status edits on cards without factory ownership alone. Corrective updates SHALL include a brief issue comment explaining the actual state and correction, using durable reporting to avoid repeating the same correction comment on each poll. The default correction interval SHALL be the normal five-minute poll; unavailable GitHub access SHALL delay the correction rather than change execution state based on an unverified board observation.
 
@@ -110,6 +114,12 @@ The factory SHALL leave status edits on cards without factory ownership alone. C
 - **WHEN** a human moves a fix card blocked by a review round's `needs-input` from Review to Running or Done while its issue remains open
 - **THEN** the factory restores Review, keeps the `needs-input` label, and comments once on the correction
 
+#### Scenario: Leave a blocked feature in Running
+
+- **WHEN** a feature claim stopped during definition and its card sits in Running with the `needs-input` label
+- **THEN** the poll does not move the card or post a correction
+- **AND** a human moving the card to Ready is treated as the unblock gesture
+
 ### Requirement: Preserve running evaluations across controller restarts
 
 Evaluations SHALL be launched so that restarting the factory controller does not itself terminate them. After restart, the factory SHALL resume monitoring verified surviving execution, recover results from execution that finished while it was offline, or apply the recovery policy if execution itself stopped unexpectedly. A controller restart alone SHALL NOT create another execution attempt, consume a retry, or reset supervision timers. Completed repetitions SHALL NOT be rerun to recover reporting. Under Fly execution, surviving execution is the recorded Machine, and the factory SHALL reattach to it as defined in `factory-fly-execution`.
@@ -139,7 +149,7 @@ Evaluations SHALL be launched so that restarting the factory controller does not
 
 The factory SHALL allow one automatic recovery retry per repetition after a technical execution failure, using supported suite resume behavior and preserving completed repetitions. It SHALL record execution attempts and consumed retries durably. A completed evaluation with a poor product result SHALL NOT trigger a technical retry. A suite-confirmed non-resumable implementation-workflow failure SHALL settle that repetition as failed without a retry and SHALL allow remaining repetitions to proceed. Resumable workflow failures and recoverable harness failures SHALL follow the bounded technical recovery policy. The factory SHALL preserve the suite's failure owner, code, and resumable value and SHALL NOT infer non-resumability from the workflow-failed status alone. Recognized quota waiting, unavailable prerequisites detected before execution, and waiting for an admission window SHALL NOT consume this retry budget. Under Fly execution, a lost Machine SHALL settle that repetition as failed for a factory-owned infrastructure reason without consuming a retry and SHALL allow remaining repetitions to proceed, as defined in `factory-fly-execution`.
 
-A pre-suite failure SHALL NOT consume the recovery retry. A pre-suite failure is one identified by an explicit launch-stage signal, never by elapsed time: a readiness or planning error raised after the attempt was reserved but before its process started; a failure of the attempt's process to start; under Fly execution, a failure of the per-claim image build, a launcher transport failure before the job was delivered to the Machine, or a job failure before the factory's job script wrote the setup-complete marker defined in `factory-fly-execution`. A failure after the suite or workflow process has started, including a model login failure, SHALL NOT be a pre-suite failure. On a pre-suite failure the factory SHALL record the failed attempt with its diagnostic, SHALL under Fly execution destroy any Machine that attempt created before anything relaunches (a recovery attempt's retained Machine SHALL remain retained), and SHALL hold the claim waiting with `infra-error` and an explanation. On a subsequent poll where readiness passes, the factory SHALL relaunch the same unit of work with the same recovery status it had, so a first attempt relaunches as a first attempt and a recovery attempt relaunches as that recovery attempt. A second consecutive pre-suite failure of the same unit SHALL stop the claim exactly as an exhausted recovery does. This SHALL apply to eval and fix claims alike.
+A pre-suite failure SHALL NOT consume the recovery retry. A pre-suite failure is one identified by an explicit launch-stage signal, never by elapsed time: a readiness or planning error raised after the attempt was reserved but before its process started; a failure of the attempt's process to start; under Fly execution, a failure of the per-claim image build, a launcher transport failure before the job was delivered to the Machine, or a job failure before the factory's job script wrote the setup-complete marker defined in `factory-fly-execution`. A failure after the suite or workflow process has started, including a model login failure, SHALL NOT be a pre-suite failure. On a pre-suite failure the factory SHALL record the failed attempt with its diagnostic, SHALL under Fly execution destroy any Machine that attempt created before anything relaunches (a recovery attempt's retained Machine SHALL remain retained), and SHALL hold the claim waiting with `infra-error` and an explanation. On a subsequent poll where readiness passes, the factory SHALL relaunch the same unit of work with the same recovery status it had, so a first attempt relaunches as a first attempt and a recovery attempt relaunches as that recovery attempt. A second consecutive pre-suite failure of the same unit SHALL stop the claim exactly as an exhausted recovery does. This SHALL apply to eval, fix, and feature claims alike.
 
 If the recovery retry fails, the factory SHALL stop the claim, leave remaining repetitions unstarted, retain completed results and failure evidence, and move the issue to Review with `infra-error` and an explanation. Other eligible requests MAY proceed. Another evaluation SHALL require the explicit fresh-request behavior defined by intake and SHALL start the requested repetitions anew while preserving prior claim history.
 
@@ -413,14 +423,15 @@ Before admitting an attempt that will run in the Docker sandbox, the factory SHA
 
 ### Requirement: Exempt settled work from closure cancellation
 
-Issue closure SHALL cancel only claims with unfinished execution. A settled fix claim with a recorded pull request SHALL remain eligible for its post-merge sync whether the issue was closed by a human or by the factory after a successful sync, and closure SHALL NOT be reported as a cancellation for such a claim.
+Issue closure SHALL cancel only claims with unfinished execution. A settled fix or feature claim with a recorded pull request SHALL remain eligible for its post-merge sync whether the issue was closed by a human or by the factory after a successful sync, and closure SHALL NOT be reported as a cancellation for such a claim.
 
 #### Scenario: Close a fixed issue by hand before the sync
 
-- **WHEN** a human closes an issue whose fix claim is settled with a merged PR before the factory has synced
+- **WHEN** a human closes an issue whose fix or feature claim is settled with a merged PR before the factory has synced
 - **THEN** the claim is not cancelled and the sync still runs once
 
 #### Scenario: Observe the factory's own closure
 
 - **WHEN** the factory closed the issue after a successful sync and observes the closed issue on a later poll
 - **THEN** it records nothing new and posts no cancellation comment
+

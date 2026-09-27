@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from agent_factory.backends.docker import container_matches_recorded_ownership
 from agent_factory.controller import ExecutionPlan
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, SourceRepositories
 from agent_factory.supervisor import (
     SupervisionLimits,
-    container_matches_recorded_ownership,
     launch_supervisor,
     resume_supervisor,
 )

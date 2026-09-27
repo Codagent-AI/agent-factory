@@ -15,8 +15,8 @@ from typing import Any, cast
 
 import pytest
 
-from agent_factory.work_kinds.fix import sync
-from agent_factory.work_kinds.fix.sync import (
+from agent_factory.work_kinds.pull_request import sync
+from agent_factory.work_kinds.pull_request.sync import (
     _merge_working_clone,  # pyright: ignore[reportPrivateUsage]
 )
 

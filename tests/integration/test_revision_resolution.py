@@ -58,9 +58,11 @@ def source_pair(tmp_path: Path) -> tuple[Path, Path, str, str]:
 
 
 def resolve(clone: Path, ref: str) -> tuple[str, str]:
+    from agent_factory.work_kinds.eval import handler as eval_handler
+
     defaults = EvalDefaults("main", "main", {}, False, 1)
     request = parse_request(f'```eval\nagent_runner_ref = "{ref}"\n```', defaults)
-    return runtime._resolve(SourceRepositories(clone, clone, clone), request)  # pyright: ignore[reportPrivateUsage]
+    return eval_handler.resolve_revisions(SourceRepositories(clone, clone, clone), request)
 
 
 def test_resolves_remote_branch_without_changing_local_checkout(tmp_path: Path) -> None:

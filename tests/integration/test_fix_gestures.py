@@ -25,9 +25,10 @@ from agent_factory.routing import SourceItem
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import WorktreeError
 from agent_factory.work_kinds.base import Preparation
-from agent_factory.work_kinds.fix.blocked import eligible_comments, process_blocked_claim
-from agent_factory.work_kinds.fix.handler import FixHandler
-from agent_factory.work_kinds.fix.review import process_review_claim
+from agent_factory.work_kinds.pull_request.blocked import eligible_comments, process_blocked_claim
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+from agent_factory.work_kinds.pull_request.kinds import FIX
+from agent_factory.work_kinds.pull_request.review import process_review_claim
 
 _SHARED_BASE = """\
 [github]
@@ -158,15 +159,15 @@ def _blocked_claim(store: ClaimStore) -> str:
     return claim.id
 
 
-class _PreparedHandler(FixHandler):
+class _PreparedHandler(PullRequestHandler):
     """Reconciliation and clones are covered elsewhere; here preparation is a no-op."""
 
     def prepare(self, claim: Claim) -> Preparation:
         return Preparation()
 
 
-def _handler(store: ClaimStore, *, with_targets: bool = False) -> FixHandler:
-    handler = _PreparedHandler(_shared(with_targets=with_targets), _local())
+def _handler(store: ClaimStore, *, with_targets: bool = False) -> PullRequestHandler:
+    handler = _PreparedHandler(FIX, _shared(with_targets=with_targets), _local())
     handler.attach_store(store)
     return handler
 
@@ -361,7 +362,7 @@ def test_slot_busy_leaves_claim_blocked(tmp_path: Path) -> None:
 
 
 def test_gesture_returns_fresh_for_settled_card_in_ready() -> None:
-    handler = FixHandler(_shared(), _local())
+    handler = PullRequestHandler(FIX, _shared(), _local())
     claim_kwargs = dict(
         id="c1",
         repository="example/work",
@@ -382,7 +383,7 @@ def test_gesture_returns_fresh_for_settled_card_in_ready() -> None:
 
 
 def test_gesture_returns_unblock_for_blocked_card_in_ready() -> None:
-    handler = FixHandler(_shared(), _local())
+    handler = PullRequestHandler(FIX, _shared(), _local())
     claim_kwargs = dict(
         id="c1",
         repository="example/work",
@@ -619,7 +620,7 @@ def test_without_memory_headroom_an_eligible_claim_is_reconciled_but_not_relaunc
         [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
         {"writer": "write"},
     )
-    handler = _ReconcilingHandler(_shared(), _local())
+    handler = _ReconcilingHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     claim = store.get_claim(claim_id)
     assert claim is not None
@@ -659,7 +660,7 @@ def test_losing_the_slot_race_after_preparing_discards_the_fresh_clones(tmp_path
         def prepare(self, claim: Claim) -> Preparation:
             return Preparation(payload={"clones": {"repo": str(clone)}})
 
-    handler = CloningHandler(_shared(), _local())
+    handler = CloningHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     client = FakeGitHub(
         [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
@@ -708,7 +709,7 @@ def test_launch_input_fails_closed_when_a_commenter_permission_cannot_be_verifie
         def get_permission(self, repository: str, login: str) -> str | None:
             raise GitHubApiError("collaborator lookup failed")
 
-    handler = FixHandler(_shared(), _local())
+    handler = PullRequestHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     handler.attach_github(IssueGitHub(comments, {}))  # pyright: ignore[reportArgumentType]
     claim = store.get_claim(claim_id)
@@ -730,7 +731,7 @@ def test_clone_removal_failure_after_a_lost_slot_race_is_reported(tmp_path: Path
         def prepare(self, claim: Claim) -> Preparation:
             return Preparation(payload={"clones": {"repo": str(clone)}})
 
-    handler = CloningHandler(_shared(), _local())
+    handler = CloningHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     client = FakeGitHub(
         [IssueComment("1", "please retry", "writer", "2026-01-02T00:00:00+00:00")],
@@ -746,7 +747,7 @@ def test_clone_removal_failure_after_a_lost_slot_race_is_reported(tmp_path: Path
     with (
         mock.patch.object(store, "reserve_run", side_effect=lose_race),
         mock.patch(
-            "agent_factory.work_kinds.fix.blocked.shutil.rmtree",
+            "agent_factory.work_kinds.pull_request.blocked.shutil.rmtree",
             side_effect=PermissionError("busy"),
         ),
     ):
@@ -807,7 +808,7 @@ class FakeReviewGitHub:
         self.labels.append(needed)
 
 
-class _ReviewPreparedHandler(FixHandler):
+class _ReviewPreparedHandler(PullRequestHandler):
     def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
         return Preparation(payload={"review": dict(review)})
 
@@ -865,7 +866,7 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
         comments=(),
     )
     client = FakeReviewGitHub(activity, {"writer": "write"})
-    handler = _ReviewPreparedHandler(_shared(), _local())
+    handler = _ReviewPreparedHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     store.set_preparation(
         claim.id,
@@ -890,6 +891,7 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     review_run, preparation = admitted
     assert review_run.reason == "review"
     review = cast(dict[str, object], preparation.payload["review"])
+    assert review["kind"] == "fix"
     assert review["branch"] == "factory/fix-64"
     # The round starts from the head observed on this poll, not the one saved at settle time.
     assert review["head_sha"] == "live-head"
@@ -958,7 +960,7 @@ _ACTIVITY = ReviewActivity(
 )
 
 
-class _UnreadyReviewHandler(FixHandler):
+class _UnreadyReviewHandler(PullRequestHandler):
     def prepare_review(self, claim: Claim, review: Mapping[str, object]) -> Preparation:
         raise WorktreeError("recorded commit abc is unavailable in the mirror")
 
@@ -967,7 +969,7 @@ def test_review_round_readiness_failure_holds_the_claim_in_review(tmp_path: Path
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = _settled_claim_with_pr(store)
     client = FakeReviewGitHub(_ACTIVITY, {"writer": "write"})
-    handler = _UnreadyReviewHandler(_shared(), _local())
+    handler = _UnreadyReviewHandler(FIX, _shared(), _local())
     handler.attach_store(store)
 
     admitted = process_review_claim(
@@ -1023,7 +1025,8 @@ def test_prepare_review_fetches_the_mirror_before_cutting_clones(tmp_path: Path)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = _settled_claim_with_pr(store)
     workspace = _RecordingWorkspace(tmp_path)
-    handler = FixHandler(
+    handler = PullRequestHandler(
+        FIX,
         _shared(),
         _local(),
         workspace=workspace,  # pyright: ignore[reportArgumentType]
@@ -1033,9 +1036,9 @@ def test_prepare_review_fetches_the_mirror_before_cutting_clones(tmp_path: Path)
     review = {"branch": "factory/fix-64", "head_sha": "abc"}
 
     with (
-        mock.patch("agent_factory.work_kinds.fix.launch.check_runner_contract"),
-        mock.patch("agent_factory.work_kinds.fix.launch.check_packaged_workflow"),
-        mock.patch("agent_factory.work_kinds.fix.launch.check_target_catalog"),
+        mock.patch("agent_factory.work_kinds.pull_request.launch.check_runner_contract"),
+        mock.patch("agent_factory.work_kinds.pull_request.launch.check_packaged_workflow"),
+        mock.patch("agent_factory.work_kinds.pull_request.launch.check_target_catalog"),
     ):
         preparation = handler.prepare_review(claim, review)
 
@@ -1051,7 +1054,7 @@ def _admit_review(
     *,
     readiness: Callable[[], bool] = lambda: True,
 ) -> tuple[object, Preparation] | None:
-    handler = _ReviewPreparedHandler(_shared(), _local())
+    handler = _ReviewPreparedHandler(FIX, _shared(), _local())
     handler.attach_store(store)
     return process_review_claim(
         store,

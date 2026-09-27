@@ -33,6 +33,15 @@ done
 
 ## Fix credential and branch protection
 
+When `[feature]` is enabled, a writer-authored issue with the native `Feature`
+type in a configured fix target can be handed to Factory by moving its Project
+card to Ready. The next poll verifies the author's write, maintain, or admin
+repository permission and sets `Owner=factory`; the router does not assign
+Feature issues to Factory on its own. The feature workflow opens a pull request
+with the same credential and target branch rules as the fix kind. A retyped,
+untouched Bug card returns to Backlog instead of retaining its automatic Ready
+assignment.
+
 The fix work kind opens pull requests with a separate fine-grained personal access token, distinct from both the App installation token and the suite candidate token. Create it (preferably on a non-admin machine user) with **Contents**, **Pull requests**, and **Issues** access on the five target repositories only — no Workflows, Administration, or Projects access — and store it locally per [installation](installation.md#fix-kind-prerequisites). `doctor` verifies its shape, identity, and reach; it warns rather than fails if the identity turns out to hold organization-admin rights, since that is a hardening recommendation, not a hard requirement.
 
 Protect `main` on each target repository with a ruleset requiring a pull request before merge, with no bypass for the fix credential's owner — the credential must never be able to push directly:

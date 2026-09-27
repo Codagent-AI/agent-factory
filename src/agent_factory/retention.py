@@ -10,7 +10,9 @@ from typing import cast
 
 from agent_factory.config import LocalConfig
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
-from agent_factory.work_kinds.fix.sync import pending_sync
+from agent_factory.work_kinds.base import WorkKindHandler
+from agent_factory.work_kinds.pull_request.kinds import registered
+from agent_factory.work_kinds.pull_request.sync import pending_sync
 
 _FIX_ATTEMPT_REMOVE = (
     "logs",
@@ -30,16 +32,22 @@ _EVAL_REP_REMOVE = (
 
 
 def reconcile(
-    store: ClaimStore, local: LocalConfig, claim: Claim, board_status: str, now: datetime
+    store: ClaimStore,
+    local: LocalConfig,
+    claim: Claim,
+    board_status: str,
+    now: datetime,
+    *,
+    handler: WorkKindHandler | None = None,
 ) -> None:
     """Observe a Done board status and prune eligible evidence, both every poll."""
     cleanup = dict(claim.cleanup)
     if _observe_done(cleanup, board_status, now):
         store.set_cleanup(claim.id, cleanup)
     retention_days = local.limits.evidence_retention_days
-    if not _eligible(store, claim, cleanup, board_status, now, retention_days):
+    if not _eligible(store, claim, cleanup, board_status, now, retention_days, handler):
         return
-    _prune(store, claim, cleanup, now)
+    _prune(store, claim, cleanup, now, handler)
 
 
 def _observe_done(cleanup: dict[str, object], board_status: str, now: datetime) -> bool:
@@ -61,6 +69,7 @@ def _eligible(
     board_status: str,
     now: datetime,
     retention_days: int,
+    handler: WorkKindHandler | None,
 ) -> bool:
     # Cheapest checks first: an already-pruned or not-yet-eligible claim costs no queries.
     retention = cleanup.get("retention")
@@ -82,7 +91,11 @@ def _eligible(
         return False
     if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
         return False
-    if pending_sync(store, claim):
+    if (
+        handler.pending_sync(claim)
+        if handler is not None
+        else any(pending_sync(store, claim, definition) for definition in registered())
+    ):
         return False
     # Retention is for finished claims. A settled claim also waits on its Review-then-Done
     # clone, image, and credential cleanup. A cancelled claim releases those as soon as
@@ -93,8 +106,14 @@ def _eligible(
     return claim.lifecycle == "settled" and cleanup.get("complete") is True
 
 
-def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: datetime) -> None:
-    targets = _removal_targets(store, claim)
+def _prune(
+    store: ClaimStore,
+    claim: Claim,
+    cleanup: dict[str, object],
+    now: datetime,
+    handler: WorkKindHandler | None,
+) -> None:
+    targets = _removal_targets(store, claim, handler)
     errors: list[dict[str, str]] = []
     for path in targets:
         if not path.exists():
@@ -116,19 +135,32 @@ def _prune(store: ClaimStore, claim: Claim, cleanup: dict[str, object], now: dat
     store.set_cleanup(claim.id, cleanup)
 
 
-def _removal_targets(store: ClaimStore, claim: Claim) -> list[Path]:
+def _removal_targets(
+    store: ClaimStore, claim: Claim, handler: WorkKindHandler | None = None
+) -> list[Path]:
     runs = store.runs_for_claim(claim.id)
-    if claim.kind == "fix":
-        fix_runs = [run for run in runs if run.unit_key == "fix"]
+    definition = next((item for item in registered() if item.kind == claim.kind), None)
+    if definition is not None:
+        kind_runs = [run for run in runs if run.unit_key == definition.unit_key]
         # The supervisor appends each launched process's output to the claim-level suite
         # log, one level above the attempt directories that every attempt shares.
-        claim_logs = [Path(run.evidence_path).resolve() / "factory-suite.log" for run in fix_runs]
-        attempts = [t for run in fix_runs for t in _fix_attempt_targets(run)]
+        claim_logs = [Path(run.evidence_path).resolve() / "factory-suite.log" for run in kind_runs]
+        attempts = [
+            t
+            for run in kind_runs
+            for t in (
+                handler.retention_targets(run) if handler else pull_request_attempt_targets(run)
+            )
+        ]
         return list(dict.fromkeys([*claim_logs, *attempts]))
-    return [t for run in runs for t in _eval_rep_targets(run)]
+    return [
+        t
+        for run in runs
+        for t in (handler.retention_targets(run) if handler else eval_rep_targets(run))
+    ]
 
 
-def _fix_attempt_targets(run: Run) -> list[Path]:
+def pull_request_attempt_targets(run: Run) -> list[Path]:
     attempt_dir = Path(run.evidence_path).resolve() / f"attempt-{run.attempt_number + 1}"
     targets = [attempt_dir / name for name in _FIX_ATTEMPT_REMOVE]
     session_dir = run.result.get("session_dir")
@@ -144,6 +176,6 @@ def _fix_attempt_targets(run: Run) -> list[Path]:
     return targets
 
 
-def _eval_rep_targets(run: Run) -> list[Path]:
+def eval_rep_targets(run: Run) -> list[Path]:
     rep_dir = Path(run.evidence_path).resolve()
     return [rep_dir / name for name in _EVAL_REP_REMOVE]

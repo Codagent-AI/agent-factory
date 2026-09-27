@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.suites.and_scene import GitWorktreeManager, SourceRepositories
-from agent_factory.supervisor import (
+from agent_factory.backends.docker import (
     container_matches_recorded_ownership,
     discover_container,
     stop_owned_container,
 )
+from agent_factory.suites.and_scene import GitWorktreeManager, SourceRepositories
 
 
 def _run(args: list[str], *, env: dict[str, str] | None = None) -> str:

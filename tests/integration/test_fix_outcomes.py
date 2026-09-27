@@ -10,8 +10,9 @@ from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig,
 from agent_factory.controller import Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimStore, Run
-from agent_factory.work_kinds.fix.handler import FixHandler, attempt_evidence
-from agent_factory.work_kinds.fix.outcome import read_outcome
+from agent_factory.work_kinds.pull_request.handler import PullRequestHandler, attempt_evidence
+from agent_factory.work_kinds.pull_request.kinds import FIX
+from agent_factory.work_kinds.pull_request.outcome import read_outcome
 
 CONTRACT = "factory-fix/1"
 
@@ -146,7 +147,7 @@ def _resolver(target: object) -> tuple[str, str, str]:
 
 def _accept_and_reserve(tmp_path: Path) -> tuple[Controller, ClaimStore, str, str]:
     store = ClaimStore(tmp_path / "state.sqlite3")
-    handler = FixHandler(_shared(), _local(tmp_path), resolver=_resolver)
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path), resolver=_resolver)
     controller = Controller(
         store, Comments(), {"fix": handler}, artifact_root=tmp_path / "artifacts"
     )
@@ -182,7 +183,7 @@ def test_pull_request_outcome_settles_with_pending_human_review(tmp_path: Path) 
             "pr": {"url": "https://github.com/example/work/pull/214", "number": 214},
         },
     )
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
     controller.record_result(run_id, result)
 
@@ -203,7 +204,7 @@ def test_needs_input_outcome_stays_running_with_label(tmp_path: Path) -> None:
         run,
         {"contract": CONTRACT, "outcome": "needs-input", "reasons": ["missing repro steps"]},
     )
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     handler.attach_store(store)
     result = handler.read_result(_required_run(store, run_id))
     controller.record_result(run_id, result)
@@ -232,7 +233,7 @@ def test_failed_outcome_settles_with_pr_link_retained(tmp_path: Path) -> None:
             "pr": {"url": "https://github.com/example/work/pull/215", "number": 215},
         },
     )
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
     controller.record_result(run_id, result)
 
@@ -261,7 +262,7 @@ def test_missing_malformed_or_wrong_contract_is_a_technical_failure_then_infra_e
         attempt_evidence(run).mkdir(parents=True, exist_ok=True)
         (attempt_evidence(run) / "fix-outcome.json").write_text(payload)
     store.finish_run(run_id, execution_status="failed", result={})
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
     controller.record_result(run_id, result)
 
@@ -304,7 +305,7 @@ def test_valid_pull_request_file_with_nonzero_exit_still_settles_as_pr(tmp_path:
         },
     )
     store.finish_run(run_id, execution_status="failed", result={"exit_code": 1})
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
     assert result.execution_status == "completed"
     controller.record_result(run_id, result)
@@ -323,7 +324,7 @@ def test_events_are_not_duplicated_on_repeated_consumption(tmp_path: Path) -> No
         run,
         {"contract": CONTRACT, "outcome": "pull-request", "pr": {"url": "u", "number": 1}},
     )
-    handler = FixHandler(_shared(), _local(tmp_path))
+    handler = PullRequestHandler(FIX, _shared(), _local(tmp_path))
     result = handler.read_result(_required_run(store, run_id))
     controller.record_result(run_id, result)
     controller.deliver_reports(claim_id)

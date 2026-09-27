@@ -126,7 +126,7 @@ def test_int_005_reserved_recovery_attempt_launches_instead_of_attaching(
             raise AssertionError("attach was spawned")
 
         monkeypatch.setattr(supervisor, "_launch_and_observe", launch)
-        monkeypatch.setattr(supervisor, "_spawn_plan_process", attach)
+        monkeypatch.setattr(supervisor, "launch", attach)
         supervisor._supervise_fly(  # pyright: ignore[reportPrivateUsage]
             store, run, _fly_plan(artifact), _limits()
         )

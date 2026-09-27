@@ -82,6 +82,11 @@ _SNAPSHOT_TIMEOUT_SECONDS = 60
 
 class FlyMachineBackend:
     name = "fly-machine"
+    supports_attach = True
+
+    def adopt(self, plan: object, run: object, store: object) -> Probe:
+        identity = self.identity_from_plan(plan, run)
+        return self.probe(identity) if identity is not None else Probe("gone")
 
     def __init__(
         self,

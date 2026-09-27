@@ -3,7 +3,6 @@
 ## Purpose
 TBD - created by archiving change pickup-and-fix-bugs. Update Purpose after archive.
 ## Requirements
-
 ### Requirement: Comment on fix activity
 
 The factory SHALL comment on the issue when it admits a bug (including the resolved refs and attempt number), when it admits a review round (naming the PR and the comments it will address), when an attempt is declined, fails, is retried, is cancelled, or produces a PR, when a review round completes (linking the PR and summarizing what was changed and answered), and when a post-merge sync succeeds or is blocked. Comments SHALL carry stable markers and SHALL NOT repeat for unchanged state. When the attempt being reported ran in host mode, the comment reporting its outcome (`pull-request`, `needs-input`, `failed`, or exhausted recovery) SHALL state that the attempt ran on the host and that the recorded Runner and Skills commits were not the versions that executed. The acceptance comment posted when a fix claim's inputs are accepted SHALL read `Fix inputs accepted and frozen.` rather than the eval wording, and SHALL keep its existing stable marker; the admission comment's content SHALL otherwise be unchanged.
@@ -64,41 +63,6 @@ On `pull-request`, the factory SHALL link the PR in a comment, move the card to 
 - **WHEN** a review attempt is running
 - **THEN** the card is in Running and returns to Review with `pending-human-review` when the attempt returns `pull-request`
 
-### Requirement: Sync the working clone after merge
-
-For a settled fix claim with a recorded factory PR that has been merged and whose sync has not completed, regardless of the card's current column, the factory SHALL update the operator's configured working clone of that repository on the next successful poll: verify the working tree and index have no changes to tracked files, fetch `main` from the remote into the local `main` branch (refusing when local `main` has diverged or is checked out in any worktree of that clone), verify by dry run that merging `main` into the currently checked-out branch produces no conflicts, and then perform that merge. On success it SHALL close the issue when it is still open so closure automation moves the card to Done. On tracked changes, a diverged local `main`, `main` checked out elsewhere, a predicted conflict, a detached HEAD, or an unreachable clone, it SHALL leave the card where it is, apply the `needs-input` label when the card is not yet Done, comment with the reason, and retry on later polls, clearing the label when the sync succeeds. Apart from fetched refs and objects, it SHALL NOT change the clone's working tree, index, or checked-out branch except by the merge itself. A merged PR whose issue a human already closed SHALL still receive its one sync attempt sequence.
-
-#### Scenario: Merge a fix while the clone is on dev
-
-- **WHEN** a factory PR merges while the working clone has branch `dev` checked out and a clean tree
-- **THEN** the factory updates local `main`, merges it into `dev`, closes the issue, and the card moves to Done
-
-#### Scenario: Merge a fix while the clone is dirty
-
-- **WHEN** the working clone has uncommitted changes
-- **THEN** the card stays in Review with the `needs-input` label and a comment naming the uncommitted changes
-- **AND** the clone's working tree, index, and branches are unchanged
-
-#### Scenario: Predict a conflict
-
-- **WHEN** the dry-run merge reports conflicts
-- **THEN** the factory performs no merge, leaves the working tree unchanged, and blocks the card with the conflict reason
-
-#### Scenario: Find local main diverged or checked out elsewhere
-
-- **WHEN** local `main` has commits not on the remote, or `main` is checked out in another worktree of the clone
-- **THEN** the factory refuses to update `main`, blocks the card with that reason, and changes no branch
-
-#### Scenario: Merge after a human closed the issue
-
-- **WHEN** a human closed the issue before the factory observed the merged PR and the card is already Done
-- **THEN** the factory still performs the sync once and comments on the outcome without relabeling the Done card
-
-#### Scenario: Resolve and retry
-
-- **WHEN** the operator commits or stashes the changes and the next poll's checks pass
-- **THEN** the factory completes the merge, removes the `needs-input` label, closes the issue, and the card moves to Done
-
 ### Requirement: Deliver fix reports durably without duplicates
 
 Fix reporting SHALL use the same per-claim reporting progress, stable markers, lost-response discovery, and restart survival as eval reporting. Pending delivery SHALL NOT rerun an attempt or repeat a sync.
@@ -107,3 +71,4 @@ Fix reporting SHALL use the same per-claim reporting progress, stable markers, l
 
 - **WHEN** GitHub accepts the PR-link comment but the response is lost
 - **THEN** reconciliation finds it by marker and completes the board update without a second comment
+

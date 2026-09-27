@@ -1,0 +1,195 @@
+# factory-contract: factory-feature/1
+name: factory-define
+description: "Define and checkpoint one autonomous feature change."
+hidden: true
+params:
+  - name: issue_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: change_name
+    required: true
+  - name: artifact_dir
+    required: true
+  - name: resume_from
+    default: ""
+sessions:
+  - name: lead-agent
+    agent: lead
+  - name: proposal-reviewer
+    agent: crosscheck
+  - name: approach-reviewer
+    agent: crosscheck
+steps:
+  - id: proposal
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" proposal'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Invoke codagent:propose for the issue in {{issue_file}}; write openspec/changes/{{change_name}}/proposal.md. A no-go is a definition stop.
+  - id: record-stop-proposal
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "proposal"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: proposal-review
+    session: proposal-reviewer
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" proposal-review'
+    prompt: |
+      Invoke codagent:proposal-review. Read the proposal and write {{artifact_dir}}/proposal-review-findings.json as an array of findings with id, severity, problem, recommendation. Do not edit repository files.
+  - id: record-stop-proposal-review
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "proposal-review"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: apply-proposal-review
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" proposal-review'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Read proposal-review-findings.json. Apply sound findings; log every finding as applied, rejected with reason, or direction-level in decisions.md.
+  - id: record-stop-apply-proposal-review
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "proposal-review"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: specs
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" specs'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Invoke codagent:spec and write specifications under openspec/changes/{{change_name}}/specs/.
+  - id: record-stop-specs
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "specs"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: design
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" design'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Invoke codagent:design and write openspec/changes/{{change_name}}/design.md.
+  - id: record-stop-design
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "design"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: test-plan
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" test-plan'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Invoke codagent:test-plan and write openspec/changes/{{change_name}}/test-plan.md.
+  - id: record-stop-test-plan
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "test-plan"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: approach-review
+    session: approach-reviewer
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" approach-review'
+    prompt: |
+      Invoke codagent:review-approach. Review all planning artifacts and write {{artifact_dir}}/approach-review-findings.json as an array of findings with id, severity, problem, recommendation. Do not edit repository files.
+  - id: record-stop-approach-review
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "approach-review"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: apply-approach-review
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" approach-review'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Read approach-review-findings.json. Apply sound findings; log every finding as applied, rejected with reason, or direction-level in decisions.md.
+  - id: record-stop-apply-approach-review
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "approach-review"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: write-tasks
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Write openspec/changes/{{change_name}}/tasks.md with exactly one implementation task for the whole change.
+  - id: record-stop-write-tasks
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "write-tasks"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: validate-openspec
+    command: openspec validate --type change "{{change_name}}" --strict >"{{artifact_dir}}/validation.log" 2>&1 && touch "{{artifact_dir}}/validation-ok"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
+  - id: repair-openspec
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Repair mechanical OpenSpec validation errors for {{change_name}}. Do not change product direction.
+  - id: revalidate-openspec
+    command: openspec validate --type change "{{change_name}}" --strict >"{{artifact_dir}}/validation.log" 2>&1 && touch "{{artifact_dir}}/validation-ok"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
+  - id: record-validation-failure
+    script: record-validation-failure.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok'
+  - id: check-planning-artifacts
+    workflow: builtin:core/check-planning-artifacts-v1.0.yaml
+    params:
+      change_dir: "openspec/changes/{{change_name}}"
+      required_files: "proposal.md,design.md,test-plan.md,tasks.md"
+      require_specs: "true"
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
+  - id: commit-plan
+    workflow: builtin:core/commit-change-plan-v1.0.yaml
+    params:
+      change_name: "{{change_name}}"
+      change_dir: "openspec/changes/{{change_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
+  - id: push-plan
+    script: checkpoint.sh
+    script_inputs:
+      phase: planned
+      branch_name: "{{branch_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'

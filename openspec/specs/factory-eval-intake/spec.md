@@ -94,25 +94,6 @@ An invalid request SHALL remain in Ready and receive the red `needs-input` label
 - **WHEN** a user removes `needs-input` while the settings remain invalid
 - **THEN** the factory does not admit the request and restores the attention label
 
-### Requirement: Select eligible work in manual Project order
-
-The factory SHALL select open issues from configured source repositories whose authors have write, maintain, or admin access, with native `Type=Eval`, `Owner=factory`, and `Status=Ready`, valid execution settings, and no applicable admission hold. Selection SHALL follow manual Project order, matching the unsorted Ready column within the Eval horizontal group. Priority values and issue age SHALL NOT override that order. Invalid or otherwise ineligible requests SHALL NOT prevent selection of a later eligible request. Reordering SHALL NOT interrupt active work.
-
-#### Scenario: Reorder queued evaluations
-
-- **WHEN** a user drags one eligible eval above another before the next selection
-- **THEN** the higher eval is selected first, regardless of issue age or Priority values
-
-#### Scenario: Skip an ineligible request
-
-- **WHEN** the highest queued request is invalid or cannot yet resume and a lower request is eligible under current admission controls
-- **THEN** the factory selects the lower eligible request
-
-#### Scenario: Reorder while an evaluation is running
-
-- **WHEN** a user changes queue order during active execution
-- **THEN** the active evaluation continues and the new order governs subsequent selection
-
 ### Requirement: Freeze accepted evaluation inputs
 
 A new claim SHALL record the effective evaluation settings, including the selected eval suite, and resolve the requested Runner and Skills refs and the configured `agent-evals` harness branch to immutable commits from the remote at admission. `agent-evals` is the evaluation harness and may contain multiple suites; `and-scene` is the default suite. Those accepted inputs SHALL remain fixed for the claim, including its repetitions and automatic recovery. Later changes to branches, defaults, or the issue SHALL NOT mutate an existing claim's frozen inputs. Configuration SHALL name the harness branch, not a commit.
@@ -164,4 +145,28 @@ The factory SHALL reconcile local claim and reporting state with board observati
 
 - **WHEN** a user changes request settings during execution
 - **THEN** the active claim keeps its frozen inputs and no overlapping evaluation starts
+
+### Requirement: Select eligible work by Priority
+
+The factory SHALL select open issues from configured source repositories whose authors have write, maintain, or admin access, with native `Type=Eval`, `Owner=factory`, and `Status=Ready`, valid execution settings, and no applicable admission hold. Selection SHALL rank eligible requests by the Project Priority field, highest first with unset values last, then by newest creation time. Invalid or otherwise ineligible requests SHALL NOT prevent selection of a later eligible request. Reordering or reprioritizing SHALL NOT interrupt active work.
+
+#### Scenario: Reorder queued evaluations
+
+- **WHEN** a user gives one eligible eval a higher Priority than another before the next selection
+- **THEN** the higher-priority eval is selected first, regardless of issue age or board position
+
+#### Scenario: Break a Priority tie by creation time
+
+- **WHEN** two eligible evals share a Priority value
+- **THEN** the more recently created eval is selected first
+
+#### Scenario: Skip an ineligible request
+
+- **WHEN** the highest queued request is invalid or cannot yet resume and a lower request is eligible under current admission controls
+- **THEN** the factory selects the lower eligible request
+
+#### Scenario: Reorder while an evaluation is running
+
+- **WHEN** a user changes Priority values during active execution
+- **THEN** the active evaluation continues and the new ranking governs subsequent selection
 

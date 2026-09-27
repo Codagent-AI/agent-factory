@@ -1,0 +1,212 @@
+# factory-contract: factory-feature/1
+name: factory-feature
+description: "Define, implement, verify, and finalize an OpenSpec feature."
+hidden: true
+params:
+  - name: issue_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: change_name
+    required: true
+  - name: contract_version
+    required: true
+  - name: artifact_dir
+    default: /artifacts
+  - name: resume_from
+    default: ""
+  - name: prior_branch
+    default: ""
+sessions:
+  - name: lead-agent
+    agent: lead
+  - name: proposal-reviewer
+    agent: crosscheck
+  - name: approach-reviewer
+    agent: crosscheck
+steps:
+  - id: check-contract
+    script: check-contract.sh
+    script_inputs:
+      expected_contract: factory-feature/1
+      declared_contract: "{{contract_version}}"
+  - id: check-openspec
+    script: check-openspec.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+  - id: target-head
+    command: git rev-parse HEAD
+    capture: target_head
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: prepare-branch
+    script: prepare-branch.sh
+    script_inputs:
+      branch_name: "{{branch_name}}"
+      target_head: "{{target_head}}"
+      resume_from: "{{resume_from}}"
+      prior_branch: "{{prior_branch}}"
+      artifact_dir: "{{artifact_dir}}"
+      change_name: "{{change_name}}"
+    capture: effective_resume
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: create-change
+    command: mkdir -p "openspec/changes/{{change_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
+  - id: reconcile-artifacts
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test -s {{artifact_dir}}/resume.json || .agent-runner/workflows/reconcile-skip.sh "{{effective_resume}}" "{{prior_branch}}"'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
+      Compare openspec/changes/{{change_name}} with {{issue_file}} and its eligible comments.
+      Revise artifacts where warranted and append each revision to decisions.md.
+  - id: record-stop-reconcile
+    script: record-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      step: "{{effective_resume}}"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: define
+    workflow: factory-define-v1.0.yaml
+    params:
+      issue_file: "{{issue_file}}"
+      branch_name: "{{branch_name}}"
+      change_name: "{{change_name}}"
+      artifact_dir: "{{artifact_dir}}"
+      resume_from: "{{effective_resume}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
+  - id: implement
+    workflow: builtin:core/implement-task-v1.0.yaml
+    params:
+      task_file: "openspec/changes/{{change_name}}/tasks.md"
+      run_session_report: "true"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
+  - id: complete-task
+    script: checkpoint.sh
+    script_inputs:
+      phase: implemented
+      branch_name: "{{branch_name}}"
+      change_name: "{{change_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
+  - id: archive
+    workflow: builtin:openspec/archive-change-v1.0.yaml
+    params:
+      change_name: "{{change_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
+  - id: push-archive
+    script: checkpoint.sh
+    script_inputs:
+      phase: archived
+      branch_name: "{{branch_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
+  # Unguarded: classify's skip_if reads validator_status even after a definition stop.
+  - id: seed-verify-status
+    command: printf passed
+    capture: validator_status
+  - id: locate-archive
+    command: python3 .agent-runner/workflows/locate-archive.py "{{change_name}}"
+    capture: archived_dir
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: verify
+    workflow: builtin:core/verify-change-v1.0.yaml
+    params:
+      change_name: "{{change_name}}"
+      change_dir: "{{archived_dir}}"
+      change_label: "feature"
+      artifact_validation_instruction: "run openspec validate --specs --strict"
+      skip_validator: "false"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
+  - id: mark-verify-failed
+    command: printf failed
+    capture: validator_status
+    skip_if: previous_success
+  - id: restore-skipped-verify-status
+    command: printf passed
+    capture: validator_status
+    skip_if: 'sh: ! .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
+  - id: classify
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`.
+      Read {{archived_dir}}/decisions.md and the review findings
+      in {{artifact_dir}}. Read acceptance-assumptions.md,
+      acceptance-preparation-status.txt, acceptance-flow-evidence.md,
+      acceptance-findings.md from {{session_dir}}/output/. Also read
+      {{artifact_dir}}/resume.json and commits after acceptance.
+      Write {{artifact_dir}}/review-attention.json with red, orange, yellow, white
+      arrays of {title, detail, link}, accepted_head SHA, and later_commits: every
+      commit after accepted_head, each also named by SHA in an orange item. A link is
+      a repository-relative path of a committed file, citing the line or range that
+      shows the item (path:12 or path:12-18) where one exists, or a URL; any other
+      path is shown as a link to the acceptance evidence.
+      Classify every review item into exactly one tier. Red: each failed or unverified
+      acceptance criterion, acceptance that did not complete, every known deviation
+      from the specifications, and a resume or continuation that fell back to a
+      fresh start in resume.json. Orange: choices the issue did not settle that change
+      scope, weaken a guarantee, affect other callers, or are costly to reverse; plan
+      revisions made in response to human comments; rejected high or medium review
+      findings; and commits added after acceptance that its evidence does not cover.
+      Group related orange choices into one item per topic whose detail cites the
+      decision IDs behind it, and order orange most important first: the pull request
+      shows commits after acceptance first, then the most important remaining orange
+      items, up to five in total, and collapses the rest. Yellow: every other recorded
+      assumption or decision. White: passed acceptance criteria with evidence.
+  - id: verify-classification
+    command: python3 .agent-runner/workflows/verify-classification.py "{{artifact_dir}}/review-attention.json"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+  - id: seed-ci-status
+    command: printf passed
+    capture: ci_status
+  - id: finalize
+    workflow: builtin:core/finalize-pr-v1.0.yaml
+    params:
+      ci_fix_cycles: "3"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" finalize'
+  - id: mark-ci-failed
+    command: printf failed
+    capture: ci_status
+    skip_if: previous_success
+  - id: seed-annotation-status
+    command: printf passed
+    capture: annotation_status
+  - id: annotate-pr
+    script: annotate-pr.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      issue_file: "{{issue_file}}"
+      change_name: "{{change_name}}"
+      archived_dir: "{{archived_dir}}"
+      session_dir: "{{session_dir}}"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: mark-annotation-failed
+    command: printf failed
+    capture: annotation_status
+    skip_if: previous_success
+  - id: pr-details
+    command: |
+      gh pr list --head "{{branch_name}}" --state open --json url,number,headRefOid --limit 1 | python3 -c 'import json,sys; print(json.dumps((json.load(sys.stdin) or [{}])[0]))'
+    capture: pr_details
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: record-outcome
+    script: record-outcome.sh
+    script_inputs:
+      contract: factory-feature/1
+      outcome_path: "{{artifact_dir}}/feature-outcome.json"
+      validator_status: "{{validator_status}}"
+      ci_status: "{{ci_status}}"
+      annotation_status: "{{annotation_status}}"
+      branch_name: "{{branch_name}}"
+      pr_details: "{{pr_details}}"
+      review_attention_counts: "{{artifact_dir}}/review-attention.json"
+      resume: "{{artifact_dir}}/resume.json"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: verify-outcome
+    command: python3 .agent-runner/workflows/verify-feature-outcome.py "{{artifact_dir}}/feature-outcome.json"

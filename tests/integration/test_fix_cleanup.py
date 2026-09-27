@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.work_kinds.fix.cleanup import FixCleanup
+from agent_factory.work_kinds.pull_request.cleanup import PullRequestCleanup
 
 
 def _settled_claim_with_clones(store: ClaimStore, tmp_path: Path) -> tuple[str, Path]:
@@ -20,7 +20,7 @@ def _settled_claim_with_clones(store: ClaimStore, tmp_path: Path) -> tuple[str, 
 def test_clones_remain_while_in_review(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
 
     result = cleanup.reconcile(claim_id, board_status="Review")
 
@@ -31,7 +31,7 @@ def test_clones_remain_while_in_review(tmp_path: Path) -> None:
 def test_clones_removed_after_review_then_done(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
     cleanup.reconcile(claim_id, board_status="Review")
 
     result = cleanup.reconcile(claim_id, board_status="Done")
@@ -54,7 +54,7 @@ def test_read_only_module_cache_in_a_clone_is_removed(tmp_path: Path) -> None:
     (module / "lib.go").chmod(0o444)
     module.chmod(0o555)
     module.parent.chmod(0o555)
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
     cleanup.reconcile(claim_id, board_status="Review")
 
     result = cleanup.reconcile(claim_id, board_status="Done")
@@ -66,7 +66,7 @@ def test_read_only_module_cache_in_a_clone_is_removed(tmp_path: Path) -> None:
 def test_done_without_prior_review_is_not_cleaned_up(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
 
     result = cleanup.reconcile(claim_id, board_status="Done")
 
@@ -77,7 +77,7 @@ def test_done_without_prior_review_is_not_cleaned_up(tmp_path: Path) -> None:
 def test_already_removed_clone_does_not_fail_retry(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
     cleanup.reconcile(claim_id, board_status="Review")
     cleanup.reconcile(claim_id, board_status="Done")
     assert not clone.exists()
@@ -98,7 +98,7 @@ def test_missing_docker_binary_records_error_instead_of_crashing(tmp_path: Path)
     )
     store.finish_run(run.id, execution_status="completed", result={"outcome": "pull-request"})
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
     cleanup.reconcile(claim.id, board_status="Review")
 
     with mock.patch(
@@ -119,7 +119,7 @@ def test_running_claim_is_never_touched(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
     clone.mkdir()
     store.set_preparation(claim.id, {"clones": {"target": str(clone)}})
-    cleanup = FixCleanup(store)
+    cleanup = PullRequestCleanup(store)
 
     result = cleanup.reconcile(claim.id, board_status="Running")
 
@@ -141,7 +141,7 @@ def test_done_removes_every_attempts_private_credential_copy(tmp_path: Path) -> 
         store.configure_run(run.id, plan={"credential_files": [str(copy)]}, limits={})
         store.finish_run(run.id, execution_status="failed", result={})
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "infra-error"})
-    cleanup = FixCleanup(store, private_root=private)
+    cleanup = PullRequestCleanup(store, private_root=private)
     cleanup.reconcile(claim.id, board_status="Review")
     assert all(copy.exists() for copy in copies)
 
@@ -170,7 +170,7 @@ def test_done_for_a_host_only_claim_removes_clones_without_running_docker(tmp_pa
         limits={},
     )
     store.finish_run(run.id, execution_status="completed", result={"outcome": "failed"})
-    cleanup = FixCleanup(store, private_root=private)
+    cleanup = PullRequestCleanup(store, private_root=private)
     cleanup.reconcile(claim_id, board_status="Review")
 
     with mock.patch("agent_factory.work_kinds.images.subprocess.run") as docker:
@@ -208,7 +208,7 @@ def test_cancelled_claim_keeps_clones_while_execution_is_stopping(tmp_path: Path
     claim_id, clone, private = _cancelled_claim_with_clone_and_token(
         store, tmp_path, run_status="running"
     )
-    cleanup = FixCleanup(store, private_root=tmp_path / "private")
+    cleanup = PullRequestCleanup(store, private_root=tmp_path / "private")
 
     result = cleanup.reconcile(claim_id, board_status="Running")
 
@@ -223,7 +223,7 @@ def test_cancelled_claim_is_released_once_execution_stopped(tmp_path: Path) -> N
     claim_id, clone, private = _cancelled_claim_with_clone_and_token(
         store, tmp_path, run_status="cancelled"
     )
-    cleanup = FixCleanup(store, private_root=tmp_path / "private")
+    cleanup = PullRequestCleanup(store, private_root=tmp_path / "private")
 
     result = cleanup.reconcile(claim_id, board_status="Running")
 
