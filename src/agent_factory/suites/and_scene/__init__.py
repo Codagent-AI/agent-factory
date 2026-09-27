@@ -498,13 +498,17 @@ class AndSceneAdapter:
     def failure_quota_until(
         self, artifact: Path, result: Mapping[str, object], *, fallback_seconds: int = 18000
     ) -> datetime | None:
-        """Recognize quota only from the suite's current terminal result.
+        """Recognize quota from the current terminal result or the failed run's audit.
 
         Logs are retained across recovery attempts, so they cannot safely identify
-        the cause of the current attempt.
+        the cause of the current attempt. The suite does not surface a Codex usage
+        limit in its result; the limit appears only in the audit of the Agent Runner
+        run the result names, where each resume starts a new execution.
         """
-        del artifact
-        return self.quota_until(json.dumps(dict(result)), fallback_seconds=fallback_seconds)
+        deadline = self.quota_until(json.dumps(dict(result)), fallback_seconds=fallback_seconds)
+        if deadline is not None:
+            return deadline
+        return _codex_audit_quota_until(artifact, result, fallback_seconds=fallback_seconds)
 
     def quota_until(
         self, diagnostic: str, *, now: datetime | None = None, fallback_seconds: int = 18000
@@ -812,6 +816,66 @@ def _recorded_worktrees(claim_id: str, cleanup: Mapping[str, object]) -> Prepare
         resolved["evals"][1],
         SourceRepositories(resolved["runner"][0], resolved["skills"][0], resolved["evals"][0]),
     )
+
+
+_RUNNER_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Audit JSON may keep the curly apostrophe or escape it as \u2019.
+_CODEX_USAGE_LIMIT = re.compile(
+    r"You(?:'|\u2019|\\u2019)ve hit your usage limit\. Visit https://chatgpt\.com/codex/"
+)
+_CODEX_RESET_AT = re.compile(r"try again at (\d{1,2}):(\d{2}) ?([AP]M)\b", re.IGNORECASE)
+_AUDIT_TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z ")
+_AUDIT_TAIL_BYTES = 1 << 20
+
+
+def _codex_audit_quota_until(
+    artifact: Path, result: Mapping[str, object], *, fallback_seconds: int
+) -> datetime | None:
+    """Find a Codex usage limit in the latest execution of the failed runner run."""
+    run_id = _object(result.get("failure")).get("run_id")
+    if not isinstance(run_id, str) or not _RUNNER_RUN_ID.fullmatch(run_id):
+        return None
+    projects = artifact / ".runtime" / "agent-runner-projects"
+    audits = sorted(projects.glob(f"*/runs/{run_id}/audit.log")) if projects.is_dir() else []
+    if len(audits) != 1:
+        return None
+    try:
+        descriptor = os.open(audits[0], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            os.lseek(descriptor, max(0, info.st_size - _AUDIT_TAIL_BYTES), os.SEEK_SET)
+            tail = os.read(descriptor, _AUDIT_TAIL_BYTES).decode("utf-8", errors="replace")
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return None
+    # A resume appends a new execution; an earlier one cannot explain this failure.
+    marker = tail.rfind(" run_start ")
+    execution = tail[tail.rfind("\n", 0, marker) + 1 :] if marker != -1 else tail
+    for line in reversed(execution.splitlines()):
+        if _CODEX_USAGE_LIMIT.search(line):
+            return _codex_reset(line) or datetime.now(UTC) + timedelta(seconds=fallback_seconds)
+    return None
+
+
+def _codex_reset(line: str) -> datetime | None:
+    """Read Codex's wall-clock reset against the audit line's time.
+
+    The guest runs in UTC, so Codex prints the reset in UTC.
+    """
+    stamp = _AUDIT_TIMESTAMP.match(line)
+    reset = _CODEX_RESET_AT.search(line)
+    if stamp is None or reset is None:
+        return None
+    hour, minute = int(reset.group(1)), int(reset.group(2))
+    if not 1 <= hour <= 12 or minute > 59:
+        return None
+    hour = hour % 12 + (12 if reset.group(3).upper() == "PM" else 0)
+    event = datetime.fromisoformat(stamp.group(1)).replace(tzinfo=UTC)
+    candidate = event.replace(hour=hour, minute=minute, second=0)
+    return candidate if candidate > event else candidate + timedelta(days=1)
 
 
 def bounded_quota_deadline(artifact: Path, *, now: float) -> float | None:

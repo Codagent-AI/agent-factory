@@ -410,6 +410,46 @@ def test_cli_quota_result_holds_admission_without_consuming_recovery(tmp_path: P
     store.close()
 
 
+def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recovery(
+    tmp_path: Path,
+) -> None:
+    config, _board, env, _shared = _setup(tmp_path)
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    run = store.nonterminal_runs()[0]
+    artifact = Path(run.evidence_path)
+    runner_run = "implement-change-2026-09-26T00-11-40-498345707Z"
+    audit = artifact / ".runtime/agent-runner-projects/-artifacts--candidate/runs" / runner_run
+    audit.mkdir(parents=True)
+    limit = (
+        "You\u2019ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+        "to purchase more credits or try again at 4:15 PM."
+    )
+    (audit / "audit.log").write_text(
+        "2026-09-26T00:11:40Z run_start {}\n"
+        f"2026-09-26T00:27:29Z [fix-violations] step_end "
+        f"{json.dumps({'exit_code': 1, 'stdout': limit}, ensure_ascii=False)}\n",
+        encoding="utf-8",
+    )
+    (artifact / "finish").write_text(
+        json.dumps(
+            {
+                "evaluation_status": "implementation-workflow-failed",
+                "failure": {
+                    "reason": "agent-runner failed (exit 1)",
+                    "run_id": runner_run,
+                },
+            }
+        )
+    )
+    _finish(store, artifact)
+    _cli(config, env, "tick")
+    assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
+    assert store.get_hold(run.claim_id, "quota") == {"until": "2026-09-26T16:15:00+00:00"}
+    assert store.recovery_attempts(run.claim_id, run.unit_key) == 0
+    store.close()
+
+
 def test_cli_clearing_delivered_deferral_verdict_creates_fresh_claim(tmp_path: Path) -> None:
     config, board, env, shared = _setup(tmp_path)
     _cli(config, env, "tick")
