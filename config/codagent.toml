@@ -67,7 +67,7 @@ results_branch = "main"
 [eval.defaults]
 agent_runner_ref = "main"
 lead = "claude:opus:high"
-implementor = "codex:gpt-6-luna:medium"
+implementor = "claude:sonnet:medium"
 tester = "codex:gpt-6-luna:medium"
 skip_validator = false
 
