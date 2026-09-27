@@ -65,6 +65,32 @@ def test_int006_newest_pushed_checkpoint_controls_recovery(tmp_path: Path) -> No
     assert workspace.feature_checkpoint("example/work", "factory/feature-12-abcd1234") == "archived"
 
 
+def test_int006_empty_continuation_head_is_not_an_exclusion(tmp_path: Path) -> None:
+    """A claim without a continuation records continuation_head as "", not a commit."""
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    _git("checkout", "-b", "factory/feature-12-abcd1234", cwd=work)
+    (work / "plan").write_text("implemented")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "implement", "-m", "Factory-Checkpoint: implemented", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+
+    assert (
+        workspace.feature_checkpoint(
+            "example/work", "factory/feature-12-abcd1234", base_sha="", exclude_sha=""
+        )
+        == "implemented"
+    )
+
+
 def test_int006_checkpoint_does_not_inherit_merged_target_marker(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     _git("init", "--bare", str(remote))
