@@ -17,13 +17,12 @@ Pass `--no-runner` or a ref only when Paul asks. `AGENTS.md` ("Deploying") descr
 
 ## What it covers
 
-- **Agent Factory**: a new immutable release is built at `~/.agent-factory/releases/<commit>`, and the service moves to it. Running jobs keep their release, so deploying while jobs run is safe. Only the newest two releases are kept, plus any a job still uses.
-- **Agent Runner**: the checkout configured as `[repositories] agent_runner`, on `main`, is fast-forwarded to `origin/main`, and `make build` updates the host runner that fix runs use. Nothing is pushed. Evals pin their own Agent Runner ref.
+- **Agent Factory**: a new immutable release is built at `~/.agent-factory/releases/<commit>`, and the service moves to it. Running jobs keep their release, so deploy at any time, including while fixes, features, and evals run; there is no need to wait or pause first. Only the newest two releases are kept, plus any a job still uses.
+- **Agent Runner**: the checkout configured as `[repositories] agent_runner`, on `main`, is fast-forwarded to `origin/main`, and `make build` updates the host runner that fix and feature runs use. A running attempt keeps the binary it started with. Nothing is pushed. Evals pin their own Agent Runner ref.
 - **Agent Evals**: nothing to do. Each eval admission fetches `harness_ref`.
 
 ## Reading the result
 
-- **Runner step skipped because a fix or feature is running**: the factory deployed, but the host runner was not rebuilt. If the runner changed, rerun the script once the fix and feature slots are free, or tell Paul.
 - **`warning:` lines**: the runner step was skipped, for example because of uncommitted changes, a branch other than `main`, or local commits not on `origin/main`. The deploy continued without it. Report the warning and what Paul needs to resolve.
 - **Stopped with "the factory stays paused"**: report the printed failures. If `doctor` failed, the service still points at the previous release. Fix the cause and rerun the script. Do not `resume` by hand while `doctor` fails.
 - **Success**: the last line is `deployed <sha>`. Report the factory commit and the runner commit it built.

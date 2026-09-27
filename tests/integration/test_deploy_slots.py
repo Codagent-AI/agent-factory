@@ -24,24 +24,6 @@ def _holds(predicate: str, status: str) -> bool:
 
 
 @pytest.mark.parametrize(
-    ("status", "busy"),
-    [
-        (FREE, False),
-        (FREE.replace("fix slot: free", "fix slot: example/work#1 fix (running)"), True),
-        (
-            FREE.replace("feature slot: free", "feature slot: example/work#2 feature (running)"),
-            True,
-        ),
-        (FREE.replace("eval slot: free", "eval slot: example/evals#3 eval (running)"), False),
-        ("paused: false\neval slot: free\nfix slot: free\n", False),
-        ("", True),
-    ],
-)
-def test_host_runner_is_busy_while_a_fix_or_feature_runs(status: str, busy: bool) -> None:
-    assert _holds("host_runner_busy", status) is busy
-
-
-@pytest.mark.parametrize(
     ("status", "free"),
     [
         (FREE, True),

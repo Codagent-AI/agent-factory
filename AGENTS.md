@@ -24,19 +24,22 @@
 
 Use the `factory-deploy` skill, or run `scripts/deploy.sh` from any checkout of
 this repository (optionally `--no-runner`, or a factory ref; the default is
-`origin/main`). Deploying while jobs run is safe: running jobs keep their
-release, and supervisors and Fly launchers survive the resident's restart.
-The script:
+`origin/main`). You can deploy, or restart the factory, at any time, including
+while fixes, features, and evals run. There is no need to wait for a slot to
+free up or to pause first. Running jobs keep their release and the Agent
+Runner binary they started with, and supervisors and Fly launchers survive the
+resident's restart. The script:
 
 1. fast-forwards the Agent Runner checkout (`[repositories] agent_runner`, on
    `main`) to `origin/main` (`scripts/update-runner.sh`). It never pushes. It
-   skips the runner step with a warning if a fix or feature is running (the
-   host runner is rebuilt in place; see #23), or if the checkout is not on
-   `main`, has uncommitted changes, or has commits not on `origin/main`;
+   skips the runner step with a warning if the checkout is not on `main`, has
+   uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
    it already exists;
 3. pauses the factory and runs `make build` in the runner checkout, which
-   updates the host runner fix runs use;
+   updates the host runner that fix and feature runs use. `go build` renames
+   the new binary over the old one, so a running attempt keeps its binary and
+   later launches use the new one;
 4. points the plist's executable and `PATH`, and `shared_config`, at the
    release;
 5. runs `doctor`. If it fails, it points them back at the previous release and
@@ -69,8 +72,8 @@ validator's end-to-end tests. Commit any pin through a PR.
   `agent_runner_ref` (`main`). Fixes clone Agent Runner and Skills from
   `[fix.branches]` (`main`), but run the `agent-runner` installed on `PATH`,
   which `make build` last built from the Agent Runner checkout.
-  `scripts/deploy.sh` keeps that checkout on `origin/main` and rebuilds it
-  when the fix and feature slots are free.
+  `scripts/deploy.sh` keeps that checkout on `origin/main` and rebuilds it on
+  every deploy.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
