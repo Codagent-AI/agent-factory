@@ -367,15 +367,15 @@ scripts/recover-development-audits.sh --execute \
 
 ## Service management and storage
 
-Restart the controller without touching independent supervisors. `kickstart -k`
-does not re-read a changed plist, so unload and load it instead:
+You can restart the controller at any time, including while fixes, features,
+and evals run, without pausing first: supervisors, Fly launchers, and host
+attempts are independent of it, and it adopts them when it starts again.
+`kickstart -k` does not re-read a changed plist, so unload and load it instead:
 
 ```sh
-agent-factory --config /absolute/path/to/config.toml pause
 launchctl bootout gui/$(id -u)/com.codagent.agent-factory
 # wait until `launchctl print gui/$(id -u)/com.codagent.agent-factory` fails
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-factory.plist
-agent-factory --config /absolute/path/to/config.toml resume
 ```
 
 On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an

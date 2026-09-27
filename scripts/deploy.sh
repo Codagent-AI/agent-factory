@@ -8,17 +8,19 @@
 # Agent Factory: each deploy is an immutable release, a detached worktree of the
 # service clone at ~/.agent-factory/releases/<commit> with its own venv. The
 # LaunchAgent runs the newest release; processes a running job started keep the
-# release they started from, so deploying while jobs run is safe. Only the
-# resident restarts, and supervisors and Fly launchers survive that. Releases
-# beyond the newest AGENT_FACTORY_KEEP_RELEASES (default 2) are removed, but
-# only while both slots are free and no process references them.
+# release they started from, so deploy (or restart the resident) at any time,
+# including while fixes, features, and evals run. Only the resident restarts,
+# and supervisors and Fly launchers survive that. Releases beyond the newest
+# AGENT_FACTORY_KEEP_RELEASES (default 2) are removed, but only while every
+# slot is free and no process references them.
 #
 # Agent Runner: unless --no-runner, the operator's checkout is fast-forwarded
 # to origin/main (scripts/update-runner.sh), and make build updates the host
-# runner that fix and feature runs use. Nothing is pushed. The runner is rebuilt
-# in place, so its step is skipped with a warning while a fix or feature runs (see
-# agent-factory #23), and when the checkout is not on main, has uncommitted
-# changes, or has commits not on origin/main.
+# runner that fix and feature runs use. Nothing is pushed. go build replaces the
+# binary by renaming a new file over it, so a running fix or feature keeps the
+# binary it started with; later launches use the new one. The step is skipped
+# with a warning when the checkout is not on main, has uncommitted changes, or
+# has commits not on origin/main.
 #
 # Evals need nothing here: each admission fetches Agent Evals harness_ref and
 # pins its own Agent Runner ref.
@@ -86,19 +88,14 @@ if [[ $build_runner == true ]]; then
   if [[ -z $runner ]]; then
     runner=$(sed -n 's/^agent_runner = "\(.*\)"$/\1/p' "$config" | head -n 1)
   fi
-  if host_runner_busy "$status_text"; then
-    warn "a fix or feature is running on the host runner, which is rebuilt in place; skipping the runner step (rerun when the fix and feature slots are free)"
-    build_runner=false
-  else
-    # Only the source moves here; the installed runner changes at make build, after the pause.
-    runner_status=0
-    "$(dirname "$0")/update-runner.sh" "$runner" || runner_status=$?
-    case $runner_status in
-      0) ;;
-      3) build_runner=false ;;
-      *) die "could not update the Agent Runner checkout; nothing is deployed" ;;
-    esac
-  fi
+  # Only the source moves here; the installed runner changes at make build, after the pause.
+  runner_status=0
+  "$(dirname "$0")/update-runner.sh" "$runner" || runner_status=$?
+  case $runner_status in
+    0) ;;
+    3) build_runner=false ;;
+    *) die "could not update the Agent Runner checkout; nothing is deployed" ;;
+  esac
 fi
 
 # Build the release. A release is complete only once its marker exists; it is never changed after.
@@ -122,13 +119,8 @@ fi
 say "paused the factory"
 
 if [[ $build_runner == true ]]; then
-  # A fix admitted since the first check would have its runner swapped mid-attempt.
-  if host_runner_busy "$(read_status)"; then
-    warn "a fix or feature was admitted while pausing; skipping the runner build (rerun when the fix and feature slots are free)"
-  else
-    make -s -C "$runner" build >/dev/null || die "make build failed in $runner; the factory stays paused"
-    say "built Agent Runner at $(git -C "$runner" rev-parse --short HEAD) in $runner"
-  fi
+  make -s -C "$runner" build >/dev/null || die "make build failed in $runner; the factory stays paused"
+  say "built Agent Runner at $(git -C "$runner" rev-parse --short HEAD) in $runner"
 fi
 
 # Point the LaunchAgent and the local configuration at the release. The plist gets the

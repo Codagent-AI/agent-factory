@@ -134,8 +134,8 @@ Report only test counts you actually saw. Paul merges.
 ### 8. Deploy after Paul merges
 
 1. Confirm the PR is in `origin/main`.
-2. Deploying while jobs run is safe: each job keeps the release it started from. If a fix or feature is running, the script skips the Agent Runner rebuild, so rerun it once the fix and feature slots are free when the runner changed.
-3. Use the `factory-deploy` skill (`scripts/deploy.sh`; see "Deploying" in `AGENTS.md`). It prepares Agent Runner `dev` and builds a release at `origin/main`, then pauses, pushes and builds Agent Runner `dev`, and runs `doctor`. If `doctor` passes, it reloads the LaunchAgent on the release, restores the prior pause state, ticks, and removes old releases. If `doctor` fails, it points the service back at the previous release and leaves the factory paused.
+2. Deploy at any time, including while jobs run: each job keeps the release and Agent Runner binary it started from. Do not wait for slots to free up or pause first.
+3. Use the `factory-deploy` skill (`scripts/deploy.sh`; see "Deploying" in `AGENTS.md`). It fast-forwards the Agent Runner checkout on `main` and builds a release at `origin/main`, then pauses, runs `make build` for Agent Runner, and runs `doctor`. If `doctor` passes, it reloads the LaunchAgent on the release, restores the prior pause state, ticks, and removes old releases. If `doctor` fails, it points the service back at the previous release and leaves the factory paused.
 4. Check whether the PR changed the LaunchAgent template (`packaging/launchd/`) or local configuration; apply those too. The script handles dependencies. `doctor` must pass everything the next run needs.
 
 ### 9. Verify
