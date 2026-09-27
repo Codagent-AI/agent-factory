@@ -12,7 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -270,6 +270,7 @@ def status(
         lines.append(f"hidden: {len(all_claims) - len(claims)} settled or superseded claim(s)")
     if not claims:
         lines.append("current: none")
+    lines.extend(_cleanup_summary(all_claims))
     quota_error = store.get_setting("runtime", "quota-error")
     if quota_error and quota_error.get("reason"):
         lines.append(f"quota-error: {quota_error['reason']}")
@@ -1275,7 +1276,7 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
 
     if any(pending_sync(store, claim, definition) for definition in registered()):
         return True
-    if claim.cleanup.get("last_error") is not None:
+    if _cleanup_failures(claim):
         return True
     return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
 
@@ -1293,8 +1294,74 @@ def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
 
 
 def _cleanup_lines(claim: Claim) -> list[str]:
+    return [f"cleanup errors: {failure}" for failure in _cleanup_failures(claim)]
+
+
+def _cleanup_failures(claim: Claim) -> list[object]:
+    """Recorded workspace-release, pruning, and registry-image failures, from the store only."""
+    failures: list[object] = []
     error = claim.cleanup.get("last_error")
-    return [f"cleanup errors: {error}"] if error is not None else []
+    if error is not None:
+        failures.append(error)
+    retention = claim.cleanup.get("retention")
+    if isinstance(retention, Mapping):
+        errors = cast(Mapping[str, object], retention).get("errors")
+        if errors:
+            failures.append({"prune": errors})
+    image = claim.cleanup.get("fly_image")
+    if isinstance(image, Mapping):
+        values = cast(Mapping[str, object], image)
+        if values.get("state") == "failed":
+            kind = "persistent" if values.get("persistent") is True else "retrying"
+            failures.append({"fly image": values.get("error"), "kind": kind})
+    return failures
+
+
+def _cleanup_pending(claim: Claim) -> bool:
+    """A terminal claim whose release, prune, or registry image deletion is not done."""
+    if claim.lifecycle not in {"settled", "cancelled", "superseded"}:
+        return False
+    image = claim.cleanup.get("fly_image")
+    if isinstance(image, Mapping) and cast(Mapping[str, object], image).get("state") == "failed":
+        return True
+    return not _pruned(claim)
+
+
+def _pruned(claim: Claim) -> bool:
+    retention = claim.cleanup.get("retention")
+    return isinstance(retention, Mapping) and bool(
+        cast(Mapping[str, object], retention).get("pruned_at")
+    )
+
+
+def _cleanup_summary(claims: Sequence[Claim]) -> list[str]:
+    """One aggregate line; the tick measures sizes, so status never walks the file system."""
+    pending = [claim for claim in claims if _cleanup_pending(claim)]
+    if not pending and not any(_pruned(claim) for claim in claims):
+        return []
+    measured: list[int] = []
+    for claim in pending:
+        estimate = claim.cleanup.get("size_estimate")
+        size = (
+            cast(Mapping[str, object], estimate).get("bytes")
+            if isinstance(estimate, Mapping)
+            else None
+        )
+        if isinstance(size, int):
+            measured.append(size)
+    unmeasured = len(pending) - len(measured)
+    total = f"~{sum(measured) / 2**30:.1f} GiB"
+    if not measured:
+        size_text = "size not yet measured"
+    elif unmeasured:
+        size_text = f"{total} across {len(measured)} measured, {unmeasured} not yet measured"
+    else:
+        size_text = total
+    pruned = sum(1 for claim in claims if _pruned(claim))
+    failing = sum(1 for claim in claims if _cleanup_failures(claim))
+    return [
+        f"cleanup: {len(pending)} claims pending ({size_text}), {pruned} pruned, {failing} failing"
+    ]
 
 
 def _events(claim: Claim) -> list[Event]:

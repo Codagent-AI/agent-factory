@@ -156,6 +156,9 @@ class LimitsConfig:
     codex_reset_fallback_seconds: int
     memory_reservation_gib: int = 3
     evidence_retention_days: int = 14
+    # Idle release and pruning of terminal claims whose card never reaches Done.
+    abandoned_retention_days: int = 3
+    settled_retention_days: int = 14
 
 
 @dataclass(frozen=True)
@@ -314,6 +317,12 @@ class LocalConfig:
                 ),
                 evidence_retention_days=_optional_positive_int(
                     limits, "evidence_retention_days", "limits", 14
+                ),
+                abandoned_retention_days=_optional_positive_int(
+                    limits, "abandoned_retention_days", "limits", 3
+                ),
+                settled_retention_days=_optional_positive_int(
+                    limits, "settled_retention_days", "limits", 14
                 ),
             ),
             credentials=CredentialsConfig(

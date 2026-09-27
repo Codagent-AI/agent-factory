@@ -16,7 +16,7 @@ from typing import Literal, Protocol, cast
 
 from agent_factory.config import SharedConfig
 from agent_factory.github import GitHubApiError
-from agent_factory.store import ClaimStore, Run
+from agent_factory.store import Claim, ClaimStore, Run
 
 # The suite's own curated publication set; logs, sessions, and credentials never leave.
 CURATED_FILES = (
@@ -52,12 +52,12 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
         # Cancelled and superseded claims keep the results they already produced.
         if claim.kind != "eval":
             continue
-        # A Done item is scanned only until everything it produced is saved, so
+        # A finished item is scanned only until everything it produced is saved, so
         # history does not grow the per-tick cost.
         # A terminal claim produces nothing new, so it is finalized once its
         # outstanding commits succeed, just like a Done item.
         terminal = claim.lifecycle in {"cancelled", "superseded"}
-        done = terminal or claim.cleanup.get("done_observed_at") is not None
+        done = capture_finished(claim)
         if done and claim.cleanup.get("results_final") is True:
             continue
         pending = False
@@ -118,6 +118,47 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
             )
         if done and not pending:
             store.set_cleanup(claim.id, {**claim.cleanup, "results_final": True})
+
+
+def capture_finished(claim: Claim) -> bool:
+    """Whether a claim can produce no new results: abandoned, Done, or idle-released.
+
+    Publication and the capture guard share this one definition, so they agree on it.
+    """
+    return (
+        claim.lifecycle in {"cancelled", "superseded"}
+        or claim.cleanup.get("done_observed_at") is not None
+        or (claim.lifecycle == "settled" and claim.cleanup.get("released_by") == "idle")
+    )
+
+
+def capture_settled(store: ClaimStore, shared: SharedConfig, claim: Claim) -> bool:
+    """Whether every capturable repetition's current curated files are committed.
+
+    Pruning never touches the curated files, so it cannot change this answer.
+    """
+    if (
+        shared.eval.results_repository is None
+        or _RESULTS_DIRECTORIES.get(shared.eval.suite) is None
+    ):
+        return True
+    if claim.kind != "eval" or claim.cleanup.get("results_final") is True:
+        return True
+    finished = capture_finished(claim)
+    for run in store.runs_for_claim(claim.id):
+        if not store.get_setting("consumed-results", run.id):
+            continue
+        recorded = store.get_setting("eval-publication", run.id) or {}
+        if recorded.get("signature") == _signature(Path(run.evidence_path)):
+            continue
+        snapshot = _snapshot(run)
+        if snapshot is None:
+            continue
+        # One broken repetition must not pin a finished claim's disk forever.
+        if snapshot == _WAITING and finished:
+            continue
+        return False
+    return True
 
 
 def _signature(artifact: Path) -> list[list[object]]:

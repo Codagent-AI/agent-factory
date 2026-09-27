@@ -29,6 +29,13 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.get_failures: list[int] = []
         # Statuses to answer the next Machine listings with.
         self.list_failures: list[int] = []
+        # Registry tags by repository. While empty, every manifest resolves to
+        # ``manifest_digest``; once set, only these tags exist.
+        self.registry: dict[str, dict[str, str]] = {}
+        # Replies for the next registry manifest GETs and DELETEs: a status, or a status
+        # and the JSON body the registry answers with.
+        self.manifest_get_failures: list[int | tuple[int, object]] = []
+        self.manifest_delete_failures: list[int | tuple[int, object]] = []
         # Machine ids are never reused, as on Fly; a destroyed id stays retired.
         self._created = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -89,6 +96,13 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                 else:
                     self._send(404)
 
+            def _fail(self, failures: list[int | tuple[int, object]]) -> bool:
+                if not failures:
+                    return False
+                failure = failures.pop(0)
+                self._send(*failure) if isinstance(failure, tuple) else self._send(failure)
+                return True
+
             def do_GET(self) -> None:  # noqa: N802
                 self._record()
                 parsed = urlsplit(self.path)
@@ -96,8 +110,20 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     if not self.headers.get("Authorization", "").startswith("Basic "):
                         self._send(401)
                         return
+                    if self._fail(fake.manifest_get_failures):
+                        return
+                    digest = fake.manifest_digest
+                    if fake.registry:
+                        repository, reference = _manifest_reference(parsed.path)
+                        tags = fake.registry.get(repository, {})
+                        digest = tags.get(reference) or (
+                            reference if reference in tags.values() else ""
+                        )
+                        if not digest:
+                            self._send(404, _UNKNOWN)
+                            return
                     self.send_response(200)
-                    self.send_header("Docker-Content-Digest", fake.manifest_digest)
+                    self.send_header("Docker-Content-Digest", digest)
                     self.end_headers()
                 elif parsed.path.endswith("/machines") and fake.list_failures:
                     self._send(fake.list_failures.pop(0))
@@ -196,6 +222,9 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
 
             def do_DELETE(self) -> None:  # noqa: N802
                 self._record()
+                if urlsplit(self.path).path.startswith("/v2/"):
+                    self._delete_manifest()
+                    return
                 machine_id = _machine_id(urlsplit(self.path).path)
                 if fake.delete_failures:
                     self._send(fake.delete_failures.pop(0))
@@ -204,7 +233,30 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                 else:
                     self._send(200, fake.machines.pop(machine_id))
 
+            def _delete_manifest(self) -> None:
+                if not self.headers.get("Authorization", "").startswith("Basic "):
+                    self._send(401)
+                    return
+                if self._fail(fake.manifest_delete_failures):
+                    return
+                repository, digest = _manifest_reference(urlsplit(self.path).path)
+                tags = fake.registry.get(repository, {})
+                if digest not in tags.values():
+                    self._send(404, _UNKNOWN)
+                    return
+                # Deleting by digest removes every tag that points at the manifest.
+                fake.registry[repository] = {t: d for t, d in tags.items() if d != digest}
+                self._send(202)
+
         return Handler
+
+
+_UNKNOWN = {"errors": [{"code": "MANIFEST_UNKNOWN", "message": "manifest unknown"}]}
+
+
+def _manifest_reference(path: str) -> tuple[str, str]:
+    repository, reference = path.removeprefix("/v2/").rsplit("/manifests/", 1)
+    return repository, reference
 
 
 def _machine_id(path: str) -> str:

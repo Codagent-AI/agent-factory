@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -17,9 +19,12 @@ from agent_factory.controller import (
     ExecutionPlan,
     RequestSnapshot,
 )
+from agent_factory.fly.api import FlyMachinesClient
+from agent_factory.fly.images import reconcile_claim_image
 from agent_factory.fly.transport import resolve_claude_login
 from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic, model_authentication
+from agent_factory.retention import CleanupBudget
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import (
     AndSceneAdapter,
@@ -43,6 +48,8 @@ from agent_factory.work_kinds.base import (
     providers_from_roles,
 )
 from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
+
+logger = logging.getLogger(__name__)
 
 
 class EvalHandler:
@@ -107,6 +114,7 @@ class EvalHandler:
                 execution=local.eval_execution,
                 fly=local.fly,
                 total_seconds=local.limits.total_seconds,
+                settled_retention_days=local.limits.settled_retention_days,
             ),
             manager=GitWorktreeManager(local.storage_root, sources),
             fallback_seconds=local.limits.codex_reset_fallback_seconds,
@@ -488,9 +496,88 @@ class EvalHandler:
             mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
         )
 
-    def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
+    def cleanup(
+        self,
+        claim: Claim,
+        *,
+        board_status: str = "",
+        idle: bool = False,
+        on_board: bool = True,
+        budget: CleanupBudget | None = None,
+    ) -> None:
+        if self._store is None:
+            return
         if self._worktree_cleanup is not None:
-            self._worktree_cleanup.reconcile(claim.id, board_status=board_status)
+            self._release(claim, board_status, idle=idle, on_board=on_board, budget=budget)
+        self._reconcile_image(claim, budget)
+
+    def _release(
+        self,
+        claim: Claim,
+        board_status: str,
+        *,
+        idle: bool,
+        on_board: bool,
+        budget: CleanupBudget | None,
+    ) -> None:
+        assert self._store is not None and self._worktree_cleanup is not None
+        current = self._store.get_claim(claim.id) or claim
+        released_before = current.cleanup.get("complete") is True
+        released = self._worktree_cleanup.reconcile(
+            claim.id, board_status=board_status, idle=idle, budget=budget
+        )
+        if (
+            released
+            and not released_before
+            and idle
+            and on_board
+            and board_status != "Done"
+            and current.lifecycle == "settled"
+            and any(key.endswith(":review-command") for key in _event_keys(current))
+        ):
+            # Events are delivered only through the card, so an off-board claim gets none.
+            self._store.record_event(claim.id, "review-window-lapsed", self._lapse_message())
+
+    def _reconcile_image(self, claim: Claim, budget: CleanupBudget | None) -> None:
+        """Delete the claim's Fly image once unused; a failure never stops other cleanup."""
+        store, local = self._store, self._local
+        if store is None or local is None or local.fly is None:
+            return
+        fly = local.fly
+        current = store.get_claim(claim.id) or claim
+        try:
+            reconcile_claim_image(
+                store,
+                current,
+                local,
+                client_factory=lambda: FlyMachinesClient(fly.app, fly.token_file),
+                now=datetime.now(UTC),
+                budget=budget,
+            )
+        except Exception as error:  # noqa: BLE001 - recorded for status, retried next poll
+            logger.exception("Fly image cleanup failed for claim %s", claim.id)
+            latest = store.get_claim(claim.id) or current
+            previous = mapping(latest.cleanup.get("fly_image"))
+            store.set_cleanup(
+                claim.id,
+                {
+                    **latest.cleanup,
+                    "fly_image": {
+                        **previous,
+                        "state": "failed",
+                        "error": f"{type(error).__name__}: {error}",
+                        "persistent": False,
+                    },
+                },
+            )
+
+    def _lapse_message(self) -> str:
+        days = self._local.limits.settled_retention_days if self._local is not None else 14
+        return (
+            "The optional human-review window has ended: this request settled more than "
+            f"{days} days ago and its item stayed outside Done, so the retained suite "
+            "worktree was released. The automated results remain saved."
+        )
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
         body = _completion_message(run.unit_key, stored_result)
@@ -591,6 +678,10 @@ def plan_attempt(
         allowed_environment={**plan.allowed_environment, "IMAGE": tag},
         ownership_hints={**plan.ownership_hints, "image_tag": tag},
     )
+
+
+def _event_keys(claim: Claim) -> list[str]:
+    return list(mapping(claim.reporting.get("events")))
 
 
 def _claim_image_digest(runs: Sequence[Run]) -> str | None:

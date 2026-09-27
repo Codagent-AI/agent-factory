@@ -1,16 +1,18 @@
-"""Age-based pruning of settled claims' attempt evidence."""
+"""Age-based pruning of terminal claims' attempt evidence, and the idle clock it shares."""
 
 from __future__ import annotations
 
-import shutil
-from collections.abc import Mapping
+import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from agent_factory.config import LocalConfig
+from agent_factory.config import LimitsConfig, LocalConfig
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.work_kinds.base import WorkKindHandler
+from agent_factory.work_kinds.pull_request.cleanup import remove_tree
 from agent_factory.work_kinds.pull_request.kinds import registered
 from agent_factory.work_kinds.pull_request.sync import pending_sync
 
@@ -28,7 +30,93 @@ _EVAL_REP_REMOVE = (
     ".runtime/agent-session-state",
     ".runtime/judge-workspace",
     ".runtime/judge",
+    # The candidate checkout the suite built; a standalone clone with its own `.git`.
+    ".runtime/candidate-worktree",
 )
+
+TERMINAL = frozenset({"settled", "cancelled", "superseded"})
+# Facts about one terminal period; a claim that becomes active again starts a fresh cycle.
+# `paths`, `fly_image`, and `done_observed_at` describe finished work and are kept.
+_CYCLE_KEYS = (
+    "terminal_observed_at",
+    "complete",
+    "released_by",
+    "last_error",
+    "review_observed",
+    "retention",
+    "results_final",
+    "size_estimate",
+)
+
+
+@dataclass
+class CleanupBudget:
+    """Heavy cleanup work one tick may do, shared by the on-board loop and the sweep."""
+
+    removals: int = 5  # workspace releases and evidence prunes, combined
+    registry: int = 5  # claims whose Fly image deletion makes registry calls
+    measurements: int = 2  # size estimates
+
+    def take(self, kind: str) -> bool:
+        left = cast(int, getattr(self, kind))
+        if left <= 0:
+            return False
+        setattr(self, kind, left - 1)
+        return True
+
+
+def take(budget: CleanupBudget | None, kind: str) -> bool:
+    """A missing budget is unlimited, as for callers outside the tick."""
+    return budget is None or budget.take(kind)
+
+
+def observe_terminal(cleanup: dict[str, object], lifecycle: str, now: datetime) -> bool:
+    """Record the first terminal observation; on a non-terminal lifecycle, reset the cycle."""
+    if lifecycle in TERMINAL:
+        if cleanup.get("terminal_observed_at") is None:
+            cleanup["terminal_observed_at"] = now.isoformat()
+            return True
+        return False
+    if cleanup.get("terminal_observed_at") is None:
+        return False
+    for key in _CYCLE_KEYS:
+        cleanup.pop(key, None)
+    return True
+
+
+def idle_due(claim: Claim, *, card_done: bool, now: datetime, limits: LimitsConfig) -> bool:
+    """Whether a terminal claim has been idle for its lifecycle's period.
+
+    A settled claim whose card is Done is idle-due only while its Done cleanup never ran,
+    as when its card was never observed in Review.
+    """
+    if claim.lifecycle in {"cancelled", "superseded"}:
+        days = limits.abandoned_retention_days
+    elif claim.lifecycle == "settled":
+        if card_done and claim.cleanup.get("complete") is True:
+            return False
+        days = limits.settled_retention_days
+    else:
+        return False
+    observed = _parse(claim.cleanup.get("terminal_observed_at"))
+    return observed is not None and now - observed >= timedelta(days=days)
+
+
+def machine_recorded(store: ClaimStore, claim_id: str) -> bool:
+    """A Fly Machine record, kept until disposal is confirmed, including a quota-hold stop."""
+    return any(
+        record.get("claim_id") == claim_id
+        for record in store.get_settings_by_prefix("runtime", "fly:machine:").values()
+    )
+
+
+def _parse(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def reconcile(
@@ -39,13 +127,24 @@ def reconcile(
     now: datetime,
     *,
     handler: WorkKindHandler | None = None,
+    on_board: bool = True,
+    capture_settled: Callable[[Claim], bool] | None = None,
+    budget: CleanupBudget | None = None,
 ) -> None:
-    """Observe a Done board status and prune eligible evidence, both every poll."""
+    """Observe Done and terminal lifecycles and prune eligible evidence, both every poll.
+
+    An off-board claim is not currently Done, so its Done observation is cleared.
+    """
     cleanup = dict(claim.cleanup)
-    if _observe_done(cleanup, board_status, now):
+    changed = _observe_done(cleanup, board_status if on_board else "", now)
+    changed = observe_terminal(cleanup, claim.lifecycle, now) or changed
+    if changed:
         store.set_cleanup(claim.id, cleanup)
-    retention_days = local.limits.evidence_retention_days
-    if not _eligible(store, claim, cleanup, board_status, now, retention_days, handler):
+    claim = replace(claim, cleanup=cleanup)
+    card_done = on_board and board_status == "Done"
+    if not _eligible(store, local, claim, card_done, now, handler, capture_settled):
+        return
+    if not take(budget, "removals"):
         return
     _prune(store, claim, cleanup, now, handler)
 
@@ -64,27 +163,36 @@ def _observe_done(cleanup: dict[str, object], board_status: str, now: datetime) 
 
 def _eligible(
     store: ClaimStore,
+    local: LocalConfig,
     claim: Claim,
-    cleanup: Mapping[str, object],
-    board_status: str,
+    card_done: bool,
     now: datetime,
-    retention_days: int,
     handler: WorkKindHandler | None,
+    capture_settled: Callable[[Claim], bool] | None,
 ) -> bool:
     # Cheapest checks first: an already-pruned or not-yet-eligible claim costs no queries.
+    # Active, waiting, and blocked claims may still need their evidence.
+    cleanup = claim.cleanup
+    if claim.lifecycle not in TERMINAL:
+        return False
     retention = cleanup.get("retention")
     if isinstance(retention, Mapping) and cast(Mapping[str, object], retention).get("pruned_at"):
         return False
-    if board_status != "Done":
+    # Retention waits on the claim's workspace release, whichever path released it.
+    if cleanup.get("complete") is not True:
         return False
-    observed_at = cleanup.get("done_observed_at")
-    if not isinstance(observed_at, str):
-        return False
-    try:
-        observed = datetime.fromisoformat(observed_at)
-    except ValueError:
-        return False
-    if now - observed < timedelta(days=retention_days):
+    done_observed = _parse(cleanup.get("done_observed_at"))
+    done_path = (
+        card_done
+        and done_observed is not None
+        and now - done_observed >= timedelta(days=local.limits.evidence_retention_days)
+    )
+    # A settled claim in Done is judged by the Done path alone, so moving a card to Done
+    # always grants the full evidence retention period to what remains.
+    idle_path = not (claim.lifecycle == "settled" and card_done) and idle_due(
+        claim, card_done=card_done, now=now, limits=local.limits
+    )
+    if not (done_path or idle_path):
         return False
     runs = store.runs_for_claim(claim.id)
     if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
@@ -97,13 +205,9 @@ def _eligible(
         else any(pending_sync(store, claim, definition) for definition in registered())
     ):
         return False
-    # Retention is for finished claims. A settled claim also waits on its Review-then-Done
-    # clone, image, and credential cleanup. A cancelled claim releases those as soon as
-    # execution stops and a superseded claim never has a cleanup pass, so neither waits on
-    # `complete`. Active, waiting, and blocked claims may still need their evidence.
-    if claim.lifecycle in {"cancelled", "superseded"}:
-        return True
-    return claim.lifecycle == "settled" and cleanup.get("complete") is True
+    if machine_recorded(store, claim.id):
+        return False
+    return capture_settled is None or capture_settled(claim)
 
 
 def _prune(
@@ -119,8 +223,8 @@ def _prune(
         if not path.exists():
             continue
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
+            if path.is_dir() and not path.is_symlink():
+                remove_tree(path)
             else:
                 path.unlink()
         except OSError as error:
@@ -131,8 +235,86 @@ def _prune(
     retention["errors"] = errors
     if not errors:
         retention["pruned_at"] = now.isoformat()
+        cleanup["size_estimate"] = {"bytes": 0, "measured_at": now.isoformat()}
     cleanup["retention"] = retention
     store.set_cleanup(claim.id, cleanup)
+
+
+def measure(
+    store: ClaimStore,
+    claim: Claim,
+    handler: WorkKindHandler | None,
+    now: datetime,
+    budget: CleanupBudget | None,
+) -> None:
+    """Estimate once the local space a terminal claim still holds, for `status` to read.
+
+    Terminal claims do not grow, so the estimate is never refreshed; a prune zeroes it.
+    """
+    cleanup = claim.cleanup
+    if claim.lifecycle not in TERMINAL or cleanup.get("size_estimate") is not None:
+        return
+    retention = cleanup.get("retention")
+    if isinstance(retention, Mapping) and cast(Mapping[str, object], retention).get("pruned_at"):
+        return
+    if not take(budget, "measurements"):
+        return
+    paths = [] if cleanup.get("complete") is True else _release_targets(claim)
+    paths.extend(_removal_targets(store, claim, handler))
+    size = sum(_tree_size(path) for path in dict.fromkeys(paths))
+    current = store.get_claim(claim.id) or claim
+    store.set_cleanup(
+        claim.id,
+        {**current.cleanup, "size_estimate": {"bytes": size, "measured_at": now.isoformat()}},
+    )
+
+
+def _release_targets(claim: Claim) -> list[Path]:
+    """Recorded eval worktrees and fix or feature clones, as each kind's release records them."""
+    targets: list[Path] = []
+    paths = claim.cleanup.get("paths")
+    if isinstance(paths, Mapping):
+        for record in cast(Mapping[str, object], paths).values():
+            path = (
+                cast(Mapping[str, object], record).get("path")
+                if isinstance(record, Mapping)
+                else None
+            )
+            if isinstance(path, str):
+                targets.append(Path(path))
+    clones = claim.preparation.get("clones")
+    if isinstance(clones, Mapping):
+        targets.extend(
+            Path(path)
+            for path in cast(Mapping[str, object], clones).values()
+            if isinstance(path, str)
+        )
+    return targets
+
+
+def _tree_size(path: Path) -> int:
+    """Bytes under ``path``, never following a symbolic link out of the tree."""
+    try:
+        if not path.is_dir() or path.is_symlink():
+            return path.lstat().st_size
+    except OSError:
+        return 0
+    total = 0
+    pending = [str(path)]
+    while pending:
+        try:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return total
 
 
 def _removal_targets(

@@ -6,6 +6,7 @@ live in ``test_fly_readiness.py``; this file covers the remaining obligations.
 
 from __future__ import annotations
 
+import base64
 import threading
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
@@ -367,3 +368,91 @@ def test_create_reports_a_400_that_persists_with_fly_reason(tmp_path: Path) -> N
         assert raised.value.status == 400
         assert "failed to get manifest" in str(raised.value)
         assert api.machines == {}
+
+
+# INT-005: registry manifest delete over HTTP.
+
+REPO = "agent-factory-sandbox"
+CLAIM_DIGEST = "sha256:" + "d" * 64
+BASE_DIGEST = "sha256:" + "b" * 64
+
+
+def _registry(fly: Harness) -> FlyMachinesClient:
+    fly.api.registry = {REPO: {"claim-abc123def456": CLAIM_DIGEST, "base": BASE_DIGEST}}
+    return FlyMachinesClient(
+        "app", fly.client.token_file, base_url=fly.api.base_url, registry_base_url=fly.api.base_url
+    )
+
+
+def _headers(request: dict[str, object]) -> dict[str, str]:
+    return {str(k).lower(): str(v) for k, v in cast(dict[str, str], request["headers"]).items()}
+
+
+def test_delete_manifest_deletes_by_digest_with_basic_auth(fly: Harness) -> None:
+    client = _registry(fly)
+
+    client.delete_manifest(REPO, CLAIM_DIGEST)
+
+    request = fly.requests("DELETE")[-1]
+    assert request["path"] == f"/v2/{REPO}/manifests/{CLAIM_DIGEST}"
+    authorization = _headers(request)["authorization"]
+    assert authorization.startswith("Basic ")
+    assert base64.b64decode(authorization.removeprefix("Basic ")) == b"x:deploy-token"
+    assert "claim-abc123def456" not in fly.api.registry[REPO]
+    assert client.resolve_manifest(f"registry.fly.io/{REPO}:base") == BASE_DIGEST
+    with pytest.raises(FlyApiError) as raised:
+        client.resolve_manifest(f"registry.fly.io/{REPO}:claim-abc123def456")
+    assert raised.value.status == 404
+
+
+def test_delete_manifest_accepts_an_unknown_manifest(fly: Harness) -> None:
+    client = _registry(fly)
+
+    client.delete_manifest(REPO, "sha256:" + "e" * 64)
+
+    assert fly.api.registry[REPO] == {"claim-abc123def456": CLAIM_DIGEST, "base": BASE_DIGEST}
+
+
+def test_delete_manifest_reports_an_unsupported_deletion(fly: Harness) -> None:
+    client = _registry(fly)
+    fly.api.manifest_delete_failures.append(
+        (405, {"errors": [{"code": "UNSUPPORTED", "message": "The operation is unsupported."}]})
+    )
+
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest(REPO, CLAIM_DIGEST)
+
+    assert raised.value.status == 405
+    assert raised.value.reason == "UNSUPPORTED"
+    assert fly.api.registry[REPO]["claim-abc123def456"] == CLAIM_DIGEST
+
+
+def test_delete_manifest_reports_a_server_error(fly: Harness) -> None:
+    client = _registry(fly)
+    fly.api.manifest_delete_failures.append(500)
+
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest(REPO, CLAIM_DIGEST)
+
+    assert raised.value.status == 500
+
+
+def test_delete_manifest_reports_an_unreachable_registry(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("deploy-token\n", encoding="utf-8")
+    client = FlyMachinesClient(
+        "app", token, base_url="http://127.0.0.1:9", registry_base_url="http://127.0.0.1:9"
+    )
+
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest(REPO, CLAIM_DIGEST)
+
+    assert raised.value.status is None
+
+
+def test_delete_manifest_never_sends_a_bearer_token(fly: Harness) -> None:
+    client = _registry(fly)
+
+    client.delete_manifest(REPO, CLAIM_DIGEST)
+
+    assert "bearer" not in _headers(fly.requests("DELETE")[-1])["authorization"].lower()

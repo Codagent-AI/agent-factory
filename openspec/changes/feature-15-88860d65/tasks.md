@@ -1,4 +1,4 @@
-- [ ] [Clean up finished claims outside Done and delete their Fly images](tasks/01-terminal-claim-cleanup.md)
+- [x] [Clean up finished claims outside Done and delete their Fly images](tasks/01-terminal-claim-cleanup.md)
 
 ## Operator gates (not implementor tasks)
 

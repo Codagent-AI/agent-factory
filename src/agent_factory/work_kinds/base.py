@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     )
     from agent_factory.github import IssueComment, ProjectQueueItem
     from agent_factory.operations import Diagnostic
+    from agent_factory.retention import CleanupBudget
     from agent_factory.store import Claim, ClaimDraft, ClaimStore, Run
     from agent_factory.suites.and_scene import PreparedWorktrees
     from agent_factory.supervisor import SupervisionLimits
@@ -120,7 +121,15 @@ class WorkKindHandler(Protocol):
 
     def providers(self, claim: Claim) -> set[str]: ...
 
-    def cleanup(self, claim: Claim, *, board_status: str = "") -> None: ...
+    def cleanup(
+        self,
+        claim: Claim,
+        *,
+        board_status: str = "",
+        idle: bool = False,
+        on_board: bool = True,
+        budget: CleanupBudget | None = None,
+    ) -> None: ...
 
     def attach_store(self, store: ClaimStore) -> None: ...
 

@@ -1,7 +1,8 @@
 """Releases a fix claim's clones, run images, and credential copies.
 
 A settled claim is released after Review then Done; a cancelled claim is released as soon
-as its execution has stopped, since its card may never travel through Review.
+as its execution has stopped, since its card may never travel through Review. A settled or
+superseded claim is also released once it has been idle for its lifecycle's period.
 """
 
 from __future__ import annotations
@@ -11,10 +12,13 @@ import shutil
 import stat
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore
 from agent_factory.work_kinds.images import remove_images, run_image_tags
+
+if TYPE_CHECKING:
+    from agent_factory.retention import CleanupBudget
 
 
 class PullRequestCleanup:
@@ -24,20 +28,31 @@ class PullRequestCleanup:
         self._store = store
         self._private_root = private_root
 
-    def reconcile(self, claim_id: str, *, board_status: str) -> bool:
+    def reconcile(
+        self,
+        claim_id: str,
+        *,
+        board_status: str,
+        idle: bool = False,
+        budget: CleanupBudget | None = None,
+    ) -> bool:
         claim = self._store.get_claim(claim_id)
         if claim is None:
             return False
         cleanup = dict(claim.cleanup)
         if cleanup.get("complete") is True:
             return True
+        stopping = any(
+            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim_id)
+        )
         if claim.lifecycle == "cancelled":
             # Cancellation stops execution asynchronously; the clones and the token copy are
             # released once no attempt can still be using them, whatever the card status.
-            runs = self._store.runs_for_claim(claim_id)
-            if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
+            if stopping:
                 return False
-            return self._release(claim, cleanup)
+            return self._release(claim, cleanup, budget)
+        if idle and claim.lifecycle in {"settled", "superseded"} and not stopping:
+            return self._release(claim, cleanup, budget, released_by="idle")
         if claim.lifecycle != "settled":
             return False
         if board_status == "Review":
@@ -47,9 +62,18 @@ class PullRequestCleanup:
             return False
         if board_status != "Done" or cleanup.get("review_observed") is not True:
             return False
-        return self._release(claim, cleanup)
+        return self._release(claim, cleanup, budget)
 
-    def _release(self, claim: Claim, cleanup: dict[str, object]) -> bool:
+    def _release(
+        self,
+        claim: Claim,
+        cleanup: dict[str, object],
+        budget: CleanupBudget | None,
+        *,
+        released_by: str | None = None,
+    ) -> bool:
+        if budget is not None and not budget.take("removals"):
+            return False
         claim_id = claim.id
         errors: dict[str, str] = {}
         clones = claim.preparation.get("clones")
@@ -58,7 +82,7 @@ class PullRequestCleanup:
                 if not isinstance(path, str):
                     continue
                 try:
-                    _remove_tree(path)
+                    remove_tree(path)
                 except FileNotFoundError:
                     pass
                 except OSError as error:
@@ -67,6 +91,8 @@ class PullRequestCleanup:
         errors.update(self._remove_credential_copies(claim_id))
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
+        if released_by is not None:
+            cleanup["released_by"] = released_by
         self._store.set_cleanup(claim_id, cleanup)
         return not errors
 
@@ -92,7 +118,7 @@ class PullRequestCleanup:
         return errors
 
 
-def _remove_tree(path: str) -> None:
+def remove_tree(path: Path | str) -> None:
     """Remove a clone even where tools left it read-only, as Go's module cache does."""
 
     def restore_write(function: Callable[..., object], target: str, error: BaseException) -> None:

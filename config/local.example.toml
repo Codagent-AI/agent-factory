@@ -29,6 +29,12 @@ memory_reservation_gib = 3
 # factory prunes logs, session state, and agent output (keeping outcome/result
 # records, issue input, candidate branches, and PRs).
 evidence_retention_days = 14
+# Terminal claims whose card never reaches Done are released and pruned after an idle
+# period from the first time the factory observed them terminal: cancelled and
+# superseded claims after abandoned_retention_days, settled claims outside Done (or off
+# the board) after settled_retention_days, which also ends their human-review window.
+abandoned_retention_days = 3
+settled_retention_days = 14
 
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"

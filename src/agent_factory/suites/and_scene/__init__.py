@@ -7,6 +7,7 @@ only in immutable claims, reserved runs, and normalized attempt results.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -18,15 +19,19 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
 from agent_factory.store import ClaimStore
 
+if TYPE_CHECKING:
+    from agent_factory.retention import CleanupBudget
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
+_TERMINAL = frozenset({"settled", "cancelled", "superseded"})
 # The dry run only parses arguments; a harness that stalls must not stall readiness.
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
@@ -172,6 +177,11 @@ class GitWorktreeManager:
             capture_output=True,
             check=False,
         )
+        if completed.returncode != 0 and target.is_dir() and not any(target.iterdir()):
+            # A removal interrupted after git dropped the worktree's files and metadata
+            # leaves an empty directory; a registered worktree always holds its `.git`.
+            with contextlib.suppress(OSError):
+                target.rmdir()
         if completed.returncode != 0 and target.exists() and not suppress_errors:
             raise WorktreeError(
                 _command_error(f"cannot remove recorded worktree {target}", completed)
@@ -189,8 +199,10 @@ class AndSceneAdapter:
         execution: str = "docker",
         fly: FlyLocalConfig | None = None,
         total_seconds: int = 18000,
+        settled_retention_days: int = 14,
     ) -> None:
         self._environment_file = environment_file.resolve()
+        self._settled_retention_days = settled_retention_days
         self._mac_name = mac_name
         self._execution = execution
         self._fly = fly
@@ -493,7 +505,10 @@ class AndSceneAdapter:
             "in Review. The automated results are saved to the eval repository without it; "
             "a completed review is added to them on a later tick.\n"
             f"Run: {command}\n"
-            "Moving the item to Done releases the retained suite worktree, reviewed or not."
+            "The command remains usable until the item moves to Done or until "
+            f"{self._settled_retention_days} days after the request settles while the item "
+            "is outside Done, whichever comes first; either releases the retained suite "
+            "worktree, reviewed or not."
         )
 
     def failure_quota_until(
@@ -566,7 +581,7 @@ class AndSceneAdapter:
 
 
 class WorktreeCleanup:
-    """Durably releases only worktrees retained through a Review handoff."""
+    """Durably releases recorded worktrees after a Review handoff or an idle period."""
 
     def __init__(self, store: ClaimStore, manager: GitWorktreeManager) -> None:
         self._store = store
@@ -586,11 +601,25 @@ class WorktreeCleanup:
             claim_id, {"review_observed": False, "complete": False, "paths": paths}
         )
 
-    def reconcile(self, claim_id: str, *, board_status: str) -> bool:
+    def reconcile(
+        self,
+        claim_id: str,
+        *,
+        board_status: str,
+        idle: bool = False,
+        budget: CleanupBudget | None = None,
+    ) -> bool:
+        """Release after Review then Done, or, when ``idle``, for any terminal claim."""
         claim = self._store.get_claim(claim_id)
-        if claim is None or claim.lifecycle != "settled":
+        if claim is None:
             return False
         cleanup = dict(claim.cleanup)
+        if idle and claim.lifecycle in _TERMINAL:
+            if cleanup.get("complete") is True:
+                return True
+            return self._release(claim_id, cleanup, budget, idle=True)
+        if claim.lifecycle != "settled":
+            return False
         if board_status == "Review":
             if cleanup.get("review_observed") is not True:
                 cleanup["review_observed"] = True
@@ -600,19 +629,39 @@ class WorktreeCleanup:
             return False
         if cleanup.get("complete") is True:
             return True
-        try:
-            worktrees = _recorded_worktrees(claim_id, cleanup)
-        except WorktreeError as error:
-            cleanup["complete"] = False
-            cleanup["last_error"] = {"cleanup": str(error)}
-            self._store.set_cleanup(claim_id, cleanup)
-            return False
-        errors = self._manager.remove(worktrees)
+        return self._release(claim_id, cleanup, budget, idle=False)
+
+    def _release(
+        self,
+        claim_id: str,
+        cleanup: dict[str, object],
+        budget: CleanupBudget | None,
+        *,
+        idle: bool,
+    ) -> bool:
         from agent_factory.work_kinds.images import remove_images, run_image_tags
 
-        errors.update(remove_images(run_image_tags(self._store, claim_id)))
+        tags = run_image_tags(self._store, claim_id)
+        # An idle claim that recorded nothing, such as one cancelled before preparation,
+        # has nothing to release and completes without drawing on the budget.
+        recorded = not idle or cleanup.get("paths") is not None
+        if (recorded or tags) and budget is not None and not budget.take("removals"):
+            return False
+        errors: dict[str, str] = {}
+        if recorded:
+            try:
+                worktrees = _recorded_worktrees(claim_id, cleanup)
+            except WorktreeError as error:
+                cleanup["complete"] = False
+                cleanup["last_error"] = {"cleanup": str(error)}
+                self._store.set_cleanup(claim_id, cleanup)
+                return False
+            errors.update(self._manager.remove(worktrees))
+        errors.update(remove_images(tags))
         cleanup["complete"] = not errors
         cleanup["last_error"] = errors or None
+        if idle:
+            cleanup["released_by"] = "idle"
         self._store.set_cleanup(claim_id, cleanup)
         return not errors
 

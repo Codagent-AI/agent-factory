@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from agent_factory.config import FixTarget, LocalConfig, ScheduleConfig, SharedConfig
 from agent_factory.controller import (
@@ -49,6 +49,9 @@ from agent_factory.work_kinds.pull_request.kinds import PullRequestKind, Reconci
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 from agent_factory.work_kinds.pull_request.readiness import check_readiness
 from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
+
+if TYPE_CHECKING:
+    from agent_factory.retention import CleanupBudget
 
 Resolver = Callable[[FixTarget], tuple[str, str, str]]
 logger = logging.getLogger(__name__)
@@ -1171,9 +1174,18 @@ class PullRequestHandler:
             lines.append("- attempt 1 starts fresh")
         return "\n".join(lines)
 
-    def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
+    def cleanup(
+        self,
+        claim: Claim,
+        *,
+        board_status: str = "",
+        idle: bool = False,
+        on_board: bool = True,
+        budget: CleanupBudget | None = None,
+    ) -> None:
+        del on_board  # fix and feature claims record no event when released
         if self._cleanup is not None:
-            self._cleanup.reconcile(claim.id, board_status=board_status)
+            self._cleanup.reconcile(claim.id, board_status=board_status, idle=idle, budget=budget)
 
 
 def attempt_evidence(run: Run) -> Path:

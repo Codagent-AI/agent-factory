@@ -74,6 +74,20 @@ def _http_reason(error: HTTPError) -> str:
     return " ".join(str(parsed).split())[:300] if parsed else ""
 
 
+def _registry_code(error: HTTPError) -> str:
+    """The registry's own error code, such as ``UNSUPPORTED``, which never echoes the token."""
+    try:
+        parsed: object = json.loads(error.read(2048).decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return ""
+    errors = (
+        cast(Mapping[str, object], parsed).get("errors") if isinstance(parsed, Mapping) else None
+    )
+    first = cast(list[object], errors)[0] if isinstance(errors, list) and errors else None
+    code = cast(Mapping[str, object], first).get("code") if isinstance(first, Mapping) else None
+    return str(code)[:100] if isinstance(code, str) else ""
+
+
 def _retry_after(header: str | None, attempt: int) -> float:
     """Honour the server's hint when it gives one, else back off 1, 2, 4... seconds."""
     if header and header.strip().isdigit():
@@ -116,7 +130,7 @@ class FlyMachinesClient:
         token_file: Path,
         *,
         base_url: str | None = None,
-        registry_base_url: str = "https://registry.fly.io",
+        registry_base_url: str = "https://registry.fly.io",  # overridable only for a local fake
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._sleep = sleep
@@ -128,7 +142,9 @@ class FlyMachinesClient:
             base_url or os.environ.get("AGENT_FACTORY_FLY_API_URL") or "https://api.machines.dev"
         )
         self._cached_token: str | None = None
-        self.registry_base_url = _encrypted_endpoint(registry_base_url)
+        self.registry_base_url = _encrypted_endpoint(
+            os.environ.get("AGENT_FACTORY_FLY_REGISTRY_URL") or registry_base_url
+        )
 
     def _token(self) -> str:
         # A deploy token is static for the life of a client; read it once.
@@ -311,6 +327,35 @@ class FlyMachinesClient:
     def get_app(self) -> Mapping[str, object]:
         return _mapping(self._request(f"/v1/apps/{self.app}"))
 
+    def _registry_request(self, path: str, method: str) -> Request:
+        request = Request(f"{self.registry_base_url}{path}", method=method)
+        # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
+        # user name and the token as the password.
+        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
+        request.add_header("Authorization", f"Basic {credentials}")
+        request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
+        return request
+
+    def delete_manifest(self, repository: str, digest: str) -> None:
+        """Delete one manifest by digest; a manifest the registry does not know is gone.
+
+        Deleting by digest removes every tag pointing at it, so callers first confirm the
+        digest is the one their own tag resolves to.
+        """
+        repo = repository.removeprefix("registry.fly.io/")
+        path = f"/v2/{repo}/manifests/{digest}"
+        try:
+            with _OPENER.open(self._registry_request(path, "DELETE"), timeout=20):
+                return
+        except HTTPError as error:
+            if error.code == 404:
+                return
+            reason = _registry_code(error)
+            detail = f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}"
+            raise FlyApiError(path, error.code, detail, reason) from error
+        except (URLError, OSError) as error:
+            raise FlyApiError(path, detail="manifest could not be deleted") from error
+
     def resolve_manifest(self, image: str) -> str:
         if "@" in image:
             repository, tag = image.split("@", 1)
@@ -320,14 +365,8 @@ class FlyMachinesClient:
             )
         repo = repository.removeprefix("registry.fly.io/")
         path = f"/v2/{repo}/manifests/{tag}"
-        request = Request(f"{self.registry_base_url}{path}", method="GET")
-        # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
-        # user name and the token as the password.
-        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
-        request.add_header("Authorization", f"Basic {credentials}")
-        request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
         try:
-            with _OPENER.open(request, timeout=20) as response:
+            with _OPENER.open(self._registry_request(path, "GET"), timeout=20) as response:
                 digest = response.headers.get("Docker-Content-Digest")
         except HTTPError as error:
             raise FlyApiError(path, error.code, f"HTTP {error.code}") from error

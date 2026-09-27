@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -397,3 +398,139 @@ def test_a_cancelled_claims_incomplete_run_stops_being_scanned(
 
     assert client.commits == []
     assert scanned == []
+
+
+# INT-004: the results-capture guard follows real publication state.
+
+
+def _reload(store: ClaimStore, claim: Claim) -> Claim:
+    current = store.get_claim(claim.id)
+    assert current is not None
+    return current
+
+
+def _settle(store: ClaimStore, claim: Claim) -> None:
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "pending-human-review"})
+
+
+def test_capture_guard_follows_each_repetitions_committed_snapshot(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    from agent_factory.work_kinds.eval.publication import capture_settled
+
+    claim, _, first = _finished(store, tmp_path, "rep-1")
+    _finished(store, tmp_path, "rep-2")
+    _settle(store, claim)
+    shared = _shared()
+    client = RecordingClient()
+
+    assert capture_settled(store, shared, _reload(store, claim)) is False
+
+    publish_eval_results(store, client, shared)
+    assert len(client.commits) == 2
+    assert capture_settled(store, shared, _reload(store, claim)) is True
+
+    (first / "human-review.json").write_text(json.dumps({"complete": False}), encoding="utf-8")
+    assert capture_settled(store, shared, _reload(store, claim)) is False
+
+    publish_eval_results(store, client, shared)
+    assert capture_settled(store, shared, _reload(store, claim)) is True
+
+
+def test_capture_guard_is_satisfied_without_a_results_repository(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    from agent_factory.work_kinds.eval.publication import capture_settled
+
+    claim, _, _ = _finished(store, tmp_path)
+    _settle(store, claim)
+
+    assert capture_settled(store, _shared(None), _reload(store, claim)) is True
+
+
+def test_capture_guard_ignores_non_eval_claims(store: ClaimStore, tmp_path: Path) -> None:
+    from agent_factory.work_kinds.eval.publication import capture_settled
+
+    claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
+
+    assert capture_settled(store, _shared(), claim) is True
+
+
+def test_an_incomplete_repetition_blocks_only_until_capture_is_finished(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    from agent_factory.work_kinds.eval.publication import capture_finished, capture_settled
+
+    claim, _, artifact = _finished(store, tmp_path)
+    (artifact / "report.html").unlink()
+    _settle(store, claim)
+    shared = _shared()
+
+    assert capture_finished(_reload(store, claim)) is False
+    assert capture_settled(store, shared, _reload(store, claim)) is False
+
+    store.set_cleanup(claim.id, {"released_by": "idle", "complete": True})
+    assert capture_finished(_reload(store, claim)) is True
+    assert capture_settled(store, shared, _reload(store, claim)) is True
+
+    cancelled, _, _ = _finished(store, tmp_path, "rep-2")
+    store.set_claim_lifecycle(cancelled.id, "cancelled", {"verdict": "cancelled"})
+    store.set_cleanup(cancelled.id, {})
+    assert capture_finished(_reload(store, cancelled)) is True
+
+
+def test_an_idle_released_settled_claim_is_finalized_and_no_longer_scanned(
+    store: ClaimStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.work_kinds.eval import publication
+    from agent_factory.work_kinds.eval.publication import capture_finished, capture_settled
+
+    claim, _, _ = _finished(store, tmp_path)
+    _settle(store, claim)
+    # In Review or off the board alike, the claim has no Done observation.
+    store.set_cleanup(claim.id, {"released_by": "idle", "complete": True})
+    shared = _shared()
+    client = RecordingClient()
+
+    publish_eval_results(store, client, shared)
+
+    finalized = _reload(store, claim)
+    assert finalized.cleanup["results_final"] is True
+    assert capture_finished(finalized) is True
+    assert capture_settled(store, shared, finalized) is True
+    stats: list[Path] = []
+    original = publication._signature  # pyright: ignore[reportPrivateUsage]
+
+    def counting(artifact: Path) -> list[list[object]]:
+        stats.append(artifact)
+        return original(artifact)
+
+    monkeypatch.setattr(publication, "_signature", counting)
+    publish_eval_results(store, client, shared)
+    assert stats == []
+    assert len(client.commits) == 1
+
+
+def test_pruning_leaves_the_published_signature_unchanged(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    from agent_factory.retention import eval_rep_targets
+    from agent_factory.work_kinds.eval.publication import capture_settled
+
+    claim, run, artifact = _finished(store, tmp_path)
+    (artifact / ".runtime" / "candidate-worktree").mkdir(parents=True)
+    _settle(store, claim)
+    shared = _shared()
+    client = RecordingClient()
+    publish_eval_results(store, client, shared)
+
+    for target in eval_rep_targets(run):
+        if target.is_dir():
+            shutil.rmtree(target)
+        elif target.exists():
+            target.unlink()
+
+    assert not (artifact / ".runtime" / "candidate-worktree").exists()
+    assert capture_settled(store, shared, _reload(store, claim)) is True
+    publish_eval_results(store, client, shared)
+    assert len(client.commits) == 1

@@ -86,15 +86,20 @@ validator's end-to-end tests. Commit any pin through a PR.
   reinstalled for each claim.
 - The registry can take about a minute to serve a just-pushed image; Fly then
   answers a Machine create with HTTP 400 `failed to get manifest`.
-- Old `claim-` tags are not removed yet (see
-  https://github.com/Codagent-AI/agent-factory/issues/15).
+- A claim's `claim-` tag is deleted from the registry once the claim is
+  terminal and no Machine is recorded for it. Failures show in `status`; see
+  "Fly image deletion" in `docs/operations.md`.
 
 ## Disk space
 
 Admission stops below `minimum_free_gib` (5 GiB). Space goes mainly to
-`~/.agent-factory/artifacts` and `clones`, which are cleaned only after a card
-reaches Done, and to Docker Desktop's disk image. Automated cleanup is tracked
-in https://github.com/Codagent-AI/agent-factory/issues/15.
+`~/.agent-factory/artifacts` and `clones`, and to Docker Desktop's disk image.
+Terminal claims release their worktrees and clones, then prune their evidence,
+after Done or after an idle period with the card outside Done or off the board
+(`[limits] abandoned_retention_days`, default 3, for cancelled and superseded
+claims; `settled_retention_days`, default 14, for settled ones), at most 5 per
+tick. The `cleanup:` line of `status` shows what is pending and how much space
+it holds. Mirrors, releases, and Docker Desktop are not cleaned automatically.
 
 ## Shell on this Mac
 

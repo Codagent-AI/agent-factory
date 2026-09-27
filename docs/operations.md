@@ -23,8 +23,9 @@ Evals can run in Fly.io Machines instead of Docker. One-time setup:
    per claim. It tags `claim-<first 12 claim id characters>` and pins the
    digest for every attempt.
    `[fly] image` names the repository to push to; its configured tag is ignored.
-   The launcher writes a temporary app config outside the checkout. Old
-   `claim-` registry tags are not removed automatically.
+   The launcher writes a temporary app config outside the checkout. A claim's
+   image is deleted from the registry once no work can use it; see "Fly image
+   deletion" below.
 4. Install `flyctl` where the LaunchAgent's PATH can find it.
 5. In `local.toml` set `[eval] execution = "fly"` and a `[fly]` table (see
    `config/local.example.toml`). Defaults: region `ewr`, `shared` CPUs, 4 CPUs,
@@ -389,38 +390,124 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image; both are cleaned up once the claim reaches Done, but
-mirrors persist and grow slowly with history. When a reviewed card moves to
-Done, Factory removes only its recorded owned worktrees, clones, and images;
-it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
-only prunes evidence under the rule below.
+per-run Docker image; both are cleaned up once the claim reaches Done or its
+idle period below ends, but mirrors persist and grow slowly with history. When
+a reviewed card moves to Done, Factory removes only its recorded owned
+worktrees, clones, and images; it never deletes candidate branches, PRs,
+mirrors, or shared checkouts, and it only prunes evidence under the rule below.
 
-**Evidence retention.** A configurable retention period, `[limits]
-evidence_retention_days` (default 14), bounds how long a settled claim's
-evidence is kept. The clock starts the first time Factory durably observes a
-claim's card as Done; observing any other status resets it, so moving a card
-back out of Done and later returning it to Done restarts the period from that
-later observation. Once the period has elapsed since that observation, and
-the claim has no non-terminal or unverified run, no unfinished reporting, no
-pending post-merge sync, and (for a non-superseded claim) its worktree, clone,
-image, and credential cleanup has completed, the next tick prunes that
-claim's evidence: logs, Runner and agent session state, and agent output
-under each attempt's artifact directory (and, for a host attempt, its
-recorded Runner session directory). It keeps the fix outcome or eval result
-and provenance records, the attempt's issue input, and never touches
-candidate branches, PRs, mirrors, SQLite history, or the operator's working
-clones. A superseded claim is pruned on the same conditions judged on its own
-runs and reporting, without waiting on cleanup it never performs. Pruning is
+**Idle release of terminal claims.** A terminal claim (settled, cancelled, or
+superseded) whose card never reaches Done is still cleaned up. The first time a
+tick observes a claim terminal it records `cleanup.terminal_observed_at`; this
+never acts retroactively, so after an upgrade the clock starts at that first
+observation. Once the claim's idle period has passed since then, the next
+successful poll releases its recorded worktrees, clones, run images, and
+credential copies (`cleanup.released_by` is `idle`) and then prunes its
+evidence under the rule below:
+
+- cancelled and superseded claims: `[limits] abandoned_retention_days`
+  (default 3);
+- settled claims whose card is in any status other than Done, or has left the
+  board: `[limits] settled_retention_days` (default 14). This also ends the
+  optional human-review window; a settled eval in Review that received a review
+  command gets one `review-window-lapsed` comment when its worktree is
+  released. A settled claim whose card is Done but whose Done cleanup never ran
+  (it was never seen in Review) gets the same idle release, and its evidence
+  then follows the Done path.
+
+Nothing is released or pruned while a run is non-terminal or unverified, or a
+Fly Machine is still recorded for the claim (including one stopped for a quota
+hold). Active, waiting, and blocked claims are never touched. A claim that
+becomes active again, such as a settled fix reopened for a review round, has
+its terminal observation and its cleanup and pruning progress cleared, so the
+round's fresh clones and token copies are released and pruned again after it
+settles.
+
+**Claims off the board.** After every successful board read, Factory also
+visits each terminal claim in the store whose card is no longer on the board,
+longest idle first, and applies the same observation, release, pruning, and
+image deletion to it (an off-board claim gets no comment, since comments are
+delivered through the card). A failed or partial board read ends the tick
+before this sweep, so a missing card is never taken as removed.
+
+**Per-tick bound.** One tick performs at most 5 workspace releases and evidence
+prunes combined, registry calls for at most 5 claims, and at most 2 size
+measurements, on-board claims first; observations are always recorded, and
+later ticks continue a backlog. The first ticks after day 3 and day 14 of an
+upgrade drain the accumulated backlog this way, at about 5 claims per poll.
+
+**Fly image deletion.** Under Fly execution, each eval claim's image,
+`<[fly] image repository>:claim-<first 12 claim id characters>`, is deleted
+from the registry on the first successful poll after the claim is terminal
+with no non-terminal run and no recorded Machine; it waits for no card status
+or retention period. Factory deletes only a digest it recorded for that claim
+(`image-build.json`), and first confirms with a manifest GET that the claim's
+tag still resolves to it; a missing tag counts as already deleted. It never
+deletes `[fly] image` itself or any tag it did not record. The outcome is kept
+in `cleanup.fly_image` (`state` is `complete`, `none`, or `failed`, with
+`digests`, `error`, `persistent`, `attempts`, and `retry_after`):
+
+- a network error, timeout, authentication failure, rate limit, or server error
+  is retried after a backoff of 5 minutes, doubling up to 6 hours;
+- a tag that resolves to another digest, a record for another repository, or a
+  registry that answers that deletion is unsupported (HTTP 405 or
+  `UNSUPPORTED`) is a persistent failure and is not retried. After checking the
+  registry by hand, clear it by removing the `fly_image` key from the claim's
+  `cleanup` JSON in `state.sqlite3` (with the factory paused); the next poll
+  tries again.
+
+Image deletion runs apart from Machine disposal and reconciliation, so a
+registry failure never delays them, other claims' cleanup, or admission.
+
+**Evidence retention.** A terminal claim's evidence is pruned on either of two
+paths. On the Done path, a configurable period, `[limits]
+evidence_retention_days` (default 14), runs from the first time Factory durably
+observes the claim's card as Done; observing any other status resets it, so
+moving a card back out of Done and later returning it to Done restarts the
+period from that later observation. On the idle path, the claim's idle period
+above has passed with its card outside Done or off the board. A settled claim
+whose card is Done is judged by the Done path alone, so moving a card to Done
+always grants the full evidence retention period to what remains.
+
+On either path the claim must also have no non-terminal or unverified run, no
+recorded Fly Machine, no unfinished reporting, no pending post-merge sync,
+every capturable eval repetition's current curated files committed to the
+results repository (when one is configured), and its workspace release
+completed (`cleanup.complete`, on every lifecycle). The next tick then prunes
+the claim's evidence: logs, Runner and agent session state, and agent output
+under each attempt's artifact directory, each eval repetition's
+`.runtime/candidate-worktree` (the standalone candidate clone the suite built,
+usually most of the space), and, for a host attempt, its recorded Runner
+session directory. Read-only files, such as those `node_modules` leaves, are
+removed too. It keeps the fix outcome or eval result and provenance records,
+the curated result files, the attempt's issue input, and any file it does not
+recognise, and never touches candidate branches, PRs, mirrors, SQLite history,
+the eval results repository, or the operator's working clones. Pruning is
 retried on later polls if a removal fails; `claim.cleanup.retention` records
-what was removed and any failures — inspect it with `status --all` or by
-reading the claim's row in `state.sqlite3` directly. This check runs from the
-per-claim loop on every tick, so history predating this rule is covered
-automatically: the first tick after upgrading records the Done observation
-for old claims and prunes them only after the retention period from that
-observation, not retroactively.
+what was removed and any failures. History predating this rule is covered
+automatically: the first tick after upgrading records the Done and terminal
+observations for old claims and prunes them only after the applicable period
+from that observation, not retroactively.
+
+**Cleanup in `status`.** `status` summarises terminal-claim cleanup in one line,
+for example:
+
+```text
+cleanup: 12 claims pending (~4.3 GiB across 7 measured, 5 not yet measured), 31 pruned, 2 failing
+```
+
+Pending claims are terminal claims whose release, pruning, or image deletion is
+not done. Their size is measured once by a tick and stored in
+`cleanup.size_estimate`; `status` only reads it, so it names the claims not yet
+measured rather than presenting a partial sum as the whole (`(~4.3 GiB)` when
+all are measured, `(size not yet measured)` when none are). Each claim with a
+recorded release, pruning, or image-deletion failure is listed individually
+with its reason; no claim is listed only because its cleanup is pending.
 
 For a ready-for-human-review result, use the absolute, quoted command in the
 Factory report on the Mac holding its retained artifacts and harness worktree.
-That command is available until the reviewed item moves to Done. Factory does
+That command is available until the reviewed item moves to Done or, while the
+item stays outside Done, until `settled_retention_days` after the request
+settled, whichever comes first. Factory does
 not run human ratings, assign an official pass, close the issue, merge a PR, or
 claim that a static plist proves live launchd acceptance.

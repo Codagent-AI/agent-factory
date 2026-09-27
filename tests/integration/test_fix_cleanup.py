@@ -234,3 +234,115 @@ def test_cancelled_claim_is_released_once_execution_stopped(tmp_path: Path) -> N
     assert claim is not None
     assert claim.cleanup["complete"] is True
     assert cleanup.reconcile(claim_id, board_status="Done") is True
+
+
+# INT-003: idle release of fix and feature clones and credential copies.
+
+
+def _claim_with_workspace(
+    store: ClaimStore, tmp_path: Path, *, kind: str = "fix", name: str = "round-1"
+) -> tuple[str, Path, Path]:
+    claim = store.create_claim(ClaimDraft("example/work", 7, "I7", "P7", kind, "fp", {}))
+    clone, token = _round(store, claim.id, tmp_path, name)
+    return claim.id, clone, token
+
+
+def _round(store: ClaimStore, claim_id: str, tmp_path: Path, name: str) -> tuple[Path, Path]:
+    """What admission records for one attempt: its clones, and a private token copy."""
+    clone = tmp_path / "clones" / name
+    clone.mkdir(parents=True)
+    (clone / "marker.txt").write_text("hi")
+    store.set_preparation(claim_id, {"clones": {"repo": str(clone)}})
+    run = store.reserve_run(claim_id, "fix", reason="initial", evidence_path=str(tmp_path / "a"))
+    token = tmp_path / "private" / run.id / "fix.env"
+    token.parent.mkdir(parents=True)
+    token.write_text("GH_TOKEN=secret\n")
+    store.configure_run(run.id, plan={"credential_files": [str(token)]}, limits={})
+    store.finish_run(run.id, execution_status="completed", result={})
+    return clone, token
+
+
+def test_idle_release_frees_a_settled_claim_in_review(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone, token = _claim_with_workspace(store, tmp_path)
+    store.set_claim_lifecycle(claim_id, "settled", {"verdict": "pending-human-review"})
+    working_clone = tmp_path / "operator-clone"
+    working_clone.mkdir()
+    cleanup = PullRequestCleanup(store, private_root=tmp_path / "private")
+
+    assert cleanup.reconcile(claim_id, board_status="Review") is False
+    assert clone.exists() and token.exists()
+
+    assert cleanup.reconcile(claim_id, board_status="Review", idle=True) is True
+
+    assert not clone.exists()
+    assert not token.parent.exists()
+    assert working_clone.exists()
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    assert claim.cleanup["complete"] is True
+    assert claim.cleanup["released_by"] == "idle"
+
+
+def test_idle_release_frees_a_superseded_feature_claim(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone, token = _claim_with_workspace(store, tmp_path, kind="feature")
+    replacing = store.supersede_and_create(
+        claim_id, ClaimDraft("example/work", 7, "I7", "P7", "feature", "fp2", {})
+    )
+    replacing_clone = tmp_path / "clones" / "replacing"
+    replacing_clone.mkdir(parents=True)
+    store.set_preparation(replacing.id, {"clones": {"repo": str(replacing_clone)}})
+    cleanup = PullRequestCleanup(store, private_root=tmp_path / "private")
+
+    assert cleanup.reconcile(claim_id, board_status="Review") is False
+    assert clone.exists()
+
+    assert cleanup.reconcile(claim_id, board_status="", idle=True) is True
+
+    assert not clone.exists()
+    assert not token.parent.exists()
+    assert replacing_clone.exists()
+
+
+def test_idle_flag_leaves_the_cancelled_path_unchanged(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone, private = _cancelled_claim_with_clone_and_token(
+        store, tmp_path, run_status="cancelled"
+    )
+    cleanup = PullRequestCleanup(store, private_root=tmp_path / "private")
+
+    assert cleanup.reconcile(claim_id, board_status="Running", idle=False) is True
+
+    assert not clone.exists() and not private.exists()
+    claim = store.get_claim(claim_id)
+    assert claim is not None and "released_by" not in claim.cleanup
+
+
+def test_idle_release_never_touches_active_claims(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone, token = _claim_with_workspace(store, tmp_path)
+
+    assert cleanup_for(store, tmp_path).reconcile(claim_id, board_status="", idle=True) is False
+
+    assert clone.exists() and token.exists()
+
+
+def test_a_spent_budget_defers_the_release(tmp_path: Path) -> None:
+    from agent_factory.retention import CleanupBudget
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, clone, _ = _claim_with_workspace(store, tmp_path)
+    store.set_claim_lifecycle(claim_id, "settled", {"verdict": "pending-human-review"})
+    cleanup = cleanup_for(store, tmp_path)
+
+    spent = CleanupBudget(removals=0)
+    assert cleanup.reconcile(claim_id, board_status="", idle=True, budget=spent) is False
+    assert clone.exists()
+
+    assert cleanup.reconcile(claim_id, board_status="", idle=True, budget=CleanupBudget()) is True
+    assert not clone.exists()
+
+
+def cleanup_for(store: ClaimStore, tmp_path: Path) -> PullRequestCleanup:
+    return PullRequestCleanup(store, private_root=tmp_path / "private")

@@ -450,3 +450,65 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
 def _identity_pid(identity: dict[str, object]) -> int | None:
     value = identity.get("pid")
     return value if isinstance(value, int) else None
+
+
+def _registry_deletes(factory: Factory) -> list[str]:
+    return [
+        str(r["path"])
+        for r in factory.api.requests
+        if r["method"] == "DELETE" and str(r["path"]).startswith("/v2/")
+    ]
+
+
+def test_e2e_003_a_claims_image_is_deleted_only_after_its_machine_is_gone(
+    factory: Factory,
+) -> None:
+    store, api = factory.store, factory.api
+    data = json.loads(factory.board.read_text())
+    body = str(data["items"][0]["content"]["body"]).replace("repetitions=3", "repetitions=1")
+    data["items"][0]["content"]["body"] = body
+    factory.board.write_text(json.dumps(data))
+    factory.env["AGENT_FACTORY_FLY_REGISTRY_URL"] = api.base_url
+
+    factory.cli("tick")
+    run = factory.active()
+    _wait(lambda: "machine-1" in api.machines, factory)
+    _wait(lambda: factory.run(run.id).progress.get("checkpoint_seen") is True, factory)
+    tag = f"claim-{run.claim_id[:12]}"
+    built = json.loads((Path(run.evidence_path) / ".factory/image-build.json").read_text())
+    digest = built["digest"]
+    assert built["tag"] == tag
+    api.registry = {"app": {tag: digest, "base": "sha256:base"}}
+    api.manifest_delete_failures.extend([500] * 3)
+
+    factory.cli("tick")
+    assert _registry_deletes(factory) == [], "no DELETE while the claim runs"
+
+    factory.guests.finish("machine-1", REVIEWABLE)
+    _wait(lambda: factory.run(run.id).status == "completed", factory)
+    factory.cli("tick")
+
+    # Disposal went ahead although the registry failed.
+    assert "machine-1" not in api.machines
+    assert store.get_setting("runtime", "fly:machine:" + run.id) is None
+    assert _registry_deletes(factory) == [f"/v2/app/manifests/{digest}"]
+    assert api.registry["app"][tag] == digest
+    claim = store.get_claim(run.claim_id)
+    assert claim is not None and claim.lifecycle == "settled"
+    image = cast(dict[str, object], claim.cleanup["fly_image"])
+    assert image["state"] == "failed" and image["persistent"] is False
+    assert "fly image" in factory.cli("status")
+
+    # The registry recovers; the retry is due once its backoff has passed.
+    api.manifest_delete_failures.clear()
+    store.set_cleanup(
+        claim.id, {**claim.cleanup, "fly_image": {**image, "retry_after": "2000-01-01T00:00:00"}}
+    )
+    factory.cli("tick")
+
+    assert tag not in api.registry["app"]
+    assert api.registry["app"]["base"] == "sha256:base"
+    finished = store.get_claim(run.claim_id)
+    assert finished is not None
+    assert cast(dict[str, object], finished.cleanup["fly_image"])["state"] == "complete"
+    assert "fly image" not in factory.cli("status")

@@ -40,7 +40,7 @@ from agent_factory.suites.and_scene import (
 )
 from agent_factory.supervisor import launch_supervisor
 from agent_factory.work_kinds.base import Feedback, Preparation, WorkKindHandler, card_status
-from agent_factory.work_kinds.eval.publication import publish_eval_results
+from agent_factory.work_kinds.eval.publication import capture_settled, publish_eval_results
 
 logger = logging.getLogger(__name__)
 
@@ -120,17 +120,33 @@ def cycle(state: Path, config_path: Path) -> None:
             )
             return not reason
 
+        # One budget bounds the tick's heavy cleanup; on-board claims draw on it first.
+        budget = retention.CleanupBudget()
+
+        def capture(candidate: Claim) -> bool:
+            return capture_settled(store, shared, candidate)
+
+        visited: set[str] = set()
         for card in cards:
             claims = store.claims_for_item(card.id)
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
             for claim in claims:
+                visited.add(claim.id)
                 handler = controller.handler(claim.kind)
                 retention.reconcile(
-                    store, local, claim, card_status(shared, card), now, handler=handler
+                    store,
+                    local,
+                    claim,
+                    card_status(shared, card),
+                    now,
+                    handler=handler,
+                    capture_settled=capture,
+                    budget=budget,
                 )
                 claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "superseded":
+                    _clean_up(store, local, handler, claim, card_status(shared, card), now, budget)
                     continue
                 if card.source.state.lower() == "closed" and _should_cancel(claim):
                     controller.cancel(claim.id)
@@ -204,8 +220,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     claim, issue_state=card.source.state
                 ):
                     _report(store, controller, client, shared, card, claim.id, handler)
-                if handler is not None:
-                    handler.cleanup(claim, board_status=card_status(shared, card))
+                _clean_up(store, local, handler, claim, card_status(shared, card), now, budget)
+        # Reached only after a complete board read, so a missing card means off the board.
+        _sweep_off_board(store, controller, local, visited, now, capture, budget)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
@@ -273,6 +290,92 @@ def cycle(state: Path, config_path: Path) -> None:
             except (WorktreeError, ReadinessError) as error:
                 _hold_for_readiness(store, claim.id, error)
                 _report(store, controller, client, shared, card, claim.id, handler)
+
+
+def _clean_up(
+    store: ClaimStore,
+    local: LocalConfig,
+    handler: WorkKindHandler | None,
+    claim: Claim,
+    board_status: str,
+    now: datetime,
+    budget: retention.CleanupBudget,
+    *,
+    on_board: bool = True,
+) -> None:
+    """Release the claim's workspace when due, then measure what it still holds.
+
+    ``idle`` is judged on the claim as it is now, after any review round was admitted.
+    """
+    if handler is None:
+        return
+    claim = store.get_claim(claim.id) or claim
+    idle = (
+        retention.idle_due(
+            claim,
+            card_done=on_board and board_status == "Done",
+            now=now,
+            limits=local.limits,
+        )
+        and not any(
+            run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)
+        )
+        and not retention.machine_recorded(store, claim.id)
+    )
+    handler.cleanup(claim, board_status=board_status, idle=idle, on_board=on_board, budget=budget)
+    retention.measure(store, store.get_claim(claim.id) or claim, handler, now, budget)
+
+
+def _sweep_off_board(
+    store: ClaimStore,
+    controller: Controller,
+    local: LocalConfig,
+    visited: set[str],
+    now: datetime,
+    capture: Callable[[Claim], bool],
+    budget: retention.CleanupBudget,
+) -> None:
+    """Clean up terminal claims whose card has left the board, longest idle first."""
+    pending = [
+        claim
+        for claim in store.all_claims()
+        if claim.id not in visited
+        and claim.lifecycle in retention.TERMINAL
+        and not _cleanup_finished(claim, local)
+    ]
+    # Claims observed for the first time are only observed this tick, so they go last.
+    pending.sort(key=lambda claim: str(claim.cleanup.get("terminal_observed_at") or "~"))
+    for claim in pending:
+        handler = controller.handler(claim.kind)
+        retention.reconcile(
+            store,
+            local,
+            claim,
+            "",
+            now,
+            handler=handler,
+            on_board=False,
+            capture_settled=capture,
+            budget=budget,
+        )
+        _clean_up(store, local, handler, claim, "", now, budget, on_board=False)
+
+
+def _cleanup_finished(claim: Claim, local: LocalConfig) -> bool:
+    """Pruned, with no registry image deletion left to do."""
+    retention_state = claim.cleanup.get("retention")
+    if not (
+        isinstance(retention_state, Mapping)
+        and cast(Mapping[str, object], retention_state).get("pruned_at")
+    ):
+        return False
+    if claim.kind != "eval" or local.fly is None:
+        return True
+    image = claim.cleanup.get("fly_image")
+    return isinstance(image, Mapping) and cast(Mapping[str, object], image).get("state") in {
+        "complete",
+        "none",
+    }
 
 
 def _hold_for_readiness(store: ClaimStore, claim_id: str, error: Exception) -> None:

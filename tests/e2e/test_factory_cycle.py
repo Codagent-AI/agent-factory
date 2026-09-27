@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from agent_factory.config import SharedConfig
-from agent_factory.store import ClaimStore
+from agent_factory.store import ClaimDraft, ClaimStore
 
 
 def _git(path: Path, *args: str) -> str:
@@ -173,8 +173,11 @@ if '/collaborators/' in endpoint: result={{'permission':'write'}}
 elif endpoint=='graphql':
  if 'query Fields' in q:
   result={{'data':{{'node':{{'fields':{{'nodes':s['fields'],'pageInfo':{{'hasNextPage':False}}}}}}}}}}
+ elif 'query Items' in q and s.get('fail_second_page') and v.get('cursor'):
+  result={{'errors':[{{'message':'second page failed'}}]}}
  elif 'query Items' in q:
-  result={{'data':{{'node':{{'items':{{'nodes':s['items'],'pageInfo':{{'hasNextPage':False}}}}}}}}}}
+  more=bool(s.get('fail_second_page'))
+  result={{'data':{{'node':{{'items':{{'nodes':s['items'],'pageInfo':{{'hasNextPage':more,'endCursor':'p2'}}}}}}}}}}
  else:
   item=next(x for x in s['items'] if x['id']==v['item']);vals=item['fieldValues']['nodes']
   vals[:]=[x for x in vals if x['field']['id']!=v['field']]
@@ -185,6 +188,12 @@ elif '/comments' in endpoint:
   result={{'id':len(s['comments'])+1,'body':body['body'],'user':{{'login':{shared.bot_login!r}}}}};s['comments'].append(result)
  else: result=s['comments']
 elif '/labels' in endpoint: result=[]
+elif '/git/' in endpoint:
+ g=s.setdefault('git',[]);g.append(endpoint);n=str(len(g))
+ if '/git/ref/heads/' in endpoint: result={{'object':{{'sha':'parent'}}}}
+ elif '/git/commits/' in endpoint: result={{'tree':{{'sha':'base-tree'}}}}
+ elif endpoint.endswith(('/git/blobs','/git/trees','/git/commits')): result={{'sha':'sha-'+n}}
+ else: result={{}}
 else: raise Exception('Unexpected gh request '+repr(args))
 p.write_text(json.dumps(s));print(json.dumps(result))
 """
@@ -215,7 +224,7 @@ def _cli(
     *,
     before_cli: str = "",
     expected_error: str | None = None,
-) -> None:
+) -> str:
     # Stub the HTTP authentication boundary just as gh stubs the Project API.
     # The real Bearer exchange is covered with a local HTTP server separately.
     # Fix only the admission hour; quota/recovery clocks retain their real timestamps.
@@ -247,6 +256,7 @@ urllib.request.urlopen = token_response
         assert done.returncode != 0
         assert "Traceback (most recent call last)" in done.stderr
         assert expected_error in done.stderr
+    return done.stdout
 
 
 def _field_value(board: Path, field_id: str) -> str | None:
@@ -304,6 +314,10 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
         assert not (tmp_path / "factory/worktrees" / run.claim_id / "runner").exists()
         assert (artifact / "result.json").exists()
         assert len(store.runs_for_claim(run.claim_id)) == 1
+        # Done before the settled retention period: the Done cleanup, and no lapse event.
+        released = store.get_claim(run.claim_id)
+        assert released is not None and "released_by" not in released.cleanup
+        assert "human-review window has ended" not in board.read_text()
     finally:
         (artifact / "finish").touch()
         store.close()
@@ -992,4 +1006,271 @@ eval_handler.plan_attempt = fail_plan
         assert claim.lifecycle == "settled"
         assert claim.outcome["verdict"] == "infra-error"
     finally:
+        store.close()
+
+
+# -- idle cleanup of terminal claims (feature 15) ----------------------------
+
+
+def _comments(board: Path) -> list[str]:
+    return [str(c["body"]) for c in json.loads(board.read_text())["comments"]]
+
+
+def _backdate(store: ClaimStore, claim_id: str, days: int) -> None:
+    claim = store.get_claim(claim_id)
+    assert claim is not None
+    observed = datetime.now(UTC) - timedelta(days=days)
+    store.set_cleanup(claim_id, {**claim.cleanup, "terminal_observed_at": observed.isoformat()})
+
+
+def _write_rep_outputs(artifact: Path) -> None:
+    """What the suite leaves besides result.json: curated files, logs, and its candidate."""
+    for name in (
+        "report.html",
+        "ambiguity-ledger.json",
+        "implementation.diff",
+        "artifact-manifest.json",
+    ):
+        (artifact / name).write_text(name)
+    (artifact / "logs").mkdir(exist_ok=True)
+    (artifact / "logs" / "harness.log").write_text("log")
+    candidate = artifact / ".runtime" / "candidate-worktree"
+    (candidate / ".git").mkdir(parents=True)
+    (candidate / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (candidate / "index.js").write_text("x")
+
+
+def test_e2e_001_settled_eval_left_in_review_is_released_announced_and_pruned(
+    tmp_path: Path,
+) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    run = store.nonterminal_runs()[0]
+    artifact = Path(run.evidence_path)
+    worktrees = tmp_path / "factory/worktrees" / run.claim_id
+    try:
+        deadline = time.monotonic() + 5
+        while not (artifact / "started").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        _write_rep_outputs(artifact)
+        result = {
+            "evaluation_status": "pending-human-review",
+            "product_verdict": "unavailable",
+            "automated_subtotal": 60,
+            "run_id": "and-scene-run-1",
+        }
+        (artifact / "finish").write_text(json.dumps(result))
+        _finish(store, artifact)
+        _cli(config, env, "pause")
+        _cli(config, env, "tick")
+        claim = store.get_claim(run.claim_id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert claim.cleanup.get("terminal_observed_at") is not None
+        assert any("human-review.sh" in body for body in _comments(board))
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+        _backdate(store, run.claim_id, 15)
+
+        # Tick 1: the suite worktree is released and the lapse event queued.
+        _cli(config, env, "tick")
+        assert not (worktrees / "runner").exists()
+        assert not any("human-review window has ended" in c for c in _comments(board))
+        assert [e.key for e in store.pending_events(run.claim_id)] == ["review-window-lapsed"]
+        assert (artifact / "logs" / "harness.log").exists()
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+
+        # Tick 2: the event is posted; the evidence waited on it.
+        _cli(config, env, "tick")
+        lapsed = [c for c in _comments(board) if "human-review window has ended" in c]
+        assert len(lapsed) == 1
+        assert (artifact / "logs" / "harness.log").exists()
+
+        # Tick 3: the evidence is pruned; results and curated files remain.
+        _cli(config, env, "tick")
+        assert not (artifact / "logs").exists()
+        assert not (artifact / ".runtime" / "candidate-worktree").exists()
+        assert (artifact / "result.json").exists()
+        assert (artifact / "implementation.diff").exists()
+        claim = store.get_claim(run.claim_id)
+        assert claim is not None and claim.cleanup["results_final"] is True
+
+        comments = len(_comments(board))
+        _cli(config, env, "tick")
+        assert len(_comments(board)) == comments
+        assert "cleanup: 0 claims pending (size not yet measured), 1 pruned, 0 failing" in _cli(
+            config, env, "status"
+        )
+    finally:
+        (artifact / "finish").touch()
+        store.close()
+
+
+def _seed_card(board: Path, shared: SharedConfig, item_id: str, status: str) -> None:
+    data: Any = json.loads(board.read_text())
+    data["items"].append(
+        {
+            "id": item_id,
+            "content": {
+                "__typename": "Issue",
+                "id": item_id + "-issue",
+                "number": 500 + len(data["items"]),
+                "body": "seeded",
+                "state": "OPEN",
+                "author": {"login": "writer"},
+                "repository": {"nameWithOwner": "example/seeded"},
+                "labels": {"nodes": []},
+                "issueType": None,
+            },
+            "fieldValues": {
+                "nodes": [
+                    {
+                        "field": {"id": shared.project.status.id},
+                        "optionId": shared.project.status.option(status),
+                    },
+                    {
+                        "field": {"id": shared.project.owner.id},
+                        "optionId": shared.project.owner.option("factory"),
+                    },
+                ]
+            },
+        }
+    )
+    board.write_text(json.dumps(data))
+
+
+def _seed_eval(
+    store: ClaimStore, root: Path, item_id: str, lifecycle: str, *, idle_days: int | None
+) -> tuple[str, Path]:
+    """A terminal eval claim with repetition evidence and a released workspace."""
+    claim = store.create_claim(ClaimDraft("example/seeded", 1, "I", item_id, "eval", "fp", {}))
+    evidence = root / f"{claim.id}-rep-1"
+    for name in ("logs/harness.log", ".runtime/candidate-worktree/HEAD", "result.json"):
+        (evidence / name).parent.mkdir(parents=True, exist_ok=True)
+        (evidence / name).write_text("x")
+    seeded = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(evidence))
+    store.finish_run(seeded.id, execution_status="cancelled", result={})
+    store.set_claim_lifecycle(claim.id, lifecycle, {"verdict": "cancelled"})
+    cleanup: dict[str, object] = {"complete": True}
+    if idle_days is not None:
+        observed = datetime.now(UTC) - timedelta(days=idle_days)
+        cleanup["terminal_observed_at"] = observed.isoformat()
+    store.set_cleanup(claim.id, cleanup)
+    return claim.id, evidence
+
+
+def test_e2e_002_off_board_claims_are_swept_only_after_a_complete_board_read(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.suites.and_scene import (
+        GitWorktreeManager,
+        SourceRepositories,
+        WorktreeCleanup,
+    )
+
+    config, board, env, _ = _setup(tmp_path)
+    _cli(config, env, "pause")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    artifacts = tmp_path / "factory/artifacts"
+    # A cancelled fix whose card was removed: clones, a token copy, and attempt evidence.
+    fix = store.create_claim(ClaimDraft("example/work", 3, "I3", "GONE-1", "fix", "fp", {}))
+    clone = tmp_path / "seed-clone"
+    (clone / "src").mkdir(parents=True)
+    store.set_preparation(fix.id, {"clones": {"repo": str(clone)}})
+    fix_evidence = artifacts / f"{fix.id}-fix"
+    for name in ("attempt-1/logs/runner.log", "attempt-1/fix-outcome.json"):
+        (fix_evidence / name).parent.mkdir(parents=True, exist_ok=True)
+        (fix_evidence / name).write_text("x")
+    fix_run = store.reserve_run(fix.id, "fix", reason="initial", evidence_path=str(fix_evidence))
+    token = tmp_path / "private" / "fix.env"
+    token.parent.mkdir()
+    token.write_text("GH_TOKEN=secret\n")
+    store.configure_run(fix_run.id, plan={"credential_files": [str(token)]}, limits={})
+    store.finish_run(fix_run.id, execution_status="cancelled", result={})
+    store.set_claim_lifecycle(fix.id, "cancelled", {"verdict": "cancelled"})
+    store.set_cleanup(
+        fix.id,
+        {"terminal_observed_at": (datetime.now(UTC) - timedelta(days=4)).isoformat()},
+    )
+    # A superseded eval whose card was removed, with real suite worktrees.
+    superseded, eval_evidence = _seed_eval(store, artifacts, "GONE-2", "superseded", idle_days=4)
+    sources = SourceRepositories(tmp_path / "runner", tmp_path / "skills", tmp_path / "evals")
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    revisions = {
+        name: _git(tmp_path / name, "rev-parse", "HEAD") for name in ("runner", "skills", "evals")
+    }
+    trees = manager.prepare(superseded, revisions)
+    WorktreeCleanup(store, manager).record(superseded, trees)
+    # Recording starts an unreleased workspace; its idle release is already due.
+    _backdate(store, superseded, 4)
+    before = {c.id: c.cleanup for c in store.all_claims()}
+
+    data = json.loads(board.read_text())
+    data["fail_second_page"] = True
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick", expected_error="GitHubApiError")
+    assert clone.exists() and token.exists()
+    assert all(path.exists() for path in trees.paths())
+    assert (fix_evidence / "attempt-1/logs").exists() and (eval_evidence / "logs").exists()
+    assert {c.id: c.cleanup for c in store.all_claims()} == before
+
+    data = json.loads(board.read_text())
+    data["fail_second_page"] = False
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")  # release
+    assert not clone.exists() and not token.exists()
+    assert not any(path.exists() for path in trees.paths())
+    _cli(config, env, "tick")  # prune
+    assert not (fix_evidence / "attempt-1/logs").exists()
+    assert (fix_evidence / "attempt-1/fix-outcome.json").exists()
+    assert not (eval_evidence / "logs").exists()
+    assert not (eval_evidence / ".runtime/candidate-worktree").exists()
+    assert (eval_evidence / "result.json").exists()
+    for claim_id in (fix.id, superseded):
+        claim = store.get_claim(claim_id)
+        assert claim is not None and not claim.reporting.get("events")
+    store.close()
+
+
+def test_e2e_002_one_tick_bounds_cleanup_and_serves_on_board_claims_first(
+    tmp_path: Path,
+) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    artifacts = tmp_path / "factory/artifacts"
+    on_board: list[tuple[str, Path]] = []
+    for n in range(4):
+        _seed_card(board, shared, f"ON-{n}", "review")
+        on_board.append(_seed_eval(store, artifacts, f"ON-{n}", "cancelled", idle_days=10))
+    _seed_card(board, shared, "ON-new", "review")
+    on_new, _ = _seed_eval(store, artifacts, "ON-new", "cancelled", idle_days=None)
+    off_board = [
+        _seed_eval(store, artifacts, f"OFF-{n}", "cancelled", idle_days=5 + n) for n in range(4)
+    ]
+    off_new, _ = _seed_eval(store, artifacts, "OFF-new", "cancelled", idle_days=None)
+
+    def pruned(evidence: Path) -> bool:
+        return not (evidence / "logs").exists()
+
+    _cli(config, env, "tick")
+    try:
+        admitted = store.nonterminal_runs()
+        assert len(admitted) == 1, "a Ready card is still admitted in the same tick"
+        assert all(pruned(evidence) for _, evidence in on_board)
+        # The off-board claim observed terminal longest ago takes the last unit.
+        assert [pruned(evidence) for _, evidence in off_board] == [False, False, False, True]
+        for claim_id in (on_new, off_new):
+            claim = store.get_claim(claim_id)
+            assert claim is not None and claim.cleanup.get("terminal_observed_at") is not None
+        worktrees = tmp_path / "factory/worktrees" / admitted[0].claim_id
+        assert all((worktrees / name).exists() for name in ("runner", "skills", "evals"))
+
+        _cli(config, env, "tick")
+        assert all(pruned(evidence) for _, evidence in off_board)
+    finally:
+        for run in store.nonterminal_runs():
+            (Path(run.evidence_path) / "finish").touch()
         store.close()

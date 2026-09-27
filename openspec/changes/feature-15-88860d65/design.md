@@ -85,13 +85,16 @@ Add to `retention.py`, alongside the existing Done logic:
 ```python
 TERMINAL = frozenset({"settled", "cancelled", "superseded"})
 
+
 def observe_terminal(cleanup: dict[str, object], lifecycle: str, now: datetime) -> bool:
     """Record the first terminal observation; on a non-terminal lifecycle, reset the cycle."""
+
 
 def idle_due(claim: Claim, *, card_done: bool, now: datetime, limits: LimitsConfig) -> bool:
     """cancelled/superseded: now - terminal_observed_at >= abandoned_retention_days.
     settled: (not card_done or cleanup.complete is not True)
              and now - terminal_observed_at >= settled_retention_days."""
+
 
 def machine_recorded(store: ClaimStore, claim_id: str) -> bool:
     """Any settings(runtime, 'fly:machine:*') record whose claim_id matches."""
@@ -295,8 +298,8 @@ the sweep:
 ```python
 @dataclass
 class CleanupBudget:
-    removals: int = 5      # idle or Done workspace releases and evidence prunes, combined
-    registry: int = 5      # claims whose Fly image deletion makes registry calls
+    removals: int = 5  # idle or Done workspace releases and evidence prunes, combined
+    registry: int = 5  # claims whose Fly image deletion makes registry calls
     measurements: int = 2  # size estimates
 
     def take(self, kind: str) -> bool: ...
