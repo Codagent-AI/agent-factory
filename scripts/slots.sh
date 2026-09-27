@@ -2,7 +2,7 @@
 # A missing status (for example, status failed) counts as busy.
 
 # Fix and feature runs execute the host agent-runner that `make build` replaces.
-# The feature slot line is absent when features are not configured.
+# Features always run on the host. Older status output has no feature slot line.
 host_runner_busy() {
   ! grep -q '^fix slot: free$' <<<"$1" || grep -E '^feature slot: ' <<<"$1" | grep -qv ': free$'
 }
