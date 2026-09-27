@@ -15,8 +15,8 @@
 #
 # Agent Runner: unless --no-runner, the operator's checkout is fast-forwarded
 # to origin/main (scripts/update-runner.sh), and make build updates the host
-# runner that fix runs use. Nothing is pushed. The runner is rebuilt in place,
-# so its step is skipped with a warning while a fix is running (see
+# runner that fix and feature runs use. Nothing is pushed. The runner is rebuilt
+# in place, so its step is skipped with a warning while a fix or feature runs (see
 # agent-factory #23), and when the checkout is not on main, has uncommitted
 # changes, or has commits not on origin/main.
 #
@@ -67,8 +67,8 @@ read_status() { "$running" --config "$config" status; }
 status_text=$(read_status) || die "could not read factory status"
 was_paused=false
 grep -q '^paused: true$' <<<"$status_text" && was_paused=true
-fix_busy() { ! grep -q '^fix slot: free$' <<<"$1"; }
-slots_free() { grep -q '^eval slot: free$' <<<"$1" && grep -q '^fix slot: free$' <<<"$1"; }
+# shellcheck source=scripts/slots.sh
+source "$(dirname "$0")/slots.sh"
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $base/.git ]]; then
@@ -86,8 +86,8 @@ if [[ $build_runner == true ]]; then
   if [[ -z $runner ]]; then
     runner=$(sed -n 's/^agent_runner = "\(.*\)"$/\1/p' "$config" | head -n 1)
   fi
-  if fix_busy "$status_text"; then
-    warn "a fix is running and the host runner is rebuilt in place; skipping the runner step (rerun when the fix slot is free)"
+  if host_runner_busy "$status_text"; then
+    warn "a fix or feature is running on the host runner, which is rebuilt in place; skipping the runner step (rerun when the fix and feature slots are free)"
     build_runner=false
   else
     # Only the source moves here; the installed runner changes at make build, after the pause.
@@ -123,8 +123,8 @@ say "paused the factory"
 
 if [[ $build_runner == true ]]; then
   # A fix admitted since the first check would have its runner swapped mid-attempt.
-  if fix_busy "$(read_status)"; then
-    warn "a fix was admitted while pausing; skipping the runner build (rerun when the fix slot is free)"
+  if host_runner_busy "$(read_status)"; then
+    warn "a fix or feature was admitted while pausing; skipping the runner build (rerun when the fix and feature slots are free)"
   else
     make -s -C "$runner" build >/dev/null || die "make build failed in $runner; the factory stays paused"
     say "built Agent Runner at $(git -C "$runner" rev-parse --short HEAD) in $runner"

@@ -23,7 +23,7 @@ Pass `--no-runner` or a ref only when Paul asks. `AGENTS.md` ("Deploying") descr
 
 ## Reading the result
 
-- **Runner step skipped because a fix is running**: the factory deployed, but the host runner was not rebuilt. If the runner changed, rerun the script once the fix slot is free, or tell Paul.
+- **Runner step skipped because a fix or feature is running**: the factory deployed, but the host runner was not rebuilt. If the runner changed, rerun the script once the fix and feature slots are free, or tell Paul.
 - **`warning:` lines**: the runner step was skipped, for example because of uncommitted changes, a branch other than `main`, or local commits not on `origin/main`. The deploy continued without it. Report the warning and what Paul needs to resolve.
 - **Stopped with "the factory stays paused"**: report the printed failures. If `doctor` failed, the service still points at the previous release. Fix the cause and rerun the script. Do not `resume` by hand while `doctor` fails.
 - **Success**: the last line is `deployed <sha>`. Report the factory commit and the runner commit it built.

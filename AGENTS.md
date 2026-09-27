@@ -30,9 +30,9 @@ The script:
 
 1. fast-forwards the Agent Runner checkout (`[repositories] agent_runner`, on
    `main`) to `origin/main` (`scripts/update-runner.sh`). It never pushes. It
-   skips the runner step with a warning if a fix is running (the host runner
-   is rebuilt in place; see #23), or if the checkout is not on `main`, has
-   uncommitted changes, or has commits not on `origin/main`;
+   skips the runner step with a warning if a fix or feature is running (the
+   host runner is rebuilt in place; see #23), or if the checkout is not on
+   `main`, has uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
    it already exists;
 3. pauses the factory and runs `make build` in the runner checkout, which
@@ -47,7 +47,7 @@ The script:
 7. resumes the factory unless it was already paused before the deploy, and
    runs one `tick`;
 8. removes releases beyond the newest two (`AGENT_FACTORY_KEEP_RELEASES`), but
-   only while both slots are free, never the live one, and never one a process
+   only while every slot is free, never the live one, and never one a process
    still uses.
 
 Agent Evals needs no deploy: each eval admission fetches `harness_ref`.
@@ -70,7 +70,7 @@ validator's end-to-end tests. Commit any pin through a PR.
   `[fix.branches]` (`main`), but run the `agent-runner` installed on `PATH`,
   which `make build` last built from the Agent Runner checkout.
   `scripts/deploy.sh` keeps that checkout on `origin/main` and rebuilds it
-  when the fix slot is free.
+  when the fix and feature slots are free.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
