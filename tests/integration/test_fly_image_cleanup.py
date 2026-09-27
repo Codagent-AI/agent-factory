@@ -424,3 +424,36 @@ def test_the_eval_handler_records_an_unexpected_image_error_and_carries_on(
     assert state["state"] == "failed"
     assert "HTTPS" in str(state["error"])
     assert registry.api.registry["app"][registry.tag(claim)] == _digest(1)
+
+
+def test_an_image_still_building_is_deleted_once_the_claim_settles(registry: Registry) -> None:
+    """A tick during the remote build sees no record yet; that must not settle as `none`."""
+    claim = registry.claim("active")
+
+    assert registry.reconcile(claim) == {}
+
+    run = registry.store.runs_for_claim(claim.id)[0]
+    record = {"repository": "registry.fly.io/app", "tag": registry.tag(claim), "digest": _digest(1)}
+    registry.store.update_progress(run.id, {"image_build": record})
+    registry.api.registry["app"][registry.tag(claim)] = _digest(1)
+    registry.store.finish_run(run.id, execution_status="completed", result={})
+    registry.store.set_claim_lifecycle(claim.id, "settled", {})
+
+    assert registry.reconcile(claim)["state"] == "complete"
+
+
+def test_an_unexpected_image_error_backs_off(
+    registry: Registry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AGENT_FACTORY_FLY_REGISTRY_URL", "http://registry.example.test")
+    claim = registry.claim("settled", digest=_digest(1))
+    handler = _eval_handler(registry)
+
+    handler.cleanup(claim, board_status="Review")
+    first = cast(dict[str, object], registry.get(claim.id).cleanup["fly_image"])
+    handler.cleanup(registry.get(claim.id), board_status="Review")
+    second = cast(dict[str, object], registry.get(claim.id).cleanup["fly_image"])
+
+    assert first["attempts"] == 1
+    assert isinstance(first["retry_after"], str)
+    assert second == first, "a retry waits for its backoff"

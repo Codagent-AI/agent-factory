@@ -20,6 +20,7 @@ from agent_factory.controller import (
     RequestSnapshot,
 )
 from agent_factory.fly.api import FlyMachinesClient
+from agent_factory.fly.images import failure as image_failure
 from agent_factory.fly.images import reconcile_claim_image
 from agent_factory.fly.transport import resolve_claude_login
 from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
@@ -545,31 +546,23 @@ class EvalHandler:
             return
         fly = local.fly
         current = store.get_claim(claim.id) or claim
+        now = datetime.now(UTC)
         try:
             reconcile_claim_image(
                 store,
                 current,
                 local,
                 client_factory=lambda: FlyMachinesClient(fly.app, fly.token_file),
-                now=datetime.now(UTC),
+                now=now,
                 budget=budget,
             )
-        except Exception as error:  # noqa: BLE001 - recorded for status, retried next poll
+        except Exception as error:  # noqa: BLE001 - recorded for status, retried with backoff
             logger.exception("Fly image cleanup failed for claim %s", claim.id)
             latest = store.get_claim(claim.id) or current
-            previous = mapping(latest.cleanup.get("fly_image"))
-            store.set_cleanup(
-                claim.id,
-                {
-                    **latest.cleanup,
-                    "fly_image": {
-                        **previous,
-                        "state": "failed",
-                        "error": f"{type(error).__name__}: {error}",
-                        "persistent": False,
-                    },
-                },
+            state = image_failure(
+                mapping(latest.cleanup.get("fly_image")), f"{type(error).__name__}: {error}", now
             )
+            store.set_cleanup(claim.id, {**latest.cleanup, "fly_image": state})
 
     def _lapse_message(self) -> str:
         days = self._local.limits.settled_retention_days if self._local is not None else 14

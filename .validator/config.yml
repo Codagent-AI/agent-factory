@@ -24,6 +24,8 @@ entry_points:
           command: uv run pyright
       - test:
           command: uv run pytest || test $? -eq 5
+          # The suite alone takes about five minutes, past the 300 s default.
+          timeout: 900
     reviews:
       - all-reviewers:
           builtin: all-reviewers

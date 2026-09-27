@@ -93,6 +93,9 @@ class PullRequestCleanup:
         cleanup["last_error"] = errors or None
         if released_by is not None:
             cleanup["released_by"] = released_by
+        if not errors:
+            # Measured with the workspace included; the next tick measures what remains.
+            cleanup.pop("size_estimate", None)
         self._store.set_cleanup(claim_id, cleanup)
         return not errors
 

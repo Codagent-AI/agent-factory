@@ -662,6 +662,9 @@ class WorktreeCleanup:
         cleanup["last_error"] = errors or None
         if idle:
             cleanup["released_by"] = "idle"
+        if not errors:
+            # Measured with the worktrees included; the next tick measures what remains.
+            cleanup.pop("size_estimate", None)
         self._store.set_cleanup(claim_id, cleanup)
         return not errors
 

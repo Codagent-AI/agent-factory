@@ -1113,3 +1113,16 @@ def test_a_prune_zeroes_the_estimate(tmp_path: Path) -> None:
 
     assert _pruned(evidence)
     assert cast(dict[str, object], _estimate(store, claim_id))["bytes"] == 0
+
+
+def test_a_hand_edited_observation_without_a_zone_is_taken_as_utc(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = _local(tmp_path)
+    claim_id, evidence = _terminal_claim(store, tmp_path, "cancelled")
+    store.set_cleanup(claim_id, {"complete": True, "terminal_observed_at": "2026-09-01T00:00:00"})
+    now = datetime(2026, 9, 5, tzinfo=UTC)
+
+    assert retention.idle_due(_get(store, claim_id), card_done=False, now=now, limits=local.limits)
+    retention.reconcile(store, local, _get(store, claim_id), "", now, on_board=False)
+
+    assert _pruned(evidence)

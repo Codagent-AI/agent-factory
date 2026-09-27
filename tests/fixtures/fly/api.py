@@ -39,7 +39,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         # Machine ids are never reused, as on Fly; a destroyed id stays retired.
         self._created = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        # A short poll lets shutdown return at once instead of after the 0.5 s default.
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
 
     @property
     def base_url(self) -> str:

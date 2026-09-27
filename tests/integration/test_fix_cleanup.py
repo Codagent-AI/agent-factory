@@ -346,3 +346,15 @@ def test_a_spent_budget_defers_the_release(tmp_path: Path) -> None:
 
 def cleanup_for(store: ClaimStore, tmp_path: Path) -> PullRequestCleanup:
     return PullRequestCleanup(store, private_root=tmp_path / "private")
+
+
+def test_a_release_drops_the_stale_size_estimate(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim_id, _, _ = _claim_with_workspace(store, tmp_path)
+    store.set_claim_lifecycle(claim_id, "settled", {"verdict": "pending-human-review"})
+    store.set_cleanup(claim_id, {"size_estimate": {"bytes": 999, "measured_at": "2026-09-01"}})
+
+    assert cleanup_for(store, tmp_path).reconcile(claim_id, board_status="", idle=True) is True
+
+    claim = store.get_claim(claim_id)
+    assert claim is not None and "size_estimate" not in claim.cleanup

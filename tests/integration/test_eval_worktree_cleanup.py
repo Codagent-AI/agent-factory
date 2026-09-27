@@ -221,3 +221,17 @@ def test_no_lapse_event_without_a_review_command(tmp_path: Path) -> None:
 
     assert _get(store, claim.id).cleanup["complete"] is True
     assert "events" not in _get(store, claim.id).reporting
+
+
+def test_a_release_drops_the_stale_size_estimate(tmp_path: Path) -> None:
+    sources, revisions = _sources(tmp_path)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    handler = _handler(store, manager)
+    claim, _ = _prepared(store, manager, handler, revisions, 1, "P1")
+    store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
+    store.set_cleanup(claim.id, {**_get(store, claim.id).cleanup, "size_estimate": {"bytes": 999}})
+
+    handler.cleanup(_get(store, claim.id), board_status="", idle=True)
+
+    assert "size_estimate" not in _get(store, claim.id).cleanup

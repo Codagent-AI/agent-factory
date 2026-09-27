@@ -43,16 +43,17 @@ def reconcile_claim_image(
     state = dict(cast(Mapping[str, object], saved)) if isinstance(saved, Mapping) else {}
     if state.get("state") in {"complete", "none"} or state.get("persistent") is True:
         return
-    tag = f"claim-{claim.id[:12]}"
-    records = _records(store, claim, tag)
-    if not records:
-        _save(store, claim.id, {"state": "none"})
-        return
+    # Judged before the records: a run still building its image has not recorded it yet.
     if claim.lifecycle not in TERMINAL:
         return
     if any(run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)):
         return
     if machine_recorded(store, claim.id):
+        return
+    tag = f"claim-{claim.id[:12]}"
+    records = _records(store, claim, tag)
+    if not records:
+        _save(store, claim.id, {"state": "none"})
         return
     retry_after = _moment(state.get("retry_after"))
     if retry_after is not None and now < retry_after:
@@ -90,18 +91,28 @@ def reconcile_claim_image(
     if not errors:
         _save(store, claim.id, {"state": "complete", "digests": digests, "error": None})
         return
-    attempts = cast(int, state.get("attempts") or 0) + 1
+    result = failure(state, "; ".join(errors), now, persistent=persistent)
+    _save(store, claim.id, {**result, "digests": digests})
+
+
+def failure(
+    state: Mapping[str, object], error: str, now: datetime, *, persistent: bool = False
+) -> dict[str, object]:
+    """A failed state; a retryable one waits 5 minutes, doubling up to 6 hours."""
+    previous = state.get("attempts")
+    attempts = (previous if isinstance(previous, int) else 0) + 1
     result: dict[str, object] = {
+        **state,
         "state": "failed",
-        "digests": digests,
-        "error": "; ".join(errors),
+        "error": error,
         "persistent": persistent,
         "attempts": attempts,
     }
+    result.pop("retry_after", None)
     if not persistent:
         delay = min(_BACKOFF * 2 ** (attempts - 1), _BACKOFF_CAP)
         result["retry_after"] = (now + delay).isoformat()
-    _save(store, claim.id, result)
+    return result
 
 
 def _delete(client: FlyMachinesClient, repository: str, tag: str, digest: str) -> str:
