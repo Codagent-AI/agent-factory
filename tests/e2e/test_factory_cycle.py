@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -407,6 +408,49 @@ def test_cli_quota_result_holds_admission_without_consuming_recovery(tmp_path: P
     assert continuation.evidence_path == run.evidence_path
     assert "--resume" in continuation.plan["argv"]  # pyright: ignore[reportOperatorIssue]
     _finish(store, artifact)
+    store.close()
+
+
+def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recovery(
+    tmp_path: Path,
+) -> None:
+    config, _board, env, _shared = _setup(tmp_path)
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    run = store.nonterminal_runs()[0]
+    artifact = Path(run.evidence_path)
+    runner_run = "implement-change-2026-09-26T00-11-40-498345707Z"
+    audit = artifact / ".runtime/agent-runner-projects/-artifacts--candidate/runs" / runner_run
+    audit.mkdir(parents=True)
+    failed_at = datetime.now(UTC).replace(microsecond=0)
+    reset = (failed_at + timedelta(hours=2)).replace(second=0)
+    limit = (
+        "You\u2019ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+        f"to purchase more credits or try again at {reset.strftime('%I:%M %p').lstrip('0')}."
+    )
+    stamp = failed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
+    (audit / "audit.log").write_text(
+        f"{stamp} run_start {{}}\n"
+        f"{stamp} [fix-violations] step_end "
+        f"{json.dumps({'exit_code': 1, 'stdout': limit}, ensure_ascii=False)}\n",
+        encoding="utf-8",
+    )
+    (artifact / "finish").write_text(
+        json.dumps(
+            {
+                "evaluation_status": "implementation-workflow-failed",
+                "failure": {
+                    "reason": "agent-runner failed (exit 1)",
+                    "run_id": runner_run,
+                },
+            }
+        )
+    )
+    _finish(store, artifact)
+    _cli(config, env, "tick")
+    assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
+    assert store.get_hold(run.claim_id, "quota") == {"until": reset.isoformat()}
+    assert store.recovery_attempts(run.claim_id, run.unit_key) == 0
     store.close()
 
 

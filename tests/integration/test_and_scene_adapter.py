@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -464,6 +464,191 @@ def test_failure_quota_uses_current_structured_result_not_retained_attempt_logs(
 
     assert (
         AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(tmp_path, result)
+        is None
+    )
+
+
+_CODEX_LIMIT = (
+    "You\u2019ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+    "to purchase more credits or try again at 4:15 PM."
+)
+_RUN_ID = "implement-change-2026-09-26T00-11-40-498345707Z"
+
+
+def _codex_step_end(
+    timestamp: str, message: str = _CODEX_LIMIT, *, ascii_only: bool = False
+) -> str:
+    detail = {
+        "exit_code": 1,
+        "started_at": "2026-09-25T23:59:59Z",
+        "outcome": "failed",
+        "stdout": message,
+        "usage": {"cli": "codex", "provider": "openai"},
+    }
+    payload = json.dumps(detail, ensure_ascii=ascii_only)
+    return f"{timestamp} [implement-tasks:1, fix-violations] step_end {payload}\n"
+
+
+def _runner_audit(artifact: Path, *executions: tuple[str, str], run_id: str = _RUN_ID) -> None:
+    run = artifact / ".runtime/agent-runner-projects/-artifacts--candidate/runs" / run_id
+    run.mkdir(parents=True)
+    (run / "audit.log").write_text(
+        "".join(f"{started} run_start {{}}\n{body}" for started, body in executions),
+        encoding="utf-8",
+    )
+
+
+def _runner_failure(run_id: str = _RUN_ID) -> dict[str, object]:
+    return {
+        "evaluation_status": "implementation-workflow-failed",
+        "failure": {
+            "owner": "implementation-workflow",
+            "reason": "agent-runner failed (exit 1); output: /artifacts/logs/agent-runner.log",
+            "run_id": run_id,
+        },
+    }
+
+
+@pytest.mark.parametrize("ascii_only", [False, True])
+def test_failure_quota_reads_codex_limit_from_the_failed_runs_latest_execution(
+    tmp_path: Path, ascii_only: bool
+) -> None:
+    """Codex reports its usage limit only in the step output the runner audits."""
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        (
+            "2026-09-26T00:11:40Z",
+            _codex_step_end("2026-09-26T00:27:29.992465136Z", ascii_only=ascii_only),
+        ),
+    )
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), now=datetime(2026, 9, 26, 0, 30, tzinfo=UTC)
+    ) == datetime(2026, 9, 26, 16, 15, tzinfo=UTC)
+
+
+def test_failure_quota_reset_time_already_past_that_day_means_the_next_day(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-09-26T17:00:00Z", _codex_step_end("2026-09-26T17:30:00Z")),
+    )
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), now=datetime(2026, 9, 26, 17, 35, tzinfo=UTC)
+    ) == datetime(2026, 9, 27, 16, 15, tzinfo=UTC)
+
+
+def test_failure_quota_without_a_readable_reset_uses_the_fallback(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        (
+            "2026-09-26T00:11:40Z",
+            _codex_step_end(
+                "2026-09-26T00:27:29Z",
+                "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage.",
+            ),
+        ),
+    )
+    before = datetime.now(UTC)
+
+    deadline = AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), fallback_seconds=600
+    )
+
+    assert deadline is not None
+    assert before + timedelta(seconds=599) <= deadline <= datetime.now(UTC) + timedelta(seconds=601)
+
+
+def test_failure_quota_reset_already_past_when_read_retries_after_a_minute(
+    tmp_path: Path,
+) -> None:
+    """A result read after the reset must not record a hold that has already expired."""
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-09-26T00:11:40Z", _codex_step_end("2026-09-26T00:27:29Z")),
+    )
+    now = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), now=now
+    ) == now + timedelta(seconds=60)
+
+
+def test_failure_quota_with_an_impossible_audit_date_uses_the_fallback(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-02-28T00:11:40Z", _codex_step_end("2026-02-30T00:27:29Z")),
+    )
+    now = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), fallback_seconds=600, now=now
+    ) == now + timedelta(seconds=600)
+
+
+def test_failure_quota_ignores_a_codex_limit_from_an_earlier_execution(tmp_path: Path) -> None:
+    """A resumed run appends a new execution; only the latest one explains this failure."""
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-09-26T00:11:40Z", _codex_step_end("2026-09-26T00:27:29Z")),
+        ("2026-09-26T16:20:00Z", '2026-09-26T16:40:00Z step_end {"exit_code":1}\n'),
+    )
+
+    assert (
+        AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+            tmp_path, _runner_failure()
+        )
+        is None
+    )
+
+
+def test_failure_quota_ignores_a_limit_in_another_runs_audit(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-09-26T00:11:40Z", _codex_step_end("2026-09-26T00:27:29Z")),
+        run_id="implement-change-older",
+    )
+
+    assert (
+        AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+            tmp_path, _runner_failure()
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("run_id", ["../../outside", "", None, "a/b"])
+def test_failure_quota_rejects_a_run_id_that_is_not_one_directory_name(
+    tmp_path: Path, run_id: object
+) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "audit.log").write_text(_codex_step_end("2026-09-26T00:27:29Z"))
+    result = _runner_failure()
+    cast(dict[str, object], result["failure"])["run_id"] = run_id
+
+    assert (
+        AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+            tmp_path / "artifact", result
+        )
         is None
     )
 
