@@ -28,17 +28,15 @@ this repository (optionally `--no-runner`, or a factory ref; the default is
 release, and supervisors and Fly launchers survive the resident's restart.
 The script:
 
-1. brings the Agent Runner checkout (`[repositories] agent_runner`, on `dev`)
-   up to `origin/dev` and merges `origin/main` into `dev` (fast-forward or
-   clean merge). It pushes `dev` in step 3, because evals build from `dev`.
-   It skips the merge
-   with a warning if it would conflict. It skips the whole runner step with a
-   warning if the checkout is not on `dev`, has uncommitted changes, or a fix
-   is running (the host runner is still rebuilt in place; see #23);
+1. fast-forwards the Agent Runner checkout (`[repositories] agent_runner`, on
+   `main`) to `origin/main` (`scripts/update-runner.sh`). It never pushes. It
+   skips the runner step with a warning if a fix is running (the host runner
+   is rebuilt in place; see #23), or if the checkout is not on `main`, has
+   uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
    it already exists;
-3. pauses the factory, pushes Agent Runner `dev`, and runs `make build` in the
-   runner checkout, which updates the host runner fix runs use;
+3. pauses the factory and runs `make build` in the runner checkout, which
+   updates the host runner fix runs use;
 4. points the plist's executable and `PATH`, and `shared_config`, at the
    release;
 5. runs `doctor`. If it fails, it points them back at the previous release and
@@ -70,10 +68,9 @@ validator's end-to-end tests. Commit any pin through a PR.
 - Evals use Agent Evals `harness_ref` (`main`) and Agent Runner
   `agent_runner_ref` (`main`). Fixes clone Agent Runner and Skills from
   `[fix.branches]` (`main`), but run the `agent-runner` installed on `PATH`,
-  which `make build` last built from the Agent Runner checkout, whatever
-  branch it is on. Agent Runner `dev` is no longer used; `scripts/deploy.sh`
-  still expects it (below) and skips its runner step when the checkout is on
-  another branch, so run `make build` there by hand.
+  which `make build` last built from the Agent Runner checkout.
+  `scripts/deploy.sh` keeps that checkout on `origin/main` and rebuilds it
+  when the fix slot is free.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
