@@ -15,7 +15,7 @@ On each Project poll, the factory SHALL treat placement of an open issue from a 
 - **THEN** the next factory poll verifies the author's repository permission and sets `Owner=factory`
 - **AND** admission re-verifies permission before work starts
 
-#### Scenario: Pick the highest-priority bug
+#### Scenario: Pick the top bug
 
 - **WHEN** the fix slot is free and two eligible bugs with different Priority values sit in Ready
 - **THEN** the factory admits the higher-priority bug regardless of issue age or repository
@@ -36,7 +36,7 @@ On each Project poll, the factory SHALL treat placement of an open issue from a 
 - **WHEN** the top-ranked bug carries the `needs-input` label or a fix-specific hold applies
 - **THEN** the factory selects the next eligible bug instead
 
-#### Scenario: Reprioritize while a fix is running
+#### Scenario: Reorder while a fix is running
 
 - **WHEN** a user changes a bug's Priority during active fix execution
 - **THEN** the active fix continues and the new ranking governs subsequent selection

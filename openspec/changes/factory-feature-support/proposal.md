@@ -153,8 +153,8 @@ part 1; the existing test suite stays green before part 3 begins.
   newest created, matching the ranking the factory already applies; bug retry gestures point
   to `factory-pull-request-lifecycle`.
 - `factory-fix-execution`: the staged workflow directory holds the feature workflows too.
-- `factory-review-intake`: its fix-only requirements are replaced by the shared
-  `factory-pull-request-lifecycle` contract.
+- `factory-review-intake`: retired. Its two fix-only requirements are replaced by the shared
+  `factory-pull-request-lifecycle` contract, so the capability's spec is removed.
 - `factory-review-execution`: review rounds run for any pull-request claim; on a feature
   pull request a requested behavior change is made and the living specifications follow it.
 - `factory-fix-reporting`: merge sync moves to `factory-pull-request-lifecycle`; the
