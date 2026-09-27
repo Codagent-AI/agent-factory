@@ -92,7 +92,8 @@ class PullRequestWorkspace:
             ["--git-dir", str(mirror), "fetch", "--quiet", "origin", ref],
             f"cannot fetch pushed feature branch {branch}",
         )
-        exclusions = [f"^{sha}" for sha in (base_sha, exclude_sha) if sha is not None]
+        # A claim with no continuation records continuation_head as "", which is not a commit.
+        exclusions = [f"^{sha}" for sha in (base_sha, exclude_sha) if sha]
         history = _git(
             [
                 "--git-dir",
