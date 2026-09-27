@@ -3,7 +3,7 @@
 #
 # Usage: scripts/deploy.sh [--no-runner] [ref]
 #   ref          factory ref to deploy (default: origin/main)
-#   --no-runner  leave Agent Runner's dev and the installed runner alone
+#   --no-runner  leave the Agent Runner checkout and the installed runner alone
 #
 # Agent Factory: each deploy is an immutable release, a detached worktree of the
 # service clone at ~/.agent-factory/releases/<commit> with its own venv. The
@@ -13,17 +13,15 @@
 # beyond the newest AGENT_FACTORY_KEEP_RELEASES (default 2) are removed, but
 # only while both slots are free and no process references them.
 #
-# Agent Runner: unless --no-runner, the operator's checkout is brought up to
-# origin/dev, then origin/main is brought into dev (fast-forward, or a clean
-# merge commit) and pushed, because evals build from dev. make build then
-# updates the host runner that fix runs use. The runner is rebuilt in place, so
-# its step is skipped with a warning while a fix is running (see agent-factory
-# #23); a merge that would conflict is skipped with a warning, and so is the
-# whole runner step when the checkout is not on dev or has uncommitted changes.
-# It stops if local dev has commits on neither origin/dev nor origin/main.
+# Agent Runner: unless --no-runner, the operator's checkout is fast-forwarded
+# to origin/main (scripts/update-runner.sh), and make build updates the host
+# runner that fix runs use. Nothing is pushed. The runner is rebuilt in place,
+# so its step is skipped with a warning while a fix is running (see
+# agent-factory #23), and when the checkout is not on main, has uncommitted
+# changes, or has commits not on origin/main.
 #
 # Evals need nothing here: each admission fetches Agent Evals harness_ref and
-# builds its image from Agent Runner's dev.
+# pins its own Agent Runner ref.
 #
 # Environment overrides: AGENT_FACTORY_SERVICE_CLONE (default
 # ~/.agent-factory/agent-factory), AGENT_FACTORY_RELEASES (default
@@ -88,51 +86,18 @@ if [[ $build_runner == true ]]; then
   if [[ -z $runner ]]; then
     runner=$(sed -n 's/^agent_runner = "\(.*\)"$/\1/p' "$config" | head -n 1)
   fi
-  git -C "$runner" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-    || die "Agent Runner checkout not found: ${runner:-unset}"
   if fix_busy "$status_text"; then
     warn "a fix is running and the host runner is rebuilt in place; skipping the runner step (rerun when the fix slot is free)"
     build_runner=false
-  elif [[ $(git -C "$runner" branch --show-current) != dev ]]; then
-    warn "the Agent Runner checkout is not on dev; skipping its update and build: $runner"
-    build_runner=false
-  elif [[ -n $(git -C "$runner" status --porcelain) ]]; then
-    warn "the Agent Runner checkout has uncommitted changes; skipping its update and build: $runner"
-    build_runner=false
-  fi
-fi
-if [[ $build_runner == true ]]; then
-  # Only the source moves here; the installed runner changes at make build, after the pause.
-  git -C "$runner" fetch -q origin
-  # The post-merge sync merges main into this checkout without pushing, so local dev may
-  # hold commits from origin/main and clean merge commits of its own. Anything else is
-  # unreviewed; never push it.
-  while IFS= read -r commit; do
-    [[ -n $commit ]] || continue
-    read -r -a parents <<<"$(git -C "$runner" rev-list --parents -n 1 "$commit" | cut -d' ' -f2-)"
-    (( ${#parents[@]} == 2 )) \
-      && merged=$(git -C "$runner" merge-tree --write-tree "${parents[0]}" "${parents[1]}" 2>/dev/null) \
-      && [[ $merged == $(git -C "$runner" rev-parse "$commit^{tree}") ]] \
-      || die "the Agent Runner checkout's dev has a commit on neither origin/dev nor origin/main: $(git -C "$runner" log -1 --format='%h %s' "$commit")"
-  done < <(git -C "$runner" rev-list HEAD --not origin/dev origin/main)
-  if git -C "$runner" merge -q --ff-only origin/dev 2>/dev/null; then
-    :
-  elif git -C "$runner" merge-tree --write-tree HEAD origin/dev >/dev/null 2>&1; then
-    git -C "$runner" merge -q --no-edit origin/dev
   else
-    warn "merging origin/dev into the Agent Runner checkout would conflict; skipping its update and build: $runner"
-    build_runner=false
-  fi
-fi
-if [[ $build_runner == true ]]; then
-  if git -C "$runner" merge-base --is-ancestor origin/main HEAD; then
-    :
-  elif git -C "$runner" merge-base --is-ancestor HEAD origin/main; then
-    git -C "$runner" merge -q --ff-only origin/main
-  elif git -C "$runner" merge-tree --write-tree HEAD origin/main >/dev/null 2>&1; then
-    git -C "$runner" merge -q --no-edit origin/main
-  else
-    warn "merging Agent Runner origin/main into dev would conflict; building dev without it"
+    # Only the source moves here; the installed runner changes at make build, after the pause.
+    runner_status=0
+    "$(dirname "$0")/update-runner.sh" "$runner" || runner_status=$?
+    case $runner_status in
+      0) ;;
+      3) build_runner=false ;;
+      *) die "could not update the Agent Runner checkout; nothing is deployed" ;;
+    esac
   fi
 fi
 
@@ -157,15 +122,6 @@ fi
 say "paused the factory"
 
 if [[ $build_runner == true ]]; then
-  # Pushed only now, while paused, so no eval is admitted with the new dev before the new
-  # factory release. Every local commit is reviewed (checked above) or a clean merge.
-  if [[ $(git -C "$runner" rev-parse HEAD) != $(git -C "$runner" rev-parse origin/dev) ]]; then
-    if git -C "$runner" push -q origin HEAD:refs/heads/dev; then
-      say "pushed Agent Runner dev at $(git -C "$runner" rev-parse --short HEAD)"
-    else
-      warn "pushing Agent Runner dev failed; evals keep building from the old dev"
-    fi
-  fi
   # A fix admitted since the first check would have its runner swapped mid-attempt.
   if fix_busy "$(read_status)"; then
     warn "a fix was admitted while pausing; skipping the runner build (rerun when the fix slot is free)"
