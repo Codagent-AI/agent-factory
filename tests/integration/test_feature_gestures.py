@@ -658,6 +658,98 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
     )
 
 
+def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """The first attempt records continuation_head as ""; the retry must still read checkpoints."""
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    base_sha = _git("rev-parse", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            12,
+            "I12",
+            "P12",
+            "feature",
+            "fp",
+            {
+                "target": {"repository": "example/work"},
+                "revisions": {"target": base_sha, "runner": "b" * 40, "skills": "c" * 40},
+                "roles": {},
+            },
+        )
+    )
+    branch = f"factory/feature-12-{claim.id[:8]}"
+    _git("checkout", "-b", branch, cwd=work)
+    (work / "change").write_text("implemented")
+    _git("add", "change", cwd=work)
+    _git("commit", "-m", "implement", "-m", "Factory-Checkpoint: implemented", cwd=work)
+    head = _git("rev-parse", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    store.set_preparation(claim.id, {"branch_name": branch, "continuation_head": ""})
+    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    store.finish_run(
+        run.id,
+        execution_status="interrupted",
+        result={"reason": "owned process exited without durable result"},
+    )
+
+    class Workspace(PullRequestWorkspace):
+        def prepare_clones(
+            self,
+            claim_id: str,
+            attempt: int,
+            repository: str,
+            revisions: Mapping[str, object],
+        ) -> dict[str, str]:
+            return {name: str(tmp_path) for name in ("repo", "runner", "skills")}
+
+    class GitHub:
+        def get_branch(self, repository: str, name: str) -> BranchInfo | None:
+            return BranchInfo(name, head) if name == branch else None
+
+        def list_open_pull_requests_for_head(
+            self, repository: str, name: str
+        ) -> list[PullRequestInfo]:
+            return []
+
+        def list_open_factory_pull_requests_for_issue(
+            self, repository: str, number: int
+        ) -> list[PullRequestInfo]:
+            return []
+
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    local = replace(
+        local, credentials=replace(local.credentials, fix_environment=tmp_path / "credential.env")
+    )
+    feature = handler.PullRequestHandler(
+        FEATURE,
+        SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n"),
+        local,
+        workspace=Workspace(tmp_path / "storage", work, work),
+    )
+    feature.attach_store(store)
+    feature.attach_github(GitHub())  # type: ignore[arg-type]
+    feature._issue_input = lambda _claim: {}  # type: ignore[method-assign]
+
+    prepared = feature.prepare(store.get_claim(claim.id) or claim)
+
+    assert prepared.payload["resume_from"] == "archive"
+
+
 @pytest.mark.parametrize(
     ("prior_available", "checkpoint"),
     [(True, "planned"), (False, "planned"), (True, "archived")],
