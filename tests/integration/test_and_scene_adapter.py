@@ -525,7 +525,7 @@ def test_failure_quota_reads_codex_limit_from_the_failed_runs_latest_execution(
     )
 
     assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
-        tmp_path, _runner_failure()
+        tmp_path, _runner_failure(), now=datetime(2026, 9, 26, 0, 30, tzinfo=UTC)
     ) == datetime(2026, 9, 26, 16, 15, tzinfo=UTC)
 
 
@@ -540,7 +540,7 @@ def test_failure_quota_reset_time_already_past_that_day_means_the_next_day(
     )
 
     assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
-        tmp_path, _runner_failure()
+        tmp_path, _runner_failure(), now=datetime(2026, 9, 26, 17, 35, tzinfo=UTC)
     ) == datetime(2026, 9, 27, 16, 15, tzinfo=UTC)
 
 
@@ -565,6 +565,37 @@ def test_failure_quota_without_a_readable_reset_uses_the_fallback(tmp_path: Path
 
     assert deadline is not None
     assert before + timedelta(seconds=599) <= deadline <= datetime.now(UTC) + timedelta(seconds=601)
+
+
+def test_failure_quota_reset_already_past_when_read_retries_after_a_minute(
+    tmp_path: Path,
+) -> None:
+    """A result read after the reset must not record a hold that has already expired."""
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-09-26T00:11:40Z", _codex_step_end("2026-09-26T00:27:29Z")),
+    )
+    now = datetime(2026, 9, 26, 18, 0, tzinfo=UTC)
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), now=now
+    ) == now + timedelta(seconds=60)
+
+
+def test_failure_quota_with_an_impossible_audit_date_uses_the_fallback(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter
+
+    _runner_audit(
+        tmp_path,
+        ("2026-02-28T00:11:40Z", _codex_step_end("2026-02-30T00:27:29Z")),
+    )
+    now = datetime(2026, 3, 1, 0, 30, tzinfo=UTC)
+
+    assert AndSceneAdapter(environment_file=tmp_path / "env").failure_quota_until(
+        tmp_path, _runner_failure(), fallback_seconds=600, now=now
+    ) == now + timedelta(seconds=600)
 
 
 def test_failure_quota_ignores_a_codex_limit_from_an_earlier_execution(tmp_path: Path) -> None:

@@ -496,7 +496,12 @@ class AndSceneAdapter:
         )
 
     def failure_quota_until(
-        self, artifact: Path, result: Mapping[str, object], *, fallback_seconds: int = 18000
+        self,
+        artifact: Path,
+        result: Mapping[str, object],
+        *,
+        fallback_seconds: int = 18000,
+        now: datetime | None = None,
     ) -> datetime | None:
         """Recognize quota from the current terminal result or the failed run's audit.
 
@@ -505,10 +510,14 @@ class AndSceneAdapter:
         limit in its result; the limit appears only in the audit of the Agent Runner
         run the result names, where each resume starts a new execution.
         """
-        deadline = self.quota_until(json.dumps(dict(result)), fallback_seconds=fallback_seconds)
+        deadline = self.quota_until(
+            json.dumps(dict(result)), now=now, fallback_seconds=fallback_seconds
+        )
         if deadline is not None:
             return deadline
-        return _codex_audit_quota_until(artifact, result, fallback_seconds=fallback_seconds)
+        return _codex_audit_quota_until(
+            artifact, result, fallback_seconds=fallback_seconds, now=now or datetime.now(UTC)
+        )
 
     def quota_until(
         self, diagnostic: str, *, now: datetime | None = None, fallback_seconds: int = 18000
@@ -826,10 +835,11 @@ _CODEX_USAGE_LIMIT = re.compile(
 _CODEX_RESET_AT = re.compile(r"try again at (\d{1,2}):(\d{2}) ?([AP]M)\b", re.IGNORECASE)
 _AUDIT_TIMESTAMP = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.\d+)?Z ")
 _AUDIT_TAIL_BYTES = 1 << 20
+_CODEX_RESET_GRACE_SECONDS = 60
 
 
 def _codex_audit_quota_until(
-    artifact: Path, result: Mapping[str, object], *, fallback_seconds: int
+    artifact: Path, result: Mapping[str, object], *, fallback_seconds: int, now: datetime
 ) -> datetime | None:
     """Find a Codex usage limit in the latest execution of the failed runner run."""
     run_id = _object(result.get("failure")).get("run_id")
@@ -856,7 +866,11 @@ def _codex_audit_quota_until(
     execution = tail[tail.rfind("\n", 0, marker) + 1 :] if marker != -1 else tail
     for line in reversed(execution.splitlines()):
         if _CODEX_USAGE_LIMIT.search(line):
-            return _codex_reset(line) or datetime.now(UTC) + timedelta(seconds=fallback_seconds)
+            reset = _codex_reset(line)
+            if reset is None:
+                return now + timedelta(seconds=fallback_seconds)
+            # A result read after the reset retries soon, never on an expired hold.
+            return max(reset, now + timedelta(seconds=_CODEX_RESET_GRACE_SECONDS))
     return None
 
 
@@ -873,7 +887,10 @@ def _codex_reset(line: str) -> datetime | None:
     if not 1 <= hour <= 12 or minute > 59:
         return None
     hour = hour % 12 + (12 if reset.group(3).upper() == "PM" else 0)
-    event = datetime.fromisoformat(stamp.group(1)).replace(tzinfo=UTC)
+    try:
+        event = datetime.fromisoformat(stamp.group(1)).replace(tzinfo=UTC)
+    except ValueError:
+        return None
     candidate = event.replace(hour=hour, minute=minute, second=0)
     return candidate if candidate > event else candidate + timedelta(days=1)
 

@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -421,13 +422,16 @@ def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recov
     runner_run = "implement-change-2026-09-26T00-11-40-498345707Z"
     audit = artifact / ".runtime/agent-runner-projects/-artifacts--candidate/runs" / runner_run
     audit.mkdir(parents=True)
+    failed_at = datetime.now(UTC).replace(microsecond=0)
+    reset = (failed_at + timedelta(hours=2)).replace(second=0)
     limit = (
         "You\u2019ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
-        "to purchase more credits or try again at 4:15 PM."
+        f"to purchase more credits or try again at {reset.strftime('%I:%M %p').lstrip('0')}."
     )
+    stamp = failed_at.strftime("%Y-%m-%dT%H:%M:%SZ")
     (audit / "audit.log").write_text(
-        "2026-09-26T00:11:40Z run_start {}\n"
-        f"2026-09-26T00:27:29Z [fix-violations] step_end "
+        f"{stamp} run_start {{}}\n"
+        f"{stamp} [fix-violations] step_end "
         f"{json.dumps({'exit_code': 1, 'stdout': limit}, ensure_ascii=False)}\n",
         encoding="utf-8",
     )
@@ -445,7 +449,7 @@ def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recov
     _finish(store, artifact)
     _cli(config, env, "tick")
     assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
-    assert store.get_hold(run.claim_id, "quota") == {"until": "2026-09-26T16:15:00+00:00"}
+    assert store.get_hold(run.claim_id, "quota") == {"until": reset.isoformat()}
     assert store.recovery_attempts(run.claim_id, run.unit_key) == 0
     store.close()
 
