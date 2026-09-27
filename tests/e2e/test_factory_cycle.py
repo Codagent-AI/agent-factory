@@ -550,7 +550,7 @@ def test_missing_frozen_revision_reports_error_without_aborting_tick(tmp_path: P
             "I1",
             "P1",
             "eval",
-            "x",
+            _setup_fingerprint(),
             {"revisions": {"runner": "a" * 40}},
         )
     )
@@ -578,7 +578,7 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
             "I1",
             "P1",
             "eval",
-            "x",
+            _setup_fingerprint(),
             {"revisions": {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}},
         )
     )
@@ -605,22 +605,9 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
 
 
 def test_ready_card_with_cleared_verdict_starts_a_fresh_settled_claim(tmp_path: Path) -> None:
-    from agent_factory.store import ClaimDraft
-
     config, board, env, shared = _setup(tmp_path)
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
-    original = store.create_claim(
-        ClaimDraft(
-            shared.routing.eval_source,
-            1,
-            "I1",
-            "P1",
-            "eval",
-            "x",
-            {"revisions": {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}},
-        )
-    )
-    store.set_claim_lifecycle(original.id, "settled", {"verdict": "infra-error"})
+    original = _settled_claim_for_current_body(store, shared)
     _cli(config, env, "tick")
     assert _field_value(board, shared.project.status.id) == shared.project.status.option("review")
 
@@ -638,10 +625,119 @@ def test_ready_card_with_cleared_verdict_starts_a_fresh_settled_claim(tmp_path: 
     runs = store.nonterminal_runs()
     try:
         assert len(runs) == 1
-        assert runs[0].claim_id != original.id
+        assert runs[0].claim_id != original
     finally:
         for run in runs:
             _finish(store, Path(run.evidence_path))
+        store.close()
+
+
+def _setup_fingerprint() -> str:
+    """Fingerprint of the setup card's eval request, as parse_request computes it."""
+    import hashlib
+
+    overrides = {
+        "repetitions": 1,
+        **{role: "codex:test:high" for role in ("lead", "implementor", "tester")},
+    }
+    return hashlib.sha256(
+        json.dumps(overrides, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _settled_claim_for_current_body(store: ClaimStore, shared: SharedConfig) -> str:
+    """Settle a claim whose fingerprint matches the unchanged setup request."""
+    from agent_factory.store import ClaimDraft
+
+    claim = store.create_claim(
+        ClaimDraft(
+            shared.routing.eval_source,
+            1,
+            "I1",
+            "P1",
+            "eval",
+            _setup_fingerprint(),
+            {"revisions": {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}},
+        )
+    )
+    store.set_claim_lifecycle(claim.id, "settled", {"verdict": "infra-error"})
+    return claim.id
+
+
+def _ready_keeping_verdict(board: Path, shared: SharedConfig, *, body_change: bool) -> None:
+    data: dict[str, Any] = json.loads(board.read_text())
+    item = data["items"][0]
+    assert any(
+        field["field"]["id"] == shared.project.verdict.id for field in item["fieldValues"]["nodes"]
+    )
+    if body_change:
+        item["content"]["body"] = item["content"]["body"].replace("repetitions=1", "repetitions=2")
+    for field in item["fieldValues"]["nodes"]:
+        if field["field"]["id"] == shared.project.status.id:
+            field["optionId"] = shared.project.status.option("ready")
+    board.write_text(json.dumps(data))
+
+
+def test_ready_card_with_changed_request_starts_a_fresh_settled_claim_despite_its_verdict(
+    tmp_path: Path,
+) -> None:
+    """Changing the parsed eval settings requests a new claim; the Verdict may stay set."""
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    original = _settled_claim_for_current_body(store, shared)
+    _cli(config, env, "tick")
+    assert _field_value(board, shared.project.status.id) == shared.project.status.option("review")
+
+    _ready_keeping_verdict(board, shared, body_change=True)
+    _cli(config, env, "tick")
+    runs = store.nonterminal_runs()
+    try:
+        assert len(runs) == 1
+        assert runs[0].claim_id != original
+        assert store.get_claim(original).lifecycle == "superseded"  # pyright: ignore[reportOptionalMemberAccess]
+    finally:
+        for run in runs:
+            _finish(store, Path(run.evidence_path))
+        store.close()
+
+
+def test_ready_card_with_invalid_changed_request_gets_needs_input_despite_its_verdict(
+    tmp_path: Path,
+) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    original = _settled_claim_for_current_body(store, shared)
+    _cli(config, env, "tick")
+
+    _ready_keeping_verdict(board, shared, body_change=False)
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = "```eval\nrepetitions=0\n```"
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")
+    try:
+        assert not store.nonterminal_runs()
+        assert [claim.id for claim in store.claims_for_item("P1")] == [original]
+        comments = json.loads(board.read_text())["comments"]
+        assert any("needs-input" in comment["body"] for comment in comments)
+    finally:
+        store.close()
+
+
+def test_ready_card_with_unchanged_request_and_verdict_returns_to_review(tmp_path: Path) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    original = _settled_claim_for_current_body(store, shared)
+    _cli(config, env, "tick")
+
+    _ready_keeping_verdict(board, shared, body_change=False)
+    _cli(config, env, "tick")
+    try:
+        assert not store.nonterminal_runs()
+        assert [claim.id for claim in store.claims_for_item("P1")] == [original]
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+    finally:
         store.close()
 
 

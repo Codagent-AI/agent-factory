@@ -410,6 +410,15 @@ class EvalHandler:
         shared = self._shared
         if card_status(shared, card) != "Ready":
             return None
+        # Changed eval settings request a new claim, whatever Verdict still shows.
+        # An invalid body also goes to admission, which reports it as needs-input.
+        try:
+            if parse_request(card.source.body, self._defaults).fingerprint != (
+                claim.request_fingerprint
+            ):
+                return "fresh"
+        except ValueError:
+            return "fresh"
         if card.fields.get(shared.project.verdict.id) is not None:
             return None
         if not self._store.get_setting("field-delivery", f"{claim.id}:{shared.project.verdict.id}"):

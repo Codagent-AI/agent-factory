@@ -21,7 +21,7 @@ The tick admits a card when all of the following hold (`work_kinds/*/handler.py`
 - **Fix**: an open issue in a `[fix] targets` repository of the live shared config, with native type **Bug**, no `needs-input` label, and an author who has write, maintain, or admin permission. The card needs Owner=factory and Status=Ready.
 - **Eval**: an open issue in `[routing] eval_source` (`agent-evals`) with native type **Eval** and an author who has write permission. The card needs Owner=factory and Status=Ready, and the body must parse: exactly one fenced eval TOML block with supported keys. The `eval-request` label is routing's trigger, not an admission gate. Still add it, because it is the documented convention.
 - **Both**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the kind's slot is free, and the kind's readiness checks pass (disk floor, credentials, Fly). The tick admits at most one card. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
-- **Earlier claims**: an active claim is reused. A settled fix starts again when its card returns to Ready. A settled eval starts again when its request body changes, or, with the same body, only once its Verdict is cleared. Ask Paul before clearing a Verdict.
+- **Earlier claims**: an active claim is reused. A settled fix starts again when its card returns to Ready. A settled eval starts again when its parsed eval settings change (edits to prose or formatting do not count), even with its Verdict still set; with unchanged settings, only once its Verdict is cleared. Ask Paul before clearing a Verdict.
 
 ## 1. Choose the kind
 
