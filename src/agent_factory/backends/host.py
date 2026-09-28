@@ -11,6 +11,14 @@ from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic
 from agent_factory.store import Run
 
+_PROVENANCE_KEYS = (
+    "runner_executable",
+    "runner_version",
+    "validator_executable",
+    "validator_version",
+    "validator_commit",
+)
+
 
 class HostProcessBackend:
     name = "host"
@@ -26,7 +34,7 @@ class HostProcessBackend:
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None:
         hints = plan_hints(plan)
         provenance: dict[str, object] = {
-            key: hints[key] for key in ("runner_executable", "runner_version") if key in hints
+            key: hints[key] for key in _PROVENANCE_KEYS if key in hints
         }
         return {**(run.process if isinstance(run, Run) else {}), **provenance}
 
@@ -70,6 +78,4 @@ class HostProcessBackend:
         return []
 
     def provenance(self, identity: Mapping[str, object]) -> Mapping[str, object]:
-        return {
-            key: identity[key] for key in ("runner_executable", "runner_version") if key in identity
-        }
+        return {key: identity[key] for key in _PROVENANCE_KEYS if key in identity}

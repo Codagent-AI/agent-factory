@@ -11,9 +11,10 @@ from agent_factory import runtime
 from agent_factory.config import ConfigurationError, SharedConfig
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
-from agent_factory.store import Claim, ClaimStore
+from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import ReadinessError, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_request
+from agent_factory.work_kinds.eval.handler import validator_source_url
 
 
 def _revisions(claim: Claim) -> dict[str, object]:
@@ -57,12 +58,130 @@ def source_pair(tmp_path: Path) -> tuple[Path, Path, str, str]:
     return origin, clone, old, new
 
 
-def resolve(clone: Path, ref: str) -> tuple[str, str]:
+def resolve(clone: Path, ref: str) -> tuple[str, ...]:
     from agent_factory.work_kinds.eval import handler as eval_handler
 
     defaults = EvalDefaults("main", "main", {}, False, 1)
     request = parse_request(f'```eval\nagent_runner_ref = "{ref}"\n```', defaults)
     return eval_handler.resolve_revisions(SourceRepositories(clone, clone, clone), request)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Codagent-AI/agent-validator",
+        "https://github.com/Codagent-AI/agent-validator.git",
+        "git@github.com:Codagent-AI/agent-validator.git",
+        "ssh://git@github.com/Codagent-AI/agent-validator.git",
+        "https://user@github.com/Codagent-AI/agent-validator.git",
+        "https://x-access-token:secret@github.com/Codagent-AI/agent-validator.git",
+        "ssh://git@github.com:22/Codagent-AI/agent-validator.git",
+    ],
+)
+def test_validator_source_normalizes_github_origins(tmp_path: Path, origin: str) -> None:
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    git(checkout, "init")
+    git(checkout, "remote", "add", "origin", origin)
+    assert validator_source_url(checkout) == "https://github.com/Codagent-AI/agent-validator.git"
+
+
+@pytest.mark.parametrize(
+    "origin", ["file:///tmp/validator", "/tmp/validator", "https://other.example/a/b"]
+)
+def test_validator_source_rejects_unfetchable_origins(tmp_path: Path, origin: str) -> None:
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    git(checkout, "init")
+    git(checkout, "remote", "add", "origin", origin)
+    with pytest.raises(ReadinessError, match="not a GitHub repository"):
+        validator_source_url(checkout)
+
+
+def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
+    defaults = EvalDefaults("main", "main", {}, False, 1, agent_validator_ref="main")
+    with pytest.raises(ValueError, match="unsupported eval setting"):
+        parse_request('```eval\nagent_validator_ref = "dev"\n```', defaults)
+    request = parse_request("```eval\nrepetitions = 1\n```", defaults)
+    sha = "a" * 40
+    frozen = request.freeze(
+        runner_sha=sha,
+        skills_sha=sha,
+        harness_sha=sha,
+        suite="and-scene",
+        validator_sha="b" * 40,
+        validator_source="https://github.com/Codagent-AI/agent-validator.git",
+    )
+    assert frozen.payload["revisions"] == {
+        "runner": sha,
+        "skills": sha,
+        "evals": sha,
+        "validator": "b" * 40,
+    }
+    assert frozen.payload["sources"] == {
+        "validator": "https://github.com/Codagent-AI/agent-validator.git"
+    }
+    legacy = request.freeze(runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene")
+    assert "sources" not in legacy.payload
+
+
+def test_admission_freezes_validator_from_real_remote_and_docker_omits_it(
+    tmp_path: Path,
+) -> None:
+    common_dir = tmp_path / "common"
+    common_dir.mkdir()
+    _common_origin, common, _old, _new = source_pair(common_dir)
+    validator_dir = tmp_path / "validator-source"
+    validator_dir.mkdir()
+    origin, validator, _first, latest = source_pair(validator_dir)
+    ssh = "git@github.com:Codagent-AI/agent-validator.git"
+    git(validator, "remote", "set-url", "origin", ssh)
+    git(validator, "config", f"url.{origin}.insteadOf", ssh)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    defaults = EvalDefaults("main", "main", {}, False, 1, execution="fly")
+    handler = EvalHandler(
+        defaults,
+        harness_ref="main",
+        sources=SourceRepositories(common, common, common, validator),
+    )
+    first = handler.accept(eval_snapshot(), store, handler.resolve_request)
+    assert not isinstance(first, str)
+    assert isinstance(first, ClaimDraft)
+    claim = store.create_claim(first)
+    assert _revisions(claim)["validator"] == latest
+    assert claim.frozen_spec["sources"] == {
+        "validator": "https://github.com/Codagent-AI/agent-validator.git"
+    }
+    git(
+        origin,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "third",
+    )
+    advanced = git(origin, "rev-parse", "HEAD")
+    second = handler.accept(
+        eval_snapshot(issue_number=2, issue_id="I2", item="P2"), store, handler.resolve_request
+    )
+    assert isinstance(second, ClaimDraft)
+    assert _revisions(store.create_claim(second))["validator"] == advanced
+    assert _revisions(claim)["validator"] == latest
+
+    docker = EvalHandler(
+        EvalDefaults("main", "main", {}, False, 1, execution="docker"),
+        harness_ref="main",
+        sources=SourceRepositories(common, common, common),
+    )
+    docker_draft = docker.accept(
+        eval_snapshot(issue_number=3, issue_id="I3", item="P3"), store, docker.resolve_request
+    )
+    assert isinstance(docker_draft, ClaimDraft)
+    assert "validator" not in cast(dict[str, object], docker_draft.frozen_spec["revisions"])
+    store.close()
 
 
 def test_resolves_remote_branch_without_changing_local_checkout(tmp_path: Path) -> None:
@@ -186,6 +305,17 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
 
     assert handler.refs_text(first) == f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]}"
     assert handler.refs_text(second) == f"runner@{'a' * 7} skills@{'b' * 7} evals@{advanced[:7]}"
+    assert "Agent Validator: published npm release (not pinned)" in handler.frozen_inputs_event(
+        first
+    )
+    revisions = cast(dict[str, object], first.frozen_spec["revisions"])
+    revisions["validator"] = "c" * 40
+    assert handler.refs_text(first) == (
+        f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]} validator@{'c' * 7}"
+    )
+    assert f"Agent Validator: {'c' * 40}" in handler.frozen_inputs_event(first)
+    revisions["validator"] = "invalid"
+    assert handler.refs_text(first) is None
     store.close()
 
 

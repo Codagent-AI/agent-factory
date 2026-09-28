@@ -712,7 +712,9 @@ def test_fly_guest_marks_setup_complete_and_records_cli_versions() -> None:
     }
     script = job_script(manifest, "exec /suite/run")
     assert script.index("setup-complete") < script.index("exec /suite/run")
-    assert 'for name in ("claude", "codex")' in script and '"--version"' in script
+    assert (
+        'for name in ("claude", "codex", "agent-validator")' in script and '"--version"' in script
+    )
     assert "unavailable" in script
 
 
@@ -764,8 +766,16 @@ def test_fly_versions_are_loaded_from_collected_guest_evidence(tmp_path: Path) -
     job = tmp_path / ".factory/job/1"
     job.mkdir(parents=True)
     (job / "versions.json").write_text('{"claude":"2.0","codex":"1.0"}')
-    assert _fly_versions(tmp_path) == {"claude": "2.0", "codex": "1.0"}
-    assert _fly_versions(tmp_path / "missing") == {"claude": "unavailable", "codex": "unavailable"}
+    assert _fly_versions(tmp_path) == {
+        "claude": "2.0",
+        "codex": "1.0",
+        "agent-validator": "unavailable",
+    }
+    assert _fly_versions(tmp_path / "missing") == {
+        "claude": "unavailable",
+        "codex": "unavailable",
+        "agent-validator": "unavailable",
+    }
 
 
 def test_later_fly_attempt_provenance_includes_claim_build_digest(tmp_path: Path) -> None:

@@ -883,6 +883,7 @@ class PullRequestHandler:
                 resume_from=str(preparation.payload.get("resume_from", "")),
                 prior_branch=str(preparation.payload.get("prior_branch", "")),
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
+                validator_checkout=self._local.repositories.agent_validator,
             )
             if self.kind == "feature" and run.reason != "review" and self._store is not None:
                 resume_step = preparation.payload.get("resume_from")
@@ -926,6 +927,9 @@ class PullRequestHandler:
                 "sandbox",
                 "runner_executable",
                 "runner_version",
+                "validator_executable",
+                "validator_version",
+                "validator_commit",
                 "session_dir",
             )
             if isinstance(hints.get(key), str)
@@ -1245,7 +1249,7 @@ def _feature_stop_message(result: Mapping[str, object], repository: str) -> str:
 def _with_host_note(body: str, result: Mapping[str, object]) -> str:
     """Outcome comments for host-mode runs say so; Docker-mode comments are unchanged."""
     if result.get("sandbox") == "host":
-        return f"{body}\n\n{launch.HOST_NOTE}"
+        return f"{body}\n\n{launch.host_note(result.get('validator_commit', 'unavailable'))}"
     return body
 
 

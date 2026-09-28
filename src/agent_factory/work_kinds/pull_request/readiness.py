@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
+import plistlib
 import re
 import shutil
 import stat
@@ -13,6 +15,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
+from xml.parsers.expat import ExpatError
 
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.operations import (
@@ -21,6 +24,9 @@ from agent_factory.operations import (
     Diagnostic,
     DiagnosticGroup,
     free_space,
+    is_git_checkout,
+    launch_agent_plist,
+    launch_agent_service_path,
     read_fix_token,
 )
 from agent_factory.suites.and_scene import ReadinessError
@@ -334,8 +340,9 @@ def _host_diagnostics(
         diagnostics.append(_session_dir_flag_diagnostic(runner))
         diagnostics.append(_validate_diagnostic(runner, shared, definition))
     for executable in HOST_BASE_EXECUTABLES:
-        if executable != "agent-runner":
+        if executable not in ("agent-runner", "agent-validator"):
             diagnostics.append(_which_diagnostic(executable))
+    diagnostics.extend(_validator_diagnostics(local))
     diagnostics.append(_gh_auth_status_diagnostic(local))
     diagnostics.extend(
         _role_cli_diagnostic(adapter)
@@ -343,6 +350,56 @@ def _host_diagnostics(
     )
     diagnostics.append(_runner_settings_diagnostic())
     return diagnostics
+
+
+def _validator_diagnostics(local: LocalConfig) -> list[Diagnostic]:
+    checkout = local.repositories.agent_validator
+    expected = (checkout / "dist/index.js").resolve() if checkout else None
+    found = shutil.which("agent-validator")
+    actual = Path(found).resolve() if found else None
+    valid_checkout = is_git_checkout(checkout)
+    plist = launch_agent_plist()
+    plist_actual = None
+    if plist.is_file():
+        with contextlib.suppress(OSError, ValueError, TypeError, ExpatError):
+            with plist.open("rb") as stream:
+                service_path = launch_agent_service_path(plistlib.load(stream))
+            service_found = shutil.which("agent-validator", path=service_path)
+            plist_actual = Path(service_found).resolve() if service_found else None
+    # The service runs with the LaunchAgent PATH, so when the plist exists it alone
+    # decides; the doctor's own PATH (an operator shell) may list another copy first.
+    resolved = plist_actual if plist.is_file() else actual
+    available = bool(valid_checkout and resolved == expected)
+    action = f"Link agent-validator on the service PATH to {expected}."
+    build = Diagnostic(
+        "host agent-validator build",
+        available,
+        f"checkout {checkout}; doctor PATH {actual or 'unavailable'}; LaunchAgent PATH "
+        f"{plist_actual or 'unavailable'}; expected {expected}",
+        "" if available else action,
+        "fix-host",
+    )
+    provenance = launch.validator_provenance(checkout)
+    commit = provenance["validator_commit"]
+    origin = "unavailable"
+    if valid_checkout:
+        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+            result = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "--verify", "origin/main"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode == 0:
+                origin = result.stdout.strip()
+    if commit == "unavailable" or origin == "unavailable":
+        freshness = f"unknown (build {commit}, origin/main {origin})"
+    elif commit == origin:
+        freshness = "current"
+    else:
+        freshness = f"{commit} is behind origin/main ({origin})"
+    return [build, Diagnostic("host agent-validator freshness", True, freshness, "", "fix-host")]
 
 
 def _host_failure(name: str, detail: str, action: str) -> Diagnostic:

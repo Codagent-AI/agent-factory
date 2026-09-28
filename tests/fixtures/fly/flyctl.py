@@ -54,7 +54,25 @@ if os.path.exists(ROOT + "/.unreachable"):
     sys.exit(1)
 if args[:1] == ["deploy"]:
     app = option(args, "-a")
-    claim = option(args, "--build-arg").split("=", 1)[1]
+    dockerfile = option(args, "--dockerfile")
+    if dockerfile and os.path.isfile(dockerfile):
+        with open(dockerfile, encoding="utf-8") as source:
+            contents = source.read()
+        with open(LOG, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps({{"dockerfile": contents}}) + "\n")
+    build_args = [
+        args[index + 1] for index, value in enumerate(args[:-1]) if value == "--build-arg"
+    ]
+    if os.environ.get("FAKE_FLY_BUILD_FAIL"):
+        sys.stderr.write(
+            "agent-validator version mismatch: built commit differs from frozen revision\n"
+        )
+        sys.exit(1)
+    claim = next(
+        value.split("=", 1)[1]
+        for value in build_args
+        if value.startswith("FACTORY_CLI_REFRESH=")
+    )
     sys.stdout.write(
         "#14 pushing manifest for registry.fly.io/" + app + ":claim-" + claim[:12]
         + "@sha256:" + "0" * 64 + " 0.4s done\n"

@@ -222,6 +222,12 @@ class Harness:
             },
         )
         self.skills_sha = _repo(tmp_path / "skills", {"README.md": "fixture"})
+        self.validator_sha = _repo(
+            tmp_path / "agent-validator", {"dist/index.js": "#!/bin/sh\necho fixture\n"}
+        )
+        (tmp_path / "agent-validator/dist/index.js").write_text(
+            f"#!/bin/sh\necho '{self.validator_sha[:7]} fixture'\n"
+        )
         prefix = "evals/agent-runner/and-scene/"
         _repo(
             tmp_path / "evals",
@@ -399,11 +405,12 @@ fix_environment = "{tmp_path / "fix.env"}"
             "cursor": "#!/bin/sh\nexit 0",
             "agent-runner": RUNNER,
             "jq": "#!/bin/sh\nexit 0",
-            "agent-validator": "#!/bin/sh\nexit 0",
         }.items():
             script = bin_dir / name
             script.write_text(content)
             script.chmod(0o755)
+        (bin_dir / "agent-validator").symlink_to(tmp_path / "agent-validator/dist/index.js")
+        (tmp_path / "agent-validator/dist/index.js").chmod(0o755)
         self.env = {
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -780,6 +787,7 @@ def _assert_host_launch(h: Harness, run: Run, artifact: Path, claim_id: str) -> 
     assert hints["session_dir"] == str(artifact / "agent-runner-session")
     assert hints["runner_executable"] == str(h.tmp / "bin" / "agent-runner")
     assert hints["runner_version"] == "stub-runner 1.0"
+    assert hints["validator_commit"] == h.validator_sha
     assert FIX_TOKEN not in json.dumps(run.plan)
     assert run.plan["argv"] == ["/bin/bash", str(h.root / "private" / run.id / "host-run.sh")]
     names: list[str] = json.loads((artifact / "env-names.json").read_text())
@@ -794,6 +802,9 @@ def _assert_host_launch(h: Harness, run: Run, artifact: Path, claim_id: str) -> 
     assert (artifact / "cwd.txt").read_text() == str(clones / "repo")
     assert (artifact / "git-user.txt").read_text().strip() == "fixbot"
     assert (artifact / "host-provenance.json").exists()
+    provenance = json.loads((artifact / "host-provenance.json").read_text())
+    assert provenance["validator_commit"] == h.validator_sha
+    assert provenance["validator_version"] == f"{h.validator_sha[:7]} fixture"
     assert (artifact / "agent-runner-session" / "state.json").exists()
     assert not (artifact / "agent-runner" / "workflows").exists(), (
         "host mode must not stage into evidence"
@@ -839,6 +850,7 @@ def test_e2e_002_host_fix_journey_reports_cleans_up_and_prunes(tmp_path: Path) -
         finished = h.store.get_run(run.id)
         assert finished is not None
         assert finished.result["sandbox"] == "host"
+        assert finished.result["validator_commit"] == h.validator_sha
         assert finished.result["session_dir"] == str(artifact / "agent-runner-session")
         assert "image_tag" not in finished.result
         assert f"{REPOSITORY}#1" in h.cli("status")

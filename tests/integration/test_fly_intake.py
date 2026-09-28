@@ -11,17 +11,19 @@ import os
 import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import closing
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from agent_factory import runtime
-from agent_factory.config import LocalConfig, SharedConfig
+from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
 from agent_factory.github import AppCredentials
 from agent_factory.operations import Diagnostic
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.work_kinds.eval import EvalDefaults, parse_request
+from agent_factory.suites.and_scene import ReadinessError
+from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_request
 from tests.fixtures.fly.api import FakeMachinesApi
 from tests.fixtures.fly.flyctl import write_flyctl
 
@@ -403,3 +405,151 @@ def test_frozen_cursor_claim_is_held_under_fly_without_mutating_its_inputs(
         site.shared.project.status.option("ready")
     )
     assert not any(str(r["method"]) == "POST" for r in site.api.requests)
+
+
+def test_missing_validator_holds_admission_then_retries_and_rejects_local_origin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with FakeMachinesApi() as api:
+        site = Installation(tmp_path, api, "```eval\nrepetitions = 1\n```")
+        _wire(monkeypatch, site)
+
+        def always_admit(_schedule: ScheduleConfig, _now: datetime) -> bool:
+            return True
+
+        monkeypatch.setattr(ScheduleConfig, "allows_admission", always_admit)
+        checkout = tmp_path / "validator"
+
+        def validator_doctor(
+            _config: LocalConfig, *, include_fix: bool = True, include_informational: bool = True
+        ) -> list[Diagnostic]:
+            return [
+                Diagnostic(
+                    "Agent Validator checkout",
+                    checkout.is_dir(),
+                    f"checkout: {checkout}",
+                    "",
+                    "eval-fly",
+                )
+            ]
+
+        monkeypatch.setattr(runtime, "doctor", validator_doctor)
+        site.config_path.write_text(
+            site.config_path.read_text().replace(
+                f'agent_skills = "{tmp_path / "skills"}"',
+                f'agent_skills = "{tmp_path / "skills"}"\nagent_validator = "{checkout}"',
+            )
+        )
+        site.tick()
+        with site.store() as store:
+            assert store.claims_for_item("P1") == []
+        assert any(
+            "Waiting for revision readiness" in str(c["body"]) and "Validator" in str(c["body"])
+            for c in site.github.comments
+        ), site.github.comments
+
+        _repository(checkout, {"README.md": "validator"})
+        site.tick()
+        with site.store() as store:
+            assert store.claims_for_item("P1") == []
+        assert any(
+            "not a GitHub repository the Fly builder can fetch" in str(c["body"])
+            for c in site.github.comments
+        )
+
+        origin = checkout.parent / "validator-origin.git"
+        ssh = "git@github.com:Codagent-AI/agent-validator.git"
+        _git(checkout, "remote", "set-url", "origin", ssh)
+        _git(checkout, "config", f"url.{origin}.insteadOf", ssh)
+        site.tick()
+        with site.store() as store:
+            claims = store.claims_for_item("P1")
+            assert len(claims) == 1
+            frozen = claims[0].frozen_spec
+            assert (
+                cast(dict[str, object], frozen["sources"])["validator"]
+                == "https://github.com/Codagent-AI/agent-validator.git"
+            )
+            assert "validator" in cast(dict[str, object], frozen["revisions"])
+
+
+def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with FakeMachinesApi() as api:
+        site = Installation(tmp_path, api, "```eval\nrepetitions = 1\n```")
+        _wire(monkeypatch, site)
+        checkout = tmp_path / "validator"
+        revision = _repository(checkout, {"README.md": "validator"})
+        site.config_path.write_text(
+            site.config_path.read_text().replace(
+                f'agent_skills = "{tmp_path / "skills"}"',
+                f'agent_skills = "{tmp_path / "skills"}"\nagent_validator = "{checkout}"',
+            )
+        )
+        request = parse_request(
+            site.github.body,
+            EvalDefaults(
+                "main",
+                "main",
+                {role: "codex:x:medium" for role in ("lead", "implementor", "tester")},
+                False,
+                1,
+                execution="fly",
+            ),
+        )
+        frozen = request.freeze(
+            runner_sha=site.revisions["runner"],
+            skills_sha=site.revisions["skills"],
+            harness_sha=site.revisions["evals"],
+            suite="and-scene",
+            validator_sha=revision,
+            validator_source="https://github.com/Codagent-AI/agent-validator.git",
+        ).payload
+        with site.store() as store:
+            claim = store.create_claim(
+                ClaimDraft(
+                    site.shared.routing.eval_source,
+                    1,
+                    "I1",
+                    "P1",
+                    "eval",
+                    request.fingerprint,
+                    frozen,
+                )
+            )
+            store.set_claim_lifecycle(claim.id, "active", {})
+        site.config_path.write_text(
+            site.config_path.read_text().replace('execution = "fly"', 'execution = "docker"')
+        )
+        docker_local = LocalConfig.from_file(site.config_path)
+        docker_handler = EvalHandler.from_config(site.shared, docker_local)
+        with pytest.raises(ReadinessError, match="runs only under Fly execution"):
+            docker_handler.prepare(claim)
+        with site.store() as store:
+            assert store.runs_for_claim(claim.id) == []
+        site.config_path.write_text(
+            site.config_path.read_text().replace('execution = "docker"', 'execution = "fly"')
+        )
+        fly_handler = EvalHandler.from_config(site.shared, LocalConfig.from_file(site.config_path))
+        assert fly_handler.next_unit(claim, []) == ("rep-1", "initial")
+        legacy = request.freeze(
+            runner_sha=site.revisions["runner"],
+            skills_sha=site.revisions["skills"],
+            harness_sha=site.revisions["evals"],
+            suite="and-scene",
+        ).payload
+        with site.store() as store:
+            old = store.create_claim(
+                ClaimDraft(
+                    site.shared.routing.eval_source,
+                    2,
+                    "I2",
+                    "P2",
+                    "eval",
+                    request.fingerprint,
+                    legacy,
+                )
+            )
+        assert fly_handler.next_unit(old, []) == ("rep-1", "initial")
+        assert "validator" not in cast(dict[str, object], old.frozen_spec["revisions"])

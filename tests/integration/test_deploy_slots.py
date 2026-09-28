@@ -29,6 +29,13 @@ def _holds(predicate: str, status: str) -> bool:
         (FREE, True),
         (FREE.replace("eval slot: free", "eval slot: example/evals#3 eval (running)"), False),
         (FREE.replace("fix slot: free", "fix slot: example/work#1 fix (running)"), False),
+        (FREE + "host attempts: 0\n", True),
+        (FREE + "host attempts: 1\n", True),
+        (
+            FREE.replace("fix slot: free", "fix slot: example/work#1 fix (running)")
+            + "host attempts: 0\n",
+            False,
+        ),
         (
             FREE.replace("feature slot: free", "feature slot: example/work#2 feature (running)"),
             False,
@@ -38,3 +45,11 @@ def _holds(predicate: str, status: str) -> bool:
 )
 def test_slots_are_free_only_when_every_slot_is_free(status: str, free: bool) -> None:
     assert _holds("slots_free", status) is free
+
+
+@pytest.mark.parametrize(
+    ("status", "free"),
+    [(FREE + "host attempts: 0\n", True), (FREE + "host attempts: 1\n", False), (FREE, False)],
+)
+def test_host_slots_require_an_explicit_zero(status: str, free: bool) -> None:
+    assert _holds("host_slots_free", status) is free

@@ -41,6 +41,7 @@ OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 _BUILD_TIMEOUT_SECONDS = 1800
+BUN_VERSION = "1.2.23"
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
 _CLAUDE_FILES = (
@@ -182,6 +183,14 @@ def image_repository(image: str) -> str:
     return image.rsplit(":", 1)[0] if ":" in suffix else image
 
 
+def _last_instruction(lines: Sequence[str], keyword: str) -> str | None:
+    """The last Dockerfile line in ``lines`` that starts with the ``keyword`` instruction."""
+    return next(
+        (line for line in reversed(lines) if line.lstrip().upper().startswith(f"{keyword} ")),
+        None,
+    )
+
+
 def build_claim_image(
     app: str,
     repository: str,
@@ -191,6 +200,7 @@ def build_claim_image(
     environment: Mapping[str, str],
     client: FlyMachinesClient | None = None,
     region: str = "ewr",
+    validator: tuple[str, str] | None = None,
 ) -> str:
     """Build once in the detached launcher and persist its immutable digest."""
     tag = f"claim-{claim_id[:12]}"
@@ -211,6 +221,58 @@ def build_claim_image(
         f"FACTORY_CLI_REFRESH={claim_id}",
         ".",
     ]
+    if validator is not None:
+        revision, source = validator
+        dockerfile = runner / "docker/dev/Dockerfile"
+        original = dockerfile.read_text(encoding="utf-8")
+        lines = original.splitlines()
+        final_from = next(
+            (
+                index
+                for index in reversed(range(len(lines)))
+                if lines[index].lstrip().upper().startswith("FROM ")
+            ),
+            None,
+        )
+        final_stage = lines[final_from + 1 :] if final_from is not None else []
+        user = _last_instruction(final_stage, "USER")
+        workdir = _last_instruction(final_stage, "WORKDIR")
+        if user is None or workdir is None:
+            raise FlyTransportError(
+                f"Runner Dockerfile lacks a final USER or WORKDIR: {dockerfile}"
+            )
+        if not workdir.lstrip().split(maxsplit=1)[1].startswith("/"):
+            raise FlyTransportError(f"Runner Dockerfile has a relative final WORKDIR: {dockerfile}")
+        tail = f"""
+USER root
+ARG AGENT_VALIDATOR_REVISION
+ARG AGENT_VALIDATOR_REPOSITORY
+RUN set -eu; \\
+    export HOME=/root npm_config_cache=/root/.npm; \\
+    git init -q /opt/agent-validator; cd /opt/agent-validator; \\
+    git fetch -q --depth 1 "$AGENT_VALIDATOR_REPOSITORY" "$AGENT_VALIDATOR_REVISION"; \\
+    git checkout -q FETCH_HEAD; \\
+    npm install -g --prefix /opt/bun bun@{BUN_VERSION}; \\
+    /opt/bun/bin/bun install --frozen-lockfile; \\
+    INJECT_GIT_VERSION=1 /opt/bun/bin/bun build.ts; \\
+    npm install -g /opt/agent-validator; \\
+    chmod -R a+rX /opt/agent-validator; \\
+    reported="$(agent-validator --version | cut -d' ' -f1)"; \\
+    printf '%s' "$reported" | grep -Eq '^[0-9a-f]{{7,40}}$'; \\
+    case "$AGENT_VALIDATOR_REVISION" in "$reported"*) ;; \\
+      *) echo "agent-validator version mismatch" >&2; exit 1 ;; esac
+{user}
+{workdir}
+"""
+        derived = (factory / "claim.Dockerfile").resolve()
+        derived.write_text(original.rstrip() + "\n" + tail, encoding="utf-8")
+        command[command.index("--dockerfile") + 1] = str(derived)
+        command[-1:-1] = [
+            "--build-arg",
+            f"AGENT_VALIDATOR_REVISION={revision}",
+            "--build-arg",
+            f"AGENT_VALIDATOR_REPOSITORY={source}",
+        ]
     with tempfile.TemporaryDirectory() as scratch:
         config = Path(scratch) / "fly.toml"
         config.write_text(f'app = "{app}"\nprimary_region = "{region}"\n', encoding="utf-8")
@@ -694,6 +756,7 @@ class Lifecycle:
             return f"{repository}@{recorded_digest}"
         worktrees = mapping_field(self.manifest, "worktrees")
         runner = Path(string_field(worktrees, "runner"))
+        commits = mapping_field(self.manifest, "commits")
         return build_claim_image(
             string_field(self.fly, "app"),
             repository,
@@ -703,6 +766,14 @@ class Lifecycle:
             self.transport.deploy_environment(),
             self.client,
             string_field(self.fly, "region"),
+            (
+                (
+                    string_field(commits, "validator"),
+                    string_field(self.manifest, "validator_repository"),
+                )
+                if "validator" in commits
+                else None
+            ),
         )
 
     def _ensure_started(
