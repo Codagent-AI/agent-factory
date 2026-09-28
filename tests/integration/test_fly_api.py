@@ -396,6 +396,7 @@ def test_registry_list_and_digest_delete_use_basic_auth(fly: Harness) -> None:
             )
     with pytest.raises(ValueError):
         client.delete_manifest("registry.fly.io/app", "claim-two")
+    assert len(fly.requests("DELETE")) == 2
 
 
 def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
@@ -414,3 +415,55 @@ def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
     assert raised.value.status == 405
     assert "UNSUPPORTED" in str(raised.value)
     assert fly.api.registry_tags["claim-one"] == digest
+
+
+@pytest.mark.parametrize("status", [401, 500])
+def test_registry_delete_errors_include_status_and_reason(fly: Harness, status: int) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {"claim-one": digest}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append((status, {"error": "registry unavailable"}))
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", digest)
+    assert raised.value.status == status
+    assert "registry unavailable" in str(raised.value)
+
+
+def test_registry_connection_reset_is_a_typed_error(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append("reset")
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", "sha256:" + "a" * 64)
+    assert "manifest deletion could not be completed" in str(raised.value)
+
+
+@pytest.mark.parametrize("operation", ["list_tags", "delete_manifest"])
+def test_registry_operations_cannot_use_a_cleartext_non_loopback_endpoint(
+    fly: Harness, operation: str
+) -> None:
+    # The constructor rejects the endpoint before either operation can send a token.
+    before = len(fly.api.requests)
+    with pytest.raises(ValueError, match="HTTPS"):
+        client = FlyMachinesClient(
+            "app",
+            fly.client.token_file,
+            base_url=fly.api.base_url,
+            registry_base_url="http://registry.example.test",
+        )
+        if operation == "list_tags":
+            client.list_tags("registry.fly.io/app")
+        else:
+            client.delete_manifest("registry.fly.io/app", "sha256:" + "a" * 64)
+    assert len(fly.api.requests) == before

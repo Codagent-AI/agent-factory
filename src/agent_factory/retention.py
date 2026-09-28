@@ -62,9 +62,10 @@ def prune_due(
     *,
     handler: WorkKindHandler | None = None,
     client: PullRequestReader | None = None,
+    sync_cache: dict[str, bool] | None = None,
 ) -> None:
     cleanup = dict(claim.cleanup)
-    if not _eligible(store, local, claim, cleanup, board_status, now, client):
+    if not _eligible(store, local, claim, cleanup, board_status, now, client, sync_cache):
         return
     _prune(store, claim, cleanup, now, handler)
 
@@ -89,6 +90,7 @@ def _eligible(
     board_status: str | None,
     now: datetime,
     client: PullRequestReader | None,
+    sync_cache: dict[str, bool] | None = None,
 ) -> bool:
     # Cheapest checks first: an already-pruned or not-yet-eligible claim costs no queries.
     retention = cleanup.get("retention")
@@ -127,7 +129,7 @@ def _eligible(
         return False
     if claim.lifecycle == "settled":
         if client is not None:
-            return not sync_pending(store, claim, client)
+            return not sync_pending(store, claim, client, sync_cache)
         from agent_factory.work_kinds.pull_request.sync import pending_sync
 
         return not any(pending_sync(store, claim, definition) for definition in registered())

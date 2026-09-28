@@ -82,6 +82,7 @@ def cycle(state: Path, config_path: Path) -> None:
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
         permission_cache: dict[tuple[str, str], str | None] = {}
         seen: dict[str, str] = {}
+        sync_cache: dict[str, bool] = {}
         for card in cards:
             for handler in registered.values():
                 handler.ready_handoff(card, shared, permission_cache)
@@ -217,10 +218,19 @@ def cycle(state: Path, config_path: Path) -> None:
                     _report(store, controller, client, shared, card, claim.id, handler)
                 if handler is not None and (
                     (claim.lifecycle == "settled" and card_status(shared, card) != "Done")
-                    or terminal.quiescent(store, store.get_claim(claim.id) or claim, client)
+                    or (
+                        claim.cleanup.get("complete") is not True
+                        and (
+                            claim.lifecycle != "settled"
+                            or claim.cleanup.get("review_observed") is True
+                        )
+                        and terminal.quiescent(
+                            store, store.get_claim(claim.id) or claim, client, sync_cache
+                        )
+                    )
                 ):
                     handler.cleanup(claim, board_status=card_status(shared, card))
-        terminal.sweep(store, controller, client, registered, local, seen, now)
+        terminal.sweep(store, controller, client, registered, local, seen, now, sync_cache)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)

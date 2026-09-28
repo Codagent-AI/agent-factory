@@ -514,7 +514,7 @@ class EvalHandler:
                                 line for line in body.splitlines() if line.startswith("Run: ")
                             )
                         elif ":results:" in key:
-                            results.append(body)
+                            results.extend(re.findall(r"https://github\.com/[^\s)]+", body))
         return (
             "The human-review command has expired. The retained suite worktree is being "
             "removed. Submit a new request to review a fresh run.\n\n"

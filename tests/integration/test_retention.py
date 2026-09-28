@@ -648,3 +648,65 @@ def test_new_run_reopens_pruning_and_keeps_prior_removal_record(tmp_path: Path) 
     )
     retention.prune_due(store, local, _get(store, claim.id), None, now)
     assert "old-path" in cast(list[str], _retention(_get(store, claim.id))["removed"])
+
+
+def test_superseded_clock_starts_at_supersession_not_old_run(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 50, "I50", "P50", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    _reserve_and_finish(store, claim.id, "fix", evidence)
+    run = store.runs_for_claim(claim.id)[0]
+    store._connection.execute(  # pyright: ignore[reportPrivateUsage]
+        "UPDATE run SET finished_at = ? WHERE id = ?",
+        ((datetime.now(UTC) - timedelta(days=40)).isoformat(), run.id),
+    )
+    store.set_claim_lifecycle(claim.id, "superseded", {})
+    now = datetime.now(UTC)
+    store.set_cleanup(
+        claim.id, {"complete": True, "terminal_at": (now - timedelta(days=3)).isoformat()}
+    )
+    retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now)
+    assert (evidence / "attempt-1" / "logs").exists()
+    retention.prune_due(
+        store, _local(tmp_path), _get(store, claim.id), None, now + timedelta(days=11)
+    )
+    assert not (evidence / "attempt-1" / "logs").exists()
+    assert (evidence / "attempt-1" / "input" / "issue.json").exists()
+
+
+def test_late_done_observation_starts_a_new_retention_clock(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 51, "I51", "P51", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    _reserve_and_finish(store, claim.id, "fix", evidence)
+    store.set_claim_lifecycle(claim.id, "settled", {})
+    start = datetime.now(UTC)
+    store.set_cleanup(
+        claim.id, {"complete": True, "terminal_at": (start - timedelta(days=25)).isoformat()}
+    )
+    retention.observe_done(store, _get(store, claim.id), "Done", start)
+    retention.prune_due(
+        store, _local(tmp_path), _get(store, claim.id), "Done", start + timedelta(days=13)
+    )
+    assert (evidence / "attempt-1" / "logs").exists()
+    retention.prune_due(
+        store, _local(tmp_path), _get(store, claim.id), "Done", start + timedelta(days=14)
+    )
+    assert not (evidence / "attempt-1" / "logs").exists()
+
+
+def test_off_board_settled_retention_requires_completed_release(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 52, "I52", "P52", "fix", "fp", {}))
+    evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
+    _reserve_and_finish(store, claim.id, "fix", evidence)
+    store.set_claim_lifecycle(claim.id, "settled", {})
+    now = datetime.now(UTC)
+    store.set_cleanup(
+        claim.id, {"complete": False, "terminal_at": (now - timedelta(days=31)).isoformat()}
+    )
+    retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now)
+    assert (evidence / "attempt-1" / "logs").exists()
+    store.set_cleanup(claim.id, {**_get(store, claim.id).cleanup, "complete": True})
+    retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now)
+    assert not (evidence / "attempt-1" / "logs").exists()

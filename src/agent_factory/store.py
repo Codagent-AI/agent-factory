@@ -276,7 +276,9 @@ class ClaimStore:
             if lifecycle in TERMINAL_LIFECYCLES:
                 self._connection.execute(
                     "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ?, "
-                    "cleanup_json = CASE WHEN lifecycle = ? THEN cleanup_json ELSE "
+                    "cleanup_json = CASE WHEN lifecycle = ? AND "
+                    "json_extract(cleanup_json, '$.terminal_at') IS NOT NULL "
+                    "THEN cleanup_json ELSE "
                     "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ?",
                     (lifecycle, _dump(outcome), now, lifecycle, now, claim_id),
                 )
@@ -392,7 +394,8 @@ class ClaimStore:
                     "UPDATE claim SET cleanup_json = json_remove("
                     "json_set(json_set(cleanup_json, '$.complete', json('false')), "
                     "'$.review_observed', json('false')), '$.terminal_at', "
-                    "'$.sweep_complete', '$.retention.pruned_at', '$.expiry') WHERE id = ?",
+                    "'$.terminal_at_backfilled', '$.sweep_complete', "
+                    "'$.retention.pruned_at', '$.expiry') WHERE id = ?",
                     (claim_id,),
                 )
             except sqlite3.IntegrityError as error:

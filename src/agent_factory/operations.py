@@ -1275,6 +1275,8 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
         return True
     if claim.cleanup.get("last_error") is not None:
         return True
+    if claim.cleanup.get("sync_check_error") is not None:
+        return True
     registry = claim.cleanup.get("registry")
     if isinstance(registry, Mapping):
         for value in cast(Mapping[str, object], registry).values():
@@ -1302,6 +1304,9 @@ def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
 def _cleanup_lines(claim: Claim) -> list[str]:
     error = claim.cleanup.get("last_error")
     lines = [f"cleanup errors: {error}"] if error is not None else []
+    sync_error = claim.cleanup.get("sync_check_error")
+    if sync_error is not None:
+        lines.append(f"PR state unreadable: {sync_error}")
     registry = claim.cleanup.get("registry")
     if isinstance(registry, Mapping):
         for digest, value in cast(Mapping[str, object], registry).items():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import cast
 
 from agent_factory.fly.api import FlyApiError, FlyMachinesClient
@@ -18,6 +18,19 @@ def _resolve(client: FlyMachinesClient, image: str) -> str | None:
         if error.status == 404:
             return None
         raise
+
+
+def ownership_skip(
+    digest: str, current: str | None, tags: Mapping[str, str], claim_tag: str
+) -> str | None:
+    if current != digest:
+        return (
+            f"claim tag now points to {current}"
+            if current is not None
+            else ("untagged; ownership cannot be proven")
+        )
+    other = next((tag for tag, value in tags.items() if tag != claim_tag and value == digest), None)
+    return f"shared with {other}" if other is not None else None
 
 
 def reconcile_claim_image(
@@ -67,6 +80,14 @@ def reconcile_claim_image(
         prior = registry.get(digest)
         if isinstance(prior, Mapping) and cast(Mapping[str, object], prior).get("deleted_at"):
             continue
+        if isinstance(prior, Mapping):
+            retry_at = cast(Mapping[str, object], prior).get("next_retry_at")
+            if isinstance(retry_at, str):
+                try:
+                    if now < datetime.fromisoformat(retry_at):
+                        continue
+                except (TypeError, ValueError):
+                    pass
         result: dict[str, object] = {"repository": repository, "tag": tag, "digest": digest}
         try:
             if client is None:
@@ -75,20 +96,21 @@ def reconcile_claim_image(
                 raise RuntimeError("recorded image is outside the configured Fly app")
             if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
                 raise RuntimeError("recorded image digest is invalid")
-            if repository not in cache:
-                cache[repository] = {
-                    other: resolved
-                    for other in client.list_tags(repository)
-                    if (resolved := _resolve(client, f"{repository}:{other}")) is not None
-                }
-            tags = cache[repository]
             current = _resolve(client, f"{repository}:{tag}")
-            shared = next(
-                (other for other, value in tags.items() if other != tag and value == digest),
-                None,
-            )
-            if shared:
-                result["skipped"] = f"shared with {shared}"
+            tags: Mapping[str, str] = {}
+            if current == digest:
+                if repository not in cache:
+                    cache[repository] = {
+                        other: resolved
+                        for other in client.list_tags(repository)
+                        if (resolved := _resolve(client, f"{repository}:{other}")) is not None
+                    }
+                tags = cache[repository]
+                # Listing can take time; the claim tag must still prove ownership.
+                current = _resolve(client, f"{repository}:{tag}")
+            skip = ownership_skip(digest, current, tags, tag)
+            if current == digest and skip:
+                result["skipped"] = skip
             elif current == digest:
                 deleted = client.delete_manifest(repository, digest)
                 if (
@@ -102,13 +124,16 @@ def reconcile_claim_image(
                     result["error"] = "delete returned not-found but the image still resolves"
             elif _resolve(client, f"{repository}@{digest}") is None:
                 result["deleted_at"] = now.isoformat()
-            elif current is not None:
-                result["skipped"] = f"claim tag now points to {current}"
             else:
-                result["skipped"] = "untagged; ownership cannot be proven"
+                assert skip is not None
+                result["skipped"] = skip
         except (FlyApiError, OSError, RuntimeError, ValueError) as error:
             result["error"] = str(error)
             result["at"] = now.isoformat()
+        if result.get("skipped"):
+            result["next_retry_at"] = (now + timedelta(days=1)).isoformat()
+        elif result.get("error"):
+            result["next_retry_at"] = (now + timedelta(minutes=5)).isoformat()
         registry[digest] = result
         current_claim = store.get_claim(claim.id) or claim
         store.set_cleanup(claim.id, {**current_claim.cleanup, "registry": registry})

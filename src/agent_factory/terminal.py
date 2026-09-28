@@ -10,6 +10,7 @@ from typing import Protocol, cast
 from agent_factory import retention
 from agent_factory.config import LocalConfig
 from agent_factory.controller import Controller
+from agent_factory.github import GitHubNotFoundError
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, TERMINAL_LIFECYCLES, Claim, ClaimStore
 from agent_factory.work_kinds.base import WorkKindHandler
 from agent_factory.work_kinds.pull_request.kinds import registered
@@ -55,7 +56,14 @@ def machines_held(store: ClaimStore, claim: Claim) -> bool:
     )
 
 
-def sync_pending(store: ClaimStore, claim: Claim, client: PullRequestReader) -> bool:
+def sync_pending(
+    store: ClaimStore,
+    claim: Claim,
+    client: PullRequestReader,
+    cache: dict[str, bool] | None = None,
+) -> bool:
+    if cache is not None and claim.id in cache:
+        return cache[claim.id]
     if claim.lifecycle != "settled" or sync_state(claim).get("completed"):
         return False
     definition = next((item for item in registered() if item.kind == claim.kind), None)
@@ -66,12 +74,35 @@ def sync_pending(store: ClaimStore, claim: Claim, client: PullRequestReader) -> 
         return False
     try:
         state = client.get_pull_request(claim.repository, pr[0])
-    except Exception:
-        return True
-    return getattr(state, "merged_at", None) is not None
+    except GitHubNotFoundError:
+        pending = False
+        error_text = None
+    except Exception as error:
+        logger.warning("PR state for %s#%s unreadable: %s", claim.repository, pr[0], error)
+        pending = True
+        error_text = str(error)
+    else:
+        pending = getattr(state, "merged_at", None) is not None
+        error_text = None
+    existing = claim.cleanup.get("sync_check_error")
+    if error_text != existing:
+        cleanup = dict((store.get_claim(claim.id) or claim).cleanup)
+        if error_text is None:
+            cleanup.pop("sync_check_error", None)
+        else:
+            cleanup["sync_check_error"] = error_text
+        store.set_cleanup(claim.id, cleanup)
+    if cache is not None:
+        cache[claim.id] = pending
+    return pending
 
 
-def quiescent(store: ClaimStore, claim: Claim, client: PullRequestReader) -> bool:
+def quiescent(
+    store: ClaimStore,
+    claim: Claim,
+    client: PullRequestReader,
+    cache: dict[str, bool] | None = None,
+) -> bool:
     return (
         claim.lifecycle in TERMINAL_LIFECYCLES
         and not any(
@@ -80,7 +111,29 @@ def quiescent(store: ClaimStore, claim: Claim, client: PullRequestReader) -> boo
         and not machines_held(store, claim)
         and not store.pending_events(claim.id)
         and not claim.reporting.get("delivery_failures")
-        and not sync_pending(store, claim, client)
+        and not sync_pending(store, claim, client, cache)
+    )
+
+
+def release_due(
+    claim: Claim, board_status: str | None, since: datetime, now: datetime, days: int
+) -> bool:
+    return claim.lifecycle in {"cancelled", "superseded"} or (
+        claim.lifecycle == "settled"
+        and board_status != "Done"
+        and now - since >= timedelta(days=days)
+    )
+
+
+def expiry_published(claim: Claim) -> bool:
+    events = claim.reporting.get("events")
+    if not isinstance(events, Mapping):
+        return False
+    return any(
+        key.endswith(":review-command")
+        and isinstance(value, Mapping)
+        and bool(cast(Mapping[str, object], value).get("comment_id"))
+        for key, value in cast(Mapping[str, object], events).items()
     )
 
 
@@ -92,12 +145,16 @@ def sweep(
     local: LocalConfig,
     seen: Mapping[str, str],
     now: datetime,
+    sync_cache: dict[str, bool] | None = None,
 ) -> None:
     from agent_factory.fly.registry_cleanup import reconcile_claim_image
 
+    sync_cache = sync_cache if sync_cache is not None else {}
     registry_cache: dict[str, dict[str, str]] = {}
     registry_client = None
     for saved in store.terminal_claims():
+        if saved.cleanup.get("sweep_complete") is True:
+            continue
         try:
             claim = store.get_claim(saved.id) or saved
             if any(
@@ -107,39 +164,37 @@ def sweep(
             since = terminal_time(store, claim)
             store.clear_delivered_failures(saved.id)
             claim = store.get_claim(saved.id) or claim
-            if claim.cleanup.get("sweep_complete") is True:
-                continue
             handler = handlers.get(claim.kind)
             if handler is None:
                 continue
             status = seen.get(claim.id)
-            due = claim.lifecycle in {"cancelled", "superseded"} or (
-                status != "Done"
-                and now - since >= timedelta(days=local.limits.unreviewed_retention_days)
-            )
+            due = release_due(claim, status, since, now, local.limits.unreviewed_retention_days)
             if due and claim.cleanup.get("complete") is not True:
                 if claim.kind == "eval" and claim.lifecycle == "settled":
                     events = claim.reporting.get("events")
                     event_values: Mapping[str, object] = (
                         cast(Mapping[str, object], events) if isinstance(events, Mapping) else {}
                     )
-                    published = any(
-                        key.endswith(":review-command")
-                        and isinstance(value, Mapping)
-                        and bool(cast(Mapping[str, object], value).get("comment_id"))
-                        for key, value in event_values.items()
-                    )
-                    if published and "review-expired" not in event_values:
+                    if expiry_published(claim) and "review-expired" not in event_values:
                         message = handler.expiry_message(claim)
                         store.record_event(claim.id, "review-expired", message)
                         claim = store.get_claim(claim.id) or claim
                 if store.pending_events(claim.id):
                     controller.deliver_reports(claim.id)
                     claim = store.get_claim(claim.id) or claim
-                if quiescent(store, claim, client):
+                if quiescent(store, claim, client, sync_cache):
                     handler.release(claim)
                     claim = store.get_claim(claim.id) or claim
-            retention.prune_due(store, local, claim, status, now, handler=handler, client=client)
+            retention.prune_due(
+                store,
+                local,
+                claim,
+                status,
+                now,
+                handler=handler,
+                client=client,
+                sync_cache=sync_cache,
+            )
             if claim.kind == "eval":
                 if registry_client is None and local.fly is not None:
                     from agent_factory.fly.api import FlyMachinesClient

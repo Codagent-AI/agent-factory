@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
@@ -21,7 +22,7 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.registry_tags: dict[str, str] = {}
         self.registry_manifests: set[str] = set()
         self.registry_enabled = False
-        self.registry_delete_failures: list[int | tuple[int, object]] = []
+        self.registry_delete_failures: list[int | tuple[int, object] | str] = []
         # Statuses to answer the next POSTs with, before normal handling resumes.
         # A failure is a status, or a status and the JSON body Fly answers with.
         self.post_failures: list[int | tuple[int, object]] = []
@@ -237,7 +238,23 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                         return
                     if fake.registry_delete_failures:
                         failure = fake.registry_delete_failures.pop(0)
-                        self._send(*failure) if isinstance(failure, tuple) else self._send(failure)
+                        if failure == "reset":
+                            self.connection.shutdown(socket.SHUT_RDWR)
+                            self.connection.close()
+                            return
+                        if failure == "404-gone":
+                            digest = path.rsplit("/", 1)[-1]
+                            fake.registry_manifests.discard(digest)
+                            fake.registry_tags = {
+                                tag: value
+                                for tag, value in fake.registry_tags.items()
+                                if value != digest
+                            }
+                            self._send(404)
+                            return
+                        self._send(*failure) if isinstance(failure, tuple) else self._send(
+                            cast(int, failure)
+                        )
                         return
                     digest = path.rsplit("/", 1)[-1]
                     if (

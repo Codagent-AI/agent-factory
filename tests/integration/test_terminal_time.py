@@ -38,6 +38,14 @@ def test_terminal_time_reopen_and_backfill(tmp_path: Path) -> None:
         store.finish_run(run.id, execution_status="completed", result={})
         store.set_claim_lifecycle(claim.id, "settled", {})
         assert store.get_claim(claim.id).cleanup["terminal_at"] != "old"  # type: ignore[union-attr]
+        same_state = store.reserve_run(
+            claim.id, "fix", reason="follow-up", evidence_path=str(tmp_path)
+        )
+        store.set_preparation(claim.id, {"clones": {}})
+        store.finish_run(same_state.id, execution_status="completed", result={})
+        store.set_claim_lifecycle(claim.id, "settled", {})
+        assert "terminal_at_backfilled" not in store.get_claim(claim.id).cleanup  # type: ignore[union-attr]
+        assert store.get_claim(claim.id).cleanup["terminal_at"]  # type: ignore[union-attr]
         replacement = store.supersede_and_create(claim.id, _draft(2))
         assert replacement.id != claim.id
         superseded = store.get_claim(claim.id)
@@ -55,4 +63,11 @@ def test_terminal_time_reopen_and_backfill(tmp_path: Path) -> None:
         assert terminal_time(store, historical).isoformat() == historical.updated_at
         store.set_preparation(legacy.id, {})
         assert terminal_time(store, store.get_claim(legacy.id)).isoformat() == historical.updated_at  # type: ignore[arg-type]
+        followup = store.reserve_run(
+            legacy.id, "fix", reason="follow-up", evidence_path=str(tmp_path)
+        )
+        assert "terminal_at_backfilled" not in store.get_claim(legacy.id).cleanup  # type: ignore[union-attr]
+        store.finish_run(followup.id, execution_status="completed", result={})
+        store.set_claim_lifecycle(legacy.id, "cancelled", {})
+        assert store.get_claim(legacy.id).cleanup["terminal_at"]  # type: ignore[union-attr]
         assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 4  # pyright: ignore[reportPrivateUsage]

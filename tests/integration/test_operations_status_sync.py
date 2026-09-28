@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -338,3 +340,57 @@ def test_status_shows_terminal_registry_and_expiry_failures(tmp_path: Path) -> N
     assert "review-expired" in plain
     assert "example/evals#3" not in plain
     assert "example/evals#3" in full
+
+
+def test_cli_status_lists_only_pending_terminal_cleanup_without_writes(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite3"
+    store = ClaimStore(db)
+    for number, lifecycle, cleanup in (
+        (
+            1,
+            "superseded",
+            {
+                "complete": True,
+                "registry": {"sha256:" + "a" * 64: {"tag": "claim-one", "error": "HTTP 500"}},
+            },
+        ),
+        (
+            2,
+            "superseded",
+            {
+                "complete": True,
+                "registry": {
+                    "sha256:" + "b" * 64: {"tag": "claim-two", "skipped": "shared with base"}
+                },
+            },
+        ),
+        (3, "settled", {"complete": False}),
+        (4, "cancelled", {"complete": False, "last_error": {"clone": "permission denied"}}),
+        (5, "superseded", {"complete": True}),
+        (6, "settled", {"complete": True}),
+    ):
+        claim = store.create_claim(
+            ClaimDraft("example/evals", number, f"I{number}", f"P{number}", "eval", "fp", {})
+        )
+        store.set_claim_lifecycle(claim.id, lifecycle, {})
+        store.set_cleanup(claim.id, cleanup)
+        if number == 3:
+            store.record_event(claim.id, "review-expired", "expired")
+            store.record_delivery_failure(claim.id, "review-expired", RuntimeError("HTTP 503"))
+    store.close()
+    before = db.read_bytes()
+    command = [sys.executable, "-m", "agent_factory.cli", "--state", str(db), "status"]
+    plain = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    full = subprocess.run([*command, "--all"], capture_output=True, text=True, check=True).stdout
+    for number in (1, 2, 3, 4):
+        assert f"example/evals#{number}" in plain
+    for number in (5, 6):
+        assert f"example/evals#{number}" not in plain
+    for number in range(1, 7):
+        assert f"example/evals#{number}" in full
+    assert "claim-one@sha256:aaaaaaaaaaaa" in plain
+    assert "claim-two@sha256:bbbbbbbbbbbb" in plain
+    assert "shared with base" in plain
+    assert "review expiry not delivered" in plain
+    assert "permission denied" in plain
+    assert db.read_bytes() == before
