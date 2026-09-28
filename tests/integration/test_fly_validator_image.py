@@ -51,6 +51,9 @@ def test_pinned_validator_build_uses_frozen_source(tmp_path: Path) -> None:
     assert content.startswith(original)
     assert "git fetch -q --depth 1" in content
     assert "bun@" in content
+    # Build-time caches must not land root-owned in the job user's HOME.
+    assert "export HOME=/root npm_config_cache=/root/.npm" in content
+    assert content.index("export HOME=/root") < content.index("npm install -g")
     assert content.rstrip().endswith("USER pwuser\nWORKDIR /workspace")
     assert records[1]["dockerfile"] == content
     assert dockerfile.read_text() == original

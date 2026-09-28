@@ -243,6 +243,7 @@ USER root
 ARG AGENT_VALIDATOR_REVISION
 ARG AGENT_VALIDATOR_REPOSITORY
 RUN set -eu; \\
+    export HOME=/root npm_config_cache=/root/.npm; \\
     git init -q /opt/agent-validator; cd /opt/agent-validator; \\
     git fetch -q --depth 1 "$AGENT_VALIDATOR_REPOSITORY" "$AGENT_VALIDATOR_REVISION"; \\
     git checkout -q FETCH_HEAD; \\
