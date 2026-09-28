@@ -235,13 +235,17 @@ def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
     assert "docker" not in text.lower()
     fly_checks = {item.name: item for item in groups["eval-fly"]}
     assert set(fly_checks) == {
+        "Agent Validator checkout",
         "Fly launcher",
         "Fly deploy token",
         "Fly app API",
         "Fly image repository",
         "flyctl transport",
     }
-    assert all(item.available for item in fly_checks.values()), text
+    assert all(
+        item.available for name, item in fly_checks.items() if name != "Agent Validator checkout"
+    ), text
+    assert fly_checks["Agent Validator checkout"].available is False
     # Diagnosis is read-only: the app was looked up, nothing was created.
     assert {str(r["method"]) for r in site.api.requests} <= {"GET"}
     assert not any("/manifests/" in str(r["path"]) for r in site.api.requests)
@@ -281,6 +285,13 @@ def test_doctor_under_docker_still_runs_the_docker_group(site: Site) -> None:
     assert site.api.requests == []
 
 
+def test_docker_only_doctor_has_no_validator_diagnostic(site: Site) -> None:
+    site.stub("docker", exit_code=0)
+    diagnostics = doctor(site.config(evals="docker", fixes="docker"))
+    assert not any("Validator" in item.name for item in diagnostics)
+    assert "Validator" not in format_doctor(diagnostics)
+
+
 def test_mode_neutral_eval_checks_sit_in_the_eval_group_under_both_modes(site: Site) -> None:
     site.stub("docker", exit_code=0)
 
@@ -313,6 +324,25 @@ def test_bad_host_codex_login_holds_eval_under_fly_without_probing_docker(site: 
         item.name == "codex model authentication" and item.group == "eval" for item in failures
     )
     assert not any("Docker" in item.name for item in failures)
+
+
+def test_missing_validator_checkout_does_not_hold_existing_fly_claims(site: Site) -> None:
+    config = site.config(evals="fly", fixes="host")
+    shared = site.shared()
+    handler = EvalHandler.from_config(shared, config)
+    checkout = Diagnostic(
+        "Agent Validator checkout", False, "missing", "clone it", group="eval-fly"
+    )
+
+    failures = runtime._kind_failures(  # pyright: ignore[reportPrivateUsage]
+        handler,
+        config,
+        shared,
+        [checkout],
+        lambda: (_ for _ in ()).throw(AssertionError("Docker memory probe ran")),
+    )
+
+    assert failures == []
 
 
 # -- status --------------------------------------------------------------------

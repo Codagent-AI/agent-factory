@@ -39,7 +39,9 @@ resident's restart. The script:
 3. pauses the factory and runs `make build` in the runner checkout, which
    updates the host runner that fix and feature runs use. `go build` renames
    the new binary over the old one, so a running attempt keeps its binary and
-   later launches use the new one;
+   later launches use the new one. Unless `--no-validator` is set, deploy also
+   fast-forwards and builds the sibling Agent Validator checkout from
+   `origin/main` when no host attempt is running;
 4. points the plist's executable and `PATH`, and `shared_config`, at the
    release;
 5. runs `doctor`. If it fails, it points them back at the previous release and
@@ -69,11 +71,18 @@ validator's end-to-end tests. Commit any pin through a PR.
 ## Code and models each kind of work uses
 
 - Evals use Agent Evals `harness_ref` (`main`) and Agent Runner
-  `agent_runner_ref` (`main`). Fixes clone Agent Runner and Skills from
+  `agent_runner_ref` (`main`). Fly evals also pin Agent Validator
+  `agent_validator_ref` (`main`) in the claim image; Docker evals still use the
+  published npm release. Validator changes can change eval results, so compare
+  results with their recorded Validator revisions. Fixes clone Agent Runner and Skills from
   `[fix.branches]` (`main`), but run the `agent-runner` installed on `PATH`,
   which `make build` last built from the Agent Runner checkout.
   `scripts/deploy.sh` keeps that checkout on `origin/main` and rebuilds it on
   every deploy.
+- `[repositories] agent_validator` defaults to a sibling of `agent_runner`.
+  Host fixes and features use the checkout's local build through a one-time
+  `agent-validator` link on the LaunchAgent PATH. Deploy skips that build while
+  a host attempt is running; `--no-validator` skips the step explicitly.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
