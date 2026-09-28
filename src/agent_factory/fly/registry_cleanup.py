@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import cast
 
 from agent_factory.fly.api import FlyApiError, FlyMachinesClient
@@ -80,14 +80,6 @@ def reconcile_claim_image(
         prior = registry.get(digest)
         if isinstance(prior, Mapping) and cast(Mapping[str, object], prior).get("deleted_at"):
             continue
-        if isinstance(prior, Mapping):
-            retry_at = cast(Mapping[str, object], prior).get("next_retry_at")
-            if isinstance(retry_at, str):
-                try:
-                    if now < datetime.fromisoformat(retry_at):
-                        continue
-                except (TypeError, ValueError):
-                    pass
         result: dict[str, object] = {"repository": repository, "tag": tag, "digest": digest}
         try:
             if client is None:
@@ -130,10 +122,6 @@ def reconcile_claim_image(
         except (FlyApiError, OSError, RuntimeError, ValueError) as error:
             result["error"] = str(error)
             result["at"] = now.isoformat()
-        if result.get("skipped"):
-            result["next_retry_at"] = (now + timedelta(days=1)).isoformat()
-        elif result.get("error"):
-            result["next_retry_at"] = (now + timedelta(minutes=5)).isoformat()
         registry[digest] = result
         current_claim = store.get_claim(claim.id) or claim
         store.set_cleanup(claim.id, {**current_claim.cleanup, "registry": registry})

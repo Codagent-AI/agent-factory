@@ -384,10 +384,10 @@ class FlyMachinesClient:
             next_url = urljoin(url, match.group(1))
             base = urlsplit(self.registry_base_url)
             next_page = urlsplit(next_url)
-            if (next_page.scheme, next_page.netloc, next_page.path) != (
-                base.scheme,
-                base.netloc,
-                path,
+            if (
+                (next_page.scheme, next_page.netloc) != (base.scheme, base.netloc)
+                or not re.fullmatch(r"/v2/[^/]+/tags/list", next_page.path)
+                or next_page.fragment
             ):
                 raise FlyApiError(path, detail="registry returned an unsafe next page")
             url = next_url

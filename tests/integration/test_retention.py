@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import Mock
 
 import pytest
 
 from agent_factory import retention
 from agent_factory.config import LocalConfig
+from agent_factory.github import GitHubApiError
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
 
 _RETENTION_DAYS = 14
@@ -710,3 +713,27 @@ def test_off_board_settled_retention_requires_completed_release(tmp_path: Path) 
     store.set_cleanup(claim.id, {**_get(store, claim.id).cleanup, "complete": True})
     retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now)
     assert not (evidence / "attempt-1" / "logs").exists()
+
+
+def test_prune_keeps_a_cleared_pr_read_error_cleared(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 53, "I53", "P53", "fix", "fp", {}))
+    store.set_claim_lifecycle(
+        claim.id, "settled", {"pr": {"number": 53, "url": "https://example.test/pr/53"}}
+    )
+    now = datetime.now(UTC)
+    store.set_cleanup(
+        claim.id, {"complete": True, "terminal_at": (now - timedelta(days=31)).isoformat()}
+    )
+    client = Mock()
+    client.get_pull_request.side_effect = GitHubApiError("unavailable")
+
+    retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now, client=client)
+    assert _get(store, claim.id).cleanup["sync_check_error"] == "unavailable"
+
+    client.get_pull_request.side_effect = None
+    client.get_pull_request.return_value = SimpleNamespace(merged_at=None)
+    retention.prune_due(store, _local(tmp_path), _get(store, claim.id), None, now, client=client)
+    saved = _get(store, claim.id)
+    assert "sync_check_error" not in saved.cleanup
+    assert _retention(saved)["pruned_at"]

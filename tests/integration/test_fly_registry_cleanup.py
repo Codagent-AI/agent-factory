@@ -48,7 +48,7 @@ def test_delete_unique_digest_and_retry_registry_failure(tmp_path: Path) -> None
         assert claim is not None
         assert "error" in cast(dict[str, dict[str, object]], claim.cleanup["registry"])[digest]
         assert store.get_setting("runtime", "fly:cleanup-failed") is None
-        reconcile_claim_image(store, claim, client, now + timedelta(minutes=5))
+        reconcile_claim_image(store, claim, client, now + timedelta(minutes=1))
         assert tag not in api.registry_tags
         assert "base" in api.registry_tags
         before = len(api.requests)
@@ -247,7 +247,7 @@ def test_registry_held_by_waiting_claim_or_failed_machine_record(tmp_path: Path)
         assert not api.requests
 
 
-def test_superseded_claim_preserves_fresh_tag_and_skips_backoff(tmp_path: Path) -> None:
+def test_superseded_claim_rechecks_shared_tag_on_next_poll(tmp_path: Path) -> None:
     old_digest = "sha256:" + "3" * 64
     new_digest = "sha256:" + "4" * 64
     token = tmp_path / "token"
@@ -272,7 +272,15 @@ def test_superseded_claim_preserves_fresh_tag_and_skips_backoff(tmp_path: Path) 
         record = cast(dict[str, dict[str, object]], saved.cleanup["registry"])[old_digest]
         assert "shared" in str(record["skipped"])
         assert api.registry_tags[new_tag] == new_digest
-        before = len(api.requests)
         reconcile_claim_image(store, saved, client, now + timedelta(hours=1))
-        assert len(api.requests) == before
+        assert cast(dict[str, dict[str, object]], store.get_claim(old_id).cleanup["registry"])[  # type: ignore[union-attr]
+            old_digest
+        ]["skipped"]
         assert not any(r["method"] == "DELETE" for r in api.requests)
+        del api.registry_tags["deployment-one"]
+        reconcile_claim_image(store, store.get_claim(old_id), client, now + timedelta(hours=2))  # type: ignore[arg-type]
+        assert old_tag not in api.registry_tags
+        assert api.registry_tags[new_tag] == new_digest
+        assert cast(dict[str, dict[str, object]], store.get_claim(old_id).cleanup["registry"])[  # type: ignore[union-attr]
+            old_digest
+        ]["deleted_at"]

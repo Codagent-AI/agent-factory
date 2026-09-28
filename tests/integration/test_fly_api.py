@@ -399,6 +399,24 @@ def test_registry_list_and_digest_delete_use_basic_auth(fly: Harness) -> None:
     assert len(fly.requests("DELETE")) == 2
 
 
+def test_registry_list_follows_internal_repository_pagination_link(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_link_internal_name = True
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    assert client.list_tags("registry.fly.io/app") == sorted(fly.api.registry_tags)
+    assert any(
+        str(request["path"]).startswith("/v2/internal-repo/tags/list")
+        for request in fly.api.requests
+    )
+
+
 def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
     digest = "sha256:" + "a" * 64
     fly.api.registry_enabled = True

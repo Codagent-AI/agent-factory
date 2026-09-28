@@ -22,6 +22,7 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.registry_tags: dict[str, str] = {}
         self.registry_manifests: set[str] = set()
         self.registry_enabled = False
+        self.registry_link_internal_name = False
         self.registry_delete_failures: list[int | tuple[int, object] | str] = []
         # Statuses to answer the next POSTs with, before normal handling resumes.
         # A failure is a status, or a status and the JSON body Fly answers with.
@@ -107,9 +108,14 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                         self.send_response(200)
                         self.send_header("Content-Type", "application/json")
                         if start + 2 < len(tags):
+                            link_path = (
+                                "/v2/internal-repo/tags/list"
+                                if fake.registry_link_internal_name
+                                else parsed.path
+                            )
                             self.send_header(
                                 "Link",
-                                f'<{fake.base_url}{parsed.path}?page={start + 2}>; rel="next"',
+                                f'<{fake.base_url}{link_path}?page={start + 2}>; rel="next"',
                             )
                         self.end_headers()
                         self.wfile.write(

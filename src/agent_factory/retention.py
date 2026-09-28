@@ -67,7 +67,8 @@ def prune_due(
     cleanup = dict(claim.cleanup)
     if not _eligible(store, local, claim, cleanup, board_status, now, client, sync_cache):
         return
-    _prune(store, claim, cleanup, now, handler)
+    fresh = store.get_claim(claim.id) or claim
+    _prune(store, fresh, dict(fresh.cleanup), now, handler)
 
 
 def _observe_done(cleanup: dict[str, object], board_status: str, now: datetime) -> bool:
