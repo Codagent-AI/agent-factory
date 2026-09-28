@@ -697,7 +697,9 @@ class PullRequestHandler:
                 last_result.get("outcome") == "needs-input"
                 and last_result.get("stopped_step") == "preflight"
             ):
+                # A preflight stop starts a fresh definition, so it continues no prior branch.
                 resume_from = ""
+                prior_branch = ""
         clones = self._workspace.prepare_clones(claim.id, attempt, repository, revisions)
         if self.definition.local(self._local).execution == "host":
             # The recorded Runner commit does not execute on the host, so only the packaged
