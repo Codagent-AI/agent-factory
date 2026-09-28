@@ -30,6 +30,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "record-review-triage.sh",
     "record-review-outcome.sh",
     "review-description.sh",
+    "mark-later-commits.py",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.

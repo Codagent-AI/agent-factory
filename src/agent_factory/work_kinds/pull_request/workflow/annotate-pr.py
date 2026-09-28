@@ -304,6 +304,12 @@ def main() -> None:
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
+    # Classification ran before finalization's last commits, which may fix its items.
+    # Best effort: the unmarked description is still published if marking fails.
+    marker = Path(__file__).with_name("mark-later-commits.py")
+    marked = subprocess.run([sys.executable, str(marker), str(body)], check=False)
+    if marked.returncode != 0:
+        print("could not mark items later commits may have fixed", file=sys.stderr)
     # The REST update, not `gh pr edit`: that also reads the pull request's project
     # items, which a token without org Projects access cannot do once the PR is on a board.
     edit = [
