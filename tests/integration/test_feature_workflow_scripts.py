@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
+from tests.integration.test_fix_workflow import shell_templates, single_quoted_placeholders
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 
@@ -73,6 +74,7 @@ def test_feature_files_are_listed_and_exist() -> None:
         "prepare-branch.sh",
         "factory-resume-skip.sh",
         "record-stop.sh",
+        "record-archive-block.sh",
         "annotate-pr.sh",
     ):
         assert name in FEATURE_STAGED_FILES
@@ -155,6 +157,204 @@ def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
     assert outcome["stopped_step"] == "design"
     assert outcome["questions"] == ["Which API?"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+
+
+def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    explanation = "Main spec contains a stray delta header outside the change directory."
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55.844297Z [archive, sub:archive-change, archive-transition] "
+        "repair_blocked "
+        + json.dumps({"attempt": 0, "response": explanation + "\n\nREPAIR_BLOCKED"})
+        + "\n"
+        + '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        + '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+        + '[archive] step_end {"outcome":"failed"}\n'
+    )
+    payload = json.dumps(
+        {
+            "artifact_dir": str(evidence),
+            "branch_name": "factory/feature-12",
+            "session_dir": str(session),
+        }
+    )
+    result = run(str(PACKAGE / "record-archive-block.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((evidence / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["stopped_step"] == "archive"
+    assert outcome["reasons"] == outcome["questions"] == [explanation]
+    assert outcome["branch"] == "factory/feature-12"
+    assert "REPAIR_BLOCKED" not in outcome["direction_summary"]
+    assert "commit the fix to this branch" in outcome["direction_summary"]
+    assert "a fix merged to main does not reach it" in outcome["direction_summary"]
+    assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+    assert (
+        run(
+            "python3",
+            str(PACKAGE / "verify-feature-outcome.py"),
+            str(evidence / "feature-outcome.json"),
+            cwd=repo,
+        ).returncode
+        == 0
+    )
+
+
+def test_record_archive_block_requires_archive_declaration(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [implement, sub:implement-task, verify-task-commit] "
+        'repair_blocked {"response":"wrong step\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+    assert not (evidence / "feature-outcome.json").exists()
+    (session / "audit.log").unlink()
+    missing_log = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert missing_log.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in missing_log.stderr
+    assert "Traceback" not in missing_log.stderr
+
+
+def test_record_archive_block_uses_last_archive_declaration_from_commit_check(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        "2026-09-28T07:50:00Z [archive, sub:archive-change, verify-archive-commit] "
+        'repair_blocked {"response":"Commit needs a human decision.\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "feature-outcome.json").read_text())["reasons"] == [
+        "Commit needs a human decision."
+    ]
+
+
+def test_record_archive_block_rejects_stale_declaration_after_later_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "[archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        "[archive, sub:archive-change, verify-archive-commit] step_start {}\n"
+        '[archive, sub:archive-change, verify-archive-commit] step_end {"exit_code":1}\n'
+        '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+    assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_record_archive_block_reports_invalid_declaration_payload(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    for payload in ('{"response":', '{"response":}', "[]"):
+        (session / "audit.log").write_text(
+            f"[archive, sub:archive-change, archive-transition] repair_blocked {payload}\n"
+        )
+        result = run(
+            str(PACKAGE / "record-archive-block.sh"),
+            str(evidence),
+            "branch",
+            str(session),
+            cwd=repo,
+        )
+        assert result.returncode != 0
+        assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    steps = feature.split("\n  - id: ")
+    ids = [step.split("\n", 1)[0] for step in steps[1:]]
+    archive = steps[ids.index("archive") + 1]
+    record = steps[ids.index("record-archive-block") + 1]
+    assert "continue_on_failure: true" in archive
+    assert "skip_if: 'sh: test \"{{archive_status}}\" = skipped'" in archive
+    assert ids.index("seed-archive-status") < ids.index("archive")
+    assert ids.index("archive") < ids.index("mark-archive-failed")
+    assert "restore-skipped-archive-status" not in ids
+    assert ids.index("mark-archive-failed") < ids.index("record-archive-block")
+    assert ids.index("record-archive-block") < ids.index("push-archive")
+    assert "script: record-archive-block.sh" in record
+
+
+def test_feature_workflow_shell_placeholders_are_interpolatable() -> None:
+    """Runner rejects placeholders within shell single quotes at step execution time."""
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    refused = {
+        template.strip().splitlines()[0]: names
+        for template in shell_templates(feature)
+        if (names := single_quoted_placeholders(template))
+    }
+    assert refused == {}
+
+
+def test_archive_status_survives_change_directory_moving_after_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    change = repo / "openspec" / "changes" / "example"
+    change.mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    skip_script = repo / ".agent-runner" / "workflows" / "factory-resume-skip.sh"
+    skip_script.parent.mkdir(parents=True)
+    skip_script.write_text("#!/bin/sh\nexit 1\n")
+    skip_script.chmod(0o755)
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    seed = feature.split("  - id: seed-archive-status\n", 1)[1].split("\n  - id: ")[0]
+    mark = feature.split("  - id: mark-archive-failed\n", 1)[1].split("\n  - id: ")[0]
+    seed_command = seed.split("    command: ", 1)[1].split("\n", 1)[0]
+    seed_command = (
+        seed_command.replace("{{artifact_dir}}", str(evidence))
+        .replace("{{change_name}}", "example")
+        .replace("{{effective_resume}}", "archive")
+    )
+    seeded = run("sh", "-c", seed_command, cwd=repo)
+    assert seeded.returncode == 0 and seeded.stdout == "passed"
+    change.rmdir()  # archive-transition can move the change before commit verification fails.
+    mark_command = mark.split("    command: ", 1)[1].split("\n", 1)[0]
+    marked = run("sh", "-c", mark_command.replace("{{archive_status}}", seeded.stdout), cwd=repo)
+    assert marked.returncode == 0 and marked.stdout == "failed"
+    skipped = run("sh", "-c", seed_command, cwd=repo)
+    assert skipped.returncode == 0 and skipped.stdout == "skipped"
+    preserved = run(
+        "sh", "-c", mark_command.replace("{{archive_status}}", skipped.stdout), cwd=repo
+    )
+    assert preserved.returncode == 0 and preserved.stdout == "skipped"
 
 
 def test_record_stop_records_the_workflow_step_not_the_agents_name(tmp_path: Path) -> None:

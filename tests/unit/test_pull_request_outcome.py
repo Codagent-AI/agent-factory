@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from agent_factory.work_kinds.pull_request.handler import feature_resume_point
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 
 
@@ -34,3 +35,7 @@ def test_feature_outcome_rejects_wrong_extra_field_type(tmp_path: Path) -> None:
         )
     )
     assert read_interpreted_outcome(tmp_path, "factory-feature/1").outcome is None
+
+
+def test_blocked_archive_resumes_at_archive() -> None:
+    assert feature_resume_point("needs-input", "archive", "implemented", False, False) == "archive"

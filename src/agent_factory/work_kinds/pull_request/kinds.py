@@ -76,6 +76,7 @@ FEATURE_STAGED_FILES = (
     "prepare-branch.sh",
     "factory-resume-skip.sh",
     "record-stop.sh",
+    "record-archive-block.sh",
     "checkpoint.sh",
     "reconcile-skip.sh",
     "locate-archive.py",
