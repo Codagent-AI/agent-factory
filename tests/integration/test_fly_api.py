@@ -367,3 +367,50 @@ def test_create_reports_a_400_that_persists_with_fly_reason(tmp_path: Path) -> N
         assert raised.value.status == 400
         assert "failed to get manifest" in str(raised.value)
         assert api.machines == {}
+
+
+def test_registry_list_and_digest_delete_use_basic_auth(fly: Harness) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {
+        "base": "sha256:" + "b" * 64,
+        "claim-one": digest,
+        "claim-two": "sha256:" + "c" * 64,
+        "deployment-one": "sha256:" + "d" * 64,
+    }
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    assert client.list_tags("registry.fly.io/app") == sorted(fly.api.registry_tags)
+    assert client.resolve_manifest("registry.fly.io/app:claim-one") == digest
+    assert client.delete_manifest("registry.fly.io/app", digest) is True
+    assert "claim-one" not in fly.api.registry_tags
+    assert client.delete_manifest("registry.fly.io/app", digest) is False
+    for request in fly.api.requests:
+        if str(request["path"]).startswith("/v2/"):
+            assert str(cast(dict[str, str], request["headers"])["Authorization"]).startswith(
+                "Basic "
+            )
+    with pytest.raises(ValueError):
+        client.delete_manifest("registry.fly.io/app", "claim-two")
+
+
+def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {"claim-one": digest}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append((405, {"error": "UNSUPPORTED"}))
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", digest)
+    assert raised.value.status == 405
+    assert "UNSUPPORTED" in str(raised.value)
+    assert fly.api.registry_tags["claim-one"] == digest

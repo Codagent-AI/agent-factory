@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
-from agent_factory.store import ClaimStore
+from agent_factory.store import NONTERMINAL_RUN_STATUSES, ClaimStore
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
@@ -189,12 +189,14 @@ class AndSceneAdapter:
         execution: str = "docker",
         fly: FlyLocalConfig | None = None,
         total_seconds: int = 18000,
+        unreviewed_retention_days: int = 30,
     ) -> None:
         self._environment_file = environment_file.resolve()
         self._mac_name = mac_name
         self._execution = execution
         self._fly = fly
         self._total_seconds = total_seconds
+        self._unreviewed_retention_days = unreviewed_retention_days
 
     @staticmethod
     def authentication_commands(roles: Mapping[str, str]) -> list[tuple[str, ...]]:
@@ -493,7 +495,9 @@ class AndSceneAdapter:
             "in Review. The automated results are saved to the eval repository without it; "
             "a completed review is added to them on a later tick.\n"
             f"Run: {command}\n"
-            "Moving the item to Done releases the retained suite worktree, reviewed or not."
+            "Moving the item to Done releases the retained suite worktree. "
+            f"If it stays unreviewed, the command expires {self._unreviewed_retention_days} "
+            "days after settlement and the suite worktree is released."
         )
 
     def failure_quota_until(
@@ -598,8 +602,33 @@ class WorktreeCleanup:
             return False
         if board_status != "Done" or cleanup.get("review_observed") is not True:
             return False
+        if self._store.pending_events(claim_id) or claim.reporting.get("delivery_failures"):
+            return False
+        if any(
+            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim_id)
+        ):
+            return False
+        from agent_factory.terminal import machines_held
+
+        if machines_held(self._store, claim):
+            return False
+        return self.release(claim_id)
+
+    def release(self, claim_id: str) -> bool:
+        claim = self._store.get_claim(claim_id)
+        if claim is None:
+            return False
+        cleanup = dict(claim.cleanup)
         if cleanup.get("complete") is True:
             return True
+        if "paths" not in cleanup and cleanup.get("review_observed") is not True:
+            from agent_factory.work_kinds.images import remove_images, run_image_tags
+
+            errors = remove_images(run_image_tags(self._store, claim_id))
+            cleanup["complete"] = not errors
+            cleanup["last_error"] = errors or None
+            self._store.set_cleanup(claim_id, cleanup)
+            return not errors
         try:
             worktrees = _recorded_worktrees(claim_id, cleanup)
         except WorktreeError as error:

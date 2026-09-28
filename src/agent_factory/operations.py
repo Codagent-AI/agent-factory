@@ -1261,9 +1261,7 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
     still costs its own per-claim query, since it is only reached for the settled or
     cancelled claims this function does not already resolve without one.
     """
-    if claim.lifecycle == "superseded":
-        return False
-    if claim.lifecycle not in {"settled", "cancelled"}:
+    if claim.lifecycle not in {"settled", "cancelled", "superseded"}:
         return True
     if claim.id in active_by_claim:
         return True
@@ -1277,6 +1275,15 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
         return True
     if claim.cleanup.get("last_error") is not None:
         return True
+    registry = claim.cleanup.get("registry")
+    if isinstance(registry, Mapping):
+        for value in cast(Mapping[str, object], registry).values():
+            if isinstance(value, Mapping):
+                record = cast(Mapping[str, object], value)
+                if record.get("error") or record.get("skipped"):
+                    return True
+    if claim.lifecycle == "superseded":
+        return False
     return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
 
 
@@ -1294,7 +1301,23 @@ def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
 
 def _cleanup_lines(claim: Claim) -> list[str]:
     error = claim.cleanup.get("last_error")
-    return [f"cleanup errors: {error}"] if error is not None else []
+    lines = [f"cleanup errors: {error}"] if error is not None else []
+    registry = claim.cleanup.get("registry")
+    if isinstance(registry, Mapping):
+        for digest, value in cast(Mapping[str, object], registry).items():
+            if isinstance(value, Mapping):
+                record = cast(Mapping[str, object], value)
+                reason = record.get("error") or record.get("skipped")
+                if reason:
+                    lines.append(f"registry image {record.get('tag', '?')}@{digest[:19]}: {reason}")
+    failures = claim.reporting.get("delivery_failures")
+    if isinstance(failures, Mapping) and "review-expired" in failures:
+        lines.append(f"review expiry not delivered: {failures['review-expired']}")
+    elif any(
+        event.key == "review-expired" and event.comment_id is None for event in _events(claim)
+    ):
+        lines.append("review expiry not delivered: pending")
+    return lines
 
 
 def _events(claim: Claim) -> list[Event]:

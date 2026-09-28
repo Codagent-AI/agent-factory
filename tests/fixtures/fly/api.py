@@ -18,6 +18,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.machines: dict[str, dict[str, object]] = {}
         self.requests: list[dict[str, object]] = []
         self.manifest_digest = manifest_digest
+        self.registry_tags: dict[str, str] = {}
+        self.registry_manifests: set[str] = set()
+        self.registry_enabled = False
+        self.registry_delete_failures: list[int | tuple[int, object]] = []
         # Statuses to answer the next POSTs with, before normal handling resumes.
         # A failure is a status, or a status and the JSON body Fly answers with.
         self.post_failures: list[int | tuple[int, object]] = []
@@ -96,9 +100,39 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                     if not self.headers.get("Authorization", "").startswith("Basic "):
                         self._send(401)
                         return
-                    self.send_response(200)
-                    self.send_header("Docker-Content-Digest", fake.manifest_digest)
-                    self.end_headers()
+                    if parsed.path.endswith("/tags/list"):
+                        tags = sorted(fake.registry_tags)
+                        start = int(parse_qs(parsed.query).get("page", ["0"])[0])
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        if start + 2 < len(tags):
+                            self.send_header(
+                                "Link",
+                                f'<{fake.base_url}{parsed.path}?page={start + 2}>; rel="next"',
+                            )
+                        self.end_headers()
+                        self.wfile.write(
+                            json.dumps(
+                                {"name": "internal-repo", "tags": tags[start : start + 2]}
+                            ).encode()
+                        )
+                    elif fake.registry_enabled:
+                        ref = parsed.path.rsplit("/", 1)[-1]
+                        digest = fake.registry_tags.get(ref)
+                        if digest is None and (
+                            ref in fake.registry_tags.values() or ref in fake.registry_manifests
+                        ):
+                            digest = ref
+                        if digest is None:
+                            self._send(404)
+                            return
+                        self.send_response(200)
+                        self.send_header("Docker-Content-Digest", digest)
+                        self.end_headers()
+                    else:
+                        self.send_response(200)
+                        self.send_header("Docker-Content-Digest", fake.manifest_digest)
+                        self.end_headers()
                 elif parsed.path.endswith("/machines") and fake.list_failures:
                     self._send(fake.list_failures.pop(0))
                 elif parsed.path.endswith("/machines"):
@@ -196,7 +230,29 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
 
             def do_DELETE(self) -> None:  # noqa: N802
                 self._record()
-                machine_id = _machine_id(urlsplit(self.path).path)
+                path = urlsplit(self.path).path
+                if path.startswith("/v2/"):
+                    if not self.headers.get("Authorization", "").startswith("Basic "):
+                        self._send(401)
+                        return
+                    if fake.registry_delete_failures:
+                        failure = fake.registry_delete_failures.pop(0)
+                        self._send(*failure) if isinstance(failure, tuple) else self._send(failure)
+                        return
+                    digest = path.rsplit("/", 1)[-1]
+                    if (
+                        digest not in fake.registry_tags.values()
+                        and digest not in fake.registry_manifests
+                    ):
+                        self._send(404)
+                        return
+                    fake.registry_manifests.discard(digest)
+                    fake.registry_tags = {
+                        tag: value for tag, value in fake.registry_tags.items() if value != digest
+                    }
+                    self._send(202)
+                    return
+                machine_id = _machine_id(path)
                 if fake.delete_failures:
                     self._send(fake.delete_failures.pop(0))
                 elif machine_id not in fake.machines:

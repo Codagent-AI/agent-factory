@@ -5,12 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -330,12 +331,90 @@ class FlyMachinesClient:
             with _OPENER.open(request, timeout=20) as response:
                 digest = response.headers.get("Docker-Content-Digest")
         except HTTPError as error:
-            raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
+            reason = _http_reason(error)
+            raise FlyApiError(
+                path,
+                error.code,
+                f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}",
+                reason,
+            ) from error
         except (URLError, OSError) as error:
             raise FlyApiError(path, detail="manifest could not be resolved") from error
         if not digest:
             raise FlyApiError(path, detail="registry did not return a digest")
         return digest
+
+    def list_tags(self, repository: str) -> list[str]:
+        repo = repository.removeprefix("registry.fly.io/")
+        path = f"/v2/{repo}/tags/list"
+        url = f"{self.registry_base_url}{path}"
+        tags: list[str] = []
+        visited: set[str] = set()
+        while True:
+            if url in visited:
+                raise FlyApiError(path, detail="registry repeated a tag-list page")
+            visited.add(url)
+            request = Request(url, method="GET")
+            credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
+            request.add_header("Authorization", f"Basic {credentials}")
+            try:
+                with _OPENER.open(request, timeout=20) as response:
+                    data: object = json.loads(response.read())
+                    link = response.headers.get("Link")
+            except HTTPError as error:
+                reason = _http_reason(error)
+                raise FlyApiError(
+                    path,
+                    error.code,
+                    f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}",
+                    reason,
+                ) from error
+            except (URLError, OSError, ValueError) as error:
+                raise FlyApiError(path, detail="tag list could not be read") from error
+            if not isinstance(data, dict):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            raw_tags = cast(Mapping[str, object], data).get("tags")
+            if raw_tags is not None and not isinstance(raw_tags, list):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            values = cast(list[object], raw_tags) if raw_tags is not None else []
+            tags.extend(tag for tag in values if isinstance(tag, str))
+            match = re.search(r'<([^>]+)>;\s*rel="next"', link or "")
+            if not match:
+                return tags
+            next_url = urljoin(url, match.group(1))
+            base = urlsplit(self.registry_base_url)
+            next_page = urlsplit(next_url)
+            if (next_page.scheme, next_page.netloc, next_page.path) != (
+                base.scheme,
+                base.netloc,
+                path,
+            ):
+                raise FlyApiError(path, detail="registry returned an unsafe next page")
+            url = next_url
+
+    def delete_manifest(self, repository: str, digest: str) -> bool:
+        if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            raise ValueError("registry deletion requires a SHA-256 digest")
+        repo = repository.removeprefix("registry.fly.io/")
+        path = f"/v2/{repo}/manifests/{digest}"
+        request = Request(f"{self.registry_base_url}{path}", method="DELETE")
+        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
+        request.add_header("Authorization", f"Basic {credentials}")
+        try:
+            with _OPENER.open(request, timeout=20) as response:
+                return response.status in (200, 202)
+        except HTTPError as error:
+            if error.code == 404:
+                return False
+            reason = _http_reason(error)
+            raise FlyApiError(
+                path,
+                error.code,
+                f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}",
+                reason,
+            ) from error
+        except (URLError, OSError) as error:
+            raise FlyApiError(path, detail="manifest deletion could not be completed") from error
 
 
 def _mapping(value: object) -> Mapping[str, object]:

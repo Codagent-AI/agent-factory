@@ -1,4 +1,4 @@
-- [ ] Implement the change described by these files:
+- [x] Implement the change described by these files:
   - [proposal.md](proposal.md)
   - [specs/factory-operations/spec.md](specs/factory-operations/spec.md)
   - [specs/factory-claim-lifecycle/spec.md](specs/factory-claim-lifecycle/spec.md)

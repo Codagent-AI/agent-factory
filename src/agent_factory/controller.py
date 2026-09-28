@@ -310,6 +310,7 @@ class Controller:
         )
 
     def deliver_reports(self, claim_id: str) -> None:
+        self._store.clear_delivered_failures(claim_id)
         claim = self._required_claim(claim_id)
         pending = self._store.pending_events(claim.id)
         if not pending:

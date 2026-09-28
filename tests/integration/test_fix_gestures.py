@@ -1003,6 +1003,9 @@ class _RecordingWorkspace:
         self.root = root
         self.calls: list[str] = []
 
+    def claim_directory(self, claim_id: str) -> Path:
+        return self.root / "clones" / claim_id
+
     def fetch_mirror(self, repository: str, token: str | None) -> None:
         self.calls.append(f"fetch:{repository}:{token}")
 

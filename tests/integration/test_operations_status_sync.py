@@ -311,3 +311,30 @@ def test_status_shows_a_cancelled_claim_whose_release_failed(tmp_path: Path) -> 
 
     assert "example/work#8" in text
     assert "cleanup errors" in text
+
+
+def test_status_shows_terminal_registry_and_expiry_failures(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    failed = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {}))
+    store.set_claim_lifecycle(failed.id, "superseded", {})
+    store.set_cleanup(
+        failed.id,
+        {
+            "registry": {"sha256:" + "a" * 64: {"tag": "claim-abc", "error": "HTTP 500"}},
+            "complete": True,
+        },
+    )
+    expiry = store.create_claim(ClaimDraft("example/evals", 2, "I2", "P2", "eval", "fp", {}))
+    store.set_claim_lifecycle(expiry.id, "settled", {})
+    store.record_event(expiry.id, "review-expired", "expired")
+    clean = store.create_claim(ClaimDraft("example/evals", 3, "I3", "P3", "eval", "fp", {}))
+    store.set_claim_lifecycle(clean.id, "superseded", {})
+    store.set_cleanup(clean.id, {"complete": True})
+
+    plain = status(store)
+    full = status(store, include_all=True)
+    assert "registry image claim-abc@sha256:aaaaaaaaaaaa" in plain
+    assert "HTTP 500" in plain
+    assert "review-expired" in plain
+    assert "example/evals#3" not in plain
+    assert "example/evals#3" in full

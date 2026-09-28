@@ -83,6 +83,7 @@ class LocalRegistryClient(fly_api.FlyMachinesClient):
     def __init__(self, app, token_file, **kw):
         super().__init__(app, token_file, registry_base_url={url!r}, **kw)
 fly_backend.FlyMachinesClient = LocalRegistryClient
+fly_api.FlyMachinesClient = LocalRegistryClient
 """
 
 

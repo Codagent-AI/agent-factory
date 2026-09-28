@@ -118,6 +118,9 @@ def _find_pr(
     return None
 
 
+find_pr = _find_pr
+
+
 def _run(clone: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(clone), *args],

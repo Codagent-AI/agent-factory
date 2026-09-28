@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, retention, work_kinds
+from agent_factory import audit, retention, terminal, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
@@ -66,10 +66,22 @@ def cycle(state: Path, config_path: Path) -> None:
             factory_login=shared.bot_login,
             artifact_root=local.storage_root / "artifacts",
         )
+        # Backfill before any tick write can advance a legacy claim's updated_at.
+        for historical in store.terminal_claims():
+            if "terminal_at" not in historical.cleanup and not (
+                historical.lifecycle == "settled"
+                and any(
+                    run.status in NONTERMINAL_RUN_STATUSES
+                    or not store.get_setting("consumed-results", run.id)
+                    for run in store.runs_for_claim(historical.id)
+                )
+            ):
+                terminal.terminal_time(store, historical)
         _reconcile_backends(store, local)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
         permission_cache: dict[tuple[str, str], str | None] = {}
+        seen: dict[str, str] = {}
         for card in cards:
             for handler in registered.values():
                 handler.ready_handoff(card, shared, permission_cache)
@@ -125,10 +137,9 @@ def cycle(state: Path, config_path: Path) -> None:
             if not claims:
                 _repair_unclaimed(store, client, shared, card)
             for claim in claims:
+                seen[claim.id] = card_status(shared, card)
                 handler = controller.handler(claim.kind)
-                retention.reconcile(
-                    store, local, claim, card_status(shared, card), now, handler=handler
-                )
+                retention.observe_done(store, claim, card_status(shared, card), now)
                 claim = store.get_claim(claim.id) or claim
                 if claim.lifecycle == "superseded":
                     continue
@@ -204,8 +215,12 @@ def cycle(state: Path, config_path: Path) -> None:
                     claim, issue_state=card.source.state
                 ):
                     _report(store, controller, client, shared, card, claim.id, handler)
-                if handler is not None:
+                if handler is not None and (
+                    (claim.lifecycle == "settled" and card_status(shared, card) != "Done")
+                    or terminal.quiescent(store, store.get_claim(claim.id) or claim, client)
+                ):
                     handler.cleanup(claim, board_status=card_status(shared, card))
+        terminal.sweep(store, controller, client, registered, local, seen, now)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
