@@ -390,6 +390,10 @@ when the checkout is safe and no host fix or feature attempt runs. Use
 `--no-validator` to skip that step. A host installation needs a one-time link
 from `agent-validator` on the LaunchAgent PATH to the checkout's `dist/index.js`;
 `doctor` checks it and reports whether the build is behind `origin/main`.
+If the Validator build fails, the deploy stops with the factory paused and puts
+the checkout's previous commit and `dist` back, but `node_modules` may already
+match the new lockfile. Before resuming, rerun the deploy, or rebuild in the
+checkout with `bun install --frozen-lockfile && bun run build:local`.
 Each release is immutable and running jobs keep using it; see `AGENTS.md`.
 
 `resident` does not write `controller.log`; use `status` and the per-run logs.
