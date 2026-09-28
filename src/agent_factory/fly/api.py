@@ -351,6 +351,7 @@ class FlyMachinesClient:
         # same one, so a page from another repository cannot hide a tag sharing a digest.
         listed_name: str | None = None
         while True:
+            first_page = not visited
             if url in visited:
                 raise FlyApiError(path, detail="registry repeated a tag-list page")
             visited.add(url)
@@ -371,7 +372,7 @@ class FlyMachinesClient:
             name = cast(Mapping[str, object], data).get("name")
             if name is not None and not isinstance(name, str):
                 raise FlyApiError(path, detail="registry returned an invalid tag list")
-            if listed_name is None:
+            if first_page:
                 listed_name = name
             elif name != listed_name:
                 raise FlyApiError(path, detail="registry changed repository between pages")

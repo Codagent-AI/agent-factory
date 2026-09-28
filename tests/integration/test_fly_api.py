@@ -436,6 +436,22 @@ def test_registry_list_refuses_pagination_into_another_repository(fly: Harness) 
     )
 
 
+def test_registry_list_refuses_a_name_missing_from_the_first_page(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_unnamed_pages = {0}
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    # A later page cannot adopt a name the first page did not report.
+    with pytest.raises(FlyApiError, match="changed repository between pages"):
+        client.list_tags("registry.fly.io/app")
+
+
 def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
     digest = "sha256:" + "a" * 64
     fly.api.registry_enabled = True

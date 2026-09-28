@@ -25,6 +25,8 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.registry_link_internal_name = False
         # A next-page path to answer with instead, such as another repository's listing.
         self.registry_link_path: str | None = None
+        # Tag-list page offsets whose body leaves out the repository name.
+        self.registry_unnamed_pages: set[int] = set()
         self.registry_delete_failures: list[int | tuple[int, object] | str] = []
         # Statuses to answer the next POSTs with, before normal handling resumes.
         # A failure is a status, or a status and the JSON body Fly answers with.
@@ -120,11 +122,10 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
                                 f'<{fake.base_url}{link_path}?page={start + 2}>; rel="next"',
                             )
                         self.end_headers()
-                        self.wfile.write(
-                            json.dumps(
-                                {"name": "internal-repo", "tags": tags[start : start + 2]}
-                            ).encode()
-                        )
+                        body: dict[str, object] = {"tags": tags[start : start + 2]}
+                        if start not in fake.registry_unnamed_pages:
+                            body["name"] = "internal-repo"
+                        self.wfile.write(json.dumps(body).encode())
                     elif fake.registry_enabled:
                         ref = parsed.path.rsplit("/", 1)[-1]
                         digest = fake.registry_tags.get(ref)
