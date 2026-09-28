@@ -299,7 +299,12 @@ def run_review_description(
         "  *) python3 -c 'import json,sys; "
         'print(json.dumps({"body": open(sys.argv[1], newline="").read()}))\''
         ' "$PR_BODY" ;; esac\n'
-        'elif [ "$2" = edit ]; then [ -z "$EDIT_FAILS" ] || exit 1; cat "$5" > "$PR_BODY"; fi\n'
+        # `gh pr edit` reads project items, which the factory's token cannot.
+        'elif [ "$2" = edit ]; then echo "GraphQL: Resource not accessible" >&2; exit 1\n'
+        'elif [ "$1" = api ]; then\n'
+        '  [ -z "$EDIT_FAILS" ] || { echo "HTTP 403: denied" >&2; exit 1; }\n'
+        '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$PR_BODY" ;; esac; done\n'
+        "fi\n"
     )
     stub.chmod(0o755)
     result = subprocess.run(
@@ -346,7 +351,8 @@ def test_a_failed_description_restore_is_recorded_for_the_completion_comment(
     body.write_text("rewritten by finalization\n")
     result = run_review_description(tmp_path, "restore", "feature", body, edit_fails=True)
     assert result.returncode != 0
-    assert "pull request #4" in (tmp_path / "description-restore-failed").read_text()
+    recorded = (tmp_path / "description-restore-failed").read_text()
+    assert "pull request #4" in recorded and "HTTP 403: denied" in recorded
     text = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
     respond = text.split("  - id: respond\n", 1)[1].split("\n  - id: ")[0]
     assert "description-restore-failed" in respond

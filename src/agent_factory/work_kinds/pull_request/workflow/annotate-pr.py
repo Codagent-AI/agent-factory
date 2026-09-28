@@ -19,6 +19,53 @@ RED_VALIDATOR_TITLE = "Validator red after acceptance fixes"
 LATER_COMMITS_TITLE = "Commits after acceptance"
 # The "Review first" section shows at most this many orange items; the rest are collapsed.
 ORANGE_SHOWN = 5
+REVIEW_BOT = "coderabbitai[bot]"
+BOT_REVIEW_TITLE = "No CodeRabbit review of the final head"
+
+
+def gh_pages(endpoint: str) -> list[dict[str, Any]]:
+    pages = json.loads(command("gh", "api", "--paginate", "--slurp", endpoint) or "[]")
+    return [item for page in pages for item in page]
+
+
+def login(item: dict[str, Any]) -> object:
+    # A deleted account's review or status has a null user.
+    user = item.get("user")
+    return cast(dict[str, object], user).get("login") if isinstance(user, dict) else None
+
+
+def missing_bot_review(number: int, head: str, url: str) -> dict[str, str] | None:
+    """CodeRabbit's check passes even when it was rate-limited or skipped the review,
+    so only its review of the final head counts as one."""
+    try:
+        reviews = gh_pages(f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews")
+        if any(
+            login(review) == REVIEW_BOT and review.get("commit_id") == head for review in reviews
+        ):
+            return None
+        # Statuses come newest first; the latest CodeRabbit one says why no review came.
+        statuses = json.loads(
+            command("gh", "api", f"repos/{{owner}}/{{repo}}/commits/{head}/statuses")
+        )
+        latest = next(
+            (str(s.get("description") or "") for s in statuses if s.get("context") == "CodeRabbit"),
+            "",
+        )
+    except (
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+        AttributeError,
+        TypeError,
+    ) as error:
+        reason = f"its reviews could not be read ({error})"
+    else:
+        reason = f"CodeRabbit: {latest}" if latest else "CodeRabbit posted no review"
+    return {
+        "title": BOT_REVIEW_TITLE,
+        "detail": f"{reason} for {head[:12]}; its passing check is not a review. "
+        "Comment `@coderabbitai review` to request one.",
+        "link": url,
+    }
 
 
 def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result: Path) -> None:
@@ -138,7 +185,7 @@ def main() -> None:
             "--state",
             "open",
             "--json",
-            "number,url",
+            "number,url,headRefOid",
             "--limit",
             "1",
         )
@@ -146,6 +193,13 @@ def main() -> None:
     if not pr:
         raise SystemExit("no open pull request on feature branch")
     number = pr[0]["number"]
+    flags["orange"] = [item for item in flags["orange"] if item.get("title") != BOT_REVIEW_TITLE]
+    # The pull request's own head, not the local one, is what CodeRabbit reviews.
+    head = str(pr[0].get("headRefOid") or command("git", "rev-parse", "HEAD"))
+    unreviewed = missing_bot_review(number, head, str(pr[0].get("url", "")))
+    if unreviewed is not None:
+        flags["orange"].insert(0, unreviewed)
+    path.write_text(json.dumps(flags, indent=2) + "\n")
     repository: object = issue.get("repository", "")
     if isinstance(repository, dict):
         repository = cast(dict[str, object], repository).get("nameWithOwner", "")
@@ -250,17 +304,29 @@ def main() -> None:
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
-    edit = ["gh", "pr", "edit", str(number), "--body-file", str(body)]
-    last_returncode = 1
+    # The REST update, not `gh pr edit`: that also reads the pull request's project
+    # items, which a token without org Projects access cannot do once the PR is on a board.
+    edit = [
+        "gh",
+        "api",
+        "--method",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}",
+        "-F",
+        f"body=@{body}",
+        "--silent",
+    ]
+    error = ""
     for attempt in range(3):
-        result = subprocess.run(edit, check=False)
-        last_returncode = result.returncode
+        result = subprocess.run(edit, check=False, capture_output=True, text=True)
         if result.returncode == 0:
             break
+        error = result.stderr.strip() or f"gh exited with status {result.returncode}"
+        print(error, file=sys.stderr)
         if attempt < 2:
             time.sleep(attempt + 1)
     else:
-        raise subprocess.CalledProcessError(last_returncode, edit)
+        raise SystemExit(f"could not update the description of pull request #{number}: {error}")
 
 
 if __name__ == "__main__":

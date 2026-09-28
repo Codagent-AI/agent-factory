@@ -43,6 +43,28 @@ def repository(tmp_path: Path) -> tuple[Path, Path]:
     return repo, remote
 
 
+# Like gh with a token that cannot read org Projects: `gh pr edit` fails because it
+# reads the pull request's project items, while the REST update writes the body.
+GH_STUB = (
+    '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+    '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+    'elif [ "$1" = pr ] && [ "$2" = edit ]; then\n'
+    "  echo 'GraphQL: Resource not accessible by personal access token"
+    " (repository.pullRequest.projectItems)' >&2; exit 1\n"
+    'elif [ "$1" = api ]; then\n'
+    '  case "$*" in\n'
+    # By default CodeRabbit reviewed the final head and left no comments.
+    '    */reviews*) [ -n "${GH_REVIEWS:-}" ] && { printf %s "$GH_REVIEWS"; exit 0; }\n'
+    '      printf \'[[{"user":{"login":"coderabbitai[bot]"},"commit_id":"%s"}]]\' '
+    '"$(git rev-parse HEAD)"; exit 0 ;;\n'
+    '    */statuses*) printf %s "${GH_STATUSES:-[]}"; exit 0 ;;\n'
+    "  esac\n"
+    '  [ -z "${GH_API_ERROR:-}" ] || { echo "$GH_API_ERROR" >&2; exit 1; }\n'
+    '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$GH_BODY" ;; esac; done\n'
+    "fi\n"
+)
+
+
 def test_feature_files_are_listed_and_exist() -> None:
     for name in (
         "factory-feature-v1.0.yaml",
@@ -245,11 +267,7 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     import os
@@ -302,13 +320,13 @@ def test_annotate_pr_flags_listed_later_commit_no_orange_item_names(tmp_path: Pa
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        "fi\n"
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GH_BODY": str(tmp_path / "body.md"),
+    }
     command = [
         str(PACKAGE / "annotate-pr.sh"),
         str(evidence),
@@ -346,13 +364,13 @@ def test_annotate_pr_flags_red_acceptance_validator_once(tmp_path: Path) -> None
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        "fi\n"
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    env = {
+        **os.environ,
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "GH_BODY": str(tmp_path / "body.md"),
+    }
     command = [
         str(PACKAGE / "annotate-pr.sh"),
         str(evidence),
@@ -419,11 +437,7 @@ def test_annotate_pr_links_items_to_github_or_the_evidence_section(tmp_path: Pat
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     result = subprocess.run(
@@ -480,11 +494,7 @@ def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, 
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "title": "Add a flag"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     result = subprocess.run(
@@ -502,6 +512,146 @@ def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, 
     )
     assert result.returncode == 0, result.stderr
     return body.read_text()
+
+
+def test_annotate_pr_reports_why_the_description_update_failed(tmp_path: Path) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GH_BODY": str(tmp_path / "body.md"),
+            "GH_API_ERROR": "HTTP 422: body is too long (maximum is 65536 characters)",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "body is too long" in result.stderr
+    assert "pull request #9" in result.stderr
+
+
+def annotate_with_bot_state(tmp_path: Path, reviews: str, statuses: str) -> dict[str, Any]:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [],
+                "orange": [{"title": "Scope", "detail": "choice", "link": ""}],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GH_BODY": str(body),
+            "GH_REVIEWS": reviews,
+            "GH_STATUSES": statuses,
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    flags = json.loads((evidence / "review-attention.json").read_text())
+    return {"flags": flags, "body": body.read_text(), "head": accepted}
+
+
+def test_annotate_pr_flags_a_rate_limited_bot_review_first(tmp_path: Path) -> None:
+    """CodeRabbit's check is green when it was rate-limited, so its review of HEAD is required."""
+    statuses = json.dumps(
+        [
+            {"context": "CodeRabbit", "description": "Review rate limited"},
+            {"context": "CodeRabbit", "description": "Review in progress"},
+        ]
+    )
+    stale = json.dumps([[{"user": {"login": "coderabbitai[bot]"}, "commit_id": "0" * 40}]])
+    result = annotate_with_bot_state(tmp_path, stale, statuses)
+    first = result["flags"]["orange"][0]
+    assert first["title"] == "No CodeRabbit review of the final head"
+    assert "Review rate limited" in first["detail"] and result["head"][:12] in first["detail"]
+    assert result["body"].index("No CodeRabbit review") < result["body"].index("Scope")
+
+
+def test_annotate_pr_flags_a_skipped_bot_review(tmp_path: Path) -> None:
+    statuses = json.dumps(
+        [
+            {
+                "context": "CodeRabbit",
+                "description": "Review skipped: manual review required for this OSS repository",
+            }
+        ]
+    )
+    result = annotate_with_bot_state(tmp_path, "[[]]", statuses)
+    assert "Review skipped: manual review" in result["flags"]["orange"][0]["detail"]
+
+
+def test_annotate_pr_adds_nothing_when_the_bot_reviewed_the_head(tmp_path: Path) -> None:
+    result = annotate_with_bot_state(tmp_path, "", "[]")
+    assert [item["title"] for item in result["flags"]["orange"]] == ["Scope"]
+
+
+def test_annotate_pr_ignores_a_review_by_a_deleted_account(tmp_path: Path) -> None:
+    """GitHub sends a null user for a deleted account; that is not CodeRabbit, not an error."""
+    reviews = json.dumps([[{"user": None, "commit_id": "0" * 40}]])
+    result = annotate_with_bot_state(tmp_path, reviews, "[]")
+    detail = result["flags"]["orange"][0]["detail"]
+    assert "could not be read" not in detail and "posted no review" in detail
 
 
 def shown_review_items(rendered: str) -> list[str]:
@@ -1036,6 +1186,7 @@ def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
     stub.write_text(
         "#!/bin/sh\n"
         'if [ "$2" = list ]; then echo \'[{"number":9}]\'; exit 0; fi\n'
+        'case "$*" in */reviews*) echo "[[]]"; exit 0 ;; */statuses*) echo "[]"; exit 0 ;; esac\n'
         'count=0; [ ! -f "$GH_COUNT" ] || count=$(cat "$GH_COUNT")\n'
         'count=$((count + 1)); echo "$count" > "$GH_COUNT"\n'
         '[ "$count" -gt 1 ]\n'
