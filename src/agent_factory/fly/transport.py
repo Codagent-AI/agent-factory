@@ -178,6 +178,14 @@ def image_repository(image: str) -> str:
     return image.rsplit(":", 1)[0] if ":" in suffix else image
 
 
+def _last_instruction(lines: Sequence[str], keyword: str) -> str | None:
+    """The last Dockerfile line in ``lines`` that starts with the ``keyword`` instruction."""
+    return next(
+        (line for line in reversed(lines) if line.lstrip().upper().startswith(f"{keyword} ")),
+        None,
+    )
+
+
 def build_claim_image(
     app: str,
     repository: str,
@@ -222,18 +230,8 @@ def build_claim_image(
             None,
         )
         final_stage = lines[final_from + 1 :] if final_from is not None else []
-        user = next(
-            (line for line in reversed(final_stage) if line.lstrip().upper().startswith("USER ")),
-            None,
-        )
-        workdir = next(
-            (
-                line
-                for line in reversed(final_stage)
-                if line.lstrip().upper().startswith("WORKDIR ")
-            ),
-            None,
-        )
+        user = _last_instruction(final_stage, "USER")
+        workdir = _last_instruction(final_stage, "WORKDIR")
         if user is None or workdir is None:
             raise FlyTransportError(
                 f"Runner Dockerfile lacks a final USER or WORKDIR: {dockerfile}"
@@ -752,6 +750,7 @@ class Lifecycle:
             return f"{repository}@{recorded_digest}"
         worktrees = mapping_field(self.manifest, "worktrees")
         runner = Path(string_field(worktrees, "runner"))
+        commits = mapping_field(self.manifest, "commits")
         return build_claim_image(
             string_field(self.fly, "app"),
             repository,
@@ -763,10 +762,10 @@ class Lifecycle:
             string_field(self.fly, "region"),
             (
                 (
-                    string_field(mapping_field(self.manifest, "commits"), "validator"),
+                    string_field(commits, "validator"),
                     string_field(self.manifest, "validator_repository"),
                 )
-                if "validator" in mapping_field(self.manifest, "commits")
+                if "validator" in commits
                 else None
             ),
         )

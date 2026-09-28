@@ -26,7 +26,7 @@ from agent_factory.fly.transport import (
     image_repository,
     resolve_claude_login,
 )
-from agent_factory.operations import Diagnostic
+from agent_factory.operations import Diagnostic, is_git_checkout
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Run
 
 
@@ -117,19 +117,7 @@ class FlyMachineBackend:
         fly = local.fly
         result = [_launcher_diagnostic()]
         checkout = local.repositories.agent_validator
-        available = False
-        if checkout is not None and checkout.is_dir():
-            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-                available = (
-                    subprocess.run(
-                        ["git", "-C", str(checkout), "rev-parse", "--is-inside-work-tree"],
-                        capture_output=True,
-                        text=True,
-                        timeout=15,
-                        check=False,
-                    ).returncode
-                    == 0
-                )
+        available = is_git_checkout(checkout)
         result.append(
             Diagnostic(
                 "Agent Validator checkout",

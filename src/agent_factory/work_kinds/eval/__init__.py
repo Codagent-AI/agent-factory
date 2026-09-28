@@ -66,11 +66,6 @@ class ParsedRequest:
         _sha(skills_sha, "skills")
         _sha(harness_sha, "harness")
         revisions = {"runner": runner_sha, "skills": skills_sha, "evals": harness_sha}
-        if validator_sha is not None:
-            _sha(validator_sha, "validator")
-            if not validator_source:
-                raise ValueError("validator source is required with its revision")
-            revisions["validator"] = validator_sha
         payload: dict[str, object] = {
             "version": 1,
             "suite": suite,
@@ -78,6 +73,10 @@ class ParsedRequest:
             "revisions": revisions,
         }
         if validator_sha is not None:
+            _sha(validator_sha, "validator")
+            if not validator_source:
+                raise ValueError("validator source is required with its revision")
+            revisions["validator"] = validator_sha
             payload["sources"] = {"validator": validator_source}
         return FrozenSpec(
             1,

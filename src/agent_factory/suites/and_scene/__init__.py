@@ -641,16 +641,12 @@ def _safe_identity(value: str) -> str:
 
 def _revisions(value: Mapping[str, object]) -> dict[str, str]:
     result: dict[str, str] = {}
-    for name in ("runner", "skills", "evals"):
+    optional = ("validator",) if "validator" in value else ()
+    for name in ("runner", "skills", "evals", *optional):
         revision = value.get(name)
         if not isinstance(revision, str) or not _SHA.fullmatch(revision):
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
-    if "validator" in value:
-        revision = value["validator"]
-        if not isinstance(revision, str) or not _SHA.fullmatch(revision):
-            raise WorktreeError("accepted validator revision is not a full commit SHA")
-        result["validator"] = revision
     return result
 
 

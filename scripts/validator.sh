@@ -2,20 +2,14 @@
 # Sourced by deploy.sh; functions also support isolated deploy integration tests.
 
 validator_checkout() {
-  validator_explicit=false
-  validator=${AGENT_FACTORY_VALIDATOR_CHECKOUT:-}
-  if [[ -n $validator ]]; then
-    validator_explicit=true
-    if [[ $validator == '~/'* ]]; then validator=$HOME/${validator#'~/'}; fi
+  validator=${AGENT_FACTORY_VALIDATOR_CHECKOUT:-$(sed -n 's/^agent_validator = "\(.*\)"$/\1/p' "$config" | head -n 1)}
+  if [[ -z $validator ]]; then
+    validator_explicit=false
+    validator=$(dirname "$runner")/agent-validator
     return
   fi
-  validator=$(sed -n 's/^agent_validator = "\(.*\)"$/\1/p' "$config" | head -n 1)
-  if [[ -n $validator ]]; then
-    validator_explicit=true
-    if [[ $validator == '~/'* ]]; then validator=$HOME/${validator#'~/'}; fi
-    return
-  fi
-  validator=$(dirname "$runner")/agent-validator
+  validator_explicit=true
+  if [[ $validator == '~/'* ]]; then validator=$HOME/${validator#'~/'}; fi
 }
 
 validator_preflight() {

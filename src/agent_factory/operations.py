@@ -914,7 +914,42 @@ def _resolved_path_diagnostic() -> Diagnostic:
 
 
 _LAUNCHD_DEFAULT_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-_LAUNCH_AGENT_PLIST = Path("~/Library/LaunchAgents/com.codagent.agent-factory.plist").expanduser()
+_LAUNCH_AGENT_LOCATION = "~/Library/LaunchAgents/com.codagent.agent-factory.plist"
+_LAUNCH_AGENT_PLIST = Path(_LAUNCH_AGENT_LOCATION).expanduser()
+
+
+def launch_agent_plist() -> Path:
+    """The installed LaunchAgent definition, resolved against the current HOME."""
+    return Path(_LAUNCH_AGENT_LOCATION).expanduser()
+
+
+def launch_agent_service_path(document: object) -> str:
+    """The PATH launchd gives the service a parsed plist defines; empty when it is malformed."""
+    if not isinstance(document, dict):
+        return ""
+    environment = cast(Mapping[str, object], document).get("EnvironmentVariables", {})
+    if not isinstance(environment, dict):
+        return ""
+    # Without a PATH entry launchd starts the service on its default search path.
+    path = cast(Mapping[str, object], environment).get("PATH", _LAUNCHD_DEFAULT_PATH)
+    return path if isinstance(path, str) else ""
+
+
+def is_git_checkout(path: Path | None) -> bool:
+    """Whether ``path`` is a directory inside a Git work tree."""
+    if path is None or not path.is_dir():
+        return False
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return completed.returncode == 0
 
 
 def _launch_agent_path_diagnostic(
@@ -949,14 +984,7 @@ def _launch_agent_path_diagnostic(
             f"Repair {target}.",
             shared=shared,
         )
-    environment_raw = cast(Mapping[str, object], document).get("EnvironmentVariables", {})
-    path_value = ""
-    if isinstance(environment_raw, dict):
-        environment = cast(Mapping[str, object], environment_raw)
-        # Without a PATH entry launchd starts the service on its default search path.
-        path_raw = environment.get("PATH", _LAUNCHD_DEFAULT_PATH)
-        if isinstance(path_raw, str):
-            path_value = path_raw
+    path_value = launch_agent_service_path(cast(Mapping[str, object], document))
     required = host_executables(shared)
     if not any(
         definition.local(config).execution == "host" and definition.enabled(shared)

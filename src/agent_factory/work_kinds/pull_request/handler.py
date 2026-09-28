@@ -1228,13 +1228,7 @@ def _feature_stop_message(result: Mapping[str, object], repository: str) -> str:
 def _with_host_note(body: str, result: Mapping[str, object]) -> str:
     """Outcome comments for host-mode runs say so; Docker-mode comments are unchanged."""
     if result.get("sandbox") == "host":
-        note = (
-            launch.HOST_NOTE
-            + " Agent Validator commit: "
-            + str(result.get("validator_commit", "unavailable"))
-            + "."
-        )
-        return f"{body}\n\n{note}"
+        return f"{body}\n\n{launch.host_note(result.get('validator_commit', 'unavailable'))}"
     return body
 
 

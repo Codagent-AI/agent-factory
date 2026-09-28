@@ -906,6 +906,11 @@ def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
             handle.write("".join(f"{entry}\n" for entry in missing))
 
 
+def host_note(validator_commit: object) -> str:
+    """The host-execution note, naming the Agent Validator commit that ran."""
+    return f"{HOST_NOTE} Agent Validator commit: {validator_commit}."
+
+
 def write_host_provenance(
     evidence: Path,
     *,
@@ -922,10 +927,7 @@ def write_host_provenance(
         "session_dir": str(evidence / SESSION_DIR_NAME),
         "recorded_revisions": dict(recorded_revisions or {}),
         "recorded_revisions_executed": False,
-        "note": HOST_NOTE
-        + " Agent Validator commit: "
-        + (validator or {}).get("validator_commit", "unavailable")
-        + ".",
+        "note": host_note((validator or {}).get("validator_commit", "unavailable")),
         **dict(validator or {}),
     }
     path = evidence / HOST_PROVENANCE_FILE

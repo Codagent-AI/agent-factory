@@ -15,6 +15,7 @@ import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
+from xml.parsers.expat import ExpatError
 
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.operations import (
@@ -23,6 +24,9 @@ from agent_factory.operations import (
     Diagnostic,
     DiagnosticGroup,
     free_space,
+    is_git_checkout,
+    launch_agent_plist,
+    launch_agent_service_path,
     read_fix_token,
 )
 from agent_factory.suites.and_scene import ReadinessError
@@ -353,42 +357,15 @@ def _validator_diagnostics(local: LocalConfig) -> list[Diagnostic]:
     expected = (checkout / "dist/index.js").resolve() if checkout else None
     found = shutil.which("agent-validator")
     actual = Path(found).resolve() if found else None
-    valid_checkout = False
-    if checkout is not None and checkout.is_dir():
-        with contextlib.suppress(OSError, subprocess.TimeoutExpired):
-            valid_checkout = (
-                subprocess.run(
-                    ["git", "-C", str(checkout), "rev-parse", "--is-inside-work-tree"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                ).returncode
-                == 0
-            )
-    plist = Path("~/Library/LaunchAgents/com.codagent.agent-factory.plist").expanduser()
+    valid_checkout = is_git_checkout(checkout)
+    plist = launch_agent_plist()
     plist_actual = None
     if plist.is_file():
-        try:
+        with contextlib.suppress(OSError, ValueError, TypeError, ExpatError):
             with plist.open("rb") as stream:
-                document: object = plistlib.load(stream)
-            fields: Mapping[str, object] = (
-                cast(Mapping[str, object], document) if isinstance(document, dict) else {}
-            )
-            raw_variables = fields.get("EnvironmentVariables")
-            variables: Mapping[str, object] = (
-                cast(Mapping[str, object], raw_variables) if isinstance(raw_variables, dict) else {}
-            )
-            configured_path = variables.get("PATH")
-            service_path = (
-                configured_path
-                if isinstance(configured_path, str)
-                else "/usr/bin:/bin:/usr/sbin:/sbin"
-            )
+                service_path = launch_agent_service_path(plistlib.load(stream))
             service_found = shutil.which("agent-validator", path=service_path)
             plist_actual = Path(service_found).resolve() if service_found else None
-        except (OSError, ValueError, TypeError):
-            pass
     available = bool(
         valid_checkout and actual == expected and (not plist.is_file() or plist_actual == expected)
     )
