@@ -116,6 +116,29 @@ class FlyMachineBackend:
             ]
         fly = local.fly
         result = [_launcher_diagnostic()]
+        checkout = local.repositories.agent_validator
+        available = False
+        if checkout is not None and checkout.is_dir():
+            with contextlib.suppress(OSError, subprocess.TimeoutExpired):
+                available = (
+                    subprocess.run(
+                        ["git", "-C", str(checkout), "rev-parse", "--is-inside-work-tree"],
+                        capture_output=True,
+                        text=True,
+                        timeout=15,
+                        check=False,
+                    ).returncode
+                    == 0
+                )
+        result.append(
+            Diagnostic(
+                "Agent Validator checkout",
+                available,
+                f"checkout: {checkout}",
+                "Set [repositories] agent_validator to a Git checkout." if not available else "",
+                "eval-fly",
+            )
+        )
         result.append(fly_repository_diagnostic(fly.image, fly.app))
         roles: Mapping[str, object] = cast(
             Mapping[str, object], getattr(getattr(shared, "eval", None), "defaults", {})

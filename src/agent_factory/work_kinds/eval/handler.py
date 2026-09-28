@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
+from urllib.parse import urlsplit
 
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
@@ -89,11 +91,13 @@ class EvalHandler:
             bool(values.get("skip_validator", False)),
             shared.eval.repetitions,
             execution=local.eval_execution,
+            agent_validator_ref=str(values.get("agent_validator_ref", "main")),
         )
         sources = SourceRepositories(
             local.repositories.agent_runner,
             local.repositories.agent_skills,
             local.repositories.agent_evals,
+            local.repositories.agent_validator if local.eval_execution == "fly" else None,
         )
         return cls(
             defaults,
@@ -226,14 +230,23 @@ class EvalHandler:
             request = parse_request(snapshot.body, self._defaults)
         except ValueError as error:
             return Feedback(str(error))
-        resolver = cast(Callable[[ParsedRequest], tuple[str, str]], resolve)
-        runner_sha, skills_sha = resolver(request)
+        resolver = cast(Callable[[ParsedRequest], tuple[str, ...]], resolve)
+        resolved = resolver(request)
+        runner_sha, skills_sha = resolved[:2]
+        validator_sha = resolved[2] if len(resolved) > 2 else None
+        validator_source = (
+            validator_source_url(self.sources.validator)
+            if validator_sha and self.sources and self.sources.validator
+            else None
+        )
         harness_sha = self._resolve_harness_ref()
         frozen = request.freeze(
             runner_sha=runner_sha,
             skills_sha=skills_sha,
             harness_sha=harness_sha,
             suite=self._suite,
+            validator_sha=validator_sha,
+            validator_source=validator_source,
         )
         return ClaimDraft(
             snapshot.repository,
@@ -267,6 +280,14 @@ class EvalHandler:
     def prepare(self, claim: Claim) -> Preparation:
         if self._manager is None or self.adapter is None:
             raise ReadinessError("eval handler is missing worktree sources")
+        revision = mapping(claim.frozen_spec.get("revisions")).get("validator")
+        if revision and self._local is not None and self._local.eval_execution == "docker":
+            raise ReadinessError(
+                f"this claim pinned Agent Validator {str(revision)[:7]} at admission under Fly "
+                "execution; Docker execution installs the published npm release, so the claim "
+                "runs only under Fly execution. Switch eval execution back to fly, or close "
+                "the issue and submit a fresh request."
+            )
         worktrees = self._manager.prepare(claim.id, mapping(claim.frozen_spec.get("revisions")))
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
@@ -513,6 +534,11 @@ class EvalHandler:
             for key in ("runner", "skills", "evals")
             if not isinstance(revisions.get(key), str) or not revisions.get(key)
         ]
+        if "validator" in revisions and not (
+            isinstance(revisions["validator"], str)
+            and re.fullmatch(r"[0-9a-f]{40}", revisions["validator"])
+        ):
+            invalid.append("validator")
         if invalid:
             if self._store is not None:
                 self._store.record_event(
@@ -523,13 +549,18 @@ class EvalHandler:
                     + ". Repair the saved claim inputs.",
                 )
             return None
-        return " ".join(f"{key}@{str(revisions[key])[:7]}" for key in ("runner", "skills", "evals"))
+        keys = ("runner", "skills", "evals") + (("validator",) if "validator" in revisions else ())
+        return " ".join(f"{key}@{str(revisions[key])[:7]}" for key in keys)
 
     def frozen_inputs_event(self, claim: Claim) -> str:
         return (
             "Frozen evaluation inputs:\n```json\n"
             + json.dumps(claim.frozen_spec, indent=2)
-            + "\n```"
+            + "\n```\nAgent Validator: "
+            + str(
+                mapping(claim.frozen_spec.get("revisions")).get("validator")
+                or "published npm release (not pinned)"
+            )
         )
 
 
@@ -616,7 +647,11 @@ def _claim_image_digest(runs: Sequence[Run]) -> str | None:
 
 
 def _fly_versions(evidence: Path) -> dict[str, str]:
-    unavailable = {"claude": "unavailable", "codex": "unavailable"}
+    unavailable = {
+        "claude": "unavailable",
+        "codex": "unavailable",
+        "agent-validator": "unavailable",
+    }
     jobs = evidence / ".factory" / "job"
     try:
         paths = sorted(jobs.glob("*/versions.json"))
@@ -788,11 +823,55 @@ def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
     return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
 
 
-def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, str]:
+def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, ...]:
     """Resolve the evaluation's Runner and Skills refs at admission."""
     from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
 
-    return (
+    resolved = (
         _resolve_revision(sources.runner, str(request.settings["agent_runner_ref"])),
         _resolve_revision(sources.skills, str(request.settings["agent_skills_ref"])),
     )
+    if sources.validator is None:
+        return resolved
+    return resolved + (
+        _resolve_revision(sources.validator, str(request.settings["agent_validator_ref"])),
+    )
+
+
+def validator_source_url(checkout: Path) -> str:
+    """Return the public GitHub origin usable by Fly's remote builder."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(checkout), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        )
+        origin = result.stdout.strip()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ReadinessError(
+            f"Cannot read Agent Validator checkout origin at {checkout}"
+        ) from error
+    match = re.fullmatch(
+        r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
+        r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?",
+        origin,
+    )
+    if match is None:
+        # Keep the actionable scheme/host without leaking embedded credentials.
+        parsed = urlsplit(origin)
+        redacted = (
+            origin
+            if parsed.scheme == "file"
+            else (
+                f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
+                if parsed.scheme
+                else origin.split("@", 1)[-1]
+            )
+        )
+        raise ReadinessError(
+            f"Agent Validator checkout origin {redacted!r} is not a GitHub repository "
+            "the Fly builder can fetch"
+        )
+    return f"https://github.com/{match.group(1)}/{match.group(2)}.git"

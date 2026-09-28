@@ -66,6 +66,7 @@ class SourceRepositories:
     runner: Path
     skills: Path
     evals: Path
+    validator: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -645,6 +646,11 @@ def _revisions(value: Mapping[str, object]) -> dict[str, str]:
         if not isinstance(revision, str) or not _SHA.fullmatch(revision):
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
+    if "validator" in value:
+        revision = value["validator"]
+        if not isinstance(revision, str) or not _SHA.fullmatch(revision):
+            raise WorktreeError("accepted validator revision is not a full commit SHA")
+        result["validator"] = revision
     return result
 
 
@@ -664,7 +670,7 @@ def _fly_manifest(
     if fly is None:
         raise ReadinessError("Fly settings are unavailable")
     revisions = _revisions(cast(Mapping[str, object], frozen.get("revisions")))
-    return {
+    manifest: dict[str, object] = {
         "run_id": run_id,
         "claim_id": claim_id,
         "unit_key": unit_key,
@@ -710,6 +716,17 @@ def _fly_manifest(
             "artifacts": "/artifacts",
         },
     }
+    if "validator" in revisions:
+        sources = frozen.get("sources")
+        source = (
+            cast(Mapping[str, object], sources).get("validator")
+            if isinstance(sources, Mapping)
+            else None
+        )
+        if not isinstance(source, str) or not source:
+            raise ReadinessError("pinned Agent Validator source is missing")
+        manifest["validator_repository"] = source
+    return manifest
 
 
 def _remote_url(path: Path) -> str:

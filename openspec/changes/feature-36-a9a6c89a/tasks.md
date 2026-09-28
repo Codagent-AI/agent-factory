@@ -1,4 +1,4 @@
-- [ ] Run Agent Validator built from `main` for host fixes and features and for Fly evals, with recorded provenance
+- [x] Run Agent Validator built from `main` for host fixes and features and for Fly evals, with recorded provenance
 
 ## Task: Run Agent Validator built from `main`, like Agent Runner
 

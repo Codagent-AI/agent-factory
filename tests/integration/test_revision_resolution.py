@@ -14,6 +14,7 @@ from agent_factory.github import IssueComment
 from agent_factory.store import Claim, ClaimStore
 from agent_factory.suites.and_scene import ReadinessError, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_request
+from agent_factory.work_kinds.eval.handler import validator_source_url
 
 
 def _revisions(claim: Claim) -> dict[str, object]:
@@ -57,12 +58,68 @@ def source_pair(tmp_path: Path) -> tuple[Path, Path, str, str]:
     return origin, clone, old, new
 
 
-def resolve(clone: Path, ref: str) -> tuple[str, str]:
+def resolve(clone: Path, ref: str) -> tuple[str, ...]:
     from agent_factory.work_kinds.eval import handler as eval_handler
 
     defaults = EvalDefaults("main", "main", {}, False, 1)
     request = parse_request(f'```eval\nagent_runner_ref = "{ref}"\n```', defaults)
     return eval_handler.resolve_revisions(SourceRepositories(clone, clone, clone), request)
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://github.com/Codagent-AI/agent-validator",
+        "https://github.com/Codagent-AI/agent-validator.git",
+        "git@github.com:Codagent-AI/agent-validator.git",
+        "ssh://git@github.com/Codagent-AI/agent-validator.git",
+    ],
+)
+def test_validator_source_normalizes_github_origins(tmp_path: Path, origin: str) -> None:
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    git(checkout, "init")
+    git(checkout, "remote", "add", "origin", origin)
+    assert validator_source_url(checkout) == "https://github.com/Codagent-AI/agent-validator.git"
+
+
+@pytest.mark.parametrize(
+    "origin", ["file:///tmp/validator", "/tmp/validator", "https://other.example/a/b"]
+)
+def test_validator_source_rejects_unfetchable_origins(tmp_path: Path, origin: str) -> None:
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    git(checkout, "init")
+    git(checkout, "remote", "add", "origin", origin)
+    with pytest.raises(ReadinessError, match="not a GitHub repository"):
+        validator_source_url(checkout)
+
+
+def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
+    defaults = EvalDefaults("main", "main", {}, False, 1, agent_validator_ref="main")
+    with pytest.raises(ValueError, match="unsupported eval setting"):
+        parse_request('```eval\nagent_validator_ref = "dev"\n```', defaults)
+    request = parse_request("```eval\nrepetitions = 1\n```", defaults)
+    sha = "a" * 40
+    frozen = request.freeze(
+        runner_sha=sha,
+        skills_sha=sha,
+        harness_sha=sha,
+        suite="and-scene",
+        validator_sha="b" * 40,
+        validator_source="https://github.com/Codagent-AI/agent-validator.git",
+    )
+    assert frozen.payload["revisions"] == {
+        "runner": sha,
+        "skills": sha,
+        "evals": sha,
+        "validator": "b" * 40,
+    }
+    assert frozen.payload["sources"] == {
+        "validator": "https://github.com/Codagent-AI/agent-validator.git"
+    }
+    legacy = request.freeze(runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene")
+    assert "sources" not in legacy.payload
 
 
 def test_resolves_remote_branch_without_changing_local_checkout(tmp_path: Path) -> None:
@@ -186,6 +243,17 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
 
     assert handler.refs_text(first) == f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]}"
     assert handler.refs_text(second) == f"runner@{'a' * 7} skills@{'b' * 7} evals@{advanced[:7]}"
+    assert "Agent Validator: published npm release (not pinned)" in handler.frozen_inputs_event(
+        first
+    )
+    revisions = cast(dict[str, object], first.frozen_spec["revisions"])
+    revisions["validator"] = "c" * 40
+    assert handler.refs_text(first) == (
+        f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]} validator@{'c' * 7}"
+    )
+    assert f"Agent Validator: {'c' * 40}" in handler.frozen_inputs_event(first)
+    revisions["validator"] = "invalid"
+    assert handler.refs_text(first) is None
     store.close()
 
 

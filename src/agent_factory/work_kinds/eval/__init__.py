@@ -37,6 +37,7 @@ class EvalDefaults:
     repetitions: int
     max_repetitions: int | None = None
     execution: str = "docker"
+    agent_validator_ref: str = "main"
 
 
 @dataclass(frozen=True)
@@ -52,19 +53,35 @@ class ParsedRequest:
     fingerprint: str
 
     def freeze(
-        self, *, runner_sha: str, skills_sha: str, harness_sha: str, suite: str
+        self,
+        *,
+        runner_sha: str,
+        skills_sha: str,
+        harness_sha: str,
+        suite: str,
+        validator_sha: str | None = None,
+        validator_source: str | None = None,
     ) -> FrozenSpec:
         _sha(runner_sha, "runner")
         _sha(skills_sha, "skills")
         _sha(harness_sha, "harness")
+        revisions = {"runner": runner_sha, "skills": skills_sha, "evals": harness_sha}
+        if validator_sha is not None:
+            _sha(validator_sha, "validator")
+            if not validator_source:
+                raise ValueError("validator source is required with its revision")
+            revisions["validator"] = validator_sha
+        payload: dict[str, object] = {
+            "version": 1,
+            "suite": suite,
+            "settings": self.settings,
+            "revisions": revisions,
+        }
+        if validator_sha is not None:
+            payload["sources"] = {"validator": validator_source}
         return FrozenSpec(
             1,
-            {
-                "version": 1,
-                "suite": suite,
-                "settings": self.settings,
-                "revisions": {"runner": runner_sha, "skills": skills_sha, "evals": harness_sha},
-            },
+            payload,
         )
 
 
@@ -86,6 +103,7 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
     effective: dict[str, object] = {
         "agent_runner_ref": defaults.agent_runner_ref,
         "agent_skills_ref": defaults.agent_skills_ref,
+        "agent_validator_ref": defaults.agent_validator_ref,
         "roles": dict(defaults.roles),
         "skip_validator": defaults.skip_validator,
         "repetitions": defaults.repetitions,

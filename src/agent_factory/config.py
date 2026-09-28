@@ -124,6 +124,8 @@ class RepositoryConfig:
     agent_runner: Path
     agent_skills: Path
     working_clones: Mapping[str, Path] = field(default_factory=lambda: dict[str, Path]())
+    agent_validator: Path | None = None
+    agent_validator_explicit: bool = False
 
 
 @dataclass(frozen=True)
@@ -284,14 +286,23 @@ class LocalConfig:
             if fix_environment_value is not None
             else None
         )
+        runner_path = _path(repositories, "agent_runner", "repositories")
+        validator_explicit = "agent_validator" in repositories
+        validator_path = (
+            _path(repositories, "agent_validator", "repositories")
+            if validator_explicit
+            else runner_path.parent / "agent-validator"
+        )
         return cls(
             shared_config=_path(document, "shared_config", "local configuration"),
             storage_root=_path(document, "storage_root", "local configuration"),
             repositories=RepositoryConfig(
                 agent_evals=_path(repositories, "agent_evals", "repositories"),
-                agent_runner=_path(repositories, "agent_runner", "repositories"),
+                agent_runner=runner_path,
                 agent_skills=_path(repositories, "agent_skills", "repositories"),
                 working_clones=working_clones,
+                agent_validator=validator_path,
+                agent_validator_explicit=validator_explicit,
             ),
             schedule=ScheduleConfig(
                 timezone,

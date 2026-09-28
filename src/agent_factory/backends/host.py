@@ -26,7 +26,15 @@ class HostProcessBackend:
     def identity_from_plan(self, plan: object, run: object) -> Mapping[str, object] | None:
         hints = plan_hints(plan)
         provenance: dict[str, object] = {
-            key: hints[key] for key in ("runner_executable", "runner_version") if key in hints
+            key: hints[key]
+            for key in (
+                "runner_executable",
+                "runner_version",
+                "validator_executable",
+                "validator_version",
+                "validator_commit",
+            )
+            if key in hints
         }
         return {**(run.process if isinstance(run, Run) else {}), **provenance}
 
@@ -71,5 +79,13 @@ class HostProcessBackend:
 
     def provenance(self, identity: Mapping[str, object]) -> Mapping[str, object]:
         return {
-            key: identity[key] for key in ("runner_executable", "runner_version") if key in identity
+            key: identity[key]
+            for key in (
+                "runner_executable",
+                "runner_version",
+                "validator_executable",
+                "validator_version",
+                "validator_commit",
+            )
+            if key in identity
         }

@@ -38,3 +38,11 @@ def _holds(predicate: str, status: str) -> bool:
 )
 def test_slots_are_free_only_when_every_slot_is_free(status: str, free: bool) -> None:
     assert _holds("slots_free", status) is free
+
+
+@pytest.mark.parametrize(
+    ("status", "free"),
+    [(FREE + "host attempts: 0\n", True), (FREE + "host attempts: 1\n", False), (FREE, False)],
+)
+def test_host_slots_require_an_explicit_zero(status: str, free: bool) -> None:
+    assert _holds("host_slots_free", status) is free

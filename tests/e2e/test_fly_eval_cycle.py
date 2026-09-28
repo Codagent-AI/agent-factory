@@ -28,6 +28,7 @@ from agent_factory.store import ClaimStore, Run
 from tests.e2e.test_factory_cycle import (
     _field_value,  # pyright: ignore[reportPrivateUsage]
     _git,  # pyright: ignore[reportPrivateUsage]
+    _repo,  # pyright: ignore[reportPrivateUsage]
     _setup,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.fixtures.fly.api import FakeMachinesApi
@@ -165,6 +166,12 @@ class Factory:
     def __init__(self, tmp_path: Path, api: FakeMachinesApi) -> None:
         self.api = api
         self.config, self.board, self.env, self.shared = _setup(tmp_path)
+        _repo(tmp_path / "agent-validator", {"build.ts": "// fixture\n"})
+        public = "https://github.com/Codagent-AI/agent-validator.git"
+        _git(tmp_path / "agent-validator", "config", "remote.origin.url", public)
+        self.env["GIT_CONFIG_COUNT"] = "1"
+        self.env["GIT_CONFIG_KEY_0"] = f"url.{tmp_path / 'agent-validator-origin.git'}.insteadOf"
+        self.env["GIT_CONFIG_VALUE_0"] = public
         bin_dir = tmp_path / "bin"
         self.roots = tmp_path / "machines"
         self.guests = Guests(api, self.roots)
@@ -337,6 +344,14 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     # -- request and first repetition ---------------------------------------
     factory.cli("tick")
     first = factory.active()
+    frozen = store.get_claim(first.claim_id)
+    assert frozen is not None
+    validator_sha = _git(factory.config.parent / "agent-validator", "rev-parse", "HEAD")
+    revisions = cast(dict[str, object], frozen.frozen_spec["revisions"])
+    sources = cast(dict[str, object], frozen.frozen_spec["sources"])
+    assert revisions["validator"] == validator_sha
+    assert sources["validator"] == ("https://github.com/Codagent-AI/agent-validator.git")
+    assert any(f"Agent Validator: {validator_sha}" in body for body in factory.comments())
     assert first.unit_key == "rep-1" and first.reason == "initial"
     _wait(lambda: "machine-1" in factory.api.machines, factory)
     _wait(
@@ -350,6 +365,15 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     machine_progress = cast(dict[str, object], running.progress["machine"])
     assert machine_progress["state"] == "alive"
     assert isinstance(machine_progress["deadline_epoch"], int)
+    flyctl_calls = [
+        json.loads(line) for line in (factory.config.parent / "flyctl.log").read_text().splitlines()
+    ]
+    assert any(
+        f"AGENT_VALIDATOR_REVISION={validator_sha}" in call.get("argv", []) for call in flyctl_calls
+    )
+    versions_file = guests.root("machine-1") / "artifacts/.factory/job/1/versions.json"
+    versions_file.parent.mkdir(parents=True, exist_ok=True)
+    versions_file.write_text(json.dumps({"agent-validator": f"{validator_sha[:7]} fixture"}))
 
     # -- the Mac restarts: controller, watcher, and launcher all die ----------
     watcher, launcher = _pid(running.supervisor), _pid(running.process)
@@ -381,6 +405,11 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     assert launcher_log.count("collected job 1") == 1
     assert (artifact_one / "guest-exit-code").read_text().strip() == "0"
     factory.cli("tick")
+    first_result = factory.run(first.id).result
+    provenance = cast(dict[str, object], first_result["execution_provenance"])
+    fly_provenance = cast(dict[str, object], provenance["fly"])
+    versions = cast(dict[str, str], fly_provenance["cli_versions"])
+    assert versions["agent-validator"] == f"{validator_sha[:7]} fixture"
     assert "machine-1" not in factory.api.machines
     assert factory.deletes("machine-1") == 1
     assert store.get_setting("runtime", "fly:machine:" + first.id) is None
@@ -426,6 +455,9 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     )
     assert _field_value(factory.board, shared.project.verdict.id) == (
         shared.project.verdict.option("pending-human-review")
+    )
+    assert str(_field_value(factory.board, shared.project.refs.id)).endswith(
+        f"validator@{validator_sha[:7]}"
     )
     comments = factory.comments()
     results = [c for c in comments if "aggregate verdict is pending-human-review" in c]

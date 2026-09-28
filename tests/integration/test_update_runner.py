@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "update-runner.sh"
 SKIP = 3
 
@@ -40,6 +42,29 @@ def _run(checkout: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), str(checkout)], capture_output=True, text=True, check=False
     )
+
+
+@pytest.mark.parametrize("name", ["runner", "validator"])
+def test_check_only_fetches_without_fast_forward(tmp_path: Path, name: str) -> None:
+    _origin, checkout, upstream = _repos(tmp_path)
+    old = _git(checkout, "rev-parse", "HEAD")
+    new = _commit(upstream, "new")
+    _git(upstream, "push", "-q", "origin", "main")
+    script = SCRIPT.with_name(f"update-{name}.sh")
+    checked = subprocess.run(
+        ["bash", str(script), "--check-only", str(checkout)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == old
+    assert _git(checkout, "rev-parse", "origin/main") == new
+    built = subprocess.run(
+        ["bash", str(script), str(checkout)], capture_output=True, text=True, check=False
+    )
+    assert built.returncode == 0, built.stderr
+    assert _git(checkout, "rev-parse", "HEAD") == new
 
 
 def test_fast_forwards_a_checkout_behind_origin_main(tmp_path: Path) -> None:

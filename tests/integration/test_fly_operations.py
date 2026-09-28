@@ -235,13 +235,17 @@ def test_doctor_under_fly_reports_the_eval_fly_group_and_never_mentions_docker(
     assert "docker" not in text.lower()
     fly_checks = {item.name: item for item in groups["eval-fly"]}
     assert set(fly_checks) == {
+        "Agent Validator checkout",
         "Fly launcher",
         "Fly deploy token",
         "Fly app API",
         "Fly image repository",
         "flyctl transport",
     }
-    assert all(item.available for item in fly_checks.values()), text
+    assert all(
+        item.available for name, item in fly_checks.items() if name != "Agent Validator checkout"
+    ), text
+    assert fly_checks["Agent Validator checkout"].available is False
     # Diagnosis is read-only: the app was looked up, nothing was created.
     assert {str(r["method"]) for r in site.api.requests} <= {"GET"}
     assert not any("/manifests/" in str(r["path"]) for r in site.api.requests)

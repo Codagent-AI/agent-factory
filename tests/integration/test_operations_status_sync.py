@@ -68,6 +68,24 @@ def test_status_shows_eval_slot_holder_and_fix_slot_free(tmp_path: Path) -> None
 
     assert "eval slot: example/evals#7 rep-1 (reserved)" in text
     assert "fix slot: free" in text
+    assert "host attempts: 0" in text
+
+
+def test_status_counts_saved_host_backends_and_unplanned_runs(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    fix = store.create_claim(ClaimDraft("example/work", 8, "I8", "P8", "fix", "fp", {}))
+    host = store.reserve_run(fix.id, "fix", reason="initial", evidence_path="/tmp/host")
+    store.configure_run(host.id, plan={"ownership_hints": {"backend": "host"}}, limits={})
+    feature = store.create_claim(ClaimDraft("example/work", 9, "I9", "P9", "feature", "fp", {}))
+    pending = store.reserve_run(
+        feature.id, "feature", reason="initial", evidence_path="/tmp/pending"
+    )
+    eval_claim = store.create_claim(ClaimDraft("example/evals", 10, "I10", "P10", "eval", "fp", {}))
+    store.reserve_run(eval_claim.id, "rep-1", reason="initial", evidence_path="/tmp/eval")
+    assert "host attempts: 2" in status(store)
+    store.finish_run(host.id, execution_status="completed", result={})
+    store.finish_run(pending.id, execution_status="completed", result={})
+    assert "host attempts: 0" in status(store)
 
 
 def test_status_shows_blocked_fix_claim_with_decline_reason(tmp_path: Path) -> None:

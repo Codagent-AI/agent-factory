@@ -79,6 +79,7 @@ if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
         tmp_path / "runner",
         {
             "scripts/sandbox-run.sh": "#!/bin/sh\n# --docker-run-arg\n",
+            "docker/dev/Dockerfile": 'FROM alpine\nUSER nobody\nWORKDIR /workspace\nCMD ["sh"]\n',
             "workflows/core/implement-change-v1.0.yaml": "# fixture",
         },
     )
@@ -179,6 +180,7 @@ elif endpoint=='graphql':
   item=next(x for x in s['items'] if x['id']==v['item']);vals=item['fieldValues']['nodes']
   vals[:]=[x for x in vals if x['field']['id']!=v['field']]
   if 'option' in v: vals.append({{'field':{{'id':v['field']}},'optionId':v['option']}})
+  if 'text' in v: vals.append({{'field':{{'id':v['field']}},'text':v['text']}})
   result={{'data':{{'updateProjectV2ItemFieldValue':{{'projectV2Item':{{'id':v['item']}}}}}}}}
 elif '/comments' in endpoint:
  if 'POST' in args:
@@ -252,7 +254,7 @@ urllib.request.urlopen = token_response
 def _field_value(board: Path, field_id: str) -> str | None:
     for field in json.loads(board.read_text())["items"][0]["fieldValues"]["nodes"]:
         if field["field"]["id"] == field_id:
-            return str(field["optionId"])
+            return str(field.get("optionId", field.get("text")))
     return None
 
 

@@ -35,6 +35,7 @@ OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 _BUILD_TIMEOUT_SECONDS = 1800
+BUN_VERSION = "1.2.23"
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
@@ -186,6 +187,7 @@ def build_claim_image(
     environment: Mapping[str, str],
     client: FlyMachinesClient | None = None,
     region: str = "ewr",
+    validator: tuple[str, str] | None = None,
 ) -> str:
     """Build once in the detached launcher and persist its immutable digest."""
     tag = f"claim-{claim_id[:12]}"
@@ -206,6 +208,59 @@ def build_claim_image(
         f"FACTORY_CLI_REFRESH={claim_id}",
         ".",
     ]
+    if validator is not None:
+        revision, source = validator
+        dockerfile = runner / "docker/dev/Dockerfile"
+        original = dockerfile.read_text(encoding="utf-8")
+        user = next(
+            (
+                line
+                for line in reversed(original.splitlines())
+                if line.lstrip().upper().startswith("USER ")
+            ),
+            None,
+        )
+        workdir = next(
+            (
+                line
+                for line in reversed(original.splitlines())
+                if line.lstrip().upper().startswith("WORKDIR ")
+            ),
+            None,
+        )
+        if user is None or workdir is None:
+            raise FlyTransportError(
+                f"Runner Dockerfile lacks a final USER or WORKDIR: {dockerfile}"
+            )
+        tail = f"""
+USER root
+ARG AGENT_VALIDATOR_REVISION
+ARG AGENT_VALIDATOR_REPOSITORY
+RUN set -eu; \\
+    git init -q /opt/agent-validator; cd /opt/agent-validator; \\
+    git fetch -q --depth 1 "$AGENT_VALIDATOR_REPOSITORY" "$AGENT_VALIDATOR_REVISION"; \\
+    git checkout -q FETCH_HEAD; \\
+    npm install -g --prefix /opt/bun bun@{BUN_VERSION}; \\
+    /opt/bun/bin/bun install --frozen-lockfile; \\
+    INJECT_GIT_VERSION=1 /opt/bun/bin/bun build.ts; \\
+    npm install -g /opt/agent-validator; \\
+    chmod -R a+rX /opt/agent-validator; \\
+    reported="$(agent-validator --version | cut -d' ' -f1)"; \\
+    printf '%s' "$reported" | grep -Eq '^[0-9a-f]{{7,40}}$'; \\
+    case "$AGENT_VALIDATOR_REVISION" in "$reported"*) ;; \\
+      *) echo "agent-validator version mismatch" >&2; exit 1 ;; esac
+{user}
+{workdir}
+"""
+        derived = (factory / "claim.Dockerfile").resolve()
+        derived.write_text(original.rstrip() + "\n" + tail, encoding="utf-8")
+        command[command.index("--dockerfile") + 1] = str(derived)
+        command[-1:-1] = [
+            "--build-arg",
+            f"AGENT_VALIDATOR_REVISION={revision}",
+            "--build-arg",
+            f"AGENT_VALIDATOR_REPOSITORY={source}",
+        ]
     with tempfile.TemporaryDirectory() as scratch:
         config = Path(scratch) / "fly.toml"
         config.write_text(f'app = "{app}"\nprimary_region = "{region}"\n', encoding="utf-8")
@@ -698,6 +753,14 @@ class Lifecycle:
             self.transport.deploy_environment(),
             self.client,
             string_field(self.fly, "region"),
+            (
+                (
+                    string_field(mapping_field(self.manifest, "commits"), "validator"),
+                    string_field(self.manifest, "validator_repository"),
+                )
+                if "validator" in mapping_field(self.manifest, "commits")
+                else None
+            ),
         )
 
     def _ensure_started(

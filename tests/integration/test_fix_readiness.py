@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import os
+import plistlib
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -559,10 +561,18 @@ def _host_environment(
         "agent-validator": _TRIVIAL,
         **(executables or {}),
     }
+    validator_build = tmp_path / "agent-validator/dist/index.js"
+    validator_build.parent.mkdir(parents=True, exist_ok=True)
+    validator_build.write_text(_TRIVIAL)
+    validator_build.chmod(0o755)
     for name, text in scripts.items():
         path = bin_dir / name
         if text is None:
             path.unlink(missing_ok=True)
+            continue
+        if name == "agent-validator" and text == _TRIVIAL:
+            path.unlink(missing_ok=True)
+            path.symlink_to(validator_build)
             continue
         path.write_text(text)
         path.chmod(0o755)
@@ -622,6 +632,88 @@ def test_host_readiness_passes_with_every_prerequisite_and_never_reads_the_runne
     assert "fix sandbox launch" not in names
     assert "fix workflow contract" in names
     assert "fix host cursor CLI" in names
+
+
+def test_validator_doctor_checks_both_paths_and_reports_staleness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.work_kinds.pull_request.readiness import (
+        _validator_diagnostics,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    checkout = tmp_path / "agent-validator"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
+
+    def commit(message: str) -> str:
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "-c",
+                "user.name=T",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                message,
+            ],
+            check=True,
+        )
+        return subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+
+    old = commit("old")
+    subprocess.run(
+        ["git", "-C", str(checkout), "update-ref", "refs/remotes/origin/main", old], check=True
+    )
+    build = checkout / "dist/index.js"
+    build.parent.mkdir()
+    build.write_text(f"#!/bin/sh\necho '{old[:7]} old'\n")
+    build.chmod(0o755)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "agent-validator").symlink_to(build)
+    home = tmp_path / "home"
+    plist = home / "Library/LaunchAgents/com.codagent.agent-factory.plist"
+    plist.parent.mkdir(parents=True)
+    with plist.open("wb") as stream:
+        plistlib.dump({"EnvironmentVariables": {"PATH": str(bin_dir)}}, stream)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    local = _local(tmp_path, tmp_path / "runner", fix_environment=None)
+    current = _validator_diagnostics(local)
+    assert current[0].available and current[1].detail == "current"
+
+    newer = commit("new")
+    subprocess.run(
+        ["git", "-C", str(checkout), "update-ref", "refs/remotes/origin/main", newer], check=True
+    )
+    behind = _validator_diagnostics(local)
+    assert behind[0].available and behind[1].available
+    assert old in behind[1].detail and newer in behind[1].detail
+
+    npm = tmp_path / "npm-validator"
+    npm.write_text("#!/bin/sh\necho 1.14.0\n")
+    npm.chmod(0o755)
+    plist_bin = tmp_path / "plist-bin"
+    plist_bin.mkdir()
+    (plist_bin / "agent-validator").symlink_to(npm)
+    with plist.open("wb") as stream:
+        plistlib.dump({"EnvironmentVariables": {"PATH": str(plist_bin)}}, stream)
+    plist_wrong = _validator_diagnostics(local)
+    assert not plist_wrong[0].available
+    assert str(npm) in plist_wrong[0].detail and str(build) in plist_wrong[0].detail
+
+    (bin_dir / "agent-validator").unlink()
+    (bin_dir / "agent-validator").symlink_to(npm)
+    wrong = _validator_diagnostics(local)
+    assert not wrong[0].available
+    assert str(npm) in wrong[0].detail and str(build) in wrong[0].detail
 
 
 @pytest.mark.parametrize(

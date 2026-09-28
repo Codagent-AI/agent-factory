@@ -38,6 +38,12 @@ a retry. Human review always runs on the Mac against the collected directory.
 
 ## Fly eval operations
 
+Fly evals pin Agent Validator from `[repositories] agent_validator`, which defaults
+to a checkout next to Agent Runner. The image builds the recorded revision and
+the report includes it. Docker evals still use the published npm release.
+Validator changes can alter eval results; retain the recorded revision when
+comparing runs.
+
 With `eval.execution = "fly"`, `doctor` reports the mode-neutral `eval` group
 and the `eval-fly` group (deploy token, app API, image repository, Claude login, and `flyctl`
 transport). `status` shows the backing Machine ID, state, and deadline for an
@@ -379,7 +385,12 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-facto
 ```
 
 On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an
-immutable release that running jobs keep using; see `AGENTS.md`.
+immutable release. It also updates and builds Agent Validator from `origin/main`
+when the checkout is safe and no host fix or feature attempt runs. Use
+`--no-validator` to skip that step. A host installation needs a one-time link
+from `agent-validator` on the LaunchAgent PATH to the checkout's `dist/index.js`;
+`doctor` checks it and reports whether the build is behind `origin/main`.
+Each release is immutable and running jobs keep using it; see `AGENTS.md`.
 
 `resident` does not write `controller.log`; use `status` and the per-run logs.
 

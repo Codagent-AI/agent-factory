@@ -16,6 +16,66 @@ from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.supervisor import _plan_document  # pyright: ignore[reportPrivateUsage]
 from agent_factory.work_kinds.pull_request import launch
 
+
+def test_validator_provenance_expands_reported_build_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout = tmp_path / "agent-validator"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "old",
+        ],
+        check=True,
+    )
+    old = subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "new",
+        ],
+        check=True,
+    )
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "agent-validator"
+    executable.write_text(f"#!/bin/sh\necho '{old[:7]} old'\n")
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    provenance = launch.validator_provenance(checkout)
+    assert provenance == {
+        "validator_executable": str(executable.resolve()),
+        "validator_version": f"{old[:7]} old",
+        "validator_commit": old,
+    }
+    executable.write_text("#!/bin/sh\necho 1.14.0\n")
+    assert launch.validator_provenance(checkout)["validator_commit"] == "unavailable"
+
+
 TOKEN = "dummy-fix-token"
 CONTRACT = "factory-fix/1"
 RUNNER_STUB = """#!/bin/sh
@@ -223,6 +283,9 @@ def test_host_plan_hints_progress_and_provenance(
         "branch_name": "factory/fix-7-claim",
         "runner_executable": str(built.runner.resolve()),
         "runner_version": "stub-runner 1.2.3",
+        "validator_executable": launch.validator_provenance(None)["validator_executable"],
+        "validator_version": launch.validator_provenance(None)["validator_version"],
+        "validator_commit": "unavailable",
         "session_dir": str(session),
     }
     assert "image_tag" not in hints

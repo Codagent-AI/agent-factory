@@ -261,6 +261,7 @@ def status(
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
+    lines.append(f"host attempts: {_host_attempts(store)}")
     all_claims = store.all_claims()
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if include_all:
@@ -956,9 +957,13 @@ def _launch_agent_path_diagnostic(
         path_raw = environment.get("PATH", _LAUNCHD_DEFAULT_PATH)
         if isinstance(path_raw, str):
             path_value = path_raw
-    missing = [
-        exe for exe in host_executables(shared) if shutil.which(exe, path=path_value) is None
-    ]
+    required = host_executables(shared)
+    if not any(
+        definition.local(config).execution == "host" and definition.enabled(shared)
+        for definition in registered()
+    ):
+        required.remove("agent-validator")
+    missing = [exe for exe in required if shutil.which(exe, path=path_value) is None]
     if not missing:
         return Diagnostic(name, True, f"{target} PATH resolves every required host executable", "")
     return _launch_agent_path_result(
@@ -1097,6 +1102,20 @@ def _slot_lines(store: ClaimStore) -> list[str]:
             f"{kind} slot: {claim.repository}#{claim.issue_number} {run.unit_key} ({run.status})"
         )
     return lines
+
+
+def _host_attempts(store: ClaimStore) -> int:
+    count = 0
+    for run in store.nonterminal_runs():
+        if run.kind == "eval":
+            continue
+        hints = run.plan.get("ownership_hints")
+        backend = (
+            cast(Mapping[str, object], hints).get("backend") if isinstance(hints, Mapping) else None
+        )
+        if backend is None or backend == "host":
+            count += 1
+    return count
 
 
 def _blocked_lines(store: ClaimStore, claim: Claim) -> list[str]:
