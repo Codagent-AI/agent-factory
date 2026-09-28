@@ -159,7 +159,7 @@ steps:
   - id: repair-openspec
     session: lead-agent
     mode: autonomous
-    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok'
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
     prompt: |
       Follow `.agent-runner/workflows/factory-define-rules.md`.
       On a direction-level stop, write {{artifact_dir}}/define-stop.json.
@@ -173,7 +173,7 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok'
+    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || test -e {{artifact_dir}}/validation-ok || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
   - id: check-planning-artifacts
     workflow: builtin:core/check-planning-artifacts-v1.0.yaml
     params:

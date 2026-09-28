@@ -854,6 +854,33 @@ def test_failed_openspec_validation_records_errors(tmp_path: Path) -> None:
     assert git(remote, "rev-parse", "refs/heads/claim") == git(repo, "rev-parse", "HEAD")
 
 
+def test_define_skips_every_step_when_resuming_past_write_tasks(tmp_path: Path) -> None:
+    """A resume past definition skips validation, so no step may run that reads its
+    validation.log or repairs its errors (#15 claim d5b85ace failed define this way)."""
+    import re
+    import shutil
+
+    workflows = tmp_path / ".agent-runner" / "workflows"
+    workflows.mkdir(parents=True)
+    shutil.copy(str(PACKAGE / "factory-resume-skip.sh"), workflows)
+    (workflows / "factory-resume-skip.sh").chmod(0o755)
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    text = (PACKAGE / "factory-define-v1.0.yaml").read_text()
+    steps = re.split(r"\n  - id: ", "\n" + text.split("\nsteps:\n", 1)[1])[1:]
+    values = {"artifact_dir": str(artifact_dir), "resume_from": "implement"}
+    ran: list[str] = []
+    for step in steps:
+        step_id = step.split("\n", 1)[0]
+        skip = re.search(r"^    skip_if: '(.*)'$", step, re.MULTILINE)
+        assert skip, f"{step_id} has no skip_if"
+        condition = skip.group(1).removeprefix("sh: ")
+        condition = re.sub(r"{{(\w+)}}", lambda m: values.get(m.group(1), m.group(0)), condition)
+        if run("sh", "-c", condition, cwd=tmp_path).returncode != 0:
+            ran.append(step_id)
+    assert ran == []
+
+
 def test_checkpoint_is_visible_only_after_push(tmp_path: Path) -> None:
     repo, remote = repository(tmp_path)
     git(repo, "checkout", "-b", "claim")
