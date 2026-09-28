@@ -48,28 +48,36 @@ validator_build() {
   # can recreate dependencies and generated files on the next attempt.
   if [[ -e $validator/dist || -L $validator/dist ]]; then
     cp -a "$validator/dist" "$backup/dist" \
-      || { rm -rf "$backup"; die "could not back up Agent Validator dist; the factory stays paused"; }
+      || { rm -rf "$backup" || true; die "could not back up Agent Validator dist; the factory stays paused"; }
   fi
   "$(dirname "${BASH_SOURCE[0]}")/update-validator.sh" "$validator" || update_status=$?
   case $update_status in
     0) ;;
-    3) rm -rf "$backup"; return ;;
-    *) rm -rf "$backup"; die "could not update Agent Validator in $validator; the factory stays paused" ;;
+    3) rm -rf "$backup" || true; return ;;
+    *) rm -rf "$backup" || true; die "could not update Agent Validator in $validator; the factory stays paused" ;;
   esac
   if ! (cd "$validator" && bun install --frozen-lockfile && bun run build:local); then
-    rm -rf "$validator/dist"
-    if [[ -e $backup/dist || -L $backup/dist ]]; then
-      mv "$backup/dist" "$validator/dist" \
-        || { rm -rf "$backup"; die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
-    fi
+    # Every step here is guarded, so a failure still reaches a message that
+    # tells the operator to rebuild before resuming.
+    validator_restore_dist "$backup" \
+      || { rm -rf "$backup" || true; die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
     git -C "$validator" reset -q --hard "$old" \
-      || { rm -rf "$backup"; die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
-    rm -rf "$backup"
+      || { rm -rf "$backup" || true; die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
+    rm -rf "$backup" || true
     die "Agent Validator build failed in $validator; the checkout was rolled back, but the host validator may be broken and must be rebuilt before resuming"
   fi
-  rm -rf "$backup"
+  rm -rf "$backup" || true
   say "built Agent Validator at $(git -C "$validator" rev-parse --short HEAD) in $validator"
   validator_path_check
+}
+
+# Replace whatever the failed build left in dist with the backup, if there is one.
+validator_restore_dist() {
+  local backup=$1
+  rm -rf "$validator/dist" || return
+  if [[ -e $backup/dist || -L $backup/dist ]]; then
+    mv "$backup/dist" "$validator/dist"
+  fi
 }
 
 validator_path_check() {

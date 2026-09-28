@@ -171,6 +171,32 @@ def test_failed_build_restores_checkout_and_dist(tmp_path: Path) -> None:
     assert (dist / "index.js").read_text() == "working build"
 
 
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_failed_build_reports_rebuild_when_dist_cannot_be_removed(tmp_path: Path) -> None:
+    _origin, checkout, upstream = _repos(tmp_path)
+    _commit(upstream, "next")
+    _git(upstream, "push", "-q", "origin", "main")
+    dist = checkout / "dist"
+    dist.mkdir()
+    (dist / "index.js").write_text("working build")
+    (checkout / ".git/info/exclude").write_text("dist/\n")
+    config = tmp_path / "config.toml"
+    config.write_text(f'[repositories]\nagent_validator = "{checkout}"\n')
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    bun = bin_dir / "bun"
+    # The failed build leaves the checkout unwritable, so removing its dist fails.
+    bun.write_text("#!/bin/sh\nchmod 555 .\nexit 7\n")
+    bun.chmod(0o755)
+    try:
+        result = _step(checkout, config, tmp_path / "runner", bin_dir, "host attempts: 0")
+    finally:
+        checkout.chmod(0o755)
+    assert result.returncode == 1
+    assert "backup restore failed" in result.stderr
+    assert "must be rebuilt before resuming" in result.stderr
+
+
 def test_wrong_plist_path_warns_without_relinking(tmp_path: Path) -> None:
     _origin, checkout, _upstream = _repos(tmp_path)
     config = tmp_path / "config.toml"
