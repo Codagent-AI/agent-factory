@@ -19,9 +19,20 @@ from pathlib import Path
 audit = Path(sys.argv[1])
 response = None
 for line in (audit.read_text() if audit.exists() else '').splitlines():
-    match = re.search(r'\[archive, sub:archive-change(?:, [^]]+)*\] repair_blocked (\{.*\})$', line)
-    if match:
-        response = json.loads(match.group(1)).get('response')
+    match = re.search(r'\[archive, sub:archive-change(?:, [^]]+)*\] (\w+) (.*)$', line)
+    if not match:
+        continue
+    event, payload = match.groups()
+    if event in ('step_end', 'sub_workflow_end'):
+        continue
+    response = None
+    if event == 'repair_blocked':
+        try:
+            data = json.loads(payload)
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            response = data.get('response')
 
 if not isinstance(response, str):
     raise SystemExit('archive step failed without a REPAIR_BLOCKED declaration; see archive entries in ' + str(audit))

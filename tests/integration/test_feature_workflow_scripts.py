@@ -171,6 +171,9 @@ def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -
         "repair_blocked "
         + json.dumps({"attempt": 0, "response": explanation + "\n\nREPAIR_BLOCKED"})
         + "\n"
+        + '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        + '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+        + '[archive] step_end {"outcome":"failed"}\n'
     )
     payload = json.dumps(
         {
@@ -249,6 +252,51 @@ def test_record_archive_block_uses_last_archive_declaration_from_commit_check(
     ]
 
 
+def test_record_archive_block_rejects_stale_declaration_after_later_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "[archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        "[archive, sub:archive-change, verify-archive-commit] step_start {}\n"
+        '[archive, sub:archive-change, verify-archive-commit] step_end {"exit_code":1}\n'
+        '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+    assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_record_archive_block_reports_invalid_declaration_payload(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    for payload in ('{"response":', '{"response":}', "[]"):
+        (session / "audit.log").write_text(
+            f"[archive, sub:archive-change, archive-transition] repair_blocked {payload}\n"
+        )
+        result = run(
+            str(PACKAGE / "record-archive-block.sh"),
+            str(evidence),
+            "branch",
+            str(session),
+            cwd=repo,
+        )
+        assert result.returncode != 0
+        assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not (evidence / "feature-outcome.json").exists()
+
+
 def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
     steps = feature.split("\n  - id: ")
@@ -256,7 +304,7 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     archive = steps[ids.index("archive") + 1]
     record = steps[ids.index("record-archive-block") + 1]
     assert "continue_on_failure: true" in archive
-    assert 'skip_if: \'sh: test "{{archive_status}}" = skipped\'' in archive
+    assert "skip_if: 'sh: test \"{{archive_status}}\" = skipped'" in archive
     assert ids.index("seed-archive-status") < ids.index("archive")
     assert ids.index("archive") < ids.index("mark-archive-failed")
     assert "restore-skipped-archive-status" not in ids
