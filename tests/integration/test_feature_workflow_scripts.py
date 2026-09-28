@@ -73,6 +73,7 @@ def test_feature_files_are_listed_and_exist() -> None:
         "prepare-branch.sh",
         "factory-resume-skip.sh",
         "record-stop.sh",
+        "record-archive-block.sh",
         "annotate-pr.sh",
     ):
         assert name in FEATURE_STAGED_FILES
@@ -155,6 +156,101 @@ def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
     assert outcome["stopped_step"] == "design"
     assert outcome["questions"] == ["Which API?"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+
+
+def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    explanation = "Main spec contains a stray delta header outside the change directory."
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55.844297Z [archive, sub:archive-change, archive-transition] "
+        "repair_blocked "
+        + json.dumps({"attempt": 0, "response": explanation + "\n\nREPAIR_BLOCKED"})
+        + "\n"
+    )
+    payload = json.dumps(
+        {
+            "artifact_dir": str(evidence),
+            "branch_name": "factory/feature-12",
+            "session_dir": str(session),
+        }
+    )
+    result = run(str(PACKAGE / "record-archive-block.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((evidence / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["stopped_step"] == "archive"
+    assert outcome["reasons"] == outcome["questions"] == [explanation]
+    assert outcome["branch"] == "factory/feature-12"
+    assert "REPAIR_BLOCKED" not in outcome["direction_summary"]
+    assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+    assert (
+        run(
+            "python3",
+            str(PACKAGE / "verify-feature-outcome.py"),
+            str(evidence / "feature-outcome.json"),
+            cwd=repo,
+        ).returncode
+        == 0
+    )
+
+
+def test_record_archive_block_requires_archive_declaration(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [implement, sub:implement-task, verify-task-commit] "
+        'repair_blocked {"response":"wrong step\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_record_archive_block_uses_last_archive_declaration_from_commit_check(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        "2026-09-28T07:50:00Z [archive, sub:archive-change, verify-archive-commit] "
+        'repair_blocked {"response":"Commit needs a human decision.\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "feature-outcome.json").read_text())["reasons"] == [
+        "Commit needs a human decision."
+    ]
+
+
+def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    steps = feature.split("\n  - id: ")
+    ids = [step.split("\n", 1)[0] for step in steps[1:]]
+    archive = steps[ids.index("archive") + 1]
+    record = steps[ids.index("record-archive-block") + 1]
+    assert "continue_on_failure: true" in archive
+    assert ids.index("seed-archive-status") < ids.index("archive")
+    assert ids.index("archive") < ids.index("mark-archive-failed")
+    assert ids.index("mark-archive-failed") < ids.index("restore-skipped-archive-status")
+    assert ids.index("restore-skipped-archive-status") < ids.index("record-archive-block")
+    assert ids.index("record-archive-block") < ids.index("push-archive")
+    assert "script: record-archive-block.sh" in record
 
 
 def test_record_stop_records_the_workflow_step_not_the_agents_name(tmp_path: Path) -> None:

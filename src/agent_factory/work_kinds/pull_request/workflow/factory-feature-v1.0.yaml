@@ -90,11 +90,31 @@ steps:
       branch_name: "{{branch_name}}"
       change_name: "{{change_name}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
+  # Unguarded: record-archive-block reads archive_status after an earlier stop.
+  - id: seed-archive-status
+    command: printf passed
+    capture: archive_status
   - id: archive
     workflow: builtin:openspec/archive-change-v1.0.yaml
     params:
       change_name: "{{change_name}}"
+    continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
+  - id: mark-archive-failed
+    command: printf failed
+    capture: archive_status
+    skip_if: previous_success
+  - id: restore-skipped-archive-status
+    command: printf passed
+    capture: archive_status
+    skip_if: 'sh: ! { test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive; }'
+  - id: record-archive-block
+    script: record-archive-block.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+      session_dir: "{{session_dir}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{archive_status}}" = passed'
   - id: push-archive
     script: checkpoint.sh
     script_inputs:
