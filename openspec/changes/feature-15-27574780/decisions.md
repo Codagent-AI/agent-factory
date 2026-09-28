@@ -280,3 +280,18 @@
     `openspec validate --all --strict` pass. A trial `openspec archive` in a throwaway copy
     of `openspec/` applied every delta (2 added, 6 modified), and the resulting specs
     validated strictly. No artifact was changed. Decision-bearing: no.
+
+## continuation review (feature-15-27574780)
+
+43. **No artifact revisions. The artifacts carried over from `feature-15-d5b85ace` still
+    match the issue and its eligible comment.** The issue title, body, and single eligible
+    comment (2026-09-25) are byte-identical to the input of every earlier claim on this
+    issue, so the mapping in decision 41 still holds. The branch contains `origin/main`.
+    Since the last review, `origin/main` gained #37, #44, and #46. None of them changes a
+    base spec under `openspec/specs`. Their code changes, in `runtime.py` (clearing a
+    claim's readiness hold after a launch) and in the pull-request handler (the resume
+    point for continuations), do not touch terminal lifecycles, cleanup, retention, or
+    the Fly registry, so the design needs no update. The artifacts refer to no earlier
+    change name except in this log. `openspec validate feature-15-27574780 --strict`
+    passes. Alternative: redo definition, rejected because neither the input nor the base
+    specs changed. Decision-bearing: no.
