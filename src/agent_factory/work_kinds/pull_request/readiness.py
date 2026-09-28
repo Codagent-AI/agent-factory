@@ -366,14 +366,15 @@ def _validator_diagnostics(local: LocalConfig) -> list[Diagnostic]:
                 service_path = launch_agent_service_path(plistlib.load(stream))
             service_found = shutil.which("agent-validator", path=service_path)
             plist_actual = Path(service_found).resolve() if service_found else None
-    available = bool(
-        valid_checkout and actual == expected and (not plist.is_file() or plist_actual == expected)
-    )
+    # The service runs with the LaunchAgent PATH, so when the plist exists it alone
+    # decides; the doctor's own PATH (an operator shell) may list another copy first.
+    resolved = plist_actual if plist.is_file() else actual
+    available = bool(valid_checkout and resolved == expected)
     action = f"Link agent-validator on the service PATH to {expected}."
     build = Diagnostic(
         "host agent-validator build",
         available,
-        f"checkout {checkout}; service PATH {actual or 'unavailable'}; LaunchAgent PATH "
+        f"checkout {checkout}; doctor PATH {actual or 'unavailable'}; LaunchAgent PATH "
         f"{plist_actual or 'unavailable'}; expected {expected}",
         "" if available else action,
         "fix-host",

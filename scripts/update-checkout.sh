@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 # Fast-forward a safe checkout to origin/main, or inspect it with --check-only.
+#
+# Usage: scripts/update-checkout.sh [--check-only] <label> <checkout>
+#
+# Exit status: 0 when the checkout is at (or can fast-forward to) origin/main and
+# is ready to build; 3 when it is left alone (another branch, uncommitted
+# changes, or commits not on origin/main), with a warning on stderr; anything
+# else is an error. Anything not on origin/main is unreviewed and is never built.
 set -euo pipefail
 check_only=false
 if [[ ${1:-} == --check-only ]]; then check_only=true; shift; fi

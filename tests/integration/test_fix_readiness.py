@@ -709,6 +709,22 @@ def test_validator_doctor_checks_both_paths_and_reports_staleness(
     assert not plist_wrong[0].available
     assert str(npm) in plist_wrong[0].detail and str(build) in plist_wrong[0].detail
 
+    # The service PATH decides: another copy earlier on the doctor's own PATH is ignored.
+    with plist.open("wb") as stream:
+        plistlib.dump({"EnvironmentVariables": {"PATH": str(bin_dir)}}, stream)
+    monkeypatch.setenv("PATH", f"{plist_bin}:{bin_dir}:{os.environ['PATH']}")
+    shell_wrong = _validator_diagnostics(local)
+    assert shell_wrong[0].available
+    assert str(npm) in shell_wrong[0].detail
+
+    # Without a plist, the doctor's PATH is the only evidence.
+    plist.unlink()
+    no_plist = _validator_diagnostics(local)
+    assert not no_plist[0].available
+    with plist.open("wb") as stream:
+        plistlib.dump({"EnvironmentVariables": {"PATH": str(plist_bin)}}, stream)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
     (bin_dir / "agent-validator").unlink()
     (bin_dir / "agent-validator").symlink_to(npm)
     wrong = _validator_diagnostics(local)
