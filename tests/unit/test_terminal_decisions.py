@@ -103,22 +103,22 @@ def test_expiry_message_uses_result_links_and_local_fallback(tmp_path: Path) -> 
 
 def test_expiry_requires_a_delivered_review_command(tmp_path: Path) -> None:
     store, claim = _claim(tmp_path)
-    assert not terminal.expiry_published(claim)
+    assert not terminal.review_command_published(claim)
     pending = replace(
         claim,
         reporting={
             "events": {"rep-1:review-command": {"body": "Run: command", "comment_id": None}}
         },
     )
-    assert not terminal.expiry_published(pending)
+    assert not terminal.review_command_published(pending)
     delivered = replace(
         claim,
         reporting={
             "events": {"rep-1:review-command": {"body": "Run: command", "comment_id": "comment-1"}}
         },
     )
-    assert terminal.expiry_published(delivered)
-    assert not terminal.expiry_published(
+    assert terminal.review_command_published(delivered)
+    assert not terminal.review_command_published(
         replace(
             claim,
             reporting={

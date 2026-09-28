@@ -13,7 +13,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore
+from agent_factory.store import Claim, ClaimStore
 from agent_factory.work_kinds.images import remove_images, run_image_tags
 
 
@@ -38,28 +38,21 @@ class PullRequestCleanup:
         cleanup = dict(claim.cleanup)
         if cleanup.get("complete") is True:
             return True
-        if self._store.pending_events(claim_id) or claim.reporting.get("delivery_failures"):
+        if claim.lifecycle == "settled":
+            if board_status == "Review":
+                if cleanup.get("review_observed") is not True:
+                    cleanup["review_observed"] = True
+                    self._store.set_cleanup(claim_id, cleanup)
+                return False
+            if board_status != "Done" or cleanup.get("review_observed") is not True:
+                return False
+        elif claim.lifecycle != "cancelled":
             return False
-        if any(
-            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim_id)
-        ):
-            return False
-        from agent_factory.terminal import machines_held
+        from agent_factory.terminal import idle_and_reported
 
-        if machines_held(self._store, claim):
-            return False
-        if claim.lifecycle == "cancelled":
-            # Cancellation stops execution asynchronously; the clones and the token copy are
-            # released once no attempt can still be using them, whatever the card status.
-            return self._release(claim, cleanup)
-        if claim.lifecycle != "settled":
-            return False
-        if board_status == "Review":
-            if cleanup.get("review_observed") is not True:
-                cleanup["review_observed"] = True
-                self._store.set_cleanup(claim_id, cleanup)
-            return False
-        if board_status != "Done" or cleanup.get("review_observed") is not True:
+        # Cancellation stops execution asynchronously; the clones and the token copy are
+        # released once no attempt can still be using them, whatever the card status.
+        if not idle_and_reported(self._store, claim):
             return False
         return self._release(claim, cleanup)
 

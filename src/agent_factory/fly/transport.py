@@ -24,7 +24,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory.fly.api import FlyApiError, FlyMachinesClient, is_gone, read_token
+from agent_factory.fly.api import (
+    DIGEST_PATTERN,
+    FlyApiError,
+    FlyMachinesClient,
+    is_gone,
+    read_token,
+)
 
 EXIT_TRANSPORT = 70
 EXIT_MACHINE_LOST = 71
@@ -35,7 +41,6 @@ OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 _BUILD_TIMEOUT_SECONDS = 1800
-_DIGEST_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
 _CLAUDE_FILES = (
@@ -683,7 +688,7 @@ class Lifecycle:
                 built.get("repository") != repository
                 or built.get("tag") != f"claim-{claim_id[:12]}"
                 or not isinstance(recorded_digest, str)
-                or _DIGEST_PATTERN.fullmatch(recorded_digest) is None
+                or DIGEST_PATTERN.fullmatch(recorded_digest) is None
             ):
                 raise FlyTransportError("Fly image build record is invalid for this claim")
             return f"{repository}@{recorded_digest}"

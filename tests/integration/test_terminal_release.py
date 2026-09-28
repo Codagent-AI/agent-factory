@@ -371,6 +371,23 @@ def test_done_handler_waits_for_pending_report_before_release(tmp_path: Path, ki
     assert store.get_claim(claim.id).cleanup["complete"] is True  # type: ignore[union-attr]
 
 
+def test_fix_review_is_observed_while_a_report_is_undelivered(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/repo", 14, "I14", "P14", "fix", "fp", {}))
+    store.set_claim_lifecycle(claim.id, "settled", {})
+    root = tmp_path / "clones" / claim.id
+    root.mkdir(parents=True)
+    store.record_delivery_failure(claim.id, "report", RuntimeError("HTTP 503"))
+    cleanup = PullRequestCleanup(store, claim_directory=lambda _: root)
+
+    # Review is observed even while delivery is failing, so a later Done can still release.
+    assert cleanup.reconcile(claim.id, board_status="Review") is False
+    saved = store.get_claim(claim.id)
+    assert saved is not None and saved.cleanup["review_observed"] is True
+    assert cleanup.reconcile(claim.id, board_status="Done") is False
+    assert root.exists()
+
+
 def test_permission_failure_records_error_and_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

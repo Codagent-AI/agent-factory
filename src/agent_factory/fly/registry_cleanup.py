@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import cast
 
-from agent_factory.fly.api import FlyApiError, FlyMachinesClient
+from agent_factory.fly.api import DIGEST_PATTERN, FlyApiError, FlyMachinesClient
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, TERMINAL_LIFECYCLES, Claim, ClaimStore
+from agent_factory.work_kinds.base import mapping
 
 
 def _resolve(client: FlyMachinesClient, image: str) -> str | None:
@@ -20,6 +20,10 @@ def _resolve(client: FlyMachinesClient, image: str) -> str | None:
         raise
 
 
+def image_deleted(record: object) -> bool:
+    return bool(mapping(record).get("deleted_at"))
+
+
 def ownership_skip(
     digest: str, current: str | None, tags: Mapping[str, str], claim_tag: str
 ) -> str | None:
@@ -27,7 +31,7 @@ def ownership_skip(
         return (
             f"claim tag now points to {current}"
             if current is not None
-            else ("untagged; ownership cannot be proven")
+            else "untagged; ownership cannot be proven"
         )
     other = next((tag for tag, value in tags.items() if tag != claim_tag and value == digest), None)
     return f"shared with {other}" if other is not None else None
@@ -57,15 +61,8 @@ def reconcile_claim_image(
             images[digest] = (repository, tag)
     if not images:
         return
-    raw_registry = claim.cleanup.get("registry")
-    registry = (
-        dict(cast(Mapping[str, object], raw_registry)) if isinstance(raw_registry, Mapping) else {}
-    )
-    if all(
-        isinstance(registry.get(d), Mapping)
-        and cast(Mapping[str, object], registry[d]).get("deleted_at")
-        for d in images
-    ):
+    registry = dict(mapping(claim.cleanup.get("registry")))
+    if all(image_deleted(registry.get(digest)) for digest in images):
         return
     if claim.lifecycle not in TERMINAL_LIFECYCLES or any(
         run.status in NONTERMINAL_RUN_STATUSES for run in runs
@@ -77,8 +74,7 @@ def reconcile_claim_image(
         return
     cache = cache if cache is not None else {}
     for digest, (repository, tag) in images.items():
-        prior = registry.get(digest)
-        if isinstance(prior, Mapping) and cast(Mapping[str, object], prior).get("deleted_at"):
+        if image_deleted(registry.get(digest)):
             continue
         result: dict[str, object] = {"repository": repository, "tag": tag, "digest": digest}
         try:
@@ -86,7 +82,7 @@ def reconcile_claim_image(
                 raise RuntimeError("no Fly configuration to delete registry image")
             if repository.removeprefix("registry.fly.io/") != client.app:
                 raise RuntimeError("recorded image is outside the configured Fly app")
-            if not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            if not DIGEST_PATTERN.fullmatch(digest):
                 raise RuntimeError("recorded image digest is invalid")
             current = _resolve(client, f"{repository}:{tag}")
             tags: Mapping[str, str] = {}
@@ -105,9 +101,8 @@ def reconcile_claim_image(
                 result["skipped"] = skip
             elif current == digest:
                 deleted = client.delete_manifest(repository, digest)
-                if (
-                    deleted
-                    or _resolve(client, f"{repository}:{tag}") is None
+                if deleted or (
+                    _resolve(client, f"{repository}:{tag}") is None
                     and _resolve(client, f"{repository}@{digest}") is None
                 ):
                     result["deleted_at"] = now.isoformat()

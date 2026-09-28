@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from agent_factory.config import LocalConfig
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
+from agent_factory.store import TERMINAL_LIFECYCLES, Claim, ClaimStore, Run
 from agent_factory.work_kinds.base import WorkKindHandler
 from agent_factory.work_kinds.pull_request.kinds import registered
 
@@ -99,7 +99,7 @@ def _eligible(
         return False
     if cleanup.get("complete") is not True:
         return False
-    from agent_factory.terminal import machines_held, sync_pending, terminal_time
+    from agent_factory.terminal import idle_and_reported, sync_pending, terminal_time
 
     if board_status == "Done" and claim.lifecycle == "settled":
         observed_at = cleanup.get("done_observed_at")
@@ -111,7 +111,7 @@ def _eligible(
             return False
         if now - observed < timedelta(days=local.limits.evidence_retention_days):
             return False
-    elif claim.lifecycle in {"cancelled", "superseded", "settled"}:
+    elif claim.lifecycle in TERMINAL_LIFECYCLES:
         days = (
             local.limits.unreviewed_retention_days
             if claim.lifecycle == "settled"
@@ -121,12 +121,7 @@ def _eligible(
             return False
     else:
         return False
-    runs = store.runs_for_claim(claim.id)
-    if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
-        return False
-    if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
-        return False
-    if machines_held(store, claim):
+    if not idle_and_reported(store, claim):
         return False
     if claim.lifecycle == "settled":
         if client is not None:

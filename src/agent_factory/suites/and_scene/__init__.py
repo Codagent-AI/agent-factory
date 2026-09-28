@@ -23,7 +23,7 @@ from urllib.parse import urlsplit
 
 from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, ClaimStore
+from agent_factory.store import ClaimStore
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
@@ -602,15 +602,9 @@ class WorktreeCleanup:
             return False
         if board_status != "Done" or cleanup.get("review_observed") is not True:
             return False
-        if self._store.pending_events(claim_id) or claim.reporting.get("delivery_failures"):
-            return False
-        if any(
-            run.status in NONTERMINAL_RUN_STATUSES for run in self._store.runs_for_claim(claim_id)
-        ):
-            return False
-        from agent_factory.terminal import machines_held
+        from agent_factory.terminal import idle_and_reported
 
-        if machines_held(self._store, claim):
+        if not idle_and_reported(self._store, claim):
             return False
         return self.release(claim_id)
 

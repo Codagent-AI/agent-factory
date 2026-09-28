@@ -67,16 +67,7 @@ def cycle(state: Path, config_path: Path) -> None:
             artifact_root=local.storage_root / "artifacts",
         )
         # Backfill before any tick write can advance a legacy claim's updated_at.
-        for historical in store.terminal_claims():
-            if "terminal_at" not in historical.cleanup and not (
-                historical.lifecycle == "settled"
-                and any(
-                    run.status in NONTERMINAL_RUN_STATUSES
-                    or not store.get_setting("consumed-results", run.id)
-                    for run in store.runs_for_claim(historical.id)
-                )
-            ):
-                terminal.terminal_time(store, historical)
+        terminal.backfill_terminal_times(store)
         _reconcile_backends(store, local)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)

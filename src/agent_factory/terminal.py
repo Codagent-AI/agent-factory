@@ -12,7 +12,7 @@ from agent_factory.config import LocalConfig
 from agent_factory.controller import Controller
 from agent_factory.github import GitHubNotFoundError
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, TERMINAL_LIFECYCLES, Claim, ClaimStore
-from agent_factory.work_kinds.base import WorkKindHandler
+from agent_factory.work_kinds.base import WorkKindHandler, claim_is_idle, mapping
 from agent_factory.work_kinds.pull_request.kinds import registered
 from agent_factory.work_kinds.pull_request.sync import find_pr, sync_state
 
@@ -31,6 +31,20 @@ def terminal_time(store: ClaimStore, claim: Claim) -> datetime:
             claim.id, {**claim.cleanup, "terminal_at": value, "terminal_at_backfilled": True}
         )
     return datetime.fromisoformat(value)
+
+
+def backfill_terminal_times(store: ClaimStore) -> None:
+    """Record a terminal time for legacy terminal claims that have none."""
+    for claim in store.terminal_claims():
+        if "terminal_at" not in claim.cleanup and not (
+            claim.lifecycle == "settled"
+            and any(
+                run.status in NONTERMINAL_RUN_STATUSES
+                or not store.get_setting("consumed-results", run.id)
+                for run in store.runs_for_claim(claim.id)
+            )
+        ):
+            terminal_time(store, claim)
 
 
 def machines_held(store: ClaimStore, claim: Claim) -> bool:
@@ -97,6 +111,16 @@ def sync_pending(
     return pending
 
 
+def idle_and_reported(store: ClaimStore, claim: Claim) -> bool:
+    """No attempt can still use the claim's files, and all of its reporting is delivered."""
+    return (
+        claim_is_idle(store, claim)
+        and not machines_held(store, claim)
+        and not store.pending_events(claim.id)
+        and not claim.reporting.get("delivery_failures")
+    )
+
+
 def quiescent(
     store: ClaimStore,
     claim: Claim,
@@ -105,12 +129,7 @@ def quiescent(
 ) -> bool:
     return (
         claim.lifecycle in TERMINAL_LIFECYCLES
-        and not any(
-            run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)
-        )
-        and not machines_held(store, claim)
-        and not store.pending_events(claim.id)
-        and not claim.reporting.get("delivery_failures")
+        and idle_and_reported(store, claim)
         and not sync_pending(store, claim, client, cache)
     )
 
@@ -125,15 +144,10 @@ def release_due(
     )
 
 
-def expiry_published(claim: Claim) -> bool:
-    events = claim.reporting.get("events")
-    if not isinstance(events, Mapping):
-        return False
+def review_command_published(claim: Claim) -> bool:
     return any(
-        key.endswith(":review-command")
-        and isinstance(value, Mapping)
-        and bool(cast(Mapping[str, object], value).get("comment_id"))
-        for key, value in cast(Mapping[str, object], events).items()
+        key.endswith(":review-command") and bool(mapping(value).get("comment_id"))
+        for key, value in mapping(claim.reporting.get("events")).items()
     )
 
 
@@ -147,7 +161,7 @@ def sweep(
     now: datetime,
     sync_cache: dict[str, bool] | None = None,
 ) -> None:
-    from agent_factory.fly.registry_cleanup import reconcile_claim_image
+    from agent_factory.fly.registry_cleanup import image_deleted, reconcile_claim_image
 
     sync_cache = sync_cache if sync_cache is not None else {}
     registry_cache: dict[str, dict[str, str]] = {}
@@ -157,9 +171,7 @@ def sweep(
             continue
         try:
             claim = store.get_claim(saved.id) or saved
-            if any(
-                run.status in NONTERMINAL_RUN_STATUSES for run in store.runs_for_claim(claim.id)
-            ):
+            if not claim_is_idle(store, claim):
                 continue
             since = terminal_time(store, claim)
             store.clear_delivered_failures(saved.id)
@@ -170,15 +182,15 @@ def sweep(
             status = seen.get(claim.id)
             due = release_due(claim, status, since, now, local.limits.unreviewed_retention_days)
             if due and claim.cleanup.get("complete") is not True:
-                if claim.kind == "eval" and claim.lifecycle == "settled":
-                    events = claim.reporting.get("events")
-                    event_values: Mapping[str, object] = (
-                        cast(Mapping[str, object], events) if isinstance(events, Mapping) else {}
-                    )
-                    if expiry_published(claim) and "review-expired" not in event_values:
-                        message = handler.expiry_message(claim)
-                        store.record_event(claim.id, "review-expired", message)
-                        claim = store.get_claim(claim.id) or claim
+                if (
+                    claim.kind == "eval"
+                    and claim.lifecycle == "settled"
+                    and review_command_published(claim)
+                    and "review-expired" not in mapping(claim.reporting.get("events"))
+                ):
+                    message = handler.expiry_message(claim)
+                    store.record_event(claim.id, "review-expired", message)
+                    claim = store.get_claim(claim.id) or claim
                 if store.pending_events(claim.id):
                     controller.deliver_reports(claim.id)
                     claim = store.get_claim(claim.id) or claim
@@ -202,15 +214,9 @@ def sweep(
                     registry_client = FlyMachinesClient(local.fly.app, local.fly.token_file)
                 reconcile_claim_image(store, claim, registry_client, now, registry_cache)
             claim = store.get_claim(saved.id) or claim
-            retention_state = claim.cleanup.get("retention")
-            registry_state = claim.cleanup.get("registry")
-            pruned = isinstance(retention_state, Mapping) and bool(
-                cast(Mapping[str, object], retention_state).get("pruned_at")
-            )
-            images_done = not isinstance(registry_state, Mapping) or all(
-                isinstance(item, Mapping)
-                and bool(cast(Mapping[str, object], item).get("deleted_at"))
-                for item in cast(Mapping[str, object], registry_state).values()
+            pruned = bool(mapping(claim.cleanup.get("retention")).get("pruned_at"))
+            images_done = all(
+                image_deleted(item) for item in mapping(claim.cleanup.get("registry")).values()
             )
             if claim.cleanup.get("complete") is True and pruned and images_done:
                 store.set_cleanup(claim.id, {**claim.cleanup, "sweep_complete": True})
