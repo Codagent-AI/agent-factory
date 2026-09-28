@@ -70,6 +70,12 @@ steps:
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
     skip_if: 'sh: test ! -s {{artifact_dir}}/merge-stop.json || test -s {{artifact_dir}}/review-outcome.json'
+  # Later skip_if conditions read changes_needed even when a merge stop skips triage, and
+  # Agent Runner rejects an undefined variable.
+  - id: seed-changes-needed
+    command: printf ''
+    capture: changes_needed
+
   - id: triage
     session: lead-agent
     mode: autonomous
@@ -145,6 +151,19 @@ steps:
     capture: changes_needed
     skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input || test -s {{artifact_dir}}/review-outcome.json'
 
+  # The round validates and pushes when triage asks for a change, or when a feature
+  # round's base merge added commits (merged, or conflict and resolved).
+  - id: decide-push
+    command: |
+      if test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = needs-input; then
+        printf false
+      elif test "{{changes_needed}}" = true || test "{{merge_status}}" = merged || test "{{merge_status}}" = conflict; then
+        printf true
+      else
+        printf false
+      fi
+    capture: push_round
+
   # Finalization may rewrite the description; a feature PR's annotated one is restored.
   - id: save-description
     script: review-description.sh
@@ -152,7 +171,7 @@ steps:
       mode: save
       review_file: "{{review_file}}"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = needs-input || { test "{{changes_needed}}" != true && test "{{merge_status}}" != merged && test "{{merge_status}}" != conflict; }'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: implement
@@ -163,7 +182,7 @@ steps:
       implement_plan: "{{changes_needed}}"
       result_path: "{{artifact_dir}}/implement-result.json"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = needs-input || { test "{{changes_needed}}" != true && test "{{merge_status}}" != merged && test "{{merge_status}}" != conflict; }'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: restore-description
@@ -172,7 +191,7 @@ steps:
       mode: restore
       review_file: "{{review_file}}"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = needs-input || { test "{{changes_needed}}" != true && test "{{merge_status}}" != merged && test "{{merge_status}}" != conflict; }'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: respond

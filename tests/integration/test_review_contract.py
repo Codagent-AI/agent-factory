@@ -568,18 +568,58 @@ def _review_step(workflow: str, step: str) -> str:
     return workflow.split(f"  - id: {step}\n", 1)[1].split("\n  - id: ", 1)[0]
 
 
+def _render(template: str, evidence: Path, changes: str, merge: str) -> str:
+    return (
+        template.replace("{{artifact_dir}}", str(evidence))
+        .replace("{{changes_needed}}", changes)
+        .replace("{{merge_status}}", merge)
+    )
+
+
+def _push_round(evidence: Path, changes: str, merge: str) -> str:
+    """What the decide-push step captures for these triage and merge results."""
+    import textwrap
+
+    block = _review_step(launch.packaged_workflow_text(launch.REVIEW_CONTRACT), "decide-push")
+    body = block.split("    command: |\n", 1)[1].split("\n    capture:", 1)[0]
+    command = _render(textwrap.dedent(body), evidence, changes, merge)
+    return subprocess.run(["sh", "-c", command], capture_output=True, text=True, check=True).stdout
+
+
 def _review_skips(block: str, evidence: Path, changes: str, merge: str) -> bool:
     import re
 
     line = re.search(r"^    skip_if: 'sh: (.*)'$", block, re.MULTILINE)
     assert line is not None
-    command = (
-        line.group(1)
-        .replace("{{artifact_dir}}", str(evidence))
-        .replace("{{changes_needed}}", changes)
-        .replace("{{merge_status}}", merge)
-    )
+    command = _render(line.group(1), evidence, changes, merge)
+    if "{{push_round}}" in command:
+        command = command.replace("{{push_round}}", _push_round(evidence, changes, merge))
     return subprocess.run(["sh", "-c", command], capture_output=True).returncode == 0
+
+
+def test_review_skip_conditions_read_only_always_defined_variables() -> None:
+    """Agent Runner fails a step whose skip_if names an undefined variable.
+
+    A merge stop skips triage, so every variable a later skip_if reads must be a parameter
+    or the capture of an earlier step that always runs.
+    """
+    import re
+
+    workflow = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    header, _, body = workflow.partition("\nsteps:\n")
+    defined = set(re.findall(r"^  - name: (\S+)$", header.split("\nsessions:", 1)[0], re.M))
+    undefined: dict[str, set[str]] = {}
+    for block in body.split("\n  - id: ")[1:]:
+        step = block.split("\n", 1)[0].strip()
+        skip = re.search(r"^    skip_if: (.*)$", block, re.MULTILINE)
+        if skip is not None:
+            missing = set(re.findall(r"\{\{(\w+)\}\}", skip.group(1))) - defined
+            if missing:
+                undefined[step] = missing
+        capture = re.search(r"^    capture: (\w+)$", block, re.MULTILINE)
+        if capture is not None and skip is None:
+            defined.add(capture.group(1))
+    assert undefined == {}
 
 
 @pytest.mark.parametrize(
