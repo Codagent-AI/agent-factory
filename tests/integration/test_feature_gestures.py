@@ -630,7 +630,7 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -640,6 +640,12 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
     store.finish_run(run.id, execution_status="failed", result=result)
 
     class Workspace(PullRequestWorkspace):
+        def fetch_mirror(self, repository: str, token: str | None) -> None:
+            pass
+
+        def resolve_mirror(self, repository: str, branch: str) -> str:
+            return "a" * 40
+
         def feature_checkpoint(
             self,
             repository: str,
@@ -720,7 +726,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": base_sha, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -825,7 +831,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": target_head, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -916,7 +922,7 @@ def test_int006_failed_claim_continues_prior_planned_branch(
         "feature",
         "fp",
         {
-            "target": {"repository": "example/work"},
+            "target": {"repository": "example/work", "branch": "master"},
             "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
             "roles": {},
         },
@@ -936,6 +942,12 @@ def test_int006_failed_claim_continues_prior_planned_branch(
     current = store.supersede_and_create(previous.id, draft)
 
     class Workspace(PullRequestWorkspace):
+        def fetch_mirror(self, repository: str, token: str | None) -> None:
+            pass
+
+        def resolve_mirror(self, repository: str, branch: str) -> str:
+            return "a" * 40
+
         def feature_checkpoint(
             self,
             repository: str,
@@ -1052,3 +1064,36 @@ def test_int006_feature_review_admission_names_pr_and_feedback(
         "https://github.com/example/work/pull/7" in event.body and "comment-9" in event.body
         for event in store.pending_events(claim.id)
     )
+
+
+def test_checkpoint_ignores_later_target_history_after_merge(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    admission = _git("rev-parse", "HEAD", cwd=work)
+    main = _git("branch", "--show-current", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "-b", "claim", cwd=work)
+    (work / "plan").write_text("plan")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "plan", "-m", "Factory-Checkpoint: planned", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", main, cwd=work)
+    (work / "other").write_text("other")
+    _git("add", "other", cwd=work)
+    _git("commit", "-m", "other feature", "-m", "Factory-Checkpoint: archived", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "claim", cwd=work)
+    _git("merge", "--no-ff", "--no-edit", main, cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+    assert workspace.feature_checkpoint("example/work", "claim", base_sha=admission) == "planned"

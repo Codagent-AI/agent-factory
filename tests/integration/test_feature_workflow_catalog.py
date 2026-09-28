@@ -93,7 +93,8 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     ):
         assert re.search(rf"- id: {step}\n(?:(?!  - id:).)*factory-resume-skip.sh", define, re.S)
     assert "tools: [call_agent]" not in feature + define
-    assert "agent-validator" not in feature + define
+    assert "agent-validator run" in feature
+    assert "agent-validator" not in define
     assert "capture: annotation_status" in feature
     assert 'annotation_status: "{{annotation_status}}"' in feature
     assert "mark-annotation-failed" in feature

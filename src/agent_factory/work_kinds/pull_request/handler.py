@@ -603,7 +603,14 @@ class PullRequestHandler:
         prior_report: Path | None = None
         resume_fallback = ""
         continuation_head = claim.preparation.get("continuation_head")
+        base_head = ""
         if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+            branch_name = target.get("branch")
+            if not isinstance(branch_name, str):
+                raise ReadinessError("claim has no recorded target branch")
+            token = self._installation_token() if self._installation_token else None
+            self._workspace.fetch_mirror(repository, token)
+            base_head = self._workspace.resolve_mirror(repository, branch_name)
             own_branch = resume.get("branch")
             previous = next(
                 (
@@ -618,6 +625,13 @@ class PullRequestHandler:
             latest = own_runs[-1] if own_runs else None
             last_result: Mapping[str, object] = latest.result if latest else {}
             if isinstance(own_branch, str):
+                if (
+                    isinstance(continuation_head, str)
+                    and continuation_head
+                    and resume.get("head_sha") == continuation_head
+                    and previous is not None
+                ):
+                    prior_branch = self.branch_name(previous)
                 token = self._installation_token() if self._installation_token else None
                 base_sha = revisions.get("target")
                 checkpoint = self._workspace.feature_checkpoint(
@@ -701,6 +715,7 @@ class PullRequestHandler:
             "prior_report": str(prior_report) if prior_report else "",
             "resume_fallback": resume_fallback,
             "continuation_head": continuation_head if isinstance(continuation_head, str) else "",
+            "base_head": base_head,
         }
         self._store.set_preparation(
             claim.id,
@@ -734,6 +749,15 @@ class PullRequestHandler:
         # The PR head was pushed after the mirror was last fetched for this claim.
         token = self._installation_token() if self._installation_token is not None else None
         self._workspace.fetch_mirror(repository, token)
+        review_payload = dict(review)
+        if self.kind == "feature":
+            branch_name = target.get("branch")
+            if not isinstance(branch_name, str):
+                raise ReadinessError("claim has no recorded target branch")
+            review_payload["base_head"] = self._workspace.resolve_mirror(repository, branch_name)
+            review_payload["target_at_admission"] = mapping(claim.frozen_spec.get("revisions")).get(
+                "target", ""
+            )
         clones = self._workspace.prepare_review_clones(
             claim.id,
             attempt,
@@ -749,7 +773,7 @@ class PullRequestHandler:
                 Path(clones["runner"]), launch.REVIEW_CONTRACT, self.definition
             )
         launch.check_target_catalog(Path(clones["repo"]))
-        return Preparation(payload={"clones": clones, "attempt": attempt, "review": dict(review)})
+        return Preparation(payload={"clones": clones, "attempt": attempt, "review": review_payload})
 
     def _issue_input(self, claim: Claim) -> dict[str, object]:
         """Current issue fields plus the writer comments a new attempt may rely on."""
@@ -880,6 +904,7 @@ class PullRequestHandler:
                 change_name=launch.feature_change_name(branch),
                 resume_from=str(preparation.payload.get("resume_from", "")),
                 prior_branch=str(preparation.payload.get("prior_branch", "")),
+                base_head=str(preparation.payload.get("base_head", "")),
                 recorded_revisions=mapping(claim.frozen_spec.get("revisions")),
                 validator_checkout=self._local.repositories.agent_validator,
             )
@@ -894,6 +919,10 @@ class PullRequestHandler:
                     start = "starts fresh"
                 if isinstance(fallback, str) and fallback:
                     start += f"; resume point unavailable ({fallback})"
+                base_head = preparation.payload.get("base_head")
+                if (resume_step or prior_branch) and isinstance(base_head, str) and base_head:
+                    target_branch = mapping(claim.frozen_spec.get("target")).get("branch")
+                    start += f"; merges {target_branch}@{base_head[:7]}"
                 self._store.record_event(
                     claim.id,
                     f"feature-admission:{run.id}",

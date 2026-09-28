@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -95,4 +97,98 @@ def test_feature_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     finally:
         if artifact is not None:
             (artifact / "finish").touch()
+        h.store.close()
+
+
+def test_stopped_feature_resolves_new_target_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        fix_cycle, "RUNNER", fix_cycle.RUNNER.replace("fix-outcome.json", "feature-outcome.json")
+    )
+    h = fix_cycle.Harness(tmp_path, factory_owner=False, execution="host")
+    shared = tmp_path / "shared.toml"
+    shared.write_text(
+        shared.read_text()
+        + '\n[feature]\ncontract = "factory-feature/1"\n'
+        + '[feature.defaults]\nlead = "codex:test:high"\n'
+        + 'implementor = "codex:test:high"\ntester = "codex:test:high"\n'
+        + 'crosscheck = "codex:test:high"\n'
+    )
+    h.config.write_text(
+        h.config.read_text().replace(
+            "[credentials]", '[feature]\nexecution = "host"\n[credentials]'
+        )
+    )
+    board = h.state()
+    board["items"][0]["content"]["issueType"]["name"] = "Feature"
+    h.board.write_text(json.dumps(board))
+    first: Path | None = None
+    second: Path | None = None
+    try:
+        h.tick()
+        run = h.store.nonterminal_runs(kind="feature")[0]
+        first = h.wait_started(run)
+        claim = h.store.get_claim(run.claim_id)
+        assert claim is not None
+        revisions = cast(Mapping[str, object], claim.frozen_spec["revisions"])
+        admission_value = revisions["target"]
+        assert isinstance(admission_value, str)
+        admission = admission_value
+        branch = f"factory/feature-1-{claim.id[:8]}"
+        work = tmp_path / "work"
+        fix_cycle._git(work, "checkout", "-b", branch, str(admission))
+        (work / "plan.txt").write_text("draft plan\n")
+        fix_cycle._commit(work, "plan")
+        fix_cycle._git(work, "push", "-q", "origin", branch)
+        fix_cycle._git(work, "checkout", "main")
+        h.finish(
+            first,
+            json.dumps(
+                {
+                    "contract": "factory-feature/1",
+                    "outcome": "needs-input",
+                    "stopped_step": "design",
+                    "questions": ["Which direction?"],
+                    "reasons": ["Which direction?"],
+                    "direction_summary": "Drafted design.",
+                    "branch": branch,
+                }
+            ),
+        )
+        h.tick()
+        (work / "target-fix.txt").write_text("new main work\n")
+        moved = fix_cycle._commit(work, "new main work")
+        fix_cycle._git(work, "push", "-q", "origin", "main")
+        board = h.state()
+        board["comments"].append(
+            {
+                "id": 950,
+                "body": "Use the proposed direction",
+                "user": {"login": "writer"},
+                "created_at": "2099-01-01T00:00:00Z",
+            }
+        )
+        h.board.write_text(json.dumps(board))
+        h.tick()
+        retry = h.store.nonterminal_runs(kind="feature")[0]
+        second = h.wait_started(retry)
+        args = json.loads((second / "runner-args.json").read_text())
+        assert "resume_from=design" in args
+        assert f"base_head={moved}" in args
+        provenance = json.loads((second / "host-provenance.json").read_text())
+        assert provenance["target_at_admission"] == admission
+        assert provenance["base_head"] == moved
+        resumed_claim = h.store.get_claim(claim.id)
+        assert resumed_claim is not None
+        assert resumed_claim.frozen_spec["revisions"] == revisions
+        assert any(
+            f"merges main@{moved[:7]}" in body
+            for body in [*h.comments(), *(event.body for event in h.store.pending_events(claim.id))]
+        )
+        assert fix_cycle.FIX_TOKEN not in json.dumps(retry.plan)
+    finally:
+        for artifact in (first, second):
+            if artifact is not None:
+                (artifact / "finish").touch()
         h.store.close()

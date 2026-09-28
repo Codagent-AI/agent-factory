@@ -86,6 +86,13 @@ validator's end-to-end tests. Commit any pin through a PR.
 - Role models are `[eval.defaults]` and `[fix.defaults]` in
   `config/codagent.toml`. Each claim freezes its revisions and roles at
   admission, so later edits affect only new claims.
+  Every feature resume merges the current target branch while its admission
+  target, Runner, and Skills revisions stay frozen. A conflict that cannot be
+  resolved stops with `needs-input` and names the files; answer in a writer
+  comment after fixing the target branch or committing to the claim branch.
+  Rolling back to a release without first-parent checkpoint reading may choose
+  a checkpoint from merged target history; inspect recently resumed claims and
+  re-admit affected ones before rollback.
 - The eval judge model is not set here. Agent Evals uses the Codex CLI default
   (`codex-default`), so it changes with the CLI version.
 

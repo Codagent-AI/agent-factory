@@ -46,7 +46,7 @@ Path(sys.argv[2]).write_text(json.dumps({
     'stopped_step': 'archive',
     'reasons': [explanation],
     'questions': [explanation],
-    'direction_summary': "Implementation is complete and pushed. Archiving is blocked by the cause above. This claim's target commit is frozen, so a fix merged to main does not reach it: commit the fix to this branch, then comment on the issue to resume at archive.",
+    'direction_summary': "Implementation is complete and pushed. Archiving is blocked by the cause above. Fix it on the target branch, or commit the fix to this branch, then comment on the issue: the next attempt merges the target branch and resumes at archive.",
     'branch': sys.argv[3],
 }) + '\n')
 PY

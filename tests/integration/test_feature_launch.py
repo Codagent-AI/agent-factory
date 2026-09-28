@@ -66,6 +66,7 @@ def test_feature_host_command_starts_fresh_with_change_name() -> None:
         "--param change_name=feature-42-abcd1234",
         "--param resume_from=''",
         "--param prior_branch=''",
+        "--param base_head=''",
         "--param contract_version=factory-feature/1",
         "--session-dir /evidence/agent-runner-session",
     ):

@@ -136,6 +136,7 @@ def test_host_wrapper_runs_the_review_workflow_with_its_input_file(tmp_path: Pat
     assert f"--param review_file={evidence / 'input' / 'review.json'}" in exec_line
     assert f"--param artifact_dir={evidence}" in exec_line
     assert "--param contract_version=factory-review/1" in exec_line
+    assert "--param base_head=" not in exec_line
 
 
 def test_container_script_runs_the_review_workflow_from_the_artifacts_mount() -> None:
@@ -378,3 +379,100 @@ def test_unreadable_gh_output_is_recorded_as_a_failed_restore(tmp_path: Path) ->
     )
     assert result.returncode != 0
     assert (tmp_path / "description-restore-failed").is_file()
+
+
+@pytest.mark.parametrize(
+    ("validator", "ci", "expected"),
+    [
+        ("passed", "passed", "pull-request"),
+        ("failed", "", "failed"),
+        ("passed", "failed", "failed"),
+    ],
+)
+def test_merge_only_review_maps_implementation_result(
+    tmp_path: Path, validator: str, ci: str, expected: str
+) -> None:
+    result_path = tmp_path / "implement-result.json"
+    result_path.write_text(
+        json.dumps({"validator": {"status": validator}, "ci": {"status": ci}, "head_sha": "abc"})
+    )
+    outcome_path = tmp_path / "review-outcome.json"
+    done = _script(
+        "record-review-outcome.sh",
+        {
+            "decision": json.dumps(
+                {"needs_input": [], "items": [{"id": "t1", "decision": "answer"}]}
+            ),
+            "changes_needed": "false",
+            "merge_status": "merged",
+            "result_path": str(result_path),
+            "outcome_path": str(outcome_path),
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["outcome"] == expected
+    assert outcome["answered"] == ["t1"]
+
+
+def test_review_merge_no_base_is_a_noop(tmp_path: Path) -> None:
+    from tests.integration.test_feature_workflow_scripts import repository, run
+
+    repo, _ = repository(tmp_path)
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": "fix"}))
+    evidence = tmp_path / "evidence"
+    result = run(
+        str(Path(launch.__file__).parent / "workflow/review-merge-base.sh"),
+        str(review),
+        str(evidence),
+        cwd=repo,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "none"
+    assert not (evidence / "base-merge.json").exists()
+
+
+def test_review_merge_stop_does_not_push_branch(tmp_path: Path) -> None:
+    from tests.integration.test_feature_workflow_scripts import git, repository, run
+
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "review")
+    (repo / "choice.txt").write_text("review\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "review change")
+    previous = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-u", "origin", "review")
+    git(repo, "checkout", "main")
+    (repo / "choice.txt").write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base change")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "review")
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": "feature", "base_head": base}))
+    evidence = tmp_path / "evidence"
+    script = str(Path(launch.__file__).parent / "workflow/review-merge-base.sh")
+    merged = run(script, str(review), str(evidence), cwd=repo)
+    assert merged.returncode == 0, merged.stderr
+    assert merged.stdout == "conflict"
+    (evidence / "merge-stop.json").write_text(
+        json.dumps(
+            {
+                "questions": ["Choose a value"],
+                "direction_summary": "Need direction",
+            }
+        )
+    )
+    stopped = run(
+        str(Path(launch.__file__).parent / "workflow/record-review-merge-stop.sh"),
+        str(evidence),
+        cwd=repo,
+    )
+    assert stopped.returncode == 0, stopped.stderr
+    assert git(repo, "rev-parse", "HEAD") == previous
+    assert git(remote, "rev-parse", "refs/heads/review") == previous
+    outcome = json.loads((evidence / "review-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["answered"] == outcome["changed"] == []
+    assert "choice.txt" in outcome["reasons"][0]

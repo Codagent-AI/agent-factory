@@ -1,4 +1,4 @@
-- [ ] Merge the target branch's current head into a feature claim's branch on every resume, continuation, and feature review round
+- [x] Merge the target branch's current head into a feature claim's branch on every resume, continuation, and feature review round
 
 ## Task: Merge the current target branch on every feature resume
 

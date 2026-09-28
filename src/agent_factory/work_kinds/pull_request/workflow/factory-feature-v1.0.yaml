@@ -17,6 +17,8 @@ params:
     default: ""
   - name: prior_branch
     default: ""
+  - name: base_head
+    default: ""
 sessions:
   - name: lead-agent
     agent: lead
@@ -47,8 +49,38 @@ steps:
       prior_branch: "{{prior_branch}}"
       artifact_dir: "{{artifact_dir}}"
       change_name: "{{change_name}}"
+      base_head: "{{base_head}}"
     capture: effective_resume
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  - id: resolve-merge
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -s {{artifact_dir}}/merge-conflict.json'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`. Read
+      {{artifact_dir}}/merge-conflict.json and {{issue_file}}, including eligible
+      answers to prior merge questions. Resolve every conflict while keeping both
+      sides' intent. Run agent-validator run, then complete the merge with
+      git commit --no-edit. If you cannot resolve it confidently, write
+      {{artifact_dir}}/merge-stop.json with non-empty questions and
+      direction_summary, and leave the merge in progress.
+  - id: check-merge
+    script: check-merge.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -s {{artifact_dir}}/merge-conflict.json || test -s {{artifact_dir}}/merge-stop.json'
+  - id: record-merge-stop
+    script: record-merge-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      branch_name: "{{branch_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -s {{artifact_dir}}/merge-stop.json'
+  - id: continue-change
+    script: continue-change.sh
+    script_inputs:
+      prior_branch: "{{prior_branch}}"
+      change_name: "{{change_name}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test -z "{{prior_branch}}"'
   - id: create-change
     command: mkdir -p "openspec/changes/{{change_name}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'

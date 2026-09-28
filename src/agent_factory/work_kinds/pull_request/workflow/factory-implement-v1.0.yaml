@@ -9,6 +9,9 @@ params:
     required: true
   - name: result_path
     required: true
+  - name: implement_plan
+    required: false
+    default: "true"
   - name: artifact_dir
     required: false
     default: /artifacts
@@ -31,6 +34,7 @@ steps:
     capture: ci_status
 
   - id: implement-plan
+    skip_if: 'sh: test "{{implement_plan}}" = false'
     session: implementor-agent
     mode: autonomous
     prompt: |

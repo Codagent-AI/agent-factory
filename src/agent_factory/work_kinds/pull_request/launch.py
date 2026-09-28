@@ -27,6 +27,10 @@ REVIEW_WORKFLOW_NAME = "factory-review"
 REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
 IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
 REVIEW_WORKFLOW_SCRIPTS = (
+    "merge-base.sh",
+    "review-merge-base.sh",
+    "check-merge.sh",
+    "record-review-merge-stop.sh",
     "record-review-triage.sh",
     "record-review-outcome.sh",
     "review-description.sh",
@@ -737,6 +741,7 @@ def host_script(
     change_name: str = "",
     resume_from: str = "",
     prior_branch: str = "",
+    base_head: str = "",
 ) -> str:
     """The bash wrapper that is the host plan's argv target.
 
@@ -762,6 +767,7 @@ def host_script(
             f" --param change_name={shlex.quote(change_name or feature_change_name(branch))}"
             f" --param resume_from={shlex.quote(resume_from)}"
             f" --param prior_branch={shlex.quote(prior_branch)}"
+            f" --param base_head={shlex.quote(base_head)}"
         )
     lines = [
         "#!/bin/bash",
@@ -918,6 +924,7 @@ def write_host_provenance(
     version: str,
     recorded_revisions: Mapping[str, object] | None = None,
     validator: Mapping[str, str] | None = None,
+    base_head: str = "",
 ) -> Path:
     """Record at plan time what will execute, so the file exists however the attempt ends."""
     payload: dict[str, object] = {
@@ -926,6 +933,8 @@ def write_host_provenance(
         "runner_version": version,
         "session_dir": str(evidence / SESSION_DIR_NAME),
         "recorded_revisions": dict(recorded_revisions or {}),
+        "target_at_admission": (recorded_revisions or {}).get("target", ""),
+        "base_head": base_head,
         "recorded_revisions_executed": False,
         "note": host_note((validator or {}).get("validator_commit", "unavailable")),
         **dict(validator or {}),
@@ -947,6 +956,7 @@ def build_host_plan(
     change_name: str = "",
     resume_from: str = "",
     prior_branch: str = "",
+    base_head: str = "",
     recorded_revisions: Mapping[str, object] | None = None,
     runner_executable: str | None = None,
     validator_checkout: Path | None = None,
@@ -968,6 +978,7 @@ def build_host_plan(
             change_name=change_name,
             resume_from=resume_from,
             prior_branch=prior_branch,
+            base_head=base_head,
             recorded_revisions=recorded_revisions,
             runner_executable=runner_executable,
             validator_checkout=validator_checkout,
@@ -992,6 +1003,7 @@ def _assemble_host_plan(
     change_name: str,
     resume_from: str,
     prior_branch: str,
+    base_head: str,
     recorded_revisions: Mapping[str, object] | None,
     runner_executable: str | None,
     validator_checkout: Path | None,
@@ -1037,6 +1049,7 @@ def _assemble_host_plan(
             change_name=change_name,
             resume_from=resume_from,
             prior_branch=prior_branch,
+            base_head=base_head,
         ),
         0o700,
     )
@@ -1048,6 +1061,7 @@ def _assemble_host_plan(
         runner=runner,
         version=version,
         recorded_revisions=recorded_revisions,
+        base_head=base_head,
         validator=validator,
     )
     session_dir = evidence / SESSION_DIR_NAME
