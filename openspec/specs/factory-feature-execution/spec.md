@@ -186,7 +186,7 @@ Related orange assumptions SHALL be grouped into one item per topic that cites t
 
 ### Requirement: Finalize the feature pull request
 
-After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue without a closing keyword and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
+After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue with a closing keyword, so GitHub links the pull request to the issue and closes the issue when the pull request merges, and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
 
 #### Scenario: Finalize a passing pull request
 
