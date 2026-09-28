@@ -23,5 +23,6 @@ conflict = json.loads((artifacts / 'merge-conflict.json').read_text())
 stop = json.loads((artifacts / 'merge-stop.json').read_text())
 files = ', '.join(conflict['conflicted'])
 questions = [f"Merging {conflict['base_head'][:7]} conflicts in: {files}", *stop['questions']]
-(artifacts / 'feature-outcome.json').write_text(json.dumps({'contract': 'factory-feature/1', 'outcome': 'needs-input', 'stopped_step': conflict['resume_from'], 'questions': questions, 'reasons': questions, 'direction_summary': stop['direction_summary'], 'branch': branch}) + '\n')
+stopped_step = conflict.get('resume_from') or 'implement'
+(artifacts / 'feature-outcome.json').write_text(json.dumps({'contract': 'factory-feature/1', 'outcome': 'needs-input', 'stopped_step': stopped_step, 'questions': questions, 'reasons': questions, 'direction_summary': stop['direction_summary'], 'branch': branch}) + '\n')
 PY

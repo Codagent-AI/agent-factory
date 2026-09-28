@@ -203,8 +203,9 @@ steps:
       stating that acceptance was not re-run and its evidence still describes
       the accepted commit. If {{artifact_dir}}/description-restore-failed exists,
       also say in that comment that the description could not be restored, quoting it.
-      For a feature merge, fetch origin {{branch_name}} and confirm the recorded
-      merge_commit is an ancestor of origin/{{branch_name}}. Only then name the
+      For a feature merge, run git fetch origin {{branch_name}} and confirm the recorded
+      merge_commit is an ancestor of origin/{{branch_name}} with
+      git merge-base --is-ancestor. Only then name the
       exact pushed merge SHA with a GitHub commit link in the completion comment.
       Link the acceptance evidence section of the PR description, and explain
       this merge was added after acceptance and is not covered by that evidence.

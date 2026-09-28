@@ -139,3 +139,41 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert report.read_text() == "preserve me"
+
+
+def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    ids = re.findall(r"^  - id: ([\w-]+)$", text, re.MULTILINE)
+    ordered = (
+        "prepare-branch",
+        "resolve-merge",
+        "check-merge",
+        "record-merge-stop",
+        "continue-change",
+        "create-change",
+    )
+    indexes = [ids.index(step) for step in ordered]
+    assert indexes == sorted(indexes)
+    assert re.search(r"  - name: base_head\n    default: \"\"", text)
+    for name in ordered[1:-1]:
+        block = text.split(f"  - id: {name}\n", 1)[1].split("\n  - id: ", 1)[0]
+        assert "skip_if:" in block
+        assert "feature-outcome.json" in block
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+    staged = launch.stage_workflow(tmp_path, "factory-feature/1", FEATURE)
+    for name in (
+        "merge-base.sh",
+        "continue-change.sh",
+        "check-merge.sh",
+        "record-merge-stop.sh",
+        "review-merge-base.sh",
+        "record-review-merge-stop.sh",
+    ):
+        assert name in launch.STAGED_FILES
+        path = staged / name
+        assert path.is_file()
+        assert path.stat().st_mode & 0o111
+    assert "{{base_head}}" in text
