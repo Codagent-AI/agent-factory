@@ -299,5 +299,3 @@ Under `fly` execution, when a claim's roles use Claude, the factory SHALL determ
 
 - **WHEN** no Claude token is in the suite environment file and neither a readable Keychain item nor the credential file is available
 - **THEN** doctor fails the eval-fly group naming the Claude login, eval admission is held with the same explanation before any Machine is created, and no attempt or retry is consumed
-
-## MODIFIED Requirements
