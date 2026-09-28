@@ -50,12 +50,12 @@ validator_build() {
     || die "could not read the Agent Validator revision; the factory stays paused"
   backup=$(mktemp -d "${TMPDIR:-/tmp}/agent-validator-build.XXXXXX") \
     || die "could not prepare an Agent Validator build backup; the factory stays paused"
-  for output in dist node_modules skills contracts; do
-    if [[ -e $validator/$output || -L $validator/$output ]]; then
-      cp -a "$validator/$output" "$backup/$output" \
-        || { rm -rf "$backup"; die "could not back up Agent Validator $output; the factory stays paused"; }
-    fi
-  done
+  # The built executable is the only artifact a failed build must restore. Bun
+  # can recreate dependencies and generated files on the next attempt.
+  if [[ -e $validator/dist || -L $validator/dist ]]; then
+    cp -a "$validator/dist" "$backup/dist" \
+      || { rm -rf "$backup"; die "could not back up Agent Validator dist; the factory stays paused"; }
+  fi
   "$(dirname "${BASH_SOURCE[0]}")/update-validator.sh" "$validator" || update_status=$?
   case $update_status in
     0) ;;
@@ -63,17 +63,13 @@ validator_build() {
     *) rm -rf "$backup"; die "could not update Agent Validator in $validator; the factory stays paused" ;;
   esac
   if ! (cd "$validator" && bun install --frozen-lockfile && bun run build:local); then
-    for output in dist node_modules skills contracts; do
-      rm -rf "$validator/$output"
-    done
-    for output in dist node_modules skills contracts; do
-      if [[ -e $backup/$output || -L $backup/$output ]]; then
-        mv "$backup/$output" "$validator/$output" \
-          || die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"
-      fi
-    done
+    rm -rf "$validator/dist"
+    if [[ -e $backup/dist || -L $backup/dist ]]; then
+      mv "$backup/dist" "$validator/dist" \
+        || { rm -rf "$backup"; die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
+    fi
     git -C "$validator" reset -q --hard "$old" \
-      || die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"
+      || { rm -rf "$backup"; die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
     rm -rf "$backup"
     die "Agent Validator build failed in $validator; the checkout was rolled back, but the host validator may be broken and must be rebuilt before resuming"
   fi

@@ -73,6 +73,9 @@ def resolve(clone: Path, ref: str) -> tuple[str, ...]:
         "https://github.com/Codagent-AI/agent-validator.git",
         "git@github.com:Codagent-AI/agent-validator.git",
         "ssh://git@github.com/Codagent-AI/agent-validator.git",
+        "https://user@github.com/Codagent-AI/agent-validator.git",
+        "https://x-access-token:secret@github.com/Codagent-AI/agent-validator.git",
+        "ssh://git@github.com:22/Codagent-AI/agent-validator.git",
     ],
 )
 def test_validator_source_normalizes_github_origins(tmp_path: Path, origin: str) -> None:

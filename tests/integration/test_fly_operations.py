@@ -326,6 +326,25 @@ def test_bad_host_codex_login_holds_eval_under_fly_without_probing_docker(site: 
     assert not any("Docker" in item.name for item in failures)
 
 
+def test_missing_validator_checkout_does_not_hold_existing_fly_claims(site: Site) -> None:
+    config = site.config(evals="fly", fixes="host")
+    shared = site.shared()
+    handler = EvalHandler.from_config(shared, config)
+    checkout = Diagnostic(
+        "Agent Validator checkout", False, "missing", "clone it", group="eval-fly"
+    )
+
+    failures = runtime._kind_failures(  # pyright: ignore[reportPrivateUsage]
+        handler,
+        config,
+        shared,
+        [checkout],
+        lambda: (_ for _ in ()).throw(AssertionError("Docker memory probe ran")),
+    )
+
+    assert failures == []
+
+
 # -- status --------------------------------------------------------------------
 
 

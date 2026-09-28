@@ -241,20 +241,6 @@ def cycle(state: Path, config_path: Path) -> None:
             if not ready:
                 continue
             if not kind_ready(handler):
-                validator_failure = next(
-                    (
-                        diagnostic
-                        for diagnostic in kind_failures(handler)
-                        if diagnostic.name == "Agent Validator checkout"
-                        and not diagnostic.available
-                    ),
-                    None,
-                )
-                if validator_failure is not None:
-                    controller.report_request_readiness(
-                        snapshot, f"Agent Validator checkout: {validator_failure.detail}"
-                    )
-                    client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 continue
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
@@ -472,7 +458,13 @@ def _kind_failures(
             "eval-fly" if getattr(local, "eval_execution", "docker") == "fly" else "eval-sandbox"
         )
         failures = [
-            d for d in diagnostics if d.group in {"shared", "eval", mode_group} and not d.available
+            d
+            for d in diagnostics
+            if d.group in {"shared", "eval", mode_group}
+            and not d.available
+            # This checkout is needed only to freeze a new Fly claim. Existing claims
+            # already carry their revisions and may launch without the checkout.
+            and d.name != "Agent Validator checkout"
         ]
         if getattr(local, "eval_execution", "docker") == "fly":
             mismatch = next(

@@ -636,7 +636,11 @@ def validator_provenance(checkout: Path | None) -> dict[str, str]:
             result = subprocess.run(
                 [found, "--version"], capture_output=True, text=True, timeout=15, check=False
             )
-            version = (result.stdout or result.stderr).strip() or "unavailable"
+            version = (
+                (result.stdout or result.stderr).strip() or "unavailable"
+                if result.returncode == 0
+                else f"unavailable (exit {result.returncode})"
+            )
         except (OSError, subprocess.TimeoutExpired):
             pass
     commit = "unavailable"

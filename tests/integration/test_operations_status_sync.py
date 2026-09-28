@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -72,20 +74,71 @@ def test_status_shows_eval_slot_holder_and_fix_slot_free(tmp_path: Path) -> None
 
 
 def test_status_counts_saved_host_backends_and_unplanned_runs(tmp_path: Path) -> None:
-    store = ClaimStore(tmp_path / "state.sqlite3")
+    state = tmp_path / "state.sqlite3"
+    config = tmp_path / "local.toml"
+    config.write_text(
+        f'''shared_config = "{tmp_path / "shared.toml"}"
+storage_root = "{tmp_path}"
+[repositories]
+agent_evals = "{tmp_path / "evals"}"
+agent_runner = "{tmp_path / "runner"}"
+agent_skills = "{tmp_path / "skills"}"
+[schedule]
+timezone = "UTC"
+poll_minutes = 5
+start_hour = 0
+stop_hour = 0
+[limits]
+minimum_free_gib = 0
+inactivity_seconds = 1
+execution_seconds = 1
+total_seconds = 1
+codex_reset_fallback_seconds = 1
+[credentials]
+github_app_key = "{tmp_path / "key"}"
+suite_environment = "{tmp_path / "environment"}"
+[fix]
+execution = "docker"
+'''
+    )
+    store = ClaimStore(state)
     fix = store.create_claim(ClaimDraft("example/work", 8, "I8", "P8", "fix", "fp", {}))
     host = store.reserve_run(fix.id, "fix", reason="initial", evidence_path="/tmp/host")
     store.configure_run(host.id, plan={"ownership_hints": {"backend": "host"}}, limits={})
+    store.mark_running(host.id, {})
     feature = store.create_claim(ClaimDraft("example/work", 9, "I9", "P9", "feature", "fp", {}))
     pending = store.reserve_run(
         feature.id, "feature", reason="initial", evidence_path="/tmp/pending"
     )
     eval_claim = store.create_claim(ClaimDraft("example/evals", 10, "I10", "P10", "eval", "fp", {}))
-    store.reserve_run(eval_claim.id, "rep-1", reason="initial", evidence_path="/tmp/eval")
-    assert "host attempts: 2" in status(store)
+    fly = store.reserve_run(eval_claim.id, "rep-1", reason="initial", evidence_path="/tmp/eval")
+    store.configure_run(fly.id, plan={"ownership_hints": {"backend": "fly"}}, limits={})
+    store.mark_running(fly.id, {})
+    store.close()
+    command = [
+        sys.executable,
+        "-m",
+        "agent_factory.cli",
+        "--config",
+        str(config),
+        "--state",
+        str(state),
+        "status",
+    ]
+    first = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    assert "host attempts: 2" in first
+    assert "eval slot: example/evals#10 rep-1 (running)" in first
+    assert "fix slot: example/work#8 fix (running)" in first
+    assert "feature slot: example/work#9 feature (reserved)" in first
+    store = ClaimStore(state)
     store.finish_run(host.id, execution_status="completed", result={})
     store.finish_run(pending.id, execution_status="completed", result={})
-    assert "host attempts: 0" in status(store)
+    store.close()
+    second = subprocess.run(command, capture_output=True, text=True, check=True).stdout
+    assert "host attempts: 0" in second
+    assert "eval slot: example/evals#10 rep-1 (running)" in second
+    assert "fix slot: free" in second
+    assert "feature slot: free" in second
 
 
 def test_status_shows_blocked_fix_claim_with_decline_reason(tmp_path: Path) -> None:

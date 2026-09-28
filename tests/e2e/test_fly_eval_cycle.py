@@ -507,6 +507,7 @@ def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -
         )
     )
     factory.store.set_claim_lifecycle(claim.id, "active", {})
+    (root / "agent-validator").rename(root / "validator-unavailable")
     factory.cli("tick")
     run = factory.active()
     _wait(lambda: "machine-1" in factory.api.machines, factory)
@@ -522,6 +523,7 @@ def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -
     saved = factory.store.get_claim(claim.id)
     assert saved is not None
     assert "validator" not in cast(dict[str, object], saved.frozen_spec["revisions"])
+    assert not any("Waiting for revision readiness" in comment for comment in factory.comments())
 
 
 def _identity_pid(identity: dict[str, object]) -> int | None:

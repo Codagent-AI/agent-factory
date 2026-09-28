@@ -133,8 +133,11 @@ if [[ $build_runner == true ]]; then
   say "built Agent Runner at $(git -C "$runner" rev-parse --short HEAD) in $runner"
 fi
 if [[ $build_validator == true ]]; then
-  validator_status=$("$executable" --config "$config" status) || validator_status=
-  validator_build "$validator_status"
+  if validator_status=$("$executable" --config "$config" status); then
+    validator_build "$validator_status"
+  else
+    warn "could not read factory status with the new release; skipping the Agent Validator update and build"
+  fi
 fi
 
 # Point the LaunchAgent and the local configuration at the release. The plist gets the

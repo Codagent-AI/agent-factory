@@ -76,6 +76,12 @@ def test_validator_provenance_expands_reported_build_commit(
     }
     executable.write_text("#!/bin/sh\necho 1.14.0\n")
     assert launch.validator_provenance(checkout)["validator_commit"] == "unavailable"
+    executable.write_text("#!/bin/sh\necho 'Cannot find module' >&2\nexit 7\n")
+    assert launch.validator_provenance(checkout) == {
+        "validator_executable": str(executable.resolve()),
+        "validator_version": "unavailable (exit 7)",
+        "validator_commit": "unavailable",
+    }
 
 
 TOKEN = "dummy-fix-token"

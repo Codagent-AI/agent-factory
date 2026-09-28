@@ -833,9 +833,13 @@ def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tu
     )
     if sources.validator is None:
         return resolved
-    return resolved + (
-        _resolve_revision(sources.validator, str(request.settings["agent_validator_ref"])),
-    )
+    try:
+        validator_sha = _resolve_revision(
+            sources.validator, str(request.settings["agent_validator_ref"])
+        )
+    except ReadinessError as error:
+        raise ReadinessError(f"Agent Validator checkout: {error}") from error
+    return resolved + (validator_sha,)
 
 
 def validator_source_url(checkout: Path) -> str:
@@ -853,14 +857,26 @@ def validator_source_url(checkout: Path) -> str:
         raise ReadinessError(
             f"Cannot read Agent Validator checkout origin at {checkout}"
         ) from error
-    match = re.fullmatch(
-        r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)"
-        r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?",
-        origin,
+    shorthand = re.fullmatch(
+        r"git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", origin
     )
+    try:
+        parsed = urlsplit(origin)
+    except ValueError:
+        raise ReadinessError(
+            "Agent Validator checkout origin is not a GitHub repository the Fly builder can fetch"
+        ) from None
+    path = (
+        re.fullmatch(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", parsed.path)
+        if parsed.scheme in {"https", "ssh"}
+        and parsed.hostname == "github.com"
+        and not parsed.query
+        and not parsed.fragment
+        else None
+    )
+    match = shorthand or path
     if match is None:
         # Keep the actionable scheme/host without leaking embedded credentials.
-        parsed = urlsplit(origin)
         redacted = (
             origin
             if parsed.scheme == "file"
