@@ -1194,11 +1194,11 @@ def test_int006_resume_points_survive_two_target_merges(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("stopped_step", "expected_prior", "expected_resume"),
-    [("implement", True, "implement"), ("preflight", False, "")],
+    ("stopped_step", "expected_resume"),
+    [("implement", "implement"), ("preflight", "")],
 )
 def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
-    tmp_path: Path, stopped_step: str, expected_prior: bool, expected_resume: str
+    tmp_path: Path, stopped_step: str, expected_resume: str
 ) -> None:
     remote = tmp_path / "remote.git"
     _git("init", "--bare", str(remote))
@@ -1310,8 +1310,9 @@ def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
     feature.attach_github(GitHub())  # type: ignore[arg-type]
     feature._issue_input = lambda _claim: {"comments": [{"body": "Resolve choice"}]}  # type: ignore[method-assign]
     prepared = feature.prepare(store.get_claim(current.id) or current)
-    # A preflight stop starts a fresh definition instead of continuing the prior branch.
-    assert prepared.payload["prior_branch"] == (prior_branch if expected_prior else "")
+    # After a preflight stop the definition starts afresh (empty resume point) but still builds
+    # on the pushed branch, which holds only the prior head, so its pushes fast-forward.
+    assert prepared.payload["prior_branch"] == prior_branch
     assert prepared.payload["resume_from"] == expected_resume
     assert prepared.payload["base_head"] == admission
     assert prepared.payload["resume_fallback"] == ""

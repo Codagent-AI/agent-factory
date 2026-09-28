@@ -242,11 +242,11 @@ def test_int005_merge_guard_states(tmp_path: Path, state: str) -> None:
         assert (evidence / "base-merge.json").read_text() == original
 
 
-def test_merge_stop_without_resume_point_fails_before_side_effects(tmp_path: Path) -> None:
+def test_fresh_definition_merge_stop_restarts_definition(tmp_path: Path) -> None:
     repo, remote = repository(tmp_path)
     admission = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-b", "prior")
-    commit_file(repo, "choice.txt", "prior\n", "prior")
+    before = commit_file(repo, "choice.txt", "prior\n", "prior")
     git(repo, "push", "origin", "prior")
     git(repo, "checkout", "main")
     base = commit_file(repo, "choice.txt", "target\n", "target")
@@ -263,13 +263,37 @@ def test_merge_stop_without_resume_point_fails_before_side_effects(tmp_path: Pat
         )
     )
     stopped = run(str(PACKAGE / "record-merge-stop.sh"), str(evidence), "claim", cwd=repo)
-    # Every merging path names a resume point, so an empty one is a technical failure rather
-    # than an invented stop step; nothing is aborted, pushed, or recorded.
-    assert stopped.returncode != 0
-    assert "names no resume point" in stopped.stderr
-    assert not (evidence / "feature-outcome.json").exists()
-    assert git(repo, "rev-parse", "MERGE_HEAD") == base
-    assert run("git", "rev-parse", "--verify", "refs/heads/claim", cwd=remote).returncode != 0
+    assert stopped.returncode == 0, stopped.stderr
+    # A merge with no resume point belongs to a fresh definition (a continuation retried after
+    # a preflight stop), so the next attempt restarts definition rather than skipping it.
+    outcome = json.loads((evidence / "feature-outcome.json").read_text())
+    assert outcome["stopped_step"] == "proposal"
+    assert git(remote, "rev-parse", "refs/heads/claim") == before
+
+
+def test_fresh_definition_on_pushed_continuation_branch_pushes_fast_forward(
+    tmp_path: Path,
+) -> None:
+    """After a preflight stop, a continuation whose branch was pushed at the prior head
+    starts definition afresh on that branch, so its first checkpoint push fast-forwards."""
+    repo, remote = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    prior_head = commit_file(repo, "plan.txt", "prior plan\n", "prior plan")
+    git(repo, "push", "origin", "prior")
+    # An earlier merge stop pushed the prior head as the claim's own branch.
+    git(repo, "push", "origin", "prior:refs/heads/claim")
+    git(repo, "checkout", "main")
+    base = commit_file(repo, "target.txt", "target\n", "target")
+    evidence = tmp_path / "evidence"
+    assert prepare(repo, evidence, "claim", admission, "", "prior", base) == ""
+    assert git(repo, "branch", "--show-current") == "claim"
+    commit_file(repo, "proposal.md", "fresh proposal\n", "fresh definition")
+    pushed = run(str(PACKAGE / "checkpoint.sh"), "planned", "claim", cwd=repo)
+    assert pushed.returncode == 0, pushed.stderr
+    head = git(remote, "rev-parse", "refs/heads/claim")
+    assert run("git", "merge-base", "--is-ancestor", prior_head, head, cwd=remote).returncode == 0
+    assert run("git", "merge-base", "--is-ancestor", base, head, cwd=remote).returncode == 0
 
 
 @pytest.mark.parametrize("archived", [False, True])

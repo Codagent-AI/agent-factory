@@ -19,6 +19,7 @@ mkdir -p "$artifact_dir"
 git cat-file -e "$target^{commit}"
 fallback=''
 effective_resume=$resume
+merge_status=''
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/merge-base.sh"
 if [ -n "$prior" ]; then

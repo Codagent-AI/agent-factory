@@ -650,10 +650,10 @@ class PullRequestHandler:
                     continuing,
                 )
                 # A continuation whose own branch holds nothing beyond the prior head is still
-                # continuing the prior branch, under the same rule as a first continuation.
+                # continuing the prior branch. That holds even for a fresh definition after a
+                # preflight stop: building on the pushed branch keeps later pushes fast-forward.
                 if (
-                    resume_from
-                    and previous is not None
+                    previous is not None
                     and isinstance(continuation_head, str)
                     and continuation_head
                     and resume.get("head_sha") == continuation_head
