@@ -35,7 +35,7 @@ Path(sys.argv[2]).write_text(json.dumps({
     'stopped_step': 'archive',
     'reasons': [explanation],
     'questions': [explanation],
-    'direction_summary': 'Implementation is complete and pushed; archiving the OpenSpec change is blocked until the cause above is fixed (for example a main spec under openspec/specs outside the change directory). The next attempt resumes at archive.',
+    'direction_summary': "Implementation is complete and pushed. Archiving is blocked by the cause above. This claim's target commit is frozen, so a fix merged to main does not reach it: commit the fix to this branch, then comment on the issue to resume at archive.",
     'branch': sys.argv[3],
 }) + '\n')
 PY

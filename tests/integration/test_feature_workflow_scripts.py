@@ -187,6 +187,8 @@ def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -
     assert outcome["reasons"] == outcome["questions"] == [explanation]
     assert outcome["branch"] == "factory/feature-12"
     assert "REPAIR_BLOCKED" not in outcome["direction_summary"]
+    assert "commit the fix to this branch" in outcome["direction_summary"]
+    assert "a fix merged to main does not reach it" in outcome["direction_summary"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
     assert (
         run(
@@ -254,6 +256,7 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     archive = steps[ids.index("archive") + 1]
     record = steps[ids.index("record-archive-block") + 1]
     assert "continue_on_failure: true" in archive
+    assert 'skip_if: \'sh: test "{{archive_status}}" = skipped\'' in archive
     assert ids.index("seed-archive-status") < ids.index("archive")
     assert ids.index("archive") < ids.index("mark-archive-failed")
     assert "restore-skipped-archive-status" not in ids

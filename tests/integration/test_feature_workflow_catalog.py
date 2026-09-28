@@ -69,8 +69,19 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
         assert result.returncode == 0, f"{name}: {result.stderr}"
     feature = (catalog / "factory-feature-v1.0.yaml").read_text()
     define = (catalog / "factory-define-v1.0.yaml").read_text()
-    for step in ("implement", "archive", "verify", "finalize"):
+    for step in ("implement", "verify", "finalize"):
         assert re.search(rf"- id: {step}\n(?:(?!  - id:).)*factory-resume-skip.sh", feature, re.S)
+    assert re.search(
+        r"- id: seed-archive-status\n(?:(?!  - id:).)*factory-resume-skip.sh"
+        r'(?:(?!  - id:).)*capture: archive_status',
+        feature,
+        re.S,
+    )
+    assert re.search(
+        r'- id: archive\n(?:(?!  - id:).)*skip_if: \'sh: test "{{archive_status}}" = skipped\'',
+        feature,
+        re.S,
+    )
     for step in (
         "proposal",
         "proposal-review",
