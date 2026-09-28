@@ -1,7 +1,7 @@
 """Releases a fix claim's clones, run images, and credential copies.
 
-A settled claim is released after Review then Done; a cancelled claim is released as soon
-as its execution has stopped, since its card may never travel through Review.
+A settled claim normally releases after Review then Done. The terminal sweep also releases
+settled claims observed Done without Review and cancelled claims once they are quiescent.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from agent_factory.work_kinds.images import remove_images, run_image_tags
 
 
 class PullRequestCleanup:
-    """Mirrors WorktreeCleanup's Review-then-Done gate for fix clones and image tags."""
+    """Reconciles Review-then-Done cleanup and releases recorded fix resources."""
 
     def __init__(
         self,

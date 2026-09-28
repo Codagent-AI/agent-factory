@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ from agent_factory import terminal
 from agent_factory.controller import Controller
 from agent_factory.github import GitHubApiError, GitHubNotFoundError
 from agent_factory.operations import status
-from agent_factory.store import ClaimDraft, ClaimStore
+from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import (
     GitWorktreeManager,
     SourceRepositories,
@@ -369,6 +370,124 @@ def test_done_handler_waits_for_pending_report_before_release(tmp_path: Path, ki
     assert current is not None
     handler.cleanup(current, board_status="Done")
     assert store.get_claim(claim.id).cleanup["complete"] is True  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("kind", ["fix", "eval"])
+@pytest.mark.parametrize("blocker", ["pending", "delivery-failure"])
+def test_done_without_review_releases_when_reporting_is_delivered(
+    tmp_path: Path, kind: str, blocker: str
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/repo", 15, "I15", "P15", kind, "fp", {}))
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    run = store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(evidence))
+    store.finish_run(run.id, execution_status="passed", result={})
+    store.set_claim_lifecycle(claim.id, "settled", {})
+    root = tmp_path / "clones" / claim.id
+    root.mkdir(parents=True)
+    now = datetime.now(UTC)
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    paths = {
+        name: {"source": str(tmp_path / name), "path": str(root / name)}
+        for name in ("runner", "skills", "evals")
+    }
+    store.set_cleanup(
+        claim.id,
+        {
+            **saved.cleanup,
+            "done_observed_at": now.isoformat(),
+            **({"paths": paths} if kind == "eval" else {}),
+        },
+    )
+    if kind == "eval":
+        store.record_event(claim.id, "rep-0:review-command", "review command")
+        store.acknowledge_event(claim.id, "rep-0:review-command", "comment-1")
+        manager = Mock()
+
+        def remove_worktrees(_: object) -> dict[str, str]:
+            shutil.rmtree(root)
+            return {}
+
+        manager.remove.side_effect = remove_worktrees
+        cleanup = WorktreeCleanup(store, manager)
+    else:
+        cleanup = PullRequestCleanup(store, claim_directory=lambda _: root)
+    handler = Mock()
+
+    def release(_: Claim) -> bool:
+        return cleanup.release(claim.id)
+
+    handler.release.side_effect = release
+    handler.retention_targets.return_value = [evidence / "logs"]
+    if blocker == "pending":
+        store.record_event(claim.id, "pending", "report")
+    else:
+        store.record_event(claim.id, "report", "report")
+        store.record_delivery_failure(claim.id, "report", RuntimeError("HTTP 503"))
+    controller = Mock()
+    client = Mock()
+    handlers = {kind: cast(WorkKindHandler, handler)}
+
+    terminal.sweep(
+        store,
+        cast(Controller, controller),
+        client,
+        handlers,
+        _local(tmp_path),
+        {claim.id: "Done"},
+        now,
+    )
+    assert root.exists()
+    handler.release.assert_not_called()
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    events = saved.reporting.get("events", {})
+    assert isinstance(events, dict) and "review-expired" not in events
+
+    if blocker == "pending":
+        store.acknowledge_event(claim.id, "pending", "comment-2")
+    else:
+        store.acknowledge_event(claim.id, "report", "comment-2")
+    terminal.sweep(
+        store,
+        cast(Controller, controller),
+        client,
+        handlers,
+        _local(tmp_path),
+        {claim.id: "Done"},
+        now,
+    )
+    assert not root.exists()
+    handler.release.assert_called_once()
+    saved = store.get_claim(claim.id)
+    assert saved is not None and saved.cleanup["complete"] is True
+    events = saved.reporting.get("events", {})
+    assert isinstance(events, dict) and "review-expired" not in events
+
+    logs = evidence / "logs"
+    logs.mkdir()
+    terminal.sweep(
+        store,
+        cast(Controller, controller),
+        client,
+        handlers,
+        _local(tmp_path),
+        {claim.id: "Done"},
+        now + timedelta(days=13),
+    )
+    assert logs.exists()
+    terminal.sweep(
+        store,
+        cast(Controller, controller),
+        client,
+        handlers,
+        _local(tmp_path),
+        {claim.id: "Done"},
+        now + timedelta(days=14),
+    )
+    assert not logs.exists()
 
 
 def test_fix_review_is_observed_while_a_report_is_undelivered(tmp_path: Path) -> None:

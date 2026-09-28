@@ -381,8 +381,11 @@ credential copies that Done cleanup removes. It SHALL happen as follows:
   30. Before releasing a settled eval claim that posted a human-review command, the factory
   SHALL first deliver that claim's human-review expiry report, as defined in
   `factory-eval-reporting`.
+- A `settled` claim whose card is observed as Done, whose Done observation was durably
+  recorded, and whose Review observation was not recorded SHALL be released on the first
+  poll on which it is quiescent. No human-review expiry report SHALL be posted.
 
-In both cases the claim's evidence SHALL remain subject to the retention requirement.
+In each case the claim's evidence SHALL remain subject to the retention requirement.
 
 **Pending post-merge sync.** For cleanup and retention, a settled pull-request claim has a
 pending post-merge sync only when both hold:
@@ -418,6 +421,12 @@ released.
 - **WHEN** a reviewed item moves from Review to Done and the factory next successfully polls GitHub
 - **THEN** its factory-owned worktrees or clones and any run-specific images are removed
 - **AND** results, logs, SQLite history, candidate branches, and PRs remain available
+
+#### Scenario: Release a Done claim with no Review observation
+
+- **WHEN** a settled claim's card is observed as Done with a durable Done observation but no recorded Review observation
+- **THEN** the first quiescent poll releases its owned worktrees or clones without a human-review expiry report
+- **AND** pending reporting or a pending post-merge sync delays release
 
 #### Scenario: Preserve worktrees still in use
 
@@ -575,7 +584,7 @@ A claim's evidence SHALL be eligible for pruning only when all of these hold:
 - one of these paths applies:
   - **Done path.** The claim is settled and its card is observed as Done on the poll that
     prunes. The retention period has elapsed since the factory first durably recorded that
-    Done observation, and the claim's worktree, clone, image, and credential cleanup has
+    Done observation, and either its Review-then-Done cleanup or its terminal release has
     completed.
   - **Cancelled or superseded path.** The claim is `cancelled` or `superseded`, the
     retention period has elapsed since its recorded terminal time, and its terminal release
@@ -607,6 +616,11 @@ SHALL be kept.
 - **WHEN** a claim's card was observed Done more than 14 days ago under the default retention and nothing still needs its evidence
 - **THEN** the next tick removes its logs, session state, and agent output
 - **AND** its outcome or result records, issue input, candidate branches, and PRs remain
+
+#### Scenario: Prune a Done claim released without Review
+
+- **WHEN** a settled claim reached Done without a recorded Review observation, its terminal release completed, and 14 days have passed since its first durable Done observation
+- **THEN** the next tick prunes its attempt evidence under the Done path
 
 #### Scenario: Skip a Done claim with a pending sync
 
@@ -790,4 +804,3 @@ The installation and operations documentation SHALL explain:
 
 - **WHEN** an operator follows the documentation to run fixes or features on the host
 - **THEN** it tells them where the Validator checkout goes, how to build it and link it on the service PATH, and which doctor check confirms it
-

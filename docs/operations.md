@@ -410,6 +410,9 @@ recorded owned worktrees, clones, images, and credential copies. Cancelled and
 superseded claims are released as soon as their runs stop and reporting is
 delivered. Settled claims still outside Done are released after `[limits]
 unreviewed_retention_days` (default 30) from their terminal transition.
+If a settled claim reaches Done without a recorded Review observation, Factory
+releases it on the first quiescent poll after recording the Done observation,
+without posting a human-review expiry report.
 Release also covers claims whose cards have left the Project. A merged PR with
 an incomplete post-merge sync holds its files. Mirrors persist with history.
 Factory removes only its recorded owned worktrees, clones, and images;

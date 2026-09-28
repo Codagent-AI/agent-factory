@@ -139,8 +139,14 @@ def release_due(
 ) -> bool:
     return claim.lifecycle in {"cancelled", "superseded"} or (
         claim.lifecycle == "settled"
-        and board_status != "Done"
-        and now - since >= timedelta(days=days)
+        and (
+            (
+                board_status == "Done"
+                and bool(claim.cleanup.get("done_observed_at"))
+                and claim.cleanup.get("review_observed") is not True
+            )
+            or (board_status != "Done" and now - since >= timedelta(days=days))
+        )
     )
 
 
@@ -185,6 +191,7 @@ def sweep(
                 if (
                     claim.kind == "eval"
                     and claim.lifecycle == "settled"
+                    and status != "Done"
                     and review_command_published(claim)
                     and "review-expired" not in mapping(claim.reporting.get("events"))
                 ):

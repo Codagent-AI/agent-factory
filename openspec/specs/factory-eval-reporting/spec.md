@@ -235,7 +235,9 @@ worktrees. The comment SHALL say that:
 The comment SHALL be delivered durably and without duplicates, like the factory's other
 reports. The worktree SHALL NOT be released until that delivery succeeds. A failed post
 SHALL be retried on later polls and SHALL be shown by `status`. The expiry SHALL NOT change
-the card's status or Verdict and SHALL NOT close the issue. No expiry comment SHALL be
+the card's status or Verdict and SHALL NOT close the issue. An observed Done card SHALL
+receive no expiry report, including when no Review observation was recorded or the
+unreviewed retention period has already elapsed. No expiry comment SHALL be
 posted for:
 
 - an eval claim that posted no human-review command;
@@ -263,3 +265,7 @@ posted for:
 - **WHEN** a reviewed eval's card moves to Done before the unreviewed retention period elapses
 - **THEN** no expiry comment is posted and the existing Done cleanup applies
 
+#### Scenario: Reach Done without a recorded Review observation
+
+- **WHEN** a settled eval with a published human-review command is observed as Done without a recorded Review observation
+- **THEN** no human-review expiry report is delivered and terminal release follows `factory-operations`

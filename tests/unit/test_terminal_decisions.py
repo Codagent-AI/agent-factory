@@ -37,6 +37,15 @@ def test_release_due_uses_terminal_transition_and_board_status(tmp_path: Path) -
     assert not terminal.release_due(settled, "Review", recent, now, 30)
     assert terminal.release_due(settled, "Review", old, now, 30)
     assert not terminal.release_due(settled, "Done", old, now, 30)
+    observed = replace(settled, cleanup={"done_observed_at": now.isoformat()})
+    assert terminal.release_due(observed, "Done", recent, now, 30)
+    assert not terminal.release_due(
+        replace(observed, cleanup={**observed.cleanup, "review_observed": True}),
+        "Done",
+        recent,
+        now,
+        30,
+    )
     store.close()
 
 
