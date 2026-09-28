@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
+from tests.integration.test_fix_workflow import shell_templates, single_quoted_placeholders
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 
@@ -259,6 +260,17 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     assert ids.index("mark-archive-failed") < ids.index("record-archive-block")
     assert ids.index("record-archive-block") < ids.index("push-archive")
     assert "script: record-archive-block.sh" in record
+
+
+def test_feature_workflow_shell_placeholders_are_interpolatable() -> None:
+    """Runner rejects placeholders within shell single quotes at step execution time."""
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    refused = {
+        template.strip().splitlines()[0]: names
+        for template in shell_templates(feature)
+        if (names := single_quoted_placeholders(template))
+    }
+    assert refused == {}
 
 
 def test_archive_status_survives_change_directory_moving_after_failure(tmp_path: Path) -> None:

@@ -92,7 +92,7 @@ steps:
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
   # Capture the skip decision before archive changes the working tree.
   - id: seed-archive-status
-    command: sh -c 'if test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive; then printf skipped; else printf passed; fi'
+    command: if test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive; then printf skipped; else printf passed; fi
     capture: archive_status
   - id: archive
     workflow: builtin:openspec/archive-change-v1.0.yaml
@@ -101,7 +101,7 @@ steps:
     continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
   - id: mark-archive-failed
-    command: sh -c 'if test "{{archive_status}}" = skipped; then printf skipped; else printf failed; fi'
+    command: if test "{{archive_status}}" = skipped; then printf skipped; else printf failed; fi
     capture: archive_status
     skip_if: previous_success
   - id: record-archive-block
