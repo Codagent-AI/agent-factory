@@ -1195,7 +1195,6 @@ def test_prepare_branch_continuation_carries_prior_change_to_new_name(tmp_path: 
         "resume_from": "implement",
         "prior_branch": "factory/feature-12-aaaaaaaa",
         "artifact_dir": str(evidence),
-        "change_name": "feature-12-bbbbbbbb",
     }
     result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
@@ -1242,7 +1241,6 @@ def test_prepare_branch_continuation_carries_prior_archive_to_new_name(tmp_path:
         "resume_from": "verify",
         "prior_branch": "factory/feature-12-aaaaaaaa",
         "artifact_dir": str(evidence),
-        "change_name": "feature-12-bbbbbbbb",
     }
     result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
@@ -1513,7 +1511,6 @@ def test_resume_merges_current_base_and_reverifies_finalize(tmp_path: Path) -> N
         "finalize",
         "",
         str(evidence),
-        "",
         base,
         cwd=repo,
     )
@@ -1549,7 +1546,7 @@ def test_conflict_resolution_and_stop_use_real_git(tmp_path: Path) -> None:
     base = git(repo, "rev-parse", "HEAD")
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    args = ("claim", admission, "implement", "prior", str(evidence), "", base)
+    args = ("claim", admission, "implement", "prior", str(evidence), base)
     result = run(str(PACKAGE / "prepare-branch.sh"), *args, cwd=repo)
     assert result.returncode == 0, result.stderr
     assert git(repo, "rev-parse", "MERGE_HEAD") == base
@@ -1570,7 +1567,7 @@ def test_conflict_resolution_and_stop_use_real_git(tmp_path: Path) -> None:
     git(repo, "checkout", "main")
     evidence2 = tmp_path / "evidence2"
     evidence2.mkdir()
-    result = run(str(PACKAGE / "prepare-branch.sh"), *args[:4], str(evidence2), "", base, cwd=repo)
+    result = run(str(PACKAGE / "prepare-branch.sh"), *args[:4], str(evidence2), base, cwd=repo)
     assert result.returncode == 0, result.stderr
     (evidence2 / "merge-stop.json").write_text(
         json.dumps({"questions": ["Which choice?"], "direction_summary": "Need a decision."})

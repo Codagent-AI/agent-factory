@@ -7,11 +7,15 @@ if [ "$#" -eq 0 ]; then
 fi
 review_file=$1
 artifact_dir=$2
-base_head=$(python3 - "$review_file" <<'PY'
+# "<base head>:<admission target>"; either may be empty, and neither contains a colon.
+heads=$(python3 - "$review_file" <<'PY'
 import json, sys
-print(json.load(open(sys.argv[1])).get('base_head', ''))
+review = json.load(open(sys.argv[1]))
+print(f"{review.get('base_head', '')}:{review.get('target_at_admission', '')}")
 PY
 )
+base_head=${heads%%:*}
+admission=${heads#*:}
 if [ -z "$base_head" ]; then
   printf none
   exit 0
@@ -20,9 +24,5 @@ branch=$(git branch --show-current)
 mkdir -p "$artifact_dir"
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/merge-base.sh"
-merge_base "$base_head" "$(python3 - "$review_file" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1])).get('target_at_admission', ''))
-PY
-)" "$branch" "$artifact_dir" '' ''
+merge_base "$base_head" "$admission" "$branch" "$artifact_dir" '' ''
 printf '%s' "$merge_status"

@@ -7,7 +7,6 @@ if [ "$#" -eq 0 ]; then
     "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("resume_from", ""))')" \
     "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("prior_branch", ""))')" \
     "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("artifact_dir", ""))')" \
-    "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("change_name", ""))')" \
     "$(printf %s "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("base_head", ""))')"
 fi
 branch=$1
@@ -15,7 +14,7 @@ target=$2
 resume=${3:-}
 prior=${4:-}
 artifact_dir=$5
-base_head=${7:-}
+base_head=${6:-}
 mkdir -p "$artifact_dir"
 git cat-file -e "$target^{commit}"
 fallback=''
@@ -50,14 +49,10 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({'fallback': sys.argv[2], 'resume_from': ''}) + '\n')
 PY
 fi
-if [ -f "$artifact_dir/base-merge.json" ] && [ "$effective_resume" = finalize ]; then
-  merge_result=$(python3 - "$artifact_dir/base-merge.json" <<'PY'
-import json, sys
-print(json.load(open(sys.argv[1]))['status'])
-PY
-)
-  if [ "$merge_result" = merged ] || [ "$merge_result" = conflict ]; then
-    effective_resume=verify
-  fi
+# A merge that brought in commits invalidates earlier validation, so finalize re-verifies.
+if [ "$effective_resume" = finalize ]; then
+  case "${merge_status:-}" in
+    merged|conflict) effective_resume=verify ;;
+  esac
 fi
 printf '%s' "$effective_resume"

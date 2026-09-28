@@ -17,13 +17,11 @@ merge_base() {
     else
       git rev-parse -q --verify MERGE_HEAD >/dev/null || return 1
       merge_status=conflict
-      git diff --name-only --diff-filter=U > "$merge_artifacts/conflicted-files.txt"
-      python3 - "$merge_artifacts/merge-conflict.json" "$merge_source" "$merge_before" "$merge_resume" "$merge_prior" "$merge_artifacts/conflicted-files.txt" <<'PY'
+      python3 - "$merge_artifacts/merge-conflict.json" "$merge_source" "$merge_before" "$merge_resume" "$merge_prior" "$(git diff --name-only --diff-filter=U)" <<'PY'
 import json, sys
 from pathlib import Path
-Path(sys.argv[1]).write_text(json.dumps({'base_head': sys.argv[2], 'pre_merge_head': sys.argv[3], 'resume_from': sys.argv[4], 'prior_branch': sys.argv[5], 'conflicted': Path(sys.argv[6]).read_text().splitlines()}) + '\n')
+Path(sys.argv[1]).write_text(json.dumps({'base_head': sys.argv[2], 'pre_merge_head': sys.argv[3], 'resume_from': sys.argv[4], 'prior_branch': sys.argv[5], 'conflicted': sys.argv[6].splitlines()}) + '\n')
 PY
-      rm "$merge_artifacts/conflicted-files.txt"
     fi
   fi
   python3 - "$merge_artifacts/base-merge.json" "$merge_admission" "$merge_source" "$merge_before" "$merge_status" "$merge_commit" <<'PY'

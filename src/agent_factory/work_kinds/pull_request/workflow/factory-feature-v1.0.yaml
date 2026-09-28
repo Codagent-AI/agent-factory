@@ -48,7 +48,6 @@ steps:
       resume_from: "{{resume_from}}"
       prior_branch: "{{prior_branch}}"
       artifact_dir: "{{artifact_dir}}"
-      change_name: "{{change_name}}"
       base_head: "{{base_head}}"
     capture: effective_resume
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'

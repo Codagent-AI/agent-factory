@@ -88,7 +88,7 @@ def branch_name(issue_number: int, claim_id: str, prefix: str = FIX.branch_prefi
 
 
 def feature_change_name(branch: str) -> str:
-    """The OpenSpec change a feature branch works on; prepare-branch.sh mirrors this rule."""
+    """The OpenSpec change a feature branch works on; continue-change.sh mirrors this rule."""
     return branch.removeprefix("factory/").replace("/", "-")
 
 
