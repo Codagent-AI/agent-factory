@@ -59,8 +59,9 @@ validator_build() {
   if ! (cd "$validator" && bun install --frozen-lockfile && bun run build:local); then
     # Every step here is guarded, so a failure still reaches a message that
     # tells the operator to rebuild before resuming.
+    # A failed restore keeps the backup: it may be the only intact copy of the last build.
     validator_restore_dist "$backup" \
-      || { rm -rf "$backup" || true; die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
+      || die "Agent Validator build failed and backup restore failed in $validator; the previous build is kept in $backup/dist; the host validator may be broken and must be restored from there or rebuilt before resuming"
     git -C "$validator" reset -q --hard "$old" \
       || { rm -rf "$backup" || true; die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"; }
     rm -rf "$backup" || true

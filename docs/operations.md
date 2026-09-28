@@ -392,7 +392,8 @@ from `agent-validator` on the LaunchAgent PATH to the checkout's `dist/index.js`
 `doctor` checks it and reports whether the build is behind `origin/main`.
 If the Validator build fails, the deploy stops with the factory paused and puts
 the checkout's previous commit and `dist` back, but `node_modules` may already
-match the new lockfile. Before resuming, rerun the deploy, or rebuild in the
+match the new lockfile. If putting `dist` back fails, the deploy says where it
+kept the previous build. Before resuming, rerun the deploy, or rebuild in the
 checkout with `bun install --frozen-lockfile && bun run build:local`.
 Each release is immutable and running jobs keep using it; see `AGENTS.md`.
 

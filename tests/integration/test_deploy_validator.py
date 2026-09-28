@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -194,7 +196,12 @@ def test_failed_build_reports_rebuild_when_dist_cannot_be_removed(tmp_path: Path
         checkout.chmod(0o755)
     assert result.returncode == 1
     assert "backup restore failed" in result.stderr
-    assert "must be rebuilt before resuming" in result.stderr
+    assert "rebuilt before resuming" in result.stderr
+    kept = re.search(r"previous build is kept in (\S+);", result.stderr)
+    assert kept is not None, result.stderr
+    backup = Path(kept.group(1))
+    assert (backup / "index.js").read_text() == "working build"
+    shutil.rmtree(backup.parent)
 
 
 def test_wrong_plist_path_warns_without_relinking(tmp_path: Path) -> None:
