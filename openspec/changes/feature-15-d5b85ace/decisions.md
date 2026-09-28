@@ -273,3 +273,10 @@
     matches its base spec, and `openspec validate --strict` passes. The design has no open
     questions. Alternative: redo definition from scratch, rejected because nothing in the
     input or the base specs changed. Decision-bearing: no.
+
+## validation repair
+
+42. **No mechanical repairs needed.** `openspec validate feature-15-d5b85ace --strict` and
+    `openspec validate --all --strict` pass. A trial `openspec archive` in a throwaway copy
+    of `openspec/` applied every delta (2 added, 6 modified), and the resulting specs
+    validated strictly. No artifact was changed. Decision-bearing: no.
