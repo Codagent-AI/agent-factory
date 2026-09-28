@@ -58,16 +58,17 @@ def feature_resume_point(
     outcome: object, stopped_step: object, checkpoint: str | None, draft: bool, continuing: bool
 ) -> str:
     """Choose the first workflow step that has no durable completed checkpoint."""
+    # A recorded stop or draft outranks any checkpoint, including an inherited one.
+    if outcome == "needs-input":
+        return stopped_step if isinstance(stopped_step, str) and stopped_step != "preflight" else ""
+    if draft:
+        return "verify"
     if continuing:
         # An archived prior change has been implemented and merged into the living specs,
         # so the continuation verifies it rather than implementing its plan again.
         if checkpoint == "archived":
             return "verify"
         return "implement" if checkpoint in {"planned", "implemented"} else ""
-    if outcome == "needs-input":
-        return stopped_step if isinstance(stopped_step, str) and stopped_step != "preflight" else ""
-    if draft:
-        return "verify"
     return {"planned": "implement", "implemented": "archive", "archived": "verify"}.get(
         checkpoint or "", ""
     )
@@ -626,12 +627,24 @@ class PullRequestHandler:
                     base_sha=base_sha if isinstance(base_sha, str) else None,
                     exclude_sha=(continuation_head if isinstance(continuation_head, str) else None),
                 )
+                continuing = False
+                if checkpoint is None and isinstance(continuation_head, str) and continuation_head:
+                    # A continuation that pushed its branch before a checkpoint of its own
+                    # still carries the prior claim's plan; restarting from the target
+                    # would redo definition and could not push over its own branch.
+                    checkpoint = self._workspace.feature_checkpoint(
+                        repository,
+                        own_branch,
+                        token,
+                        base_sha=base_sha if isinstance(base_sha, str) else None,
+                    )
+                    continuing = checkpoint is not None
                 resume_from = feature_resume_point(
                     last_result.get("outcome"),
                     last_result.get("stopped_step"),
                     checkpoint,
                     resume.get("draft") is True,
-                    False,
+                    continuing,
                 )
                 if latest is not None:
                     prior_report = attempt_evidence(latest)
