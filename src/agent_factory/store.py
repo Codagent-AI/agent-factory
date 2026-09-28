@@ -395,7 +395,7 @@ class ClaimStore:
                     "json_set(json_set(cleanup_json, '$.complete', json('false')), "
                     "'$.review_observed', json('false')), '$.terminal_at', "
                     "'$.terminal_at_backfilled', '$.sweep_complete', "
-                    "'$.retention.pruned_at', '$.expiry') WHERE id = ?",
+                    "'$.retention.pruned_at') WHERE id = ?",
                     (claim_id,),
                 )
             except sqlite3.IntegrityError as error:
