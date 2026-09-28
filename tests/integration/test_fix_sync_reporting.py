@@ -201,6 +201,9 @@ def test_successful_merge_closes_issue_and_records_completion(tmp_path: Path) ->
     origin = tmp_path / "origin.git"
     origin.mkdir()
     subprocess.run(["git", "init", "--quiet", "--bare", str(origin)], check=True)
+    subprocess.run(
+        ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
     seed = tmp_path / "seed"
     subprocess.run(["git", "clone", "--quiet", str(origin), str(seed)], check=True)
     subprocess.run(["git", "-C", str(seed), "checkout", "-b", "main"], check=True)

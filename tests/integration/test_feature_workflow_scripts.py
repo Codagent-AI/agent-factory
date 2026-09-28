@@ -212,7 +212,15 @@ def test_record_archive_block_requires_archive_declaration(tmp_path: Path) -> No
         str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
     )
     assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
     assert not (evidence / "feature-outcome.json").exists()
+    (session / "audit.log").unlink()
+    missing_log = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert missing_log.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in missing_log.stderr
+    assert "Traceback" not in missing_log.stderr
 
 
 def test_record_archive_block_uses_last_archive_declaration_from_commit_check(
@@ -247,10 +255,43 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     assert "continue_on_failure: true" in archive
     assert ids.index("seed-archive-status") < ids.index("archive")
     assert ids.index("archive") < ids.index("mark-archive-failed")
-    assert ids.index("mark-archive-failed") < ids.index("restore-skipped-archive-status")
-    assert ids.index("restore-skipped-archive-status") < ids.index("record-archive-block")
+    assert "restore-skipped-archive-status" not in ids
+    assert ids.index("mark-archive-failed") < ids.index("record-archive-block")
     assert ids.index("record-archive-block") < ids.index("push-archive")
     assert "script: record-archive-block.sh" in record
+
+
+def test_archive_status_survives_change_directory_moving_after_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    change = repo / "openspec" / "changes" / "example"
+    change.mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    skip_script = repo / ".agent-runner" / "workflows" / "factory-resume-skip.sh"
+    skip_script.parent.mkdir(parents=True)
+    skip_script.write_text("#!/bin/sh\nexit 1\n")
+    skip_script.chmod(0o755)
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    seed = feature.split("  - id: seed-archive-status\n", 1)[1].split("\n  - id: ")[0]
+    mark = feature.split("  - id: mark-archive-failed\n", 1)[1].split("\n  - id: ")[0]
+    seed_command = seed.split("    command: ", 1)[1].split("\n", 1)[0]
+    seed_command = (
+        seed_command.replace("{{artifact_dir}}", str(evidence))
+        .replace("{{change_name}}", "example")
+        .replace("{{effective_resume}}", "archive")
+    )
+    seeded = run("sh", "-c", seed_command, cwd=repo)
+    assert seeded.returncode == 0 and seeded.stdout == "passed"
+    change.rmdir()  # archive-transition can move the change before commit verification fails.
+    mark_command = mark.split("    command: ", 1)[1].split("\n", 1)[0]
+    marked = run("sh", "-c", mark_command.replace("{{archive_status}}", seeded.stdout), cwd=repo)
+    assert marked.returncode == 0 and marked.stdout == "failed"
+    skipped = run("sh", "-c", seed_command, cwd=repo)
+    assert skipped.returncode == 0 and skipped.stdout == "skipped"
+    preserved = run(
+        "sh", "-c", mark_command.replace("{{archive_status}}", skipped.stdout), cwd=repo
+    )
+    assert preserved.returncode == 0 and preserved.stdout == "skipped"
 
 
 def test_record_stop_records_the_workflow_step_not_the_agents_name(tmp_path: Path) -> None:

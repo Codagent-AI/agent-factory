@@ -18,13 +18,13 @@ from pathlib import Path
 
 audit = Path(sys.argv[1])
 response = None
-for line in audit.read_text().splitlines():
+for line in (audit.read_text() if audit.exists() else '').splitlines():
     match = re.search(r'\[archive, sub:archive-change(?:, [^]]+)*\] repair_blocked (\{.*\})$', line)
     if match:
         response = json.loads(match.group(1)).get('response')
 
 if not isinstance(response, str):
-    raise SystemExit('archive repair was not declared blocked')
+    raise SystemExit('archive step failed without a REPAIR_BLOCKED declaration; see archive entries in ' + str(audit))
 explanation = re.sub(r'(?:^|\n)REPAIR_BLOCKED\s*$', '', response).strip()
 if not explanation:
     raise SystemExit('archive repair block has no explanation')
