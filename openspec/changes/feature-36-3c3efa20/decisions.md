@@ -332,3 +332,24 @@
 - **Alternatives considered:** split the work into per-component tasks. Rejected: the feature
   workflow requires a single task.
 - **Decision-bearing:** no.
+
+## define (feature-36-3c3efa20): re-check against issue #36
+
+- **Decision:** the specs, design, test plan, and tasks still match issue #36. The issue has no
+  eligible comments and has not changed since the first definition (`reason: initial`), so their
+  direction stays as it is. Each of the issue's three requirements (host checkout, deploy
+  update and build with the Runner's safety rules and no rebuild during host work; a Fly claim
+  image pinned to a SHA resolved once per claim; Validator provenance for evals, fixes, and
+  features, reported by `doctor`) maps to existing requirements. The only revision is to
+  `proposal.md`. Its Technical Approach and Impact sections still described choices that later
+  steps replaced, and they now match the design:
+  - a shared `update-checkout.sh` instead of a copied script;
+  - `host_slots_free` reads the `host attempts:` status line, not the fix execution mode;
+  - the fast-forward waits until after the pause;
+  - the image build checks the Validator version, not the Machine;
+  - admission freezes a normalized GitHub source URL;
+  - a missing `bun` stops the deploy before the pause rather than being reported by `doctor`.
+- **Alternatives considered:** leave the proposal stale, since `decisions.md` records the
+  superseding decisions. Rejected: implementers and reviewers read the proposal, and the
+  contradictions could lead them back to the rejected choices.
+- **Decision-bearing:** no. Wording only; no behavior changed.

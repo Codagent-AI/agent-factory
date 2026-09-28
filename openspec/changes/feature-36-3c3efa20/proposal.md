@@ -115,13 +115,16 @@ None.
 
 ## Technical Approach
 
-- **Host update and build.** `update-validator.sh` copies `update-runner.sh`: the same exit-code
-  contract (0 = ready to build, 3 = skipped with a warning). The two scripts could later share a
-  helper, but duplicating them now keeps the tested Runner script unchanged. The build runs after
-  `deploy.sh` pauses the factory. While paused, the factory admits nothing new, so a status
-  check at that point reliably shows whether a host attempt is still running. The check uses a
-  new predicate in `scripts/slots.sh`, `host_slots_free`, which looks only at the feature slot
-  (features run only on the host) and at the fix slot when fixes execute on the host. The
+- **Host update and build.** `update-runner.sh` and a new `update-validator.sh` become thin
+  wrappers over a shared `update-checkout.sh <label> <checkout>`, which keeps the Runner script's
+  messages and exit-code contract (0 = ready to build, 3 = skipped with a warning) and avoids two
+  copies of the safety rules. Before the pause, the deploy only fetches and checks
+  (`--check-only`). After `deploy.sh` pauses the factory, it fast-forwards and builds. While
+  paused, the factory admits nothing new, so a status check at that point reliably shows whether
+  a host attempt is still running. The check uses a new predicate in `scripts/slots.sh`,
+  `host_slots_free`, which reads only the new `host attempts: <n>` status line. That line counts
+  unfinished runs by the backend each run recorded, not by current configuration, so switching
+  `[fix] execution` cannot hide a running host attempt. A missing line counts as busy. The
   existing `slots_free`, which also requires the eval slot to be free, stays in use for release
   pruning only. The build runs the repository's own local build: dependency install, then
   `build:local`, which embeds the git SHA in `--version`. On Paul's Mac,
@@ -141,15 +144,18 @@ None.
   `Codagent-AI/agent-validator` and installs it globally over the npm copy, then restores the
   final user and working directory. The Validator SHA is passed as a build argument, so the
   layers above it stay cacheable. The derived Dockerfile depends on the end of Runner's
-  Dockerfile (`USER pwuser`, `WORKDIR /workspace`). `design.md` will decide how to guard that
-  dependency, for example by checking inside the Machine that `agent-validator --version` reports
-  the frozen SHA before the suite starts, and failing the attempt as pre-suite otherwise. The
+  Dockerfile (`USER pwuser`, `WORKDIR /workspace`), so the tail restores whatever the last `USER`
+  and `WORKDIR` were. The image build itself checks that `agent-validator --version` reports the
+  frozen SHA and fails otherwise, so a mismatch goes through the existing build-failure path
+  (pre-suite failure, no digest, rebuild on relaunch) rather than reusing a bad image. The
   alternative was a build argument added to Runner's Dockerfile. It was rejected because it
   requires a change in another repository.
 - **Freezing.** Admission resolves `agent_validator_ref` with the existing
   `runtime._resolve_revision` against the local Validator checkout, the same way it resolves the
-  Runner. The eval request grammar does not change, so an individual request cannot override the
-  Validator ref yet.
+  Runner. It also freezes the checkout's GitHub origin, normalized to a credential-free HTTPS URL
+  the Fly builder can fetch; any other origin holds admission as a readiness failure. The eval
+  request grammar does not change, so an individual request cannot override the Validator ref
+  yet.
 
 ## Out of Scope
 
@@ -165,20 +171,24 @@ None.
 ## Impact
 
 - **Code:**
-  - `scripts/deploy.sh` and a new `scripts/update-validator.sh`.
+  - `scripts/deploy.sh`, a shared `scripts/update-checkout.sh` behind `update-runner.sh` and a new
+    `update-validator.sh`, a sourced `scripts/validator.sh`, and `host_slots_free` in
+    `scripts/slots.sh`.
   - `src/agent_factory/config.py`: the new repository key and eval default.
   - `src/agent_factory/work_kinds/eval/`: freezing, reporting, and the `Refs` field.
   - `src/agent_factory/fly/transport.py` and `fly/launcher.py`: the derived Dockerfile, the
     build argument, and provenance.
   - Host launch provenance for fixes and features (`work_kinds/pull_request/`, `backends/host.py`).
-  - `operations.py`: `doctor`.
+  - `operations.py`: `doctor` and the `host attempts:` status line.
 - **Configuration:** `config/codagent.toml` (`agent_validator_ref`) and
   `config/local.example.toml`.
-- **Tests:** a counterpart of `test_update_runner.py` for the Validator, deploy slot tests, Fly
-  build-command tests, eval freeze and reporting tests, and host provenance tests.
+- **Tests:** `test_update_runner.py` parametrized over both update scripts, deploy Validator-step
+  and slot tests, Fly build-command tests, eval freeze and reporting tests, and host provenance
+  tests.
 - **Operations:**
   - Deploys also move the Validator build to `origin/main`.
   - Fly image builds take somewhat longer, because the Validator is built from source.
   - Eval scores can shift when the Validator changes. Reports now say which Validator produced
     each result.
-  - The host needs `bun` to build the Validator. `doctor` reports it when it is missing.
+  - The host needs `bun` to build the Validator. When the Validator step will run and `bun` is
+    missing, the deploy stops before pausing the factory and names `bun` and `--no-validator`.
