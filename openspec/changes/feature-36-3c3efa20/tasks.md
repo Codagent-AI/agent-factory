@@ -88,7 +88,7 @@ The decision log is `decisions.md`, and the automated obligations are in `test-p
   that `test-plan.md` names.
 - `uv run ruff format --check . && uv run ruff check .`, `uv run pyright`, `uv build`, and
   `uv run pytest` pass.
-- `openspec validate feature-36-a9a6c89a --strict` passes.
+- `openspec validate feature-36-3c3efa20 --strict` passes.
 - Claims admitted before the change (no `revisions.validator`) still plan, build, and report
   exactly as before.
 - No test or implementation step runs `scripts/deploy.sh`, `launchctl`, or real Fly commands,
