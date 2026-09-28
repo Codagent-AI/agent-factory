@@ -43,6 +43,21 @@ def repository(tmp_path: Path) -> tuple[Path, Path]:
     return repo, remote
 
 
+# Like gh with a token that cannot read org Projects: `gh pr edit` fails because it
+# reads the pull request's project items, while the REST update writes the body.
+GH_STUB = (
+    '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
+    '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
+    'elif [ "$1" = pr ] && [ "$2" = edit ]; then\n'
+    "  echo 'GraphQL: Resource not accessible by personal access token"
+    " (repository.pullRequest.projectItems)' >&2; exit 1\n"
+    'elif [ "$1" = api ]; then\n'
+    '  [ -z "${GH_API_ERROR:-}" ] || { echo "$GH_API_ERROR" >&2; exit 1; }\n'
+    '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$GH_BODY" ;; esac; done\n'
+    "fi\n"
+)
+
+
 def test_feature_files_are_listed_and_exist() -> None:
     for name in (
         "factory-feature-v1.0.yaml",
@@ -245,11 +260,7 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     import os
@@ -419,11 +430,7 @@ def test_annotate_pr_links_items_to_github_or_the_evidence_section(tmp_path: Pat
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     result = subprocess.run(
@@ -480,11 +487,7 @@ def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, 
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "title": "Add a flag"}))
     stub = tmp_path / "gh"
-    stub.write_text(
-        '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = list ]; then\n'
-        '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'\n'
-        'else cat "$5" > "$GH_BODY"; fi\n'
-    )
+    stub.write_text(GH_STUB)
     stub.chmod(0o755)
     body = tmp_path / "body.md"
     result = subprocess.run(
@@ -502,6 +505,54 @@ def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, 
     )
     assert result.returncode == 0, result.stderr
     return body.read_text()
+
+
+def test_annotate_pr_reports_why_the_description_update_failed(tmp_path: Path) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GH_BODY": str(tmp_path / "body.md"),
+            "GH_API_ERROR": "HTTP 422: body is too long (maximum is 65536 characters)",
+        },
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode != 0
+    assert "body is too long" in result.stderr
+    assert "pull request #9" in result.stderr
 
 
 def shown_review_items(rendered: str) -> list[str]:

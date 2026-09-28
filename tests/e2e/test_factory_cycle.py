@@ -825,6 +825,34 @@ eval_handler.plan_attempt = fail_plan
         store.close()
 
 
+def test_a_launch_clears_the_claims_earlier_readiness_hold(tmp_path: Path) -> None:
+    """A readiness failure that has cleared must not keep showing in status."""
+    config, _board, env, _shared = _setup(tmp_path)
+    before_cli = """
+from agent_factory.suites.and_scene import WorktreeError
+def fail_plan(*args, **kwargs):
+    raise WorktreeError('planning failed before launch')
+from agent_factory.work_kinds.eval import handler as eval_handler
+eval_handler.plan_attempt = fail_plan
+"""
+    _cli(config, env, "tick", before_cli=before_cli)
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        claim = store.all_claims()[0]
+        assert store.get_hold(claim.id, "readiness") is not None
+    finally:
+        store.close()
+
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        attempts = store.runs_for_claim(claim.id)
+        assert len(attempts) == 2 and attempts[-1].status != "failed"
+        assert store.get_hold(claim.id, "readiness") is None
+    finally:
+        store.close()
+
+
 def _add_bug_card(board: Path, shared: SharedConfig, *, repository: str, item_id: str) -> None:
     data: Any = json.loads(board.read_text())
     item: dict[str, Any] = {

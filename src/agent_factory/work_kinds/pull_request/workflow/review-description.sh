@@ -40,9 +40,17 @@ elif saved.is_file() and (original := saved.open(newline="").read()).strip():
         if current != original:
             # Keep what is replaced, so an edit made during the round can be recovered.
             (artifacts / "pr-description-overwritten.md").write_text(current, newline="")
-            subprocess.run(["gh", "pr", "edit", number, "--body-file", str(saved)], check=True)
+            # REST, not `gh pr edit`, which also reads project items (see annotate-pr.py).
+            subprocess.run(
+                [
+                    "gh", "api", "--method", "PATCH", f"repos/{{owner}}/{{repo}}/pulls/{number}",
+                    "-F", f"body=@{saved}", "--silent",
+                ],
+                capture_output=True, text=True, check=True,
+            )
     except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
-        message = f"could not restore the description of pull request #{number}: {error}"
+        detail = getattr(error, "stderr", None) or error
+        message = f"could not restore the description of pull request #{number}: {detail}"
         (artifacts / "description-restore-failed").write_text(message + "\n")
         raise SystemExit(message) from error
 PY

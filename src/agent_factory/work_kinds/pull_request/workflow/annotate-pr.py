@@ -250,17 +250,29 @@ def main() -> None:
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
-    edit = ["gh", "pr", "edit", str(number), "--body-file", str(body)]
-    last_returncode = 1
+    # The REST update, not `gh pr edit`: that also reads the pull request's project
+    # items, which a token without org Projects access cannot do once the PR is on a board.
+    edit = [
+        "gh",
+        "api",
+        "--method",
+        "PATCH",
+        f"repos/{{owner}}/{{repo}}/pulls/{number}",
+        "-F",
+        f"body=@{body}",
+        "--silent",
+    ]
+    error = ""
     for attempt in range(3):
-        result = subprocess.run(edit, check=False)
-        last_returncode = result.returncode
+        result = subprocess.run(edit, check=False, capture_output=True, text=True)
         if result.returncode == 0:
             break
+        error = result.stderr.strip() or f"gh exited with status {result.returncode}"
+        print(error, file=sys.stderr)
         if attempt < 2:
             time.sleep(attempt + 1)
     else:
-        raise subprocess.CalledProcessError(last_returncode, edit)
+        raise SystemExit(f"could not update the description of pull request #{number}: {error}")
 
 
 if __name__ == "__main__":

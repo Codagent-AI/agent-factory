@@ -158,6 +158,7 @@ def cycle(state: Path, config_path: Path) -> None:
                             _launch(
                                 state,
                                 config_path,
+                                store,
                                 controller,
                                 handler,
                                 local,
@@ -196,7 +197,15 @@ def cycle(state: Path, config_path: Path) -> None:
                         run, preparation = admitted
                         claim = store.get_claim(claim.id) or claim
                         _launch(
-                            state, config_path, controller, handler, local, claim, run, preparation
+                            state,
+                            config_path,
+                            store,
+                            controller,
+                            handler,
+                            local,
+                            claim,
+                            run,
+                            preparation,
                         )
                         continue
                 gesture = handler.gesture(claim, card, []) if handler is not None else None
@@ -267,7 +276,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     # found); present that immediately rather than on the next poll.
                     _report(store, controller, client, shared, card, claim.id, handler)
                     continue
-                _launch(state, config_path, controller, handler, local, claim, run, preparation)
+                _launch(
+                    state, config_path, store, controller, handler, local, claim, run, preparation
+                )
                 _report(store, controller, client, shared, card, claim.id, handler)
                 break
             except (WorktreeError, ReadinessError) as error:
@@ -288,6 +299,7 @@ def _hold_for_readiness(store: ClaimStore, claim_id: str, error: Exception) -> N
 def _launch(
     state: Path,
     config_path: Path,
+    store: ClaimStore,
     controller: Controller,
     handler: WorkKindHandler,
     local: LocalConfig,
@@ -317,6 +329,9 @@ def _launch(
         # Preserve worktree readiness handling and unexpected error tracebacks.
         if not isinstance(error, (OSError, ReadinessError, RecoveryStateError)):
             raise
+        return
+    # The attempt launched, so an earlier readiness failure no longer blocks the claim.
+    store.clear_setting("claim-hold", f"{claim.id}:readiness")
 
 
 def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
