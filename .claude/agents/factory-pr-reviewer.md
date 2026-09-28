@@ -98,7 +98,9 @@ For each real defect in the tooling that this PR does not fix, and that is not a
 1. Create a Bug issue in the repository that owns the defect: `gh issue create`, then set the native type **Bug**. The body gives the evidence (run id, artifact path, log excerpt, and PR link), the cause, and a proposed fix.
 2. Assign it to the factory:
    `~/.agent-factory/releases/current/.venv/bin/python .claude/skills/factory-assign/assign.py OWNER/REPO N --apply fix`
-   Run this from `/Users/paul/codagent/agent-factory`. The helper sets Priority to Low only when Priority is empty. Set Medium when the defect wastes runs, using the `updateIssueFieldValue` mutation with Paul's `gh` login on field `IFSS_kgDOAmcJrg` with option Medium `IFSSO_kgDOBDQ5DA`. Use High `IFSSO_kgDOBDQ5Cw` only when it blocks work.
+   Run this from `/Users/paul/codagent/agent-factory`. The helper sets Priority to Low only when Priority is empty. Set Medium when the defect wastes runs or corrupts data, with Paul's `gh` login:
+   `gh api graphql -f query='mutation($i:ID!){updateIssueFieldValue(input:{issueId:$i, issueField:{fieldId:"IFSS_kgDOAmcJrg", singleSelectOptionId:"IFSSO_kgDOBDQ5DA"}}){issue{id}}}' -f i=<issue node id>`
+   Use High (`IFSSO_kgDOBDQ5Cw`) only when it blocks work.
 3. Link the new issue from the review, or from a PR comment if you are not posting a review. A comment starts a round too, so add the link to the review rather than posting separately.
 
 Do not file issues for defects that belong to this PR. Those go in the review.
