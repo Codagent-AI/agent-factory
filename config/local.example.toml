@@ -5,6 +5,7 @@ storage_root = "~/.agent-factory"
 [repositories]
 agent_evals = "/srv/src/agent-evals"
 agent_runner = "/srv/src/agent-runner"
+# agent_validator = "/srv/src/agent-validator" # defaults to sibling of agent_runner
 agent_skills = "/srv/src/agent-skills"
 
 [schedule]

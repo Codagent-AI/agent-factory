@@ -165,7 +165,8 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "    except (OSError, subprocess.TimeoutExpired):",
             '        return "unavailable"',
             'with open(sys.argv[1], "w") as output:',
-            '    json.dump({name: version(name) for name in ("claude", "codex")}, output)',
+            "    json.dump({name: version(name) for name in "
+            '("claude", "codex", "agent-validator")}, output)',
             "PY",
             'touch "$(dirname "$0")/setup-complete"',
             suite_script,

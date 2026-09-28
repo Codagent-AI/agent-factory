@@ -473,7 +473,13 @@ def _kind_failures(
             "eval-fly" if getattr(local, "eval_execution", "docker") == "fly" else "eval-sandbox"
         )
         failures = [
-            d for d in diagnostics if d.group in {"shared", "eval", mode_group} and not d.available
+            d
+            for d in diagnostics
+            if d.group in {"shared", "eval", mode_group}
+            and not d.available
+            # This checkout is needed only to freeze a new Fly claim. Existing claims
+            # already carry their revisions and may launch without the checkout.
+            and d.name != "Agent Validator checkout"
         ]
         if getattr(local, "eval_execution", "docker") == "fly":
             mismatch = next(
