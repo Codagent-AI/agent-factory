@@ -177,3 +177,27 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
         assert path.is_file()
         assert path.stat().st_mode & 0o111
     assert "{{base_head}}" in text
+
+
+@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
+    text = (PACKAGE / workflow).read_text()
+    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    for required in (
+        "merge-conflict.json",
+        "conflicted",
+        "git commit --no-edit",
+        "agent-validator run",
+        "follow-up commits",
+        "any file, including new files",
+        "reset",
+        "rebase",
+        "squash",
+        "amend",
+        "merge-stop.json",
+        "questions",
+        "direction_summary",
+        "leave the merge in progress",
+    ):
+        assert required in prompt
+    assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")

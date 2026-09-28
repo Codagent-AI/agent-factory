@@ -139,6 +139,22 @@ def test_int002_merge_topologies_and_fallback(tmp_path: Path, case: str) -> None
     assert effective == ("verify" if case == "finalize_merged" else resume)
 
 
+def test_continuation_resumes_own_branch_when_prior_was_deleted(tmp_path: Path) -> None:
+    repo, remote = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    continuation_head = commit_file(repo, "plan.txt", "planned\n", "prior plan")
+    git(repo, "push", "origin", "prior:refs/heads/claim")
+    git(repo, "checkout", "main")
+    base = commit_file(repo, "base.txt", "current\n", "advance target")
+    evidence = tmp_path / "evidence"
+
+    assert prepare(repo, evidence, "claim", admission, "implement", "prior", base) == "implement"
+    assert git(repo, "show", "-s", "--format=%P", "HEAD") == f"{continuation_head} {base}"
+    assert not (evidence / "resume.json").exists()
+    assert git(remote, "rev-parse", "refs/heads/claim") == continuation_head
+
+
 @pytest.mark.parametrize(
     "state",
     [
@@ -240,6 +256,76 @@ def test_int005_merge_guard_states(tmp_path: Path, state: str) -> None:
     else:
         assert result.returncode != 0, state
         assert (evidence / "base-merge.json").read_text() == original
+
+
+def test_merge_guard_accepts_follow_up_changes_outside_conflicts(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    commit_file(repo, "choice.txt", "prior\n", "prior choice")
+    commit_file(repo, "unconflicted.txt", "before\n", "unconflicted work")
+    git(repo, "push", "origin", "prior")
+    git(repo, "checkout", "main")
+    base = commit_file(repo, "choice.txt", "target\n", "target choice")
+    evidence = tmp_path / "evidence"
+    prepare(repo, evidence, "claim", admission, "implement", "prior", base)
+    (repo / "choice.txt").write_text("both\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "--no-edit")
+    resolution = git(repo, "rev-parse", "HEAD")
+    (repo / "unconflicted.txt").write_text("after\n")
+    (repo / "new.txt").write_text("new\n")
+    git(repo, "add", "unconflicted.txt", "new.txt")
+    git(repo, "commit", "-m", "validator fix")
+    follow_up = git(repo, "rev-parse", "HEAD")
+
+    checked = run(str(PACKAGE / "check-merge.sh"), str(evidence), cwd=repo)
+    assert checked.returncode == 0, checked.stderr
+    record = json.loads((evidence / "base-merge.json").read_text())
+    assert record["status"] == "resolved"
+    assert record["merge_commit"] == resolution
+    assert record["follow_up_commits"] == [follow_up]
+
+
+def test_merge_guard_allows_markdown_setext_underline(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    commit_file(repo, "choice.md", "Original\n", "common")
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    commit_file(repo, "choice.md", "Prior\n", "prior choice")
+    git(repo, "push", "origin", "prior")
+    git(repo, "checkout", "main")
+    base = commit_file(repo, "choice.md", "Target\n", "target choice")
+    evidence = tmp_path / "evidence"
+    prepare(repo, evidence, "claim", admission, "implement", "prior", base)
+    (repo / "choice.md").write_text("Merged\n=======\n")
+    git(repo, "add", "choice.md")
+    git(repo, "commit", "--no-edit")
+
+    checked = run(str(PACKAGE / "check-merge.sh"), str(evidence), cwd=repo)
+    assert checked.returncode == 0, checked.stderr
+
+
+def test_merge_guard_rejects_markers_added_in_follow_up(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    commit_file(repo, "choice.txt", "prior\n", "prior choice")
+    git(repo, "push", "origin", "prior")
+    git(repo, "checkout", "main")
+    base = commit_file(repo, "choice.txt", "target\n", "target choice")
+    evidence = tmp_path / "evidence"
+    prepare(repo, evidence, "claim", admission, "implement", "prior", base)
+    (repo / "choice.txt").write_text("both\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "--no-edit")
+    commit_file(
+        repo, "new.txt", "<<<<<<< branch\nprior\n=======\ntarget\n>>>>>>> base\n", "bad fix"
+    )
+
+    checked = run(str(PACKAGE / "check-merge.sh"), str(evidence), cwd=repo)
+    assert checked.returncode != 0
+    assert "conflict markers remain" in checked.stderr
 
 
 def test_fresh_definition_merge_stop_restarts_definition(tmp_path: Path) -> None:

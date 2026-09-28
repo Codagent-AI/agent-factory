@@ -706,7 +706,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
 ) -> None:
     """The first attempt records continuation_head as ""; the retry must still read checkpoints."""
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -715,7 +715,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
     _git("add", "base", cwd=work)
     _git("commit", "-m", "base", cwd=work)
     base_sha = _git("rev-parse", "HEAD", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(
         ClaimDraft(
@@ -800,7 +800,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     prior claim's plan: restarting from the target would redo definition and then fail
     to push over the branch it already pushed (#15 claim d5b85ace)."""
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -809,7 +809,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     _git("add", "base", cwd=work)
     _git("commit", "-m", "base", cwd=work)
     target_branch = _git("branch", "--show-current", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     _git("checkout", "-b", "factory/feature-12-prior", cwd=work)
     (work / "plan").write_text("prior plan")
     _git("add", "plan", cwd=work)
@@ -820,7 +820,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     _git("add", "target", cwd=work)
     _git("commit", "-m", "target", cwd=work)
     target_head = _git("rev-parse", "HEAD", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(
         ClaimDraft(
@@ -1068,7 +1068,7 @@ def test_int006_feature_review_admission_names_pr_and_feedback(
 
 def test_checkpoint_ignores_later_target_history_after_merge(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -1101,7 +1101,7 @@ def test_checkpoint_ignores_later_target_history_after_merge(tmp_path: Path) -> 
 
 def test_int006_resume_points_survive_two_target_merges(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -1201,7 +1201,7 @@ def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
     tmp_path: Path, stopped_step: str, expected_resume: str
 ) -> None:
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)

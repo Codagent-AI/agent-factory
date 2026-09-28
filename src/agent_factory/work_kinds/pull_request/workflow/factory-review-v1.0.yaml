@@ -57,8 +57,12 @@ steps:
       Follow `.agent-runner/workflows/factory-define-rules.md`. Read
       {{artifact_dir}}/merge-conflict.json and {{review_file}} for context and
       eligible answers. Resolve all conflicts, preserving both sides' intent.
-      Run agent-validator run, then finish with git commit --no-edit. If
-      uncertain, write {{artifact_dir}}/merge-stop.json with non-empty
+      In the merge commit, edit only paths listed under conflicted in
+      merge-conflict.json. Never reset, rebase, squash, or amend. Finish the
+      merge with git commit --no-edit first. Then run agent-validator run and
+      commit any fixes it needs as separate follow-up commits. Those commits may
+      touch any file, including new files. If the conflict cannot be resolved
+      within these rules, write {{artifact_dir}}/merge-stop.json with non-empty
       questions and direction_summary and leave the merge in progress.
   - id: check-merge
     script: check-merge.sh

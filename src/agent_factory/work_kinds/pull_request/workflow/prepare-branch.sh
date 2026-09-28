@@ -26,6 +26,9 @@ if [ -n "$prior" ]; then
   if git fetch origin "refs/heads/$prior:refs/remotes/origin/$prior" 2>/dev/null; then
     git checkout -B "$branch" "refs/remotes/origin/$prior" >&2
     merge_base "${base_head:-$target}" "$target" "$branch" "$artifact_dir" "$resume" "$prior"
+  elif git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
+    git checkout -B "$branch" "refs/remotes/origin/$branch" >&2
+    merge_base "${base_head:-$target}" "$target" "$branch" "$artifact_dir" "$resume" "$prior"
   else
     fallback='prior branch unavailable'
   fi

@@ -56,7 +56,7 @@ The factory SHALL select open issues from configured fix targets with the config
 
 ### Requirement: Resolve feature branches once per claim
 
-A new feature claim SHALL resolve the configured branches of the target repository, Agent Runner, and Agent Skills to commits at admission and record those commits on the claim. Configuration SHALL name branches, not commits. The claim's attempts, including technical recovery retries and attempts resumed after `needs-input`, SHALL use the recorded commits. The `Refs` field SHALL render as `target@<7> runner@<7> skills@<7>`. Only a new claim SHALL re-resolve branch heads.
+A new feature claim SHALL resolve the configured branches of the target repository, Agent Runner, and Agent Skills to commits at admission and record those commits on the claim. Configuration SHALL name branches, not commits. The recorded target commit SHALL be where the claim's branch starts. Each resume SHALL merge the target branch's current head into the claim's branch, as required by `factory-feature-execution`. The claim's attempts, including technical recovery retries and attempts resumed after `needs-input`, SHALL keep the recorded Agent Runner and Agent Skills commits frozen. The `Refs` field SHALL render as `target@<7> runner@<7> skills@<7>`. Only a new claim SHALL re-resolve the Runner and Skills branch heads or record a new target commit at admission.
 
 #### Scenario: Admit a feature
 
@@ -67,7 +67,7 @@ A new feature claim SHALL resolve the configured branches of the target reposito
 #### Scenario: Resume after the target branch advanced
 
 - **WHEN** the target branch receives new commits while a feature claim is blocked, and the claim is then re-admitted
-- **THEN** the resumed attempt uses the commits recorded at admission
+- **THEN** the resumed attempt merges the target branch's current head into the claim's branch while keeping its recorded target, Runner, and Skills commits
 
 ### Requirement: Recognize feature retry gestures
 
