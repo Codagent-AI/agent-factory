@@ -417,6 +417,25 @@ def test_registry_list_follows_internal_repository_pagination_link(fly: Harness)
     )
 
 
+def test_registry_list_refuses_pagination_into_another_repository(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_link_path = "/v2/other-repo/tags/list"
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    # A partial listing could hide a tag sharing a claim's digest, so it is an error.
+    with pytest.raises(FlyApiError, match="unsafe next page"):
+        client.list_tags("registry.fly.io/app")
+    assert not any(
+        str(request["path"]).startswith("/v2/other-repo/") for request in fly.api.requests
+    )
+
+
 def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
     digest = "sha256:" + "a" * 64
     fly.api.registry_enabled = True

@@ -350,6 +350,9 @@ class FlyMachinesClient:
         url = f"{self.registry_base_url}{path}"
         tags: list[str] = []
         visited: set[str] = set()
+        # Fly names the repository by an internal id in the listing; every page must name the
+        # same one, so a page from another repository cannot hide a tag sharing a digest.
+        listed_name: str | None = None
         while True:
             if url in visited:
                 raise FlyApiError(path, detail="registry repeated a tag-list page")
@@ -376,6 +379,13 @@ class FlyMachinesClient:
             raw_tags = cast(Mapping[str, object], data).get("tags")
             if raw_tags is not None and not isinstance(raw_tags, list):
                 raise FlyApiError(path, detail="registry returned an invalid tag list")
+            name = cast(Mapping[str, object], data).get("name")
+            if name is not None and not isinstance(name, str):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            if listed_name is None:
+                listed_name = name
+            elif name != listed_name:
+                raise FlyApiError(path, detail="registry changed repository between pages")
             values = cast(list[object], raw_tags) if raw_tags is not None else []
             tags.extend(tag for tag in values if isinstance(tag, str))
             match = re.search(r'<([^>]+)>;\s*rel="next"', link or "")
@@ -384,9 +394,11 @@ class FlyMachinesClient:
             next_url = urljoin(url, match.group(1))
             base = urlsplit(self.registry_base_url)
             next_page = urlsplit(next_url)
+            next_repo = re.fullmatch(r"/v2/([^/]+)/tags/list", next_page.path)
             if (
                 (next_page.scheme, next_page.netloc) != (base.scheme, base.netloc)
-                or not re.fullmatch(r"/v2/[^/]+/tags/list", next_page.path)
+                or next_repo is None
+                or next_repo.group(1) not in {repo, listed_name}
                 or next_page.fragment
             ):
                 raise FlyApiError(path, detail="registry returned an unsafe next page")
