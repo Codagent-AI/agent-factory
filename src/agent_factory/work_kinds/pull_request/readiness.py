@@ -371,9 +371,19 @@ def _validator_diagnostics(local: LocalConfig) -> list[Diagnostic]:
     if plist.is_file():
         try:
             with plist.open("rb") as stream:
-                document = plistlib.load(stream)
-            service_path = document.get("EnvironmentVariables", {}).get(
-                "PATH", "/usr/bin:/bin:/usr/sbin:/sbin"
+                document: object = plistlib.load(stream)
+            fields: Mapping[str, object] = (
+                cast(Mapping[str, object], document) if isinstance(document, dict) else {}
+            )
+            raw_variables = fields.get("EnvironmentVariables")
+            variables: Mapping[str, object] = (
+                cast(Mapping[str, object], raw_variables) if isinstance(raw_variables, dict) else {}
+            )
+            configured_path = variables.get("PATH")
+            service_path = (
+                configured_path
+                if isinstance(configured_path, str)
+                else "/usr/bin:/bin:/usr/sbin:/sbin"
             )
             service_found = shutil.which("agent-validator", path=service_path)
             plist_actual = Path(service_found).resolve() if service_found else None
@@ -405,7 +415,12 @@ def _validator_diagnostics(local: LocalConfig) -> list[Diagnostic]:
             )
             if result.returncode == 0:
                 origin = result.stdout.strip()
-    freshness = "current" if commit == origin else f"{commit} is behind origin/main ({origin})"
+    if commit == "unavailable" or origin == "unavailable":
+        freshness = f"unknown (build {commit}, origin/main {origin})"
+    elif commit == origin:
+        freshness = "current"
+    else:
+        freshness = f"{commit} is behind origin/main ({origin})"
     return [build, Diagnostic("host agent-validator freshness", True, freshness, "", "fix-host")]
 
 

@@ -714,6 +714,33 @@ def test_validator_doctor_checks_both_paths_and_reports_staleness(
     wrong = _validator_diagnostics(local)
     assert not wrong[0].available
     assert str(npm) in wrong[0].detail and str(build) in wrong[0].detail
+    assert wrong[1].detail == f"unknown (build unavailable, origin/main {newer})"
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+        == newer
+    )
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "origin/main"], text=True
+        ).strip()
+        == newer
+    )
+    assert (bin_dir / "agent-validator").resolve() == npm
+    assert (plist_bin / "agent-validator").resolve() == npm
+
+    build.write_text("#!/bin/sh\necho 1.14.0\n")
+    unknown = _validator_diagnostics(local)
+    assert unknown[1].available and unknown[1].detail.startswith("unknown (build unavailable")
+    with plist.open("wb") as stream:
+        plistlib.dump({"EnvironmentVariables": []}, stream)
+    malformed = _validator_diagnostics(local)
+    assert not malformed[0].available
+    assert "unknown" in malformed[1].detail
+    with plist.open("wb") as stream:
+        plistlib.dump([], stream)
+    assert not _validator_diagnostics(local)[0].available
 
 
 @pytest.mark.parametrize(

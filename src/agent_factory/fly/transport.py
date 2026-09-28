@@ -212,18 +212,24 @@ def build_claim_image(
         revision, source = validator
         dockerfile = runner / "docker/dev/Dockerfile"
         original = dockerfile.read_text(encoding="utf-8")
-        user = next(
+        lines = original.splitlines()
+        final_from = next(
             (
-                line
-                for line in reversed(original.splitlines())
-                if line.lstrip().upper().startswith("USER ")
+                index
+                for index in reversed(range(len(lines)))
+                if lines[index].lstrip().upper().startswith("FROM ")
             ),
+            None,
+        )
+        final_stage = lines[final_from + 1 :] if final_from is not None else []
+        user = next(
+            (line for line in reversed(final_stage) if line.lstrip().upper().startswith("USER ")),
             None,
         )
         workdir = next(
             (
                 line
-                for line in reversed(original.splitlines())
+                for line in reversed(final_stage)
                 if line.lstrip().upper().startswith("WORKDIR ")
             ),
             None,
@@ -232,6 +238,8 @@ def build_claim_image(
             raise FlyTransportError(
                 f"Runner Dockerfile lacks a final USER or WORKDIR: {dockerfile}"
             )
+        if not workdir.lstrip().split(maxsplit=1)[1].startswith("/"):
+            raise FlyTransportError(f"Runner Dockerfile has a relative final WORKDIR: {dockerfile}")
         tail = f"""
 USER root
 ARG AGENT_VALIDATOR_REVISION

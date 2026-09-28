@@ -285,6 +285,13 @@ def test_doctor_under_docker_still_runs_the_docker_group(site: Site) -> None:
     assert site.api.requests == []
 
 
+def test_docker_only_doctor_has_no_validator_diagnostic(site: Site) -> None:
+    site.stub("docker", exit_code=0)
+    diagnostics = doctor(site.config(evals="docker", fixes="docker"))
+    assert not any("Validator" in item.name for item in diagnostics)
+    assert "Validator" not in format_doctor(diagnostics)
+
+
 def test_mode_neutral_eval_checks_sit_in_the_eval_group_under_both_modes(site: Site) -> None:
     site.stub("docker", exit_code=0)
 

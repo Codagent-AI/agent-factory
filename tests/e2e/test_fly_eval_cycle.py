@@ -24,7 +24,8 @@ import pytest
 
 from agent_factory.config import LocalConfig
 from agent_factory.fly.guest import guest_init_script
-from agent_factory.store import ClaimStore, Run
+from agent_factory.store import ClaimDraft, ClaimStore, Run
+from agent_factory.work_kinds.eval import EvalDefaults, parse_request
 from tests.e2e.test_factory_cycle import (
     _field_value,  # pyright: ignore[reportPrivateUsage]
     _git,  # pyright: ignore[reportPrivateUsage]
@@ -477,6 +478,50 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     status = factory.cli("status")
     assert "Machine:" not in status
     assert "blocking condition" not in status
+
+
+def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -> None:
+    board = json.loads(factory.board.read_text())
+    issue = board["items"][0]["content"]
+    issue["body"] = str(issue["body"]).replace("repetitions=3", "repetitions=1")
+    factory.board.write_text(json.dumps(board))
+    defaults = EvalDefaults(
+        "main",
+        "main",
+        {role: "codex:x:medium" for role in ("lead", "implementor", "tester")},
+        False,
+        1,
+        execution="fly",
+    )
+    request = parse_request(str(issue["body"]), defaults)
+    root = factory.config.parent
+    frozen = request.freeze(
+        runner_sha=_git(root / "runner", "rev-parse", "HEAD"),
+        skills_sha=_git(root / "skills", "rev-parse", "HEAD"),
+        harness_sha=_git(root / "evals", "rev-parse", "HEAD"),
+        suite="and-scene",
+    ).payload
+    claim = factory.store.create_claim(
+        ClaimDraft(
+            factory.shared.routing.eval_source, 1, "I1", "P1", "eval", request.fingerprint, frozen
+        )
+    )
+    factory.store.set_claim_lifecycle(claim.id, "active", {})
+    factory.cli("tick")
+    run = factory.active()
+    _wait(lambda: "machine-1" in factory.api.machines, factory)
+    _wait(lambda: factory.run(run.id).progress.get("checkpoint_seen") is True, factory)
+    factory.guests.finish("machine-1", REVIEWABLE)
+    _wait(lambda: factory.run(run.id).status == "completed", factory)
+    factory.cli("tick")
+    factory.cli("tick")
+    refs = str(_field_value(factory.board, factory.shared.project.refs.id))
+    assert all(f"{name}@" in refs for name in ("runner", "skills", "evals"))
+    assert "validator@" not in refs
+    assert any("published npm release (not pinned)" in comment for comment in factory.comments())
+    saved = factory.store.get_claim(claim.id)
+    assert saved is not None
+    assert "validator" not in cast(dict[str, object], saved.frozen_spec["revisions"])
 
 
 def _identity_pid(identity: dict[str, object]) -> int | None:

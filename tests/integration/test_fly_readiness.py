@@ -347,6 +347,70 @@ token_file = "{token}"
     assert launcher[0].group == "eval-fly"
 
 
+def test_fly_validator_checkout_diagnostic_is_read_only(tmp_path: Path) -> None:
+    from agent_factory.fly.backend import FlyMachineBackend
+
+    token = tmp_path / "token"
+    token.write_text("token-value\n")
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(checkout)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "-c",
+            "user.name=T",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ],
+        check=True,
+    )
+    head = subprocess.check_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+    ).strip()
+    fly_settings = (
+        '[eval]\nexecution = "fly"\n[fly]\napp = "factory"\n'
+        f'image = "registry.fly.io/factory:base"\ntoken_file = "{token}"\n'
+    )
+    config = LocalConfig.from_toml(
+        _local(fly_settings).replace(
+            'agent_skills = "/tmp/skills"',
+            f'agent_skills = "/tmp/skills"\nagent_validator = "{checkout}"',
+        )
+    )
+    checks = FlyMachineBackend().readiness(config, cast(SharedConfig, object()))
+    validator = next(item for item in checks if item.name == "Agent Validator checkout")
+    assert validator.available and validator.group == "eval-fly"
+    assert (
+        subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True
+        ).strip()
+        == head
+    )
+    assert not (checkout / "dist").exists()
+    missing = tmp_path / "missing"
+    missing_config = LocalConfig.from_toml(
+        _local(fly_settings).replace(
+            'agent_skills = "/tmp/skills"',
+            f'agent_skills = "/tmp/skills"\nagent_validator = "{missing}"',
+        )
+    )
+    missing_check = next(
+        item
+        for item in FlyMachineBackend().readiness(missing_config, cast(SharedConfig, object()))
+        if item.name == "Agent Validator checkout"
+    )
+    assert not missing_check.available and missing_check.group == "eval-fly"
+    assert not missing.exists()
+
+
 @pytest.mark.parametrize(
     "origin",
     [

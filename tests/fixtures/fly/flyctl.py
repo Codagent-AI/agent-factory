@@ -63,6 +63,11 @@ if args[:1] == ["deploy"]:
     build_args = [
         args[index + 1] for index, value in enumerate(args[:-1]) if value == "--build-arg"
     ]
+    if os.environ.get("FAKE_FLY_BUILD_FAIL"):
+        sys.stderr.write(
+            "agent-validator version mismatch: built commit differs from frozen revision\n"
+        )
+        sys.exit(1)
     claim = next(
         value.split("=", 1)[1]
         for value in build_args

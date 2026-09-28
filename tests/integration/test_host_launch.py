@@ -9,9 +9,11 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.supervisor import _plan_document  # pyright: ignore[reportPrivateUsage]
 from agent_factory.work_kinds.pull_request import launch
@@ -132,6 +134,108 @@ class Built:
             recorded_revisions={"runner": "a" * 40, "skills": "b" * 40},
         )
         self.wrapper = self.private / "host-run.sh"
+
+
+def validator_fixture(tmp_path: Path, bin_dir: Path, output: str) -> tuple[Path, str, Path]:
+    checkout = tmp_path / "validator"
+    checkout.mkdir()
+    _git(checkout, "init", "-q", "-b", "main")
+    _git(
+        checkout,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "old",
+    )
+    old = _git(checkout, "rev-parse", "HEAD")
+    _git(
+        checkout,
+        "-c",
+        "user.name=T",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "new",
+    )
+    executable = bin_dir / "agent-validator"
+    executable.write_text(f"#!/bin/sh\n{output}\n")
+    executable.chmod(0o755)
+    return checkout, old, executable
+
+
+def test_fix_host_plan_records_reported_validator_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    bin_dir = built.runner.parent
+    checkout, old, executable = validator_fixture(tmp_path, bin_dir, "echo placeholder")
+    executable.write_text(f"#!/bin/sh\necho '{old[:7]} old'\n")
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    plan = launch.build_host_plan(
+        evidence=built.evidence,
+        repo_clone=built.clone,
+        credential_copy=built.credential,
+        roles=ROLES,
+        branch="factory/fix-7-claim",
+        contract=CONTRACT,
+        validator_checkout=checkout,
+    )
+    expected = {
+        "validator_executable": str(executable.resolve()),
+        "validator_version": f"{old[:7]} old",
+        "validator_commit": old,
+    }
+    assert {key: plan.ownership_hints[key] for key in expected} == expected
+    provenance = json.loads((built.evidence / "host-provenance.json").read_text())
+    assert {key: provenance[key] for key in expected} == expected
+    assert old in provenance["note"]
+    record = _plan_document(plan)
+    hints = cast(dict[str, object], record["ownership_hints"])
+    assert {key: hints[key] for key in expected} == expected
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 7, "I7", "P7", "fix", "request", {}))
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(built.evidence))
+    store.configure_run(run.id, plan=record, limits={})
+    saved = store.get_run(run.id)
+    assert saved is not None
+    saved_hints = cast(dict[str, object], saved.plan["ownership_hints"])
+    assert {key: saved_hints[key] for key in expected} == expected
+    store.close()
+
+
+@pytest.mark.parametrize("mode", ["npm", "failure", "missing"])
+def test_fix_plan_tolerates_unreported_validator_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    bin_dir = built.runner.parent
+    output = "echo 1.14.0" if mode == "npm" else "exit 7"
+    checkout, _old, executable = validator_fixture(tmp_path, bin_dir, output)
+    if mode == "missing":
+        executable.unlink()
+    monkeypatch.setenv("PATH", f"{bin_dir}:/usr/bin:/bin")
+    plan = launch.build_host_plan(
+        evidence=built.evidence,
+        repo_clone=built.clone,
+        credential_copy=built.credential,
+        roles=ROLES,
+        branch="factory/fix-7-claim",
+        contract=CONTRACT,
+        validator_checkout=checkout,
+    )
+    assert plan.ownership_hints["validator_commit"] == "unavailable"
+    assert (
+        json.loads((built.evidence / "host-provenance.json").read_text())["validator_commit"]
+        == "unavailable"
+    )
 
 
 def test_host_plan_document_and_wrapper_hold_paths_never_the_token(

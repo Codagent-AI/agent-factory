@@ -11,7 +11,7 @@ from agent_factory import runtime
 from agent_factory.config import ConfigurationError, SharedConfig
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
-from agent_factory.store import Claim, ClaimStore
+from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import ReadinessError, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_request
 from agent_factory.work_kinds.eval.handler import validator_source_url
@@ -120,6 +120,65 @@ def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
     }
     legacy = request.freeze(runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene")
     assert "sources" not in legacy.payload
+
+
+def test_admission_freezes_validator_from_real_remote_and_docker_omits_it(
+    tmp_path: Path,
+) -> None:
+    common_dir = tmp_path / "common"
+    common_dir.mkdir()
+    _common_origin, common, _old, _new = source_pair(common_dir)
+    validator_dir = tmp_path / "validator-source"
+    validator_dir.mkdir()
+    origin, validator, _first, latest = source_pair(validator_dir)
+    ssh = "git@github.com:Codagent-AI/agent-validator.git"
+    git(validator, "remote", "set-url", "origin", ssh)
+    git(validator, "config", f"url.{origin}.insteadOf", ssh)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    defaults = EvalDefaults("main", "main", {}, False, 1, execution="fly")
+    handler = EvalHandler(
+        defaults,
+        harness_ref="main",
+        sources=SourceRepositories(common, common, common, validator),
+    )
+    first = handler.accept(eval_snapshot(), store, handler.resolve_request)
+    assert not isinstance(first, str)
+    assert isinstance(first, ClaimDraft)
+    claim = store.create_claim(first)
+    assert _revisions(claim)["validator"] == latest
+    assert claim.frozen_spec["sources"] == {
+        "validator": "https://github.com/Codagent-AI/agent-validator.git"
+    }
+    git(
+        origin,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "third",
+    )
+    advanced = git(origin, "rev-parse", "HEAD")
+    second = handler.accept(
+        eval_snapshot(issue_number=2, issue_id="I2", item="P2"), store, handler.resolve_request
+    )
+    assert isinstance(second, ClaimDraft)
+    assert _revisions(store.create_claim(second))["validator"] == advanced
+    assert _revisions(claim)["validator"] == latest
+
+    docker = EvalHandler(
+        EvalDefaults("main", "main", {}, False, 1, execution="docker"),
+        harness_ref="main",
+        sources=SourceRepositories(common, common, common),
+    )
+    docker_draft = docker.accept(
+        eval_snapshot(issue_number=3, issue_id="I3", item="P3"), store, docker.resolve_request
+    )
+    assert isinstance(docker_draft, ClaimDraft)
+    assert "validator" not in cast(dict[str, object], docker_draft.frozen_spec["revisions"])
+    store.close()
 
 
 def test_resolves_remote_branch_without_changing_local_checkout(tmp_path: Path) -> None:

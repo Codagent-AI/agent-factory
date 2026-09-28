@@ -41,19 +41,43 @@ validator_preflight() {
 }
 
 validator_build() {
-  local status_text=$1 update_status=0
+  local status_text=$1 update_status=0 old backup output
   if ! host_slots_free "$status_text"; then
     warn "a host attempt is running; skipping the Agent Validator update and build"
     return
   fi
+  old=$(git -C "$validator" rev-parse HEAD) \
+    || die "could not read the Agent Validator revision; the factory stays paused"
+  backup=$(mktemp -d "${TMPDIR:-/tmp}/agent-validator-build.XXXXXX") \
+    || die "could not prepare an Agent Validator build backup; the factory stays paused"
+  for output in dist node_modules skills contracts; do
+    if [[ -e $validator/$output || -L $validator/$output ]]; then
+      cp -a "$validator/$output" "$backup/$output" \
+        || { rm -rf "$backup"; die "could not back up Agent Validator $output; the factory stays paused"; }
+    fi
+  done
   "$(dirname "${BASH_SOURCE[0]}")/update-validator.sh" "$validator" || update_status=$?
   case $update_status in
     0) ;;
-    3) return ;;
-    *) die "could not update Agent Validator in $validator; the factory stays paused" ;;
+    3) rm -rf "$backup"; return ;;
+    *) rm -rf "$backup"; die "could not update Agent Validator in $validator; the factory stays paused" ;;
   esac
-  (cd "$validator" && bun install --frozen-lockfile && bun run build:local) \
-    || die "Agent Validator build failed in $validator; the factory stays paused"
+  if ! (cd "$validator" && bun install --frozen-lockfile && bun run build:local); then
+    for output in dist node_modules skills contracts; do
+      rm -rf "$validator/$output"
+    done
+    for output in dist node_modules skills contracts; do
+      if [[ -e $backup/$output || -L $backup/$output ]]; then
+        mv "$backup/$output" "$validator/$output" \
+          || die "Agent Validator build failed and backup restore failed in $validator; the host validator may be broken and must be rebuilt before resuming"
+      fi
+    done
+    git -C "$validator" reset -q --hard "$old" \
+      || die "Agent Validator build failed and checkout rollback failed in $validator; the host validator may be broken and must be rebuilt before resuming"
+    rm -rf "$backup"
+    die "Agent Validator build failed in $validator; the checkout was rolled back, but the host validator may be broken and must be rebuilt before resuming"
+  fi
+  rm -rf "$backup"
   say "built Agent Validator at $(git -C "$validator" rev-parse --short HEAD) in $validator"
   validator_path_check
 }
