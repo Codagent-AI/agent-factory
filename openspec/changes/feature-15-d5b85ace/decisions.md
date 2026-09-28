@@ -248,3 +248,28 @@
     archived `code-review` change.** It links every definition artifact and states the
     scope, test obligations, safety constraints, and the rule for spec adjustments.
     Changes to what may be deleted, or when, return to definition. Decision-bearing: no.
+
+## continuation review (feature-15-d5b85ace)
+
+41. **No artifact revisions. The artifacts carried over from `feature-15-24f07129` still
+    match the issue and its eligible comment.** The issue title, body, and single eligible
+    comment (2026-09-25) are identical to the input of both attempts of the earlier claim.
+    Each point in them maps to an existing artifact:
+    - Mac cleanup outside Done: terminal release and the three pruning paths in
+      `factory-operations`, with clocks from `terminal_at`;
+    - retention for settled, cancelled, and superseded claims outside Done: proposal items
+      3 and 4, decisions 3, 4, and 10;
+    - preserving active and resumable claims: decision 2 and the `active`/`waiting`/`blocked`
+      exclusions in both specs;
+    - safe retries: persisted cleanup progress, the retry scenarios, and idempotent
+      registry records;
+    - "not permission to delete all artifacts": enumerated pruning, with whole directories
+      and records out of scope;
+    - Fly tag cleanup that keeps images for active or resumable claims and is isolated from
+      Machine disposal: the ADDED `factory-fly-execution` requirement and design D3 and D9.
+
+    The branch contains `origin/main`. Since planning, the base specs changed only by the
+    removal of the stray delta header (#38). Every MODIFIED requirement header still
+    matches its base spec, and `openspec validate --strict` passes. The design has no open
+    questions. Alternative: redo definition from scratch, rejected because nothing in the
+    input or the base specs changed. Decision-bearing: no.
