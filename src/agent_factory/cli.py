@@ -7,7 +7,7 @@ import signal
 import time
 from pathlib import Path
 
-from agent_factory.config import ConfigurationError, LocalConfig
+from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic, doctor, format_doctor, status
 from agent_factory.store import ClaimStore
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
@@ -55,6 +55,9 @@ def main() -> None:
     subcommands.add_parser("doctor")
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
+    watch_parser = subcommands.add_parser("watch")
+    watch_commands = watch_parser.add_subparsers(dest="watch_command", required=True)
+    watch_commands.add_parser("redispatch").add_argument("dispatch_id")
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
@@ -73,6 +76,21 @@ def main() -> None:
         state = args.state
     if args.command == "tick":
         _tick(state, args.config)
+    elif args.command == "watch":
+        from agent_factory.watch.store import redispatch
+
+        store = ClaimStore(state)
+        try:
+            try:
+                new_id = redispatch(store, args.dispatch_id)
+            except ValueError as error:
+                print(str(error))
+                raise SystemExit(2) from error
+        finally:
+            store.close()
+        print(new_id)
+        if local is None or not SharedConfig.from_file(local.shared_config).watch.enabled:
+            print("waits until watching is enabled")
     elif args.command == "status":
         print(_status(state, local, include_all=args.all))
     elif args.command in {"pause", "resume"}:

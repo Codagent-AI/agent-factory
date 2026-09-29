@@ -1,4 +1,4 @@
-- [ ] Run factory watching inside the service, and dispatch short headless review and triage sessions only on events
+- [x] Run factory watching inside the service, and dispatch short headless review and triage sessions only on events
 
 ## Task: Service-driven watching with event dispatch
 

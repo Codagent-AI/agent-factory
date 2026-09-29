@@ -862,7 +862,7 @@ def _hide_tracked_file_from_git(repo_clone: Path, relative: str) -> None:
             )
 
 
-def _refuse_symlinked_staging(repo_clone: Path) -> None:
+def _refuse_symlinked_staging(repo_clone: Path, extra_files: tuple[str, ...] = ()) -> None:
     """The target repository controls the clone's contents, so a committed symlink at a
     staging path would make host planning write outside the clone as the operator."""
     workflows = PROJECT_WORKFLOWS
@@ -870,7 +870,7 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
         workflows.parent,
         workflows,
         PROJECT_CONFIG,
-        *(workflows / name for name in STAGED_FILES),
+        *(workflows / name for name in (*STAGED_FILES, *extra_files)),
     )
     for relative in candidates:
         if (repo_clone / relative).is_symlink():
@@ -880,10 +880,10 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
             )
 
 
-def _refuse_tracked_workflow_files(repo_clone: Path) -> None:
+def _refuse_tracked_workflow_files(repo_clone: Path, extra_files: tuple[str, ...] = ()) -> None:
     """Staging over a catalog file the target commits would leave a modified tracked file,
     which the workflow's clean-tree gate rejects and finalize-pr could commit."""
-    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in STAGED_FILES]
+    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in (*STAGED_FILES, *extra_files)]
     listed = subprocess.run(
         ["git", "-C", str(repo_clone), "ls-files", "--", *names],
         capture_output=True,

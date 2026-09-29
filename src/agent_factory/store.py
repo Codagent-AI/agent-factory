@@ -120,6 +120,39 @@ class ClaimStore:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
+        required_watch_schema = {
+            "watch_dispatch",
+            "watch_dispatch_state",
+            "watch_run_finished_at",
+            "watch_claim_created_at",
+        }
+        existing_watch_schema = {
+            cast(str, row[0])
+            for row in self._connection.execute(
+                "SELECT name FROM sqlite_master WHERE name IN (?,?,?,?)",
+                tuple(required_watch_schema),
+            )
+        }
+        if required_watch_schema <= existing_watch_schema:
+            return
+        self._connection.executescript("""
+            CREATE TABLE IF NOT EXISTS watch_dispatch (
+                id TEXT PRIMARY KEY, event_key TEXT NOT NULL, attempt INTEGER NOT NULL,
+                event_kind TEXT NOT NULL, claim_id TEXT NOT NULL REFERENCES claim(id),
+                run_id TEXT, repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+                pr_number INTEGER, pr_url TEXT, event_at TEXT NOT NULL,
+                state TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', profile TEXT,
+                evidence_path TEXT, process_json TEXT NOT NULL DEFAULT '{}',
+                launched_at TEXT, deadline_at TEXT, finished_at TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}',
+                audit_json TEXT NOT NULL DEFAULT '{}', deliveries_json TEXT NOT NULL DEFAULT '{}',
+                redispatch_of TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(event_key, attempt)
+            );
+            CREATE INDEX IF NOT EXISTS watch_dispatch_state ON watch_dispatch(state);
+            CREATE INDEX IF NOT EXISTS watch_run_finished_at ON run(finished_at);
+            CREATE INDEX IF NOT EXISTS watch_claim_created_at ON claim(created_at);
+        """)
 
     def close(self) -> None:
         self._connection.close()

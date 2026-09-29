@@ -1,0 +1,160 @@
+"""Probe detached watch process groups and finish each dispatch once."""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+from agent_factory.supervisor import (
+    process_identity_status,
+    process_start_identity,
+    terminate_owned_process,
+)
+from agent_factory.watch import deliver, result, session
+from agent_factory.watch import store as watch_store
+
+if TYPE_CHECKING:
+    from agent_factory.config import LocalConfig
+    from agent_factory.store import ClaimStore
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], value) if isinstance(value, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _usage(row: dict[str, Any], evidence: Path, finished: datetime) -> dict[str, object]:
+    metrics = _read_json(evidence / "agent-runner-session" / "run-metrics.json").get("totals", {})
+    totals = cast(dict[str, Any], metrics) if isinstance(metrics, dict) else {}
+    token_totals = totals.get("token_totals", {})
+    tokens = cast(dict[str, Any], token_totals) if isinstance(token_totals, dict) else {}
+    token_coverage = totals.get("token_total_coverage", "unavailable")
+    cost_coverage = totals.get("cost_coverage", "unavailable")
+    started_text = (
+        (evidence / "started-at").read_text().strip()
+        if (evidence / "started-at").is_file()
+        else row["launched_at"]
+    )
+    try:
+        started = datetime.fromisoformat(started_text.replace("Z", "+00:00"))
+    except ValueError:
+        started = datetime.fromisoformat(row["launched_at"])
+    return {
+        "profile": row["profile"],
+        "started_at": started_text,
+        "finished_at": finished.isoformat(),
+        "duration_seconds": max(0, (finished - started).total_seconds()),
+        "input_tokens": tokens.get("input") if token_coverage == "complete" else None,
+        "output_tokens": tokens.get("output") if token_coverage == "complete" else None,
+        "estimated_cost_usd": totals.get("estimated_api_cost_usd")
+        if cost_coverage == "complete"
+        else None,
+        "coverage": {"tokens": token_coverage, "cost": cost_coverage},
+    }
+
+
+def _finish(
+    store: ClaimStore,
+    row: dict[str, Any],
+    local: LocalConfig,
+    config_path: Path,
+    state: str,
+    detail: str,
+    validated: dict[str, Any] | None = None,
+    operator: str = "",
+) -> None:
+    now = datetime.now(UTC)
+    evidence = Path(row["evidence_path"])
+    audit = _read_json(evidence / "audit.json") or {"outcome": "missing"}
+    usage = _usage(row, evidence, now)
+    with store._transaction():  # pyright: ignore[reportPrivateUsage]
+        watch_store.update(
+            store,
+            row["id"],
+            state=state,
+            detail=detail,
+            finished_at=now.isoformat(),
+            result_json=json.dumps(validated or {}),
+            usage_json=json.dumps(usage),
+            audit_json=json.dumps(audit),
+        )
+        ended = watch_store.get(store, row["id"])
+        assert ended is not None
+        if state == "completed" and validated and row["event_kind"] == "FAILURE":
+            deliver.queue(
+                store, ended, "triage", result.triage(ended, validated, store.is_paused()), "issue"
+            )
+        elif state == "completed" and validated and validated["decisions"]:
+            deliver.queue(store, ended, "decisions", result.decisions(validated, operator), "pr")
+        elif state != "completed":
+            deliver.queue(
+                store,
+                ended,
+                "alert",
+                result.notice(
+                    ended,
+                    config_path,
+                    budget=False,
+                    claim=store.get_claim(ended["claim_id"]),
+                    run=store.get_run(ended["run_id"]) if ended["run_id"] else None,
+                ),
+                "issue",
+            )
+    session.remove_clone(local, row["id"])
+
+
+def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator: str = "") -> None:
+    for row in watch_store.rows(store, "launched"):
+        evidence = Path(row["evidence_path"])
+        identity = watch_store.json_field(row, "process_json")
+        if not identity and (evidence / "pid").is_file():
+            try:
+                pid = int((evidence / "pid").read_text().strip())
+                start = process_start_identity(pid)
+                if start is not None:
+                    identity = {"pid": pid, "start": start}
+                    watch_store.update(store, row["id"], process_json=json.dumps(identity))
+                else:
+                    identity = {"pid": pid, "start": "missing"}
+            except (OSError, ValueError):
+                pass
+        if not identity:
+            if datetime.now(UTC) > datetime.fromisoformat(row["launched_at"]) + timedelta(
+                minutes=2
+            ):
+                _finish(store, row, local, config_path, "launch-failed", "launch did not complete")
+            continue
+        status = process_identity_status(identity)
+        if status == "unknown":
+            continue
+        if status == "alive":
+            if datetime.now(UTC) > datetime.fromisoformat(row["deadline_at"]):
+                terminate_owned_process(identity)
+                _finish(store, row, local, config_path, "timed-out", "session deadline exceeded")
+            continue
+        exit_record = _read_json(evidence / "exit.json")
+        if not exit_record:
+            _finish(store, row, local, config_path, "interrupted", "no exit record")
+            continue
+        if exit_record.get("code") != 0:
+            _finish(
+                store,
+                row,
+                local,
+                config_path,
+                "interrupted",
+                f"exit code {exit_record.get('code')}",
+            )
+            continue
+        try:
+            procedure = "review" if row["event_kind"] == "PR-READY" else "triage"
+            validated = result.read(evidence / "watch-result.json", procedure)
+        except (OSError, ValueError) as error:
+            _finish(store, row, local, config_path, "interrupted", f"invalid result: {error}")
+        else:
+            _finish(store, row, local, config_path, "completed", "", validated, operator)

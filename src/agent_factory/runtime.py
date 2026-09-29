@@ -8,14 +8,14 @@ import logging
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
-from contextlib import closing
+from collections.abc import Callable, Generator, Mapping
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, retention, terminal, work_kinds
+from agent_factory import audit, retention, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
@@ -45,6 +45,21 @@ from agent_factory.work_kinds.eval.publication import publish_eval_results
 logger = logging.getLogger(__name__)
 
 
+@contextmanager
+def _watch_finally(
+    store: ClaimStore,
+    client: GitHubClient,
+    shared: SharedConfig,
+    local: LocalConfig,
+    config_path: Path,
+    token_provider: InstallationTokenProvider,
+) -> Generator[None, None, None]:
+    try:
+        yield
+    finally:
+        watch.step(store, client, shared, local, config_path, token_provider)
+
+
 def cycle(state: Path, config_path: Path) -> None:
     local = LocalConfig.from_file(config_path)
     shared = SharedConfig.from_file(local.shared_config)
@@ -58,7 +73,11 @@ def cycle(state: Path, config_path: Path) -> None:
     registered = work_kinds.handlers(shared, local)
     for handler in registered.values():
         handler.attach_github(client, token_provider)
-    with advisory_lock(state, "cycle"), closing(ClaimStore(state)) as store:
+    with (
+        advisory_lock(state, "cycle"),
+        closing(ClaimStore(state)) as store,
+        _watch_finally(store, client, shared, local, config_path, token_provider),
+    ):
         controller = Controller(
             store,
             client,
