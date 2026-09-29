@@ -30,6 +30,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "record-review-triage.sh",
     "record-review-outcome.sh",
     "review-description.sh",
+    "mark-later-commits.py",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
@@ -627,6 +628,52 @@ def runner_version(executable: str) -> str:
     return text or "unknown"
 
 
+def validator_provenance(checkout: Path | None) -> dict[str, str]:
+    found = shutil.which("agent-validator")
+    executable = os.path.realpath(found) if found else "unavailable"
+    version = "unavailable"
+    if found:
+        try:
+            result = subprocess.run(
+                [found, "--version"], capture_output=True, text=True, timeout=15, check=False
+            )
+            version = (
+                (result.stdout or result.stderr).strip() or "unavailable"
+                if result.returncode == 0
+                else f"unavailable (exit {result.returncode})"
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    commit = "unavailable"
+    token = version.split(" ", 1)[0]
+    if checkout is not None and re.fullmatch(r"[0-9a-fA-F]{7,40}", token):
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(checkout),
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    f"{token}^{{commit}}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode == 0 and re.fullmatch(r"[0-9a-fA-F]{40}", result.stdout.strip()):
+                commit = result.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    return {
+        "validator_executable": executable,
+        "validator_version": version,
+        "validator_commit": commit,
+    }
+
+
 def check_host_runner_workflow(runner: str, workflow: Path, definition: PullRequestKind) -> None:
     if definition.kind != "feature":
         return
@@ -860,12 +907,18 @@ def _exclude_from_git(repo_clone: Path, entries: tuple[str, ...]) -> None:
             handle.write("".join(f"{entry}\n" for entry in missing))
 
 
+def host_note(validator_commit: object) -> str:
+    """The host-execution note, naming the Agent Validator commit that ran."""
+    return f"{HOST_NOTE} Agent Validator commit: {validator_commit}."
+
+
 def write_host_provenance(
     evidence: Path,
     *,
     runner: str,
     version: str,
     recorded_revisions: Mapping[str, object] | None = None,
+    validator: Mapping[str, str] | None = None,
 ) -> Path:
     """Record at plan time what will execute, so the file exists however the attempt ends."""
     payload: dict[str, object] = {
@@ -875,7 +928,8 @@ def write_host_provenance(
         "session_dir": str(evidence / SESSION_DIR_NAME),
         "recorded_revisions": dict(recorded_revisions or {}),
         "recorded_revisions_executed": False,
-        "note": HOST_NOTE,
+        "note": host_note((validator or {}).get("validator_commit", "unavailable")),
+        **dict(validator or {}),
     }
     path = evidence / HOST_PROVENANCE_FILE
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -896,6 +950,7 @@ def build_host_plan(
     prior_branch: str = "",
     recorded_revisions: Mapping[str, object] | None = None,
     runner_executable: str | None = None,
+    validator_checkout: Path | None = None,
 ) -> ExecutionPlan:
     """Assemble the host launch: workflow and profiles in the clone, secrets and wrapper in
     the attempt's private directory, and a plan document that holds only paths.
@@ -916,6 +971,7 @@ def build_host_plan(
             prior_branch=prior_branch,
             recorded_revisions=recorded_revisions,
             runner_executable=runner_executable,
+            validator_checkout=validator_checkout,
         )
     except BaseException:
         # Best effort: the claim's cleanup retries the removal, and a failure here must not
@@ -939,10 +995,12 @@ def _assemble_host_plan(
     prior_branch: str,
     recorded_revisions: Mapping[str, object] | None,
     runner_executable: str | None,
+    validator_checkout: Path | None,
 ) -> ExecutionPlan:
     profiles = role_profiles(roles, definition)
     runner = resolve_runner_executable(runner_executable)
     version = runner_version(runner)
+    validator = validator_provenance(validator_checkout)
     evidence = evidence.resolve()
     repo_clone = repo_clone.resolve()
     (evidence / "logs").mkdir(parents=True, exist_ok=True)
@@ -987,7 +1045,11 @@ def _assemble_host_plan(
     # leaves the bit set without the wrapper whose exit trap clears it.
     _hide_tracked_file_from_git(repo_clone, PROJECT_CONFIG.as_posix())
     write_host_provenance(
-        evidence, runner=runner, version=version, recorded_revisions=recorded_revisions
+        evidence,
+        runner=runner,
+        version=version,
+        recorded_revisions=recorded_revisions,
+        validator=validator,
     )
     session_dir = evidence / SESSION_DIR_NAME
     progress = tuple(
@@ -1012,6 +1074,7 @@ def _assemble_host_plan(
             "branch_name": branch,
             "runner_executable": runner,
             "runner_version": version,
+            **validator,
             "session_dir": str(session_dir),
         },
         False,

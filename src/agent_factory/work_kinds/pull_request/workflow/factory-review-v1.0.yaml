@@ -116,7 +116,8 @@ steps:
     capture: changes_needed
     skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
 
-  # Finalization may rewrite the description; a feature PR's annotated one is restored.
+  # Finalization may rewrite the description; a feature PR's annotated one is restored,
+  # with the round's commits and the items they may have fixed added to it.
   - id: save-description
     script: review-description.sh
     script_inputs:
@@ -141,6 +142,7 @@ steps:
     script_inputs:
       mode: restore
       review_file: "{{review_file}}"
+      decision: "{{review_decision}}"
       artifact_dir: "{{artifact_dir}}"
     skip_if: 'sh: test "{{changes_needed}}" != true'
     continue_on_failure: true

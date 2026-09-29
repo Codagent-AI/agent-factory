@@ -248,9 +248,13 @@ def main() -> None:
     )
     if hidden or flags["yellow"]:
         lines.extend([f"{others} are collapsed below the change summary.", ""])
+    # A closing keyword is GitHub's only link from a pull request to its issue: without
+    # it the board shows no linked pull request and merging leaves the issue open. The
+    # factory targets the issue's own repository, so the short `#N` form resolves. The
+    # post-merge sync still runs and closes an issue that is already closed as a no-op.
     lines.extend(
         [
-            f"Refs #{issue['number']}",
+            f"Closes #{issue['number']}",
             f"<!-- agent-factory:claim:{issue['claim_id']} -->",
             "",
             "## Change summary",
@@ -304,6 +308,12 @@ def main() -> None:
     lines.extend(["", "</details>", ""])
     body = artifact_dir / "feature-pr-body.md"
     body.write_text("\n".join(lines))
+    # Classification ran before finalization's last commits, which may fix its items.
+    # Best effort: the unmarked description is still published if marking fails.
+    marker = Path(__file__).with_name("mark-later-commits.py")
+    marked = subprocess.run([sys.executable, str(marker), str(body)], check=False)
+    if marked.returncode != 0:
+        print("could not mark items later commits may have fixed", file=sys.stderr)
     # The REST update, not `gh pr edit`: that also reads the pull request's project
     # items, which a token without org Projects access cannot do once the PR is on a board.
     edit = [

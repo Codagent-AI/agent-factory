@@ -6,3 +6,7 @@ slots_free() {
   grep -q '^eval slot: free$' <<<"$1" && grep -q '^fix slot: free$' <<<"$1" \
     && ! grep -E '^[a-z-]+ slot: ' <<<"$1" | grep -qv ': free$'
 }
+
+host_slots_free() {
+  grep -q '^host attempts: 0$' <<<"$1"
+}

@@ -11,6 +11,7 @@ from typing import Any
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
+from tests.integration.test_fix_workflow import shell_templates, single_quoted_placeholders
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 
@@ -73,6 +74,7 @@ def test_feature_files_are_listed_and_exist() -> None:
         "prepare-branch.sh",
         "factory-resume-skip.sh",
         "record-stop.sh",
+        "record-archive-block.sh",
         "annotate-pr.sh",
     ):
         assert name in FEATURE_STAGED_FILES
@@ -155,6 +157,204 @@ def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
     assert outcome["stopped_step"] == "design"
     assert outcome["questions"] == ["Which API?"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+
+
+def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    explanation = "Main spec contains a stray delta header outside the change directory."
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55.844297Z [archive, sub:archive-change, archive-transition] "
+        "repair_blocked "
+        + json.dumps({"attempt": 0, "response": explanation + "\n\nREPAIR_BLOCKED"})
+        + "\n"
+        + '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        + '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+        + '[archive] step_end {"outcome":"failed"}\n'
+    )
+    payload = json.dumps(
+        {
+            "artifact_dir": str(evidence),
+            "branch_name": "factory/feature-12",
+            "session_dir": str(session),
+        }
+    )
+    result = run(str(PACKAGE / "record-archive-block.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((evidence / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["stopped_step"] == "archive"
+    assert outcome["reasons"] == outcome["questions"] == [explanation]
+    assert outcome["branch"] == "factory/feature-12"
+    assert "REPAIR_BLOCKED" not in outcome["direction_summary"]
+    assert "commit the fix to this branch" in outcome["direction_summary"]
+    assert "a fix merged to main does not reach it" in outcome["direction_summary"]
+    assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
+    assert (
+        run(
+            "python3",
+            str(PACKAGE / "verify-feature-outcome.py"),
+            str(evidence / "feature-outcome.json"),
+            cwd=repo,
+        ).returncode
+        == 0
+    )
+
+
+def test_record_archive_block_requires_archive_declaration(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [implement, sub:implement-task, verify-task-commit] "
+        'repair_blocked {"response":"wrong step\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+    assert not (evidence / "feature-outcome.json").exists()
+    (session / "audit.log").unlink()
+    missing_log = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert missing_log.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in missing_log.stderr
+    assert "Traceback" not in missing_log.stderr
+
+
+def test_record_archive_block_uses_last_archive_declaration_from_commit_check(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "2026-09-28T07:49:55Z [archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        "2026-09-28T07:50:00Z [archive, sub:archive-change, verify-archive-commit] "
+        'repair_blocked {"response":"Commit needs a human decision.\\nREPAIR_BLOCKED"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((evidence / "feature-outcome.json").read_text())["reasons"] == [
+        "Commit needs a human decision."
+    ]
+
+
+def test_record_archive_block_rejects_stale_declaration_after_later_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(
+        "[archive, sub:archive-change, archive-transition] "
+        'repair_blocked {"response":"old reason\\nREPAIR_BLOCKED"}\n'
+        '[archive, sub:archive-change, archive-transition] step_end {"exit_code":1}\n'
+        "[archive, sub:archive-change, verify-archive-commit] step_start {}\n"
+        '[archive, sub:archive-change, verify-archive-commit] step_end {"exit_code":1}\n'
+        '[archive, sub:archive-change] sub_workflow_end {"outcome":"failed"}\n'
+    )
+    result = run(
+        str(PACKAGE / "record-archive-block.sh"), str(evidence), "branch", str(session), cwd=repo
+    )
+    assert result.returncode != 0
+    assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+    assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_record_archive_block_reports_invalid_declaration_payload(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    session = tmp_path / "session"
+    session.mkdir()
+    for payload in ('{"response":', '{"response":}', "[]"):
+        (session / "audit.log").write_text(
+            f"[archive, sub:archive-change, archive-transition] repair_blocked {payload}\n"
+        )
+        result = run(
+            str(PACKAGE / "record-archive-block.sh"),
+            str(evidence),
+            "branch",
+            str(session),
+            cwd=repo,
+        )
+        assert result.returncode != 0
+        assert "archive step failed without a REPAIR_BLOCKED declaration" in result.stderr
+        assert "Traceback" not in result.stderr
+        assert not (evidence / "feature-outcome.json").exists()
+
+
+def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    steps = feature.split("\n  - id: ")
+    ids = [step.split("\n", 1)[0] for step in steps[1:]]
+    archive = steps[ids.index("archive") + 1]
+    record = steps[ids.index("record-archive-block") + 1]
+    assert "continue_on_failure: true" in archive
+    assert "skip_if: 'sh: test \"{{archive_status}}\" = skipped'" in archive
+    assert ids.index("seed-archive-status") < ids.index("archive")
+    assert ids.index("archive") < ids.index("mark-archive-failed")
+    assert "restore-skipped-archive-status" not in ids
+    assert ids.index("mark-archive-failed") < ids.index("record-archive-block")
+    assert ids.index("record-archive-block") < ids.index("push-archive")
+    assert "script: record-archive-block.sh" in record
+
+
+def test_feature_workflow_shell_placeholders_are_interpolatable() -> None:
+    """Runner rejects placeholders within shell single quotes at step execution time."""
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    refused = {
+        template.strip().splitlines()[0]: names
+        for template in shell_templates(feature)
+        if (names := single_quoted_placeholders(template))
+    }
+    assert refused == {}
+
+
+def test_archive_status_survives_change_directory_moving_after_failure(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    change = repo / "openspec" / "changes" / "example"
+    change.mkdir(parents=True)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    skip_script = repo / ".agent-runner" / "workflows" / "factory-resume-skip.sh"
+    skip_script.parent.mkdir(parents=True)
+    skip_script.write_text("#!/bin/sh\nexit 1\n")
+    skip_script.chmod(0o755)
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    seed = feature.split("  - id: seed-archive-status\n", 1)[1].split("\n  - id: ")[0]
+    mark = feature.split("  - id: mark-archive-failed\n", 1)[1].split("\n  - id: ")[0]
+    seed_command = seed.split("    command: ", 1)[1].split("\n", 1)[0]
+    seed_command = (
+        seed_command.replace("{{artifact_dir}}", str(evidence))
+        .replace("{{change_name}}", "example")
+        .replace("{{effective_resume}}", "archive")
+    )
+    seeded = run("sh", "-c", seed_command, cwd=repo)
+    assert seeded.returncode == 0 and seeded.stdout == "passed"
+    change.rmdir()  # archive-transition can move the change before commit verification fails.
+    mark_command = mark.split("    command: ", 1)[1].split("\n", 1)[0]
+    marked = run("sh", "-c", mark_command.replace("{{archive_status}}", seeded.stdout), cwd=repo)
+    assert marked.returncode == 0 and marked.stdout == "failed"
+    skipped = run("sh", "-c", seed_command, cwd=repo)
+    assert skipped.returncode == 0 and skipped.stdout == "skipped"
+    preserved = run(
+        "sh", "-c", mark_command.replace("{{archive_status}}", skipped.stdout), cwd=repo
+    )
+    assert preserved.returncode == 0 and preserved.stdout == "skipped"
 
 
 def test_record_stop_records_the_workflow_step_not_the_agents_name(tmp_path: Path) -> None:
@@ -288,7 +488,7 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     rendered = body.read_text()
     assert rendered.index("🔴") < rendered.index("🟠") < rendered.index("🟡")
-    assert "Refs #7" in rendered and "agent-factory:claim:claim-7" in rendered
+    assert "Closes #7" in rendered and "agent-factory:claim:claim-7" in rendered
     assert "<details>" in rendered and accepted in rendered
     assert "fix CI" in rendered
     flags = json.loads((evidence / "review-attention.json").read_text())
@@ -655,7 +855,7 @@ def test_annotate_pr_ignores_a_review_by_a_deleted_account(tmp_path: Path) -> No
 
 
 def shown_review_items(rendered: str) -> list[str]:
-    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Closes #7")]
     return [
         line.split("]")[0].removeprefix("- [")
         for line in review_first.splitlines()
@@ -680,7 +880,7 @@ def test_annotate_pr_opens_with_issue_and_shows_only_red_and_top_orange(
         },
     )
     assert rendered.startswith("**Feature for #7:** Add a flag\n")
-    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Closes #7")]
     assert "### 🟠 Orange (7)" in review_first
     assert shown_review_items(rendered) == [
         "red one",
@@ -695,6 +895,29 @@ def test_annotate_pr_opens_with_issue_and_shows_only_red_and_top_orange(
     collapsed = rendered[rendered.index("<details><summary>2 more orange") :]
     for title in ("orange 5", "orange 6", "yellow one", "yellow two"):
         assert f"[{title}]" in collapsed
+
+
+def test_annotate_pr_closes_the_issue_with_exactly_one_keyword(tmp_path: Path) -> None:
+    """GitHub links a pull request to its issue (the board's "linked pull request", and
+    closing the issue on merge) only through a closing keyword. The description is
+    regenerated on every annotation, so it must carry the keyword itself, exactly once."""
+    import re
+
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, _later: {
+            "red": [],
+            "orange": [],
+            "yellow": [],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [],
+        },
+    )
+    keywords = re.findall(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#7\b", rendered)
+    assert keywords == ["Closes #7"]
+    # The factory's own lookup of a claim's open pull requests must still find it.
+    assert re.search(r"(?i)\b(?:refs|closes)\s+#7\b", rendered)
 
 
 def test_annotate_pr_keeps_a_classifier_item_naming_later_commits_visible(
@@ -1349,3 +1572,226 @@ def test_verify_classification_rejects_malformed_items(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "red[0]" in result.stderr
     assert "white[0]" in result.stderr
+
+
+def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
+    tmp_path: Path,
+) -> None:
+    """Classification runs before finalization's last fixes, so an item may already be
+    fixed by a later commit; the item then says which commit changed its linked file."""
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    (repo / "settings.go").write_text('enabled == "true"\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "settings.go").write_text("enabled is a bool\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: read enabled as a YAML bool")
+    later = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [
+                    {
+                        "title": "Known deviation",
+                        "detail": "True reads as off",
+                        "link": "settings.go:1",
+                    },
+                    {"title": "Unverified", "detail": "no run", "link": "openspec/.keep"},
+                ],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = body.read_text().splitlines()
+    deviation = next(line for line in lines if line.startswith("- [Known deviation]"))
+    unverified = next(line for line in lines if line.startswith("- [Unverified]"))
+    assert f"may be fixed by `{later[:7]}`" in deviation
+    assert "may be fixed by" not in unverified
+
+
+REVIEW_GH_STUB = (
+    '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = view ]; then\n'
+    "  python3 -c 'import json,sys; "
+    'print(json.dumps({"body": open(sys.argv[1], newline="").read()}))\' "$GH_BODY"\n'
+    'elif [ "$1" = api ]; then\n'
+    '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$GH_BODY" ;; esac; done\n'
+    "fi\n"
+)
+
+
+def test_review_round_description_keeps_the_layout_and_reflects_the_round(
+    tmp_path: Path,
+) -> None:
+    """A review round restores the factory's description over the agent's rewrite, but the
+    restored description still shows what the round did: the round's commits and the
+    feedback it addressed, every commit after acceptance, and which items those commits
+    may have fixed. Lines added outside the factory's items, such as a closing keyword,
+    are kept."""
+    import os
+
+    from agent_factory.work_kinds.pull_request import launch
+
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "factory/feature-7")
+    (repo / "spec.md").write_text("smoke passes\n")
+    (repo / "plan.md").write_text("AT-001\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "run.sh").write_text("cleanup\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: defer early signals")
+    round_start = git(repo, "rev-parse", "HEAD")
+    (repo / "spec.md").write_text("smoke passes with a lead auditor\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: align smoke fixture with lead auditor")
+    fixture = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    (repo / "unrelated").write_text("main moved\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "main work")
+    git(repo, "checkout", "-q", "factory/feature-7")
+    git(repo, "merge", "--no-ff", "-m", "Merge main", "main")
+    merge = git(repo, "rev-parse", "HEAD")
+
+    blob = "https://github.com/o/r/blob/factory/feature-7"
+    saved = "\n".join(
+        [
+            "**Feature for #7:** Clean up smoke leftovers",
+            "",
+            "# Review first",
+            "",
+            "### 🔴 Red (2)",
+            f"- [Spec deviation]({blob}/spec.md#L1): the smoke fails on this host",
+            f"- [AT-001 unverified]({blob}/plan.md#L1): no success run",
+            "",
+            "### 🟠 Orange (1)",
+            f"- [Commits after acceptance](#acceptance-evidence): {round_start[:12]} "
+            "(fix: defer early signals)",
+            "",
+            "Closes #7",
+            "<!-- agent-factory:claim:claim-7 -->",
+            "",
+            "## Change summary",
+            "",
+            "Feature: Clean up smoke leftovers.",
+            "",
+            '<details id="acceptance-evidence"><summary>Acceptance evidence</summary>',
+            "",
+            f"Acceptance ran against `{accepted}`.",
+            "",
+            f"Later commits: `{round_start}`",
+            "",
+            "</details>",
+            "",
+        ]
+    )
+    body = tmp_path / "body.md"
+    body.write_text(saved)
+    staged = launch.stage_workflow(tmp_path / "stage", launch.REVIEW_CONTRACT)
+    review = tmp_path / "review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "kind": "feature",
+                "head_sha": round_start,
+                "pull_request": {"number": 9, "head_sha": round_start},
+            }
+        )
+    )
+    decision = {
+        "needs_input": [],
+        "items": [
+            {
+                "id": "c1",
+                "source": "comment",
+                "decision": "change",
+                "reply": "Fixed the audit-warning blocker\n(A1/L1).",
+                "plan": "Configure the lead agent in the fixture.",
+            },
+            {"id": "c2", "source": "comment", "decision": "answer", "reply": "No change."},
+            {"id": "c3", "source": "comment", "decision": "change", "reply": "Kept </details>"},
+        ],
+    }
+    stub = tmp_path / "bin" / "gh"
+    stub.parent.mkdir()
+    stub.write_text(REVIEW_GH_STUB)
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub.parent}:{os.environ['PATH']}", "GH_BODY": str(body)}
+
+    def describe(mode: str) -> None:
+        payload = {
+            "mode": mode,
+            "review_file": str(review),
+            "artifact_dir": str(tmp_path),
+            "decision": json.dumps(decision),
+        }
+        result = subprocess.run(
+            [str(staged / "review-description.sh")],
+            cwd=repo,
+            env=env,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    describe("save")
+    rewritten = "# Review follow-up\n\nA1/L1 fixed.\n\n" + saved
+    body.write_text(rewritten)
+    describe("restore")
+
+    restored = body.read_text()
+    assert restored.startswith("**Feature for #7:** Clean up smoke leftovers\n\n# Review first")
+    assert "Closes #7" in restored
+    assert (tmp_path / "pr-description-overwritten.md").read_text() == rewritten
+    lines = restored.splitlines()
+    commits_item = next(line for line in lines if line.startswith("- [Commits after acceptance]"))
+    for sha in (round_start, fixture, merge):
+        assert sha[:12] in commits_item
+    assert "main work" not in commits_item
+    later_line = next(line for line in lines if line.startswith("Later commits:"))
+    for sha in (round_start, fixture, merge):
+        assert sha in later_line
+    deviation = next(line for line in lines if line.startswith("- [Spec deviation]"))
+    unverified = next(line for line in lines if line.startswith("- [AT-001 unverified]"))
+    assert f"may be fixed by `{fixture[:7]}`" in deviation
+    assert "may be fixed by" not in unverified
+    follow_up = restored.split("### 🔁 Review round", 1)[1].split("## Change summary")[0]
+    assert fixture[:7] in follow_up and "align smoke fixture with lead auditor" in follow_up
+    assert f"- `{merge[:7]}` Merge main" in follow_up
+    assert f"- `{round_start[:7]}`" not in follow_up and "main work" not in follow_up
+    assert "Fixed the audit-warning blocker (A1/L1)." in follow_up
+    assert "No change." not in follow_up
+    assert "Kept &lt;/details&gt;" in follow_up and "</details>" not in follow_up
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")

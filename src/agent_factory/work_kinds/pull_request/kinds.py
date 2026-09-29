@@ -76,6 +76,7 @@ FEATURE_STAGED_FILES = (
     "prepare-branch.sh",
     "factory-resume-skip.sh",
     "record-stop.sh",
+    "record-archive-block.sh",
     "checkpoint.sh",
     "reconcile-skip.sh",
     "locate-archive.py",
@@ -85,6 +86,7 @@ FEATURE_STAGED_FILES = (
     "verify-feature-outcome.py",
     "annotate-pr.sh",
     "annotate-pr.py",
+    "mark-later-commits.py",
     "check-contract.sh",
     "record-outcome.sh",
 )

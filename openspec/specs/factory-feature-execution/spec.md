@@ -132,12 +132,20 @@ After the plan commit the feature workflow SHALL implement the whole change as a
 ### Requirement: Archive the change before verification
 
 After implementation the feature workflow SHALL archive the OpenSpec change, applying its specification deltas to the repository's specifications, and commit the result before any verification, draft pull request, or acceptance runs, so that verification and acceptance evidence describe the tree the pull request carries.
+If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushed implemented branch and return `needs-input` with the archive explanation and an archive resume point.
 
 #### Scenario: Verify against the archived tree
 
 - **WHEN** implementation completes
 - **THEN** the change is archived and committed
 - **AND** assumption review, the validator, and acceptance run against the archived tree
+
+#### Scenario: Archive repair is blocked
+
+- **WHEN** the archive step stops with a `REPAIR_BLOCKED` declaration
+- **THEN** the workflow returns `needs-input` with stopped step `archive` and the agent's explanation
+- **AND** the pushed implemented branch is retained and no pull request is opened
+- **AND** the next attempt resumes at archive
 
 ### Requirement: Verify the change and open a draft pull request
 
@@ -211,7 +219,7 @@ Related orange assumptions SHALL be grouped into one item per topic that cites t
 
 ### Requirement: Finalize the feature pull request
 
-After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue without a closing keyword and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
+After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue with a closing keyword, so GitHub links the pull request to the issue and closes the issue when the pull request merges, and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
 
 #### Scenario: Finalize a passing pull request
 
@@ -250,4 +258,3 @@ Feature attempts SHALL run only in `host` execution mode. Configuration that sel
 
 - **WHEN** a feature attempt has launched
 - **THEN** its run record stores the host execution mode, the Runner path and version, and the session directory, and contains no credential
-

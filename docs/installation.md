@@ -18,7 +18,8 @@ uv tool install 'agent-factory==<released-version>'
 
 Keep that environment in place while any attempt started by it is active. Clone
 the configured `agent-evals`, Agent Runner, and Agent Skills source repositories
-on the Mac. Start Docker Desktop, authenticate the selected model CLI, and
+on the Mac. Fly evals and host fixes or features also need an Agent Validator
+checkout. Start Docker Desktop, authenticate the selected model CLI, and
 prevent the Mac from idle-sleeping while unattended work is expected (for
 example, use a managed power policy or `caffeinate` under operator control).
 Complete the selected suite's documented browser-proof prerequisite before
@@ -118,6 +119,14 @@ Before setting `execution = "host"`, `doctor` must pass the `fix-host` group:
   `agent-runner run --help` lists `--session-dir` (Codagent-AI/agent-runner
   PR #90 or later).
 - `git`, `gh`, `jq`, `python3`, and `agent-validator` resolve on PATH.
+- For host fixes or features, clone Agent Validator next to the configured Agent Runner
+  checkout (or set `[repositories] agent_validator`). In that checkout run
+  `bun install --frozen-lockfile` and `bun run build:local`, then link its
+  `dist/index.js` as `agent-validator` on the service's LaunchAgent PATH. The
+  `host agent-validator build` doctor check verifies both service and plist PATHs.
+  For example, after adding `~/.local/bin` to the LaunchAgent PATH, run
+  `ln -s /path/to/agent-validator/dist/index.js ~/.local/bin/agent-validator`
+  once. Deploy never replaces this link.
 - `gh auth status` succeeds using the configured fix credential.
 - Each CLI adapter selected by the fix roles (`claude`, `codex`, or `cursor`,
   whose installed executable is `agent`) is on PATH, logged in, and carries
@@ -217,6 +226,11 @@ set the value back to `"docker"`. Fly keeps the Mac controller, SQLite state,
 and collected artifacts local while moving untrusted suite execution into a
 microVM. It gives up Docker's local bind mounts and Cursor role profiles;
 Cursor is not supported for Fly eval roles.
+
+Fly eval admission pins the Validator checkout's `main` commit and its public
+GitHub origin. Its claim image builds that exact commit; Docker execution uses
+the published npm release. Changing the Validator can change eval scores, and
+earlier results retain their recorded revision.
 
 Before enabling it, create a Fly organization and app, then create an
 app-scoped deploy token. Store that single token in a private owner-readable
