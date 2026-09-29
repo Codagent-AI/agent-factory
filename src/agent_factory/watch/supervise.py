@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from agent_factory.supervisor import (
+    ProcessProbeError,
     process_identity_status,
     process_start_identity,
     terminate_owned_process,
@@ -123,6 +124,9 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
                     identity = {"pid": pid, "start": "missing"}
             except (OSError, ValueError):
                 pass
+            except ProcessProbeError:
+                # An unknown probe leaves the dispatch launched; later rows still run.
+                continue
         if not identity:
             if datetime.now(UTC) > datetime.fromisoformat(row["launched_at"]) + timedelta(
                 minutes=2
@@ -139,22 +143,18 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
             continue
         exit_record = _read_json(evidence / "exit.json")
         if not exit_record:
-            _finish(store, row, local, config_path, "interrupted", "no exit record")
-            continue
-        if exit_record.get("code") != 0:
-            _finish(
-                store,
-                row,
-                local,
-                config_path,
-                "interrupted",
-                f"exit code {exit_record.get('code')}",
-            )
-            continue
+            exit_detail = "no exit record"
+        elif exit_record.get("code") != 0:
+            exit_detail = f"exit code {exit_record.get('code')}"
+        else:
+            exit_detail = ""
+        procedure = "review" if row["event_kind"] == "PR-READY" else "triage"
         try:
-            procedure = "review" if row["event_kind"] == "PR-READY" else "triage"
             validated = result.read(evidence / "watch-result.json", procedure)
         except (OSError, ValueError) as error:
-            _finish(store, row, local, config_path, "interrupted", f"invalid result: {error}")
+            detail = exit_detail or f"invalid result: {error}"
+            _finish(store, row, local, config_path, "interrupted", detail)
         else:
-            _finish(store, row, local, config_path, "completed", "", validated, operator)
+            # A session that exits with a valid result is completed whatever its exit
+            # status: its review or triage already happened, so its comment must be posted.
+            _finish(store, row, local, config_path, "completed", exit_detail, validated, operator)

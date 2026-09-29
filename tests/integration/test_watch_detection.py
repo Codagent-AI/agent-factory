@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import multiprocessing
 from datetime import UTC, datetime, timedelta
+from multiprocessing.queues import Queue
 from pathlib import Path
 
 from agent_factory.store import ClaimDraft, ClaimStore
@@ -33,5 +35,116 @@ def test_detection_uses_current_grace_and_never_requeues(tmp_path: Path) -> None
         assert len(failures) == 1
         assert failures[0]["event_key"] == f"FAILURE:{run.id}"
         assert store._connection.execute("PRAGMA user_version").fetchone()[0] == 4
+    finally:
+        store.close()
+
+
+def _failed_run(store: ClaimStore, finished: datetime, key: str) -> str:
+    claim = store.create_claim(
+        ClaimDraft("Codagent-AI/example", 13, "I", f"P-{key}", "eval", f"fp-{key}", {})
+    )
+    run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
+    store.finish_run(run.id, execution_status="failed", result={})
+    store._connection.execute(
+        "UPDATE run SET finished_at=? WHERE id=?", (finished.isoformat(), run.id)
+    )
+    return run.id
+
+
+def _failures(store: ClaimStore) -> list[str]:
+    return [row["run_id"] for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
+
+
+def test_grace_shrinking_to_zero_queues_a_waiting_failure_once(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=30))
+        run_id = _failed_run(store, now - timedelta(minutes=5), "shrink")
+        detect.detect(store, 7, lambda: now)
+        assert _failures(store) == []
+        detect.detect(store, 0, lambda: now + timedelta(minutes=5))
+        detect.detect(store, 0, lambda: now + timedelta(minutes=10))
+        assert _failures(store) == [run_id]
+    finally:
+        store.close()
+
+
+def test_grace_growing_delays_a_waiting_failure_then_queues_it_once(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=30))
+        finished = now - timedelta(minutes=5)
+        run_id = _failed_run(store, finished, "grow")
+        detect.detect(store, 7, lambda: now)
+        detect.detect(store, 15, lambda: finished + timedelta(minutes=14))
+        assert _failures(store) == []
+        detect.detect(store, 15, lambda: finished + timedelta(minutes=15, seconds=1))
+        detect.detect(store, 15, lambda: finished + timedelta(minutes=20))
+        assert _failures(store) == [run_id]
+    finally:
+        store.close()
+
+
+def test_failures_before_enablement_or_past_the_horizon_are_never_queued(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        _failed_run(store, now - timedelta(days=9), "before")
+        detect.detect(store, 7, lambda: now - timedelta(days=8))
+        _failed_run(store, now - timedelta(days=7, minutes=30), "old")
+        recent = _failed_run(store, now - timedelta(days=1), "recent")
+        detect.detect(store, 7, lambda: now)
+        assert _failures(store) == [recent]
+    finally:
+        store.close()
+
+
+def _contend(path: str, dispatch_id: str, results: Queue[bool]) -> None:
+    store = ClaimStore(Path(path))
+    try:
+        won = False
+        for _ in range(50):
+            detect.detect(store, 0)
+            won = won or watch_store.claim_launch(
+                store, dispatch_id, datetime.now(UTC), 90, "claude:m:e", "/tmp/e"
+            )
+        results.put(won)
+    finally:
+        store.close()
+
+
+def test_two_processes_queue_and_launch_each_event_exactly_once(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    store = ClaimStore(path)
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 0, lambda: now - timedelta(minutes=1))
+        _failed_run(store, now - timedelta(seconds=30), "race")
+        detect.detect(store, 0, lambda: now)
+        row = watch_store.rows(store)[0]
+    finally:
+        store.close()
+    context = multiprocessing.get_context("spawn")
+    results: Queue[bool] = context.Queue()
+    workers = [
+        context.Process(target=_contend, args=(str(path), row["id"], results)) for _ in range(2)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=60)
+        assert worker.exitcode == 0
+    assert sorted(results.get(timeout=5) for _ in workers) == [False, True]
+    store = ClaimStore(path)
+    try:
+        rows = watch_store.rows(store)
+        keys = [(r["event_key"], r["attempt"]) for r in rows]
+        # The claim's own CLAIM event is also queued; every key appears exactly once.
+        assert len(keys) == len(set(keys))
+        failure = [r for r in rows if r["event_key"] == row["event_key"]]
+        assert len(failure) == 1
+        assert failure[0]["state"] == "launched"
     finally:
         store.close()

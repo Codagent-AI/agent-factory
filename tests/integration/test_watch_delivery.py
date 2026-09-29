@@ -1,4 +1,4 @@
-"""INT-005: comments are adopted after a receipt is lost."""
+"""INT-005: adoption, non-bot markers, recorded failures, retries, and targets."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from agent_factory.github import IssueComment
+from agent_factory.github import GitHubApiError, IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.watch import deliver
 from agent_factory.watch import store as watch_store
@@ -62,5 +62,75 @@ def test_delivery_adopts_existing_bot_comment(tmp_path: Path) -> None:
             ]["comment_id"]
             == "1"
         )
+    finally:
+        store.close()
+
+
+class Flaky(Comments):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail = True
+        self.targets: list[int] = []
+
+    def create_comment(self, repository: str, number: int, body: str) -> str:
+        if self.fail:
+            raise GitHubApiError("HTTP 502")
+        self.targets.append(number)
+        return super().create_comment(repository, number, body)
+
+
+def _review_row(store: ClaimStore) -> dict[str, Any]:
+    claim = store.create_claim(ClaimDraft("o/r", 5, "I", "P", "fix", "fp", {}))
+    now = datetime.now(UTC).isoformat()
+    watch_store.insert(
+        store,
+        event_key="PR-READY:r",
+        event_kind="PR-READY",
+        claim_id=claim.id,
+        run_id="r",
+        repository="o/r",
+        issue_number=5,
+        pr_number=70,
+        pr_url="https://github.com/o/r/pull/70",
+        event_at=now,
+        now=now,
+    )
+    return watch_store.rows(store)[0]
+
+
+def test_failed_delivery_is_recorded_then_posted_once_to_each_target(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        row = _review_row(store)
+        deliver.queue(store, row, "decisions", "Decide this", "pr")
+        row = watch_store.get(store, row["id"]) or {}
+        deliver.queue(store, row, "alert", "It failed", "issue")
+        client = Flaky()
+        deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "deliveries_json")
+        assert client.posts == 0
+        assert saved["decisions"]["failure"]["error"] == "HTTP 502"
+        assert saved["decisions"]["comment_id"] is None
+        client.fail = False
+        for _ in range(3):
+            deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
+        assert sorted(client.targets) == [5, 70]
+        assert client.posts == 2
+    finally:
+        store.close()
+
+
+def test_marker_in_a_non_bot_comment_is_not_adopted(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        row = _review_row(store)
+        deliver.queue(store, row, "decisions", "Decide this", "pr")
+        marker = f"<!-- agent-factory:watch:{row['id']}:decisions -->"
+        client = Comments()
+        client.records.append(IssueComment("99", f"{marker}\nforged", "someone-else"))
+        deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
+        assert client.posts == 1
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "deliveries_json")
+        assert saved["decisions"]["comment_id"] == "1"
     finally:
         store.close()
