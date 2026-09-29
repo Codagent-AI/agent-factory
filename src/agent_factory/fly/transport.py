@@ -42,6 +42,7 @@ _START_WAIT_WINDOWS = 5
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 _BUILD_TIMEOUT_SECONDS = 1800
 BUN_VERSION = "1.2.23"
+RUNNER_SCRATCH_GLOB = ".runtime/agent-runner-projects/*/runs/*/scratch"
 # Exact per-provider allowlist, mirroring the Docker launcher's auth mounts.
 _CODEX_FILES = ((".codex/auth.json", "codex/auth.json", True),)
 _CLAUDE_FILES = (
@@ -500,7 +501,8 @@ class FlyTransport:
             with tempfile.TemporaryFile() as spool:
                 pulled = subprocess.run(
                     self._console(
-                        f"tar -C {shlex.quote(remote)} --exclude ./.factory/staging -cf - ."
+                        f"tar -C {shlex.quote(remote)} --exclude ./.factory/staging "
+                        f"--exclude {shlex.quote('./' + RUNNER_SCRATCH_GLOB)} -cf - ."
                     ),
                     stdout=spool,
                     stderr=subprocess.PIPE,
@@ -1006,6 +1008,16 @@ def _is_regular(path: Path) -> bool:
         return False
 
 
+def _is_runner_scratch(relative: Path) -> bool:
+    parts = relative.parts
+    return (
+        len(parts) > 6
+        and parts[:2] == (".runtime", "agent-runner-projects")
+        and parts[3] == "runs"
+        and parts[5] == "scratch"
+    )
+
+
 def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
     """Relative paths the guest declared and the collection really contains.
 
@@ -1024,6 +1036,8 @@ def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
         relative = Path(fields[0])
         if relative.is_absolute() or ".." in relative.parts:
             raise CollectionError(f"guest manifest names an unsafe path: {fields[0]}")
+        if _is_runner_scratch(relative):
+            continue
         if relative.parts[:1] == (".factory",) and relative.parts[:2] != (".factory", "job"):
             continue
         collected = staging / relative
