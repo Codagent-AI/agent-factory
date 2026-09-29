@@ -1485,6 +1485,95 @@ def test_feature_workflow_skip_conditions_read_only_variables_defined_on_a_stop(
             defined.add(capture.group(1))
 
 
+def verify_classification(
+    tmp_path: Path, attention: dict[str, Any]
+) -> subprocess.CompletedProcess[str]:
+    path = tmp_path / "review-attention.json"
+    path.write_text(json.dumps(attention))
+    return run("python3", str(PACKAGE / "verify-classification.py"), str(path), cwd=tmp_path)
+
+
+def classified(**tiers: Any) -> dict[str, Any]:
+    return {
+        "red": [],
+        "orange": [],
+        "yellow": [],
+        "white": [],
+        "accepted_head": "a" * 40,
+        "later_commits": [],
+        **tiers,
+    }
+
+
+def item(title: str, detail: str = "detail") -> dict[str, str]:
+    return {"title": title, "detail": detail, "link": "#evidence"}
+
+
+def test_verify_classification_accepts_a_later_commits_item_with_size_and_tests(
+    tmp_path: Path,
+) -> None:
+    later = "b" * 40
+    attention = classified(
+        later_commits=[later],
+        orange=[
+            item(
+                "Commits after acceptance",
+                f"{later[:7]} fix lint. 2 files changed, 10 insertions(+), 3 deletions(-). "
+                "Tests: covered by TestSweepIntegration.",
+            )
+        ],
+        yellow=[item("Criterion covered by TestReplayRetentionRace")],
+    )
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode == 0, result.stderr
+
+
+def test_verify_classification_requires_later_commits_diff_size_and_test_coverage(
+    tmp_path: Path,
+) -> None:
+    later = "b" * 40
+    attention = classified(
+        later_commits=[later], orange=[item("Commits after acceptance", f"{later[:7]} fix lint")]
+    )
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode != 0
+    assert "diff size" in result.stderr
+    assert "Tests:" in result.stderr
+
+
+def test_verify_classification_requires_every_later_commit_named_in_orange(
+    tmp_path: Path,
+) -> None:
+    later = "b" * 40
+    attention = classified(later_commits=[later], yellow=[item("Commits", later[:7])])
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode != 0
+    assert later[:7] in result.stderr
+
+
+def test_verify_classification_rejects_one_item_in_two_tiers(tmp_path: Path) -> None:
+    attention = classified(red=[item("Smoke test fails")], orange=[item("Smoke test fails")])
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode != 0
+    assert "Smoke test fails" in result.stderr
+
+
+def test_verify_classification_allows_generic_titles_repeated_within_a_tier(
+    tmp_path: Path,
+) -> None:
+    attention = classified(white=[item("Criterion passed", "a"), item("Criterion passed", "b")])
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode == 0, result.stderr
+
+
+def test_verify_classification_rejects_malformed_items(tmp_path: Path) -> None:
+    attention = classified(red=[{"title": "", "detail": "x", "link": "#e"}], white=["passed"])
+    result = verify_classification(tmp_path, attention)
+    assert result.returncode != 0
+    assert "red[0]" in result.stderr
+    assert "white[0]" in result.stderr
+
+
 def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
     tmp_path: Path,
 ) -> None:
