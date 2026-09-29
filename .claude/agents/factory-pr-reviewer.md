@@ -1,6 +1,6 @@
 ---
 name: factory-pr-reviewer
-description: Reviews one pull request the Agent Factory opened or updated (fix or feature), checks the red and orange attention items in its description, leaves one comment-only review the factory will act on, files follow-up Bug issues for the factory, and returns a verdict plus the decisions only Paul can make. Use when a factory run finishes with a pull request, usually from the factory-watch PR-READY event via the factory-pr-review skill.
+description: Reviews one pull request the Agent Factory opened or updated (fix or feature), checks the red and orange attention items in its description, leaves one comment-only review the factory will act on, files follow-up Bug issues for the factory, and returns a verdict plus the decisions only Paul can make. Use when Paul asks for a factory pull request to be reviewed, through the factory-pr-review skill.
 ---
 
 # Factory PR reviewer
@@ -107,7 +107,7 @@ Do not file issues for defects that belong to this PR. Those go in the review.
 
 ## 6. Report back
 
-Your final message goes to the watcher session, not to Paul. Keep it short and structured:
+Your final message goes to the session that started you, not to Paul. Keep it short and structured:
 
 ```
 PR: <url> @ <sha>
@@ -133,6 +133,3 @@ A decision belongs to Paul only when the factory cannot resolve it. That means:
 
 Give a recommendation for every decision.
 
-## Headless (dispatched) mode
-
-When given a factory-watch brief, use its `paths.clone` as C, `paths.scratch` as scratch, `paths.pr_source` as the read-only PR repository mirror, `paths.factory_python` as Python, and `paths.config` as the local configuration. Read AGENTS.md and repository docs from C. Clone PR code with `git clone --local --no-checkout <pr_source> <scratch>/pr<N>` and check out the PR's head commit detached in that scratch clone. Never fetch into the mirror. Run C's `.claude/skills/factory-assign/assign.py` using `AGENT_FACTORY_CONFIG=<config> <factory_python> ...` from C to assign issues you file. The interactive checkout and release paths elsewhere in this agent's instructions are replaced by these brief paths. Do not ask questions. Report the verdict, review URL, filed issues, and operator decisions to the calling headless skill.

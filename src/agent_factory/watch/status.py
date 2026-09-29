@@ -25,7 +25,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
     current = watch_store.cursor(store)
     if watch.enabled:
         output = [
-            f"watch: enabled, handled up to {current.get('handled_up_to') if current else 'not started'}"
+            f"watch: enabled, last detection {current.get('handled_up_to') if current else 'not started'}"
         ]
         today = watch_store.launched_today(store, local.schedule.timezone, now)
         cost = sum(
@@ -60,7 +60,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
                 and row["pr_number"]
                 and watch_store.pr_running(store, row["repository"], row["pr_number"])
             ):
-                reasons.add("PR review running")
+                reasons.add("PR check running")
             elif len(running) >= watch.max_sessions:
                 reasons.add("concurrency cap")
             else:
@@ -92,8 +92,12 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
             audit = watch_store.json_field(row, "audit_json")
             if audit.get("outcome") != "delivered":
                 output.append(f"watch audit: {row['id']} {audit.get('outcome', 'missing')}")
-        if row["event_kind"] == "PR-READY" and current_claim:
+        if current_claim:
             result = watch_store.json_field(row, "result_json")
-            if result.get("decisions"):
-                output.append(f"watch decisions: {row['pr_url']} ({row['id']})")
+            issues = [*result.get("issues_filed", []), *result.get("issues_updated", [])]
+            if issues:
+                source = row["pr_url"] or f"{row['repository']}#{row['issue_number']}"
+                output.append(
+                    f"watch factory issues: {source} → {' '.join(map(str, issues))} ({row['id']})"
+                )
     return output

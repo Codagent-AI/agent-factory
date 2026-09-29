@@ -44,7 +44,8 @@ if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
 WORKFLOW_DIR = Path(__file__).parent / "workflow"
-WORKFLOW_FILE = "factory-watch-v1.0.yaml"
+WORKFLOW_FILE = "factory-watch-v2.0.yaml"
+CONTRACT = "factory-watch/2"
 FILES = (WORKFLOW_FILE, "check-contract.sh", "check-result.sh")
 
 
@@ -96,10 +97,6 @@ def start(
         ),
         "cannot point the watch clone at GitHub",
     )
-    pr_source = None
-    if row["event_kind"] == "PR-READY":
-        workspace.fetch_mirror(row["repository"], token_provider())
-        pr_source = workspace.mirror_path(row["repository"])
     _refuse_symlinked_staging(clone, FILES)
     _refuse_tracked_workflow_files(clone, FILES)
     catalog = clone / ".agent-runner" / "workflows"
@@ -119,10 +116,11 @@ def start(
     )
     claim = store.get_claim(row["claim_id"])
     run = store.get_run(row["run_id"]) if row["run_id"] else None
+    kind = procedure(row)
     brief: dict[str, object] = {
         "dispatch": row["id"],
         "event_kind": row["event_kind"],
-        "event_line": event_line(row, claim, run),
+        "event_line": event_line(row, run),
         "attempt": row["attempt"],
         "claim": (
             {
@@ -162,12 +160,19 @@ def start(
             "evidence": str(evidence),
             "clone": str(clone),
             "scratch": str(evidence / "scratch"),
-            **({"pr_source": str(pr_source)} if pr_source else {}),
         },
-        "operator_login": shared.watch.operator,
+        "fix_targets": [target.repository for target in shared.fix.targets],
         "result_file": str(evidence / RESULT_FILE),
-        "procedure": procedure(row),
+        "procedure": kind,
         "forbidden": [
+            "Do not fix anything: do not create branches, commit, push, or open pull requests; file issues instead",
+            *(
+                [
+                    "Do not review the pull request's code, and do not post a review or comment on the pull request"
+                ]
+                if kind == "pr-check"
+                else []
+            ),
             "Do not deploy, including through the hotfix exception, or merge",
             "Do not edit a release or the service clone",
             "Do not fetch into, add worktrees to, switch branches in, or run commands from the operator's checkout",
@@ -205,7 +210,7 @@ def start(
                 f"cd {q(str(clone))}",
                 f"{q(runner)} run factory-watch --profile factory --session-dir {q(str(session_dir))} "
                 f"--param brief_file={q(str(brief_file))} "
-                f"--param artifact_dir={q(str(evidence))} --param contract_version=factory-watch/1",
+                f"--param artifact_dir={q(str(evidence))} --param contract_version={CONTRACT}",
                 "status=$?",
                 *audit_command,
                 f'printf \'{{"code": %d, "finished_at": "%s"}}\\n\' "$status" "$(date -u +%FT%TZ)" > {q(str(evidence / "exit.json"))}',

@@ -1,0 +1,3 @@
+- [x] Move the failure-handling and headless triage procedure to `factory-triage`
+- [x] Add the on-demand `factory-status` skill
+- [x] Remove `factory-watch` and `watch.sh`, and repoint references

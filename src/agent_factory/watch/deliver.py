@@ -15,14 +15,14 @@ if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
 
-def queue(store: ClaimStore, row: dict[str, Any], purpose: str, body: str, target: str) -> None:
+def queue(store: ClaimStore, row: dict[str, Any], purpose: str, body: str) -> None:
+    """Queue one comment on the claim's issue; the watcher never comments on a pull request."""
     deliveries = watch_store.json_field(row, "deliveries_json")
     if purpose in deliveries:
         return
-    number = row["pr_number"] if target == "pr" else row["issue_number"]
     deliveries[purpose] = {
-        "target": target,
-        "number": number,
+        "target": "issue",
+        "number": row["issue_number"],
         "marker": f"<!-- agent-factory:watch:{row['id']}:{purpose} -->",
         "body": body,
         "comment_id": None,
@@ -39,14 +39,13 @@ def end(
     config_path: object,
     *,
     validated: dict[str, Any] | None = None,
-    operator: str = "",
     **fields: object,
 ) -> None:
     """Record a dispatch's end state and queue the comment it owes, in one transaction.
 
-    A completed triage owes its triage comment and a completed review its decisions (when
-    there are any); a budget-exhausted dispatch owes a budget notice, and any other end
-    state an alert.
+    A completed triage owes its triage comment on the claim's issue. A completed PR-READY
+    check owes no comment: its filed issues are on the board and in status. A
+    budget-exhausted dispatch owes a budget notice, and any other end state an alert.
     """
     with store._transaction():  # pyright: ignore[reportPrivateUsage]
         watch_store.update(
@@ -60,24 +59,13 @@ def end(
         ended = watch_store.get(store, dispatch_id)
         assert ended is not None
         if state == "completed":
-            if validated is None:
-                return
-            if ended["event_kind"] == "FAILURE":
-                queue(
-                    store,
-                    ended,
-                    "triage",
-                    result.triage(ended, validated, store.is_paused()),
-                    "issue",
-                )
-            elif validated["decisions"]:
-                queue(store, ended, "decisions", result.decisions(validated, operator), "pr")
+            if validated is not None and ended["event_kind"] == "FAILURE":
+                queue(store, ended, "triage", result.triage(ended, validated, store.is_paused()))
             return
         budget = state == "budget-exhausted"
-        claim = store.get_claim(ended["claim_id"])
         run = store.get_run(ended["run_id"]) if ended["run_id"] else None
-        notice = result.notice(ended, config_path, budget=budget, claim=claim, run=run)
-        queue(store, ended, "budget" if budget else "alert", notice, "issue")
+        notice = result.notice(ended, config_path, budget=budget, run=run)
+        queue(store, ended, "budget" if budget else "alert", notice)
 
 
 def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:

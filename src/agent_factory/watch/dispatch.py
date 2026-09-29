@@ -50,18 +50,14 @@ def dispatch(
     started_today = watch_store.daily_count(store, local.schedule.timezone, datetime.now(UTC))
     readiness_failure: str | None = None  # computed once, only when a row could launch
     for row in watch_store.rows(store, "pending"):
-        if row["event_kind"] in {"CLAIM", "EVAL-DONE"}:
-            claim = store.get_claim(row["claim_id"])
-            run = store.get_run(row["run_id"]) if row["run_id"] else None
-            logger.info("watch event %s", result.event_line(row, claim, run))
+        if row["event_kind"] not in {"PR-READY", "FAILURE"}:
+            # A CLAIM or EVAL-DONE row queued by an earlier release: nothing handles it now.
             watch_store.update(store, row["id"], state="logged")
             continue
         if row["event_kind"] == "PR-READY" and row["pr_number"] is None:
-            claim = store.get_claim(row["claim_id"])
             run = store.get_run(row["run_id"]) if row["run_id"] else None
             logger.info(
-                "watch event %s: no parseable pull request URL",
-                result.event_line(row, claim, run),
+                "watch event %s: no parseable pull request URL", result.event_line(row, run)
             )
             watch_store.update(store, row["id"], state="logged")
             continue

@@ -1,8 +1,5 @@
-# factory-watch-dispatch Specification
+## MODIFIED Requirements
 
-## Purpose
-TBD - created by archiving change feature-61-51640878. Update Purpose after archive.
-## Requirements
 ### Requirement: Detect watch events in every cycle
 
 When watching is enabled, every factory cycle, whether started by the resident or by `tick`, SHALL detect watch events after it consumes attempt results. It SHALL detect them whether the factory is paused or not, and whether the admission window is open or not. The watcher exists to make sure the factory itself works, so the factory SHALL detect only two event kinds:
@@ -77,6 +74,7 @@ So a change to the grace period can neither skip a failure nor detect it twice. 
 - **WHEN** watching is disabled for a day, a pull request becomes ready during that day, and watching is enabled again
 - **THEN** the pull request that became ready while watching was disabled is not detected
 
+
 ### Requirement: Queue each event exactly once
 
 Every event that a cycle detects SHALL be recorded durably as a `pending` dispatch, under a key made of the event kind and the id of its attempt. It SHALL be recorded in the same transaction that advances the watch cursor, so an event can never be passed over without a dispatch record. An event detected again SHALL NOT create a second dispatch. Each dispatch SHALL record its event kind, claim, attempt when there is one, issue, pull request when there is one, event time, and state. The states are:
@@ -111,6 +109,7 @@ Each cycle SHALL process `pending` dispatches oldest first, by event time and th
 
 - **WHEN** a `pending` `CLAIM` or `EVAL-DONE` dispatch recorded by an earlier release is processed
 - **THEN** it is recorded `logged`, and no session starts and no comment is posted for it
+
 
 ### Requirement: Triage a failure in a dispatched session
 
@@ -153,6 +152,7 @@ The comment SHALL NOT be treated as a writer gesture on the claim.
 
 - **WHEN** a triage comment is posted on the issue of a feature claim that is blocked with `needs-input`
 - **THEN** the claim is not resumed by that comment
+
 
 ### Requirement: Run dispatched sessions fresh and bounded
 
@@ -226,6 +226,7 @@ A dispatch SHALL NOT be relaunched automatically. Pausing the factory SHALL NOT 
 - **WHEN** a dispatched session ends in any state
 - **THEN** its checkout no longer exists, and the release, the service clone, and the operator's checkout are unchanged by it
 
+
 ### Requirement: Bound sessions with a daily budget
 
 The factory SHALL count the dispatched sessions it starts in each local day of the configured schedule timezone. A redispatched attempt counts like any other. When the count has reached the configured per-day budget, a `pending` `PR-READY` or `FAILURE` dispatch SHALL NOT start a session. It SHALL be recorded `budget-exhausted`, and the factory SHALL post one factory-bot comment on the claim's issue. That comment names the event, states that no agent ran because the day's budget was spent, and gives the command that redispatches it. A budget of zero SHALL post every such event this way. The budget SHALL be applied before the watch readiness checks, the one-session-per-pull-request rule, and the concurrency cap, and it SHALL need none of the session's prerequisites. So a spent budget is reported even while sessions could not start anyway. The count SHALL survive restarts.
@@ -250,6 +251,7 @@ The factory SHALL count the dispatched sessions it starts in each local day of t
 - **WHEN** the budget was spent yesterday and a `PR-READY` event is detected after local midnight
 - **THEN** a PR-READY check session starts
 
+
 ### Requirement: Alert on a dispatch that did not finish
 
 When a dispatch is recorded `interrupted`, `timed-out`, or `launch-failed`, the factory SHALL post one factory-bot comment on the claim's issue. The comment SHALL name the event, the pull request when there is one, what happened, the dispatch's evidence path, and the command that redispatches it.
@@ -258,6 +260,7 @@ When a dispatch is recorded `interrupted`, `timed-out`, or `launch-failed`, the 
 
 - **WHEN** the check session for a ready pull request cannot be started because the configured CLI is not executable
 - **THEN** the dispatch is recorded `launch-failed`, and one comment on the claim's issue names the pull request, the reason, the evidence path, and the redispatch command
+
 
 ### Requirement: Deliver dispatch comments exactly once
 
@@ -272,6 +275,7 @@ Every comment the factory posts for a dispatch SHALL carry a marker unique to th
 
 - **WHEN** posting a triage comment on the claim's issue fails
 - **THEN** the failure and its reason are recorded, and a later cycle posts the comment once
+
 
 ### Requirement: Record each dispatched session's usage
 
@@ -299,28 +303,8 @@ Tokens and cost SHALL come from the session's Agent Runner metrics. When a value
 - **WHEN** a session is terminated at its timeout
 - **THEN** its usage holds whatever the Runner recorded, with its coverage, and its audit delivery is recorded as missing
 
-### Requirement: Prune dispatch evidence
 
-The factory SHALL remove a dispatch's evidence directory once the dispatch has been in an end state for longer than the configured evidence retention period. It SHALL keep the dispatch record, with its result, usage, audit outcome, and comment deliveries. It SHALL NOT remove evidence of a `pending` or `launched` dispatch.
-
-#### Scenario: Prune an old dispatch
-
-- **WHEN** a triage dispatch completed longer ago than the retention period
-- **THEN** its evidence directory is removed, and status and the dispatch record still show its outcome and usage
-
-### Requirement: Stop watching without losing queued events
-
-When watching is disabled, or the `[watch]` configuration is absent, the factory SHALL detect no events and start no sessions. This keeps today's behavior. Sessions already `launched` SHALL still be supervised, and their results and comments delivered. `pending` dispatches SHALL remain `pending` and SHALL be processed when watching is enabled again.
-
-#### Scenario: Disable watching while a session runs
-
-- **WHEN** watching is disabled while a triage session runs and another dispatch is `pending`
-- **THEN** the running session is supervised to its end and its comment posted, the pending dispatch starts no session, and no new event is detected
-
-#### Scenario: No watch configuration
-
-- **WHEN** the shared configuration has no `[watch]` section
-- **THEN** cycles detect no watch event and start no session
+## ADDED Requirements
 
 ### Requirement: Check a ready pull request for factory defects
 
@@ -367,3 +351,14 @@ A dispatched session that finds a defect in the factory stack SHALL first search
 - **WHEN** a session finds a new Agent Validator defect and Agent Validator is a fix target
 - **THEN** it files a Bug issue in Agent Validator with the evidence, sets Owner factory, Status Ready, and Priority Low, and reports the issue as filed
 
+## REMOVED Requirements
+
+### Requirement: Log claim and eval-completion events without an agent
+
+**Reason**: Nothing depends on these log lines; on-demand status reads claims and eval results directly from the factory database.
+**Migration**: None. Pending `CLAIM` and `EVAL-DONE` rows left by an earlier release are recorded `logged` without a session.
+
+### Requirement: Review a ready pull request in a dispatched session
+
+**Reason**: The watcher only makes sure the factory works; reviewing what the factory builds is out of its scope.
+**Migration**: Replaced by "Check a ready pull request for factory defects". The operator reviews a factory pull request on request with the interactive `factory-pr-review` skill.

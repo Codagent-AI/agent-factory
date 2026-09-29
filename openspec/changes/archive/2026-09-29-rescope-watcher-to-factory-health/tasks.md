@@ -1,0 +1,6 @@
+- [x] Stop detecting CLAIM and EVAL-DONE; log legacy pending rows
+- [x] Replace the PR-READY review with a factory-defect check that posts nothing on the PR
+- [x] Triage files issues and never fixes; new result schemas and contract `factory-watch/2`
+- [x] Remove decisions delivery and `[watch] operator`; rename the doctor login check
+- [x] Move headless procedures into `factory-triage`; remove headless review modes
+- [x] Update status, docs, AGENTS.md, and skills

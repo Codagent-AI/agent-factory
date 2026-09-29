@@ -10,7 +10,7 @@ Run the deploy script from the root of any Agent Factory checkout:
 ```sh
 scripts/deploy.sh               # factory origin/main + latest Agent Runner
 scripts/deploy.sh --no-runner   # factory only
-scripts/deploy.sh origin/<branch>   # agreed hotfix only; see factory-watch
+scripts/deploy.sh origin/<branch>   # agreed hotfix only; see factory-triage
 ```
 
 Pass `--no-runner` or a ref only when Paul asks. `AGENTS.md` ("Deploying") describes each step.

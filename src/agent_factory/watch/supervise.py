@@ -69,7 +69,6 @@ def _finish(
     state: str,
     detail: str,
     validated: dict[str, Any] | None = None,
-    operator: str = "",
 ) -> None:
     evidence = Path(row["evidence_path"])
     deliver.end(
@@ -79,7 +78,6 @@ def _finish(
         detail,
         config_path,
         validated=validated,
-        operator=operator,
         result_json=json.dumps(validated or {}),
         usage_json=json.dumps(_usage(row, evidence, datetime.now(UTC))),
         audit_json=json.dumps(_read_json(evidence / AUDIT_FILE) or {"outcome": "missing"}),
@@ -87,7 +85,7 @@ def _finish(
     session.remove_clone(local, row["id"])
 
 
-def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator: str = "") -> None:
+def supervise(store: ClaimStore, local: LocalConfig, config_path: Path) -> None:
     for row in watch_store.rows(store, "launched"):
         evidence = Path(row["evidence_path"])
         identity = watch_store.json_field(row, "process_json")
@@ -134,7 +132,6 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
                         "completed",
                         "session deadline exceeded after result",
                         validated,
-                        operator,
                     )
             continue
         exit_record = _read_json(evidence / "exit.json")
@@ -151,5 +148,5 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
             _finish(store, row, local, config_path, "interrupted", detail)
         else:
             # A session that exits with a valid result is completed whatever its exit
-            # status: its review or triage already happened, so its comment must be posted.
-            _finish(store, row, local, config_path, "completed", exit_detail, validated, operator)
+            # status: its check or triage already happened, so its result must be recorded.
+            _finish(store, row, local, config_path, "completed", exit_detail, validated)
