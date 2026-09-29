@@ -1,11 +1,11 @@
 ---
 name: factory-pr-review
-description: Review a pull request the Agent Factory opened or updated. Runs the factory-pr-reviewer agent (code review, red and orange description items, a comment-only review the factory acts on, follow-up Bug issues assigned to the factory), then puts Paul's decisions to him one at a time with a recommendation. Use on every factory-watch PR-READY event, or when asked to review a factory PR.
+description: Review a pull request the Agent Factory opened or updated. Runs the factory-pr-reviewer agent (code review, red and orange description items, a comment-only review the factory acts on, follow-up Bug issues assigned to the factory), then puts Paul's decisions to him one at a time with a recommendation. Use when Paul asks for a factory PR to be reviewed. The service watcher does not review PRs.
 ---
 
 # Factory PR review
 
-Run this for every `PR-READY` event from `factory-watch`, and whenever Paul asks for a factory PR to be reviewed. PR-READY fires for initial and recovery runs, and again after each review round. Paul reviews the PR after this has run, so it has to catch what he would.
+Run this only when Paul asks for a factory PR to be reviewed. The service watcher does not review pull requests: its PR-READY check only looks for defects in the factory itself and files issues for them (see the `factory-triage` skill). Paul reviews the PR after this has run, so it has to catch what he would.
 
 ## 1. Start the reviewer
 
@@ -16,8 +16,6 @@ Start one background agent per PR, with `subagent_type: factory-pr-reviewer`. If
 - the scratchpad directory to use for worktrees and review bodies.
 
 Several PRs can be reviewed in parallel. Do not start a second reviewer on a PR while one is still running on it. If the PR changes again, start the next reviewer after the first finishes.
-
-Keep watching while it runs: restart `watch.sh` right away.
 
 ## 2. Handle its report
 
@@ -43,6 +41,3 @@ Act on each answer before moving on:
 - a merge: only Paul merges, unless he told you to merge this PR in this conversation;
 - "leave it": note it and move on.
 
-## Headless mode
-
-When a `factory-watch` brief requests `procedure: "review"`, review its pull request in the foreground and do not ask the operator questions. Give the `factory-pr-reviewer` agent the brief, its `paths`, `pull_request`, and `result_file`; tell it to follow its Headless (dispatched) mode. Use the brief's scratch directory for all temporary files. Wait for its review to finish. Write exactly one JSON object to `result_file` with `procedure: "review"`, `verdict` (string), `review_url` (string or null), `issues_filed` (array of strings), and `decisions` (at most ten objects with `question`, `context`, `options` as `label`/`consequence` pairs, and `recommendation`). Leave `decisions` empty when none need the operator. The resident posts any decisions as a bot comment on the PR.

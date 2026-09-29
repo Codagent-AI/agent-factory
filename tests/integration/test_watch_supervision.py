@@ -127,11 +127,11 @@ _TRIAGE = {
     "owner": "transient",
     "retry": "succeeded",
     "actions": [],
-    "pull_request": None,
+    "issues_filed": [],
+    "issues_updated": [],
     "paused_by_session": False,
     "resumed_by_session": False,
     "next_step": "none",
-    "handoff": None,
 }
 
 

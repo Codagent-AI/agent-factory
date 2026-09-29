@@ -45,9 +45,7 @@ def step(
     config_path: Path,
     token_provider: InstallationTokenProvider,
 ) -> None:
-    _safe(
-        "supervise", lambda: supervise.supervise(store, local, config_path, shared.watch.operator)
-    )
+    _safe("supervise", lambda: supervise.supervise(store, local, config_path))
     if shared.watch.enabled:
         _safe("detect", lambda: detect.detect(store, shared.watch.grace_minutes))
         _safe(

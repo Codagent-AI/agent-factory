@@ -82,10 +82,7 @@ def test_quiet_cycle_and_budget_zero_deliver_once(tmp_path: Path) -> None:
         rows = [row for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
         assert len(rows) == 1
         assert rows[0]["state"] == "budget-exhausted"
-        assert any(
-            row["event_kind"] == "CLAIM" and row["state"] == "logged"
-            for row in watch_store.rows(store)
-        )
+        assert {row["event_kind"] for row in watch_store.rows(store)} == {"FAILURE"}
         assert len(client.records) == 1
         assert "No agent ran" in client.records[0].body
         assert "watch redispatch" in client.records[0].body
@@ -147,11 +144,11 @@ def test_failure_session_completes_and_delivers_once(
                         "owner": "transient",
                         "retry": "automatic",
                         "actions": [],
-                        "pull_request": None,
+                        "issues_filed": [],
+                        "issues_updated": [],
                         "paused_by_session": False,
                         "resumed_by_session": False,
                         "next_step": "observe retry",
-                        "handoff": None,
                     }
                 )
             )
@@ -171,27 +168,32 @@ def test_failure_session_completes_and_delivers_once(
         assert len(client.records) == 1
         assert "temporary outage" in client.records[0].body
         assert "Factory paused: no" in client.records[0].body
+        assert "Issues filed: none" in client.records[0].body
     finally:
         store.close()
 
 
-def test_ready_pr_decisions_go_to_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_ready_pr_check_files_issues_and_posts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import json
     from typing import Any
 
     from agent_factory.watch import readiness, session
+    from agent_factory.watch.status import lines
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         local = _local(tmp_path)
         shared = replace(
             SharedConfig.from_file(Path("config/codagent.toml")),
-            watch=WatchConfig(True, "o/r", "claude:model:medium", operator="writer"),
+            watch=WatchConfig(True, "o/r", "claude:model:medium"),
         )
         client = Comments()
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "fix", "fp", {}))
         run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
         pr = "https://github.com/o/r/pull/9"
+        issue = "https://github.com/o/agent-runner/issues/41"
         store.finish_run(
             run.id,
             execution_status="completed",
@@ -210,6 +212,7 @@ def test_ready_pr_decisions_go_to_pr(tmp_path: Path, monkeypatch: pytest.MonkeyP
             return []
 
         monkeypatch.setattr(readiness, "diagnostics", ready)
+        procedures: list[str] = []
 
         def fake_start(
             _store: ClaimStore,
@@ -219,24 +222,19 @@ def test_ready_pr_decisions_go_to_pr(tmp_path: Path, monkeypatch: pytest.MonkeyP
             _config: Path,
             _token: object,
         ) -> dict[str, object]:
+            from agent_factory.watch.result import procedure
+
+            procedures.append(procedure(row))
             evidence = Path(row["evidence_path"])
             evidence.mkdir(parents=True)
             (evidence / "exit.json").write_text('{"code":0}')
             (evidence / "watch-result.json").write_text(
                 json.dumps(
                     {
-                        "procedure": "review",
-                        "verdict": "commented",
-                        "review_url": pr,
-                        "issues_filed": [],
-                        "decisions": [
-                            {
-                                "question": "Ship?",
-                                "context": "Risk is low",
-                                "options": [{"label": "yes", "consequence": "merge"}],
-                                "recommendation": "yes",
-                            }
-                        ],
+                        "procedure": "pr-check",
+                        "summary": "the orange resume item is a Runner defect",
+                        "issues_filed": [issue],
+                        "issues_updated": [],
                     }
                 )
             )
@@ -249,13 +247,57 @@ def test_ready_pr_decisions_go_to_pr(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
         step(store, client, shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
         step(store, client, shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
-        reviews = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
-        assert len(reviews) == 1
-        assert reviews[0]["pr_number"] == 9
-        assert reviews[0]["state"] == "completed"
-        assert len(client.records) == 1
-        assert "@writer" in client.records[0].body
-        assert "Ship?" in client.records[0].body
+        checks = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        assert procedures == ["pr-check"]
+        assert len(checks) == 1
+        assert checks[0]["pr_number"] == 9
+        assert checks[0]["state"] == "completed"
+        assert watch_store.json_field(checks[0], "deliveries_json") == {}
+        assert client.records == []
+        status = lines(store, local)
+        assert any(pr in line and issue in line for line in status)
+        assert not any("decisions" in line for line in status)
+    finally:
+        store.close()
+
+
+def test_a_legacy_pending_claim_event_starts_no_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.watch import session
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        local = _local(tmp_path)
+        shared = replace(
+            SharedConfig.from_file(Path("config/codagent.toml")),
+            watch=WatchConfig(True, "o/r", "claude:model:medium", daily_sessions=0),
+        )
+        claim = store.create_claim(ClaimDraft("o/r", 7, "I", "P", "fix", "fp", {}))
+        now = datetime.now(UTC).isoformat()
+        for kind in ("CLAIM", "EVAL-DONE"):
+            watch_store.insert(
+                store,
+                event_key=f"{kind}:{claim.id}",
+                event_kind=kind,
+                claim_id=claim.id,
+                run_id=None,
+                repository="o/r",
+                issue_number=7,
+                pr_number=None,
+                pr_url=None,
+                event_at=now,
+                now=now,
+            )
+
+        def no_start(*_args: object) -> None:
+            pytest.fail("session launched")
+
+        monkeypatch.setattr(session, "start", no_start)
+        client = Comments()
+        step(store, client, shared, local, tmp_path / "local.toml", lambda: "unused")  # type: ignore[arg-type]
+        assert [row["state"] for row in watch_store.rows(store)] == ["logged", "logged"]
+        assert client.records == []
     finally:
         store.close()
 
@@ -307,7 +349,7 @@ def test_ready_pr_without_parseable_url_is_logged_without_launch(
         store.close()
 
 
-def test_interrupted_host_result_after_failed_board_cycle_starts_one_review(
+def test_interrupted_host_result_after_failed_board_cycle_starts_one_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from typing import Any
@@ -502,7 +544,7 @@ def test_detection_error_preserves_cursor_and_still_delivers(
             now=now,
         )
         row = watch_store.rows(store)[0]
-        deliver.queue(store, row, "alert", "earlier failure", "issue")
+        deliver.queue(store, row, "alert", "earlier failure")
         client = Comments()
 
         def broken(*_args: object) -> None:
@@ -521,7 +563,7 @@ def test_detection_error_preserves_cursor_and_still_delivers(
         store.close()
 
 
-def test_second_review_waits_for_same_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_second_check_waits_for_same_pr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from typing import Any
 
     from agent_factory.watch import readiness, session, supervise
@@ -583,7 +625,7 @@ def test_second_review_waits_for_same_pr(tmp_path: Path, monkeypatch: pytest.Mon
             result={"outcome": "pull-request", "pr": {"url": pr}},
         )
         step(store, Comments(), shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
-        reviews = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
-        assert [row["state"] for row in reviews] == ["launched", "pending"]
+        checks = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        assert [row["state"] for row in checks] == ["launched", "pending"]
     finally:
         store.close()

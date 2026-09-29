@@ -149,6 +149,32 @@ def test_failures_before_enablement_or_past_the_horizon_are_never_queued(tmp_pat
         store.close()
 
 
+def test_claims_and_finished_evals_queue_no_event(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 0, lambda: now - timedelta(minutes=10))
+        claim = store.create_claim(
+            ClaimDraft("Codagent-AI/example", 21, "I", "P-eval", "eval", "fp-eval", {})
+        )
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/eval")
+        store.finish_run(run.id, execution_status="completed", result={})
+        store.set_setting("consumed-results", run.id, {"complete": True})
+        store._connection.execute(
+            "UPDATE run SET finished_at=? WHERE id=?",
+            ((now - timedelta(minutes=5)).isoformat(), run.id),
+        )
+        store._connection.execute(
+            "UPDATE claim SET created_at=? WHERE id=?",
+            ((now - timedelta(minutes=6)).isoformat(), claim.id),
+        )
+        detect.detect(store, 0, lambda: now)
+        detect.detect(store, 0, lambda: now + timedelta(minutes=1))
+        assert watch_store.rows(store) == []
+    finally:
+        store.close()
+
+
 def _contend(path: str, dispatch_id: str, results: Queue[bool]) -> None:
     store = ClaimStore(Path(path))
     try:
@@ -189,7 +215,6 @@ def test_two_processes_queue_and_launch_each_event_exactly_once(tmp_path: Path) 
     try:
         rows = watch_store.rows(store)
         keys = [(r["event_key"], r["attempt"]) for r in rows]
-        # The claim's own CLAIM event is also queued; every key appears exactly once.
         assert len(keys) == len(set(keys))
         failure = [r for r in rows if r["event_key"] == row["event_key"]]
         assert len(failure) == 1

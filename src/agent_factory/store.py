@@ -140,7 +140,6 @@ class ClaimStore:
             "watch_dispatch",
             "watch_dispatch_state",
             "watch_run_finished_at",
-            "watch_claim_created_at",
             "watch_dispatch_launched_at",
         }
         placeholders = ",".join("?" * len(required_watch_schema))
@@ -169,7 +168,6 @@ class ClaimStore:
             );
             CREATE INDEX IF NOT EXISTS watch_dispatch_state ON watch_dispatch(state);
             CREATE INDEX IF NOT EXISTS watch_run_finished_at ON run(finished_at);
-            CREATE INDEX IF NOT EXISTS watch_claim_created_at ON claim(created_at);
             CREATE INDEX IF NOT EXISTS watch_dispatch_launched_at ON watch_dispatch(launched_at);
         """)
         columns = {

@@ -35,9 +35,12 @@ def _git(*args: str) -> None:
     subprocess.run(["git", *args], check=True, capture_output=True)
 
 
-@pytest.mark.parametrize("audit_enabled", [False, True])
+@pytest.mark.parametrize(
+    ("audit_enabled", "event_kind"),
+    [(False, "FAILURE"), (True, "FAILURE"), (False, "PR-READY")],
+)
 def test_session_stages_and_launches_with_no_token_in_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_enabled: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_enabled: bool, event_kind: str
 ) -> None:
     monkeypatch.setattr(audit, "AUDIT_ENABLED", audit_enabled)
     # All git and Runner effects stay under this isolated root.
@@ -80,24 +83,27 @@ def test_session_stages_and_launches_with_no_token_in_environment(
     )
 
     # The local bare fixture already represents a fetched mirror.
+    fetches: list[str] = []
+
     def fetched(self: PullRequestWorkspace, repository: str, token: str | None) -> None:
-        return None
+        fetches.append(repository)
 
     monkeypatch.setattr(PullRequestWorkspace, "fetch_mirror", fetched)
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "eval", "fp", {}))
         now = datetime.now(UTC)
+        pr = event_kind == "PR-READY"
         watch_store.insert(
             store,
-            event_key="FAILURE:r",
-            event_kind="FAILURE",
+            event_key=f"{event_kind}:r",
+            event_kind=event_kind,
             claim_id=claim.id,
             run_id=None,
-            repository="o/r",
+            repository="o/product" if pr else "o/r",
             issue_number=1,
-            pr_number=None,
-            pr_url=None,
+            pr_number=5 if pr else None,
+            pr_url="https://github.com/o/product/pull/5" if pr else None,
             event_at=now.isoformat(),
             now=now.isoformat(),
         )
@@ -118,14 +124,21 @@ def test_session_stages_and_launches_with_no_token_in_environment(
         )
         assert isinstance(identity.get("pid"), int)
         brief = json.loads((evidence / "input" / "brief.json").read_text())
-        assert brief["procedure"] == "triage"
+        assert brief["procedure"] == ("pr-check" if pr else "triage")
+        assert fetches == ["o/r"]
+        assert "pr_source" not in brief["paths"]
+        assert "operator_login" not in brief
+        assert brief["fix_targets"] == [target.repository for target in shared.fix.targets]
+        forbidden = " ".join(brief["forbidden"])
+        assert "commit, push, or open pull requests" in forbidden
+        assert ("post a review or comment on the pull request" in forbidden) is pr
         assert Path(str(brief["paths"]["scratch"])).is_dir()
         assert "allowed_environment" not in json.dumps(brief)
         wrapper = (evidence / "private" / "watch-run.sh").read_text()
         assert wrapper.splitlines()[1].startswith("echo $$ > ")
         assert "must-not-pass" not in wrapper
         assert ("-m agent_factory.audit host" in wrapper) is audit_enabled
-        assert (clone / ".agent-runner" / "workflows" / "factory-watch-v1.0.yaml").is_file()
+        assert (clone / ".agent-runner" / "workflows" / "factory-watch-v2.0.yaml").is_file()
         for _ in range(100):
             if (evidence / "exit.json").is_file():
                 break

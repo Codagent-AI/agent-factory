@@ -1,5 +1,5 @@
 # pyright: reportPrivateUsage=false
-"""INT-005: adoption, non-bot markers, recorded failures, retries, and targets."""
+"""INT-005: adoption, non-bot markers, recorded failures, and retries on the claim's issue."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def test_delivery_adopts_existing_bot_comment(tmp_path: Path) -> None:
             now=now,
         )
         row = watch_store.rows(store)[0]
-        deliver.queue(store, row, "alert", "A failure occurred", "issue")
+        deliver.queue(store, row, "alert", "A failure occurred")
         client = Comments()
         deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
         assert client.posts == 1
@@ -81,7 +81,7 @@ class Flaky(Comments):
         return super().create_comment(repository, number, body)
 
 
-def _review_row(store: ClaimStore) -> dict[str, Any]:
+def _pr_ready_row(store: ClaimStore) -> dict[str, Any]:
     claim = store.create_claim(ClaimDraft("o/r", 5, "I", "P", "fix", "fp", {}))
     now = datetime.now(UTC).isoformat()
     watch_store.insert(
@@ -100,23 +100,23 @@ def _review_row(store: ClaimStore) -> dict[str, Any]:
     return watch_store.rows(store)[0]
 
 
-def test_failed_delivery_is_recorded_then_posted_once_to_each_target(tmp_path: Path) -> None:
+def test_failed_delivery_is_recorded_then_posted_once_per_purpose(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
-        row = _review_row(store)
-        deliver.queue(store, row, "decisions", "Decide this", "pr")
+        row = _pr_ready_row(store)
+        deliver.queue(store, row, "triage", "Triage this")
         row = watch_store.get(store, row["id"]) or {}
-        deliver.queue(store, row, "alert", "It failed", "issue")
+        deliver.queue(store, row, "alert", "It failed")
         client = Flaky()
         deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
         saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "deliveries_json")
         assert client.posts == 0
-        assert saved["decisions"]["failure"]["error"] == "HTTP 502"
-        assert saved["decisions"]["comment_id"] is None
+        assert saved["triage"]["failure"]["error"] == "HTTP 502"
+        assert saved["triage"]["comment_id"] is None
         client.fail = False
         for _ in range(3):
             deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
-        assert sorted(client.targets) == [5, 70]
+        assert client.targets == [5, 5]
         assert client.posts == 2
     finally:
         store.close()
@@ -125,15 +125,15 @@ def test_failed_delivery_is_recorded_then_posted_once_to_each_target(tmp_path: P
 def test_marker_in_a_non_bot_comment_is_not_adopted(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
-        row = _review_row(store)
-        deliver.queue(store, row, "decisions", "Decide this", "pr")
-        marker = f"<!-- agent-factory:watch:{row['id']}:decisions -->"
+        row = _pr_ready_row(store)
+        deliver.queue(store, row, "triage", "Triage this")
+        marker = f"<!-- agent-factory:watch:{row['id']}:triage -->"
         client = Comments()
         client.records.append(IssueComment("99", f"{marker}\nforged", "someone-else"))
         deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
         assert client.posts == 1
         saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "deliveries_json")
-        assert saved["decisions"]["comment_id"] == "1"
+        assert saved["triage"]["comment_id"] == "1"
     finally:
         store.close()
 
@@ -141,8 +141,8 @@ def test_marker_in_a_non_bot_comment_is_not_adopted(tmp_path: Path) -> None:
 def test_delivery_queries_only_rows_with_pending_comments(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
-        old = _review_row(store)
-        deliver.queue(store, old, "decisions", "Already delivered", "pr")
+        old = _pr_ready_row(store)
+        deliver.queue(store, old, "triage", "Already delivered")
         client = Comments()
         deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
         assert watch_store.pending_deliveries(store) == []
@@ -165,7 +165,7 @@ def test_delivery_queries_only_rows_with_pending_comments(tmp_path: Path) -> Non
         next_row = next(
             row for row in watch_store.rows(store) if row["event_key"] == "PR-READY:next"
         )
-        deliver.queue(store, next_row, "decisions", "Still pending", "pr")
+        deliver.queue(store, next_row, "triage", "Still pending")
         assert [row["id"] for row in watch_store.pending_deliveries(store)] == [next_row["id"]]
         plan = store._connection.execute(
             "EXPLAIN QUERY PLAN SELECT * FROM watch_dispatch WHERE delivery_pending=1"
@@ -179,8 +179,8 @@ def test_existing_watch_rows_backfill_pending_delivery_index(tmp_path: Path) -> 
     path = tmp_path / "state.sqlite3"
     store = ClaimStore(path)
     try:
-        row = _review_row(store)
-        deliver.queue(store, row, "decisions", "Still pending", "pr")
+        row = _pr_ready_row(store)
+        deliver.queue(store, row, "triage", "Still pending")
     finally:
         store.close()
     with sqlite3.connect(path) as connection:

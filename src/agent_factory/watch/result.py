@@ -1,5 +1,5 @@
 # ruff: noqa: E501
-"""Validate headless watcher results and render stable operator comments."""
+"""Validate headless watcher results and render stable factory-bot comments."""
 
 from __future__ import annotations
 
@@ -7,10 +7,18 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from agent_factory.store import Claim, Run
+from agent_factory.store import Run
 
 OWNERS = frozenset(
-    {"factory code", "Agent Runner", "Agent Evals", "Skills", "environment", "transient"}
+    {
+        "factory code",
+        "Agent Runner",
+        "Agent Evals",
+        "Agent Validator",
+        "Skills",
+        "environment",
+        "transient",
+    }
 )
 
 
@@ -22,65 +30,33 @@ def _clean(value: object, path: str) -> str:
     return value.replace("<!-- agent-factory:", "")
 
 
-def _optional(value: object, path: str) -> str | None:
-    return None if value is None else _clean(value, path)
-
-
 def _strings(value: object, path: str) -> list[str]:
     if not isinstance(value, list):
         raise ValueError(f"{path} must be an array")
     return [_clean(item, path) for item in cast(list[object], value)]
 
 
+def _issues(value: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        "issues_filed": _strings(value.get("issues_filed"), "issues_filed"),
+        "issues_updated": _strings(value.get("issues_updated"), "issues_updated"),
+    }
+
+
 def validate(value: object, procedure: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("result must be an object")
     value = cast(dict[str, Any], value)
+    if procedure not in {"pr-check", "triage"}:
+        raise ValueError("unknown procedure")
     if value.get("procedure") != procedure:
         raise ValueError("procedure does not match dispatch")
-    if procedure == "review":
-        decisions = value.get("decisions")
-        if not isinstance(decisions, list):
-            raise ValueError("decisions must be an array")
-        decisions = cast(list[object], decisions)
-        if len(decisions) > 10:
-            raise ValueError("decisions must have at most 10 items")
-        clean_decisions: list[dict[str, object]] = []
-        for index, decision in enumerate(decisions):
-            if not isinstance(decision, dict):
-                raise ValueError(f"decisions[{index}] must be an object")
-            decision = cast(dict[str, object], decision)
-            options = decision.get("options")
-            if not isinstance(options, list):
-                raise ValueError("decision options must be an array")
-            clean_options: list[dict[str, str]] = []
-            for option in cast(list[object], options):
-                if not isinstance(option, dict):
-                    raise ValueError("decision option must be an object")
-                option = cast(dict[str, object], option)
-                clean_options.append(
-                    {
-                        "label": _clean(option.get("label"), "label"),
-                        "consequence": _clean(option.get("consequence"), "consequence"),
-                    }
-                )
-            clean_decisions.append(
-                {
-                    "question": _clean(decision.get("question"), "question"),
-                    "context": _clean(decision.get("context"), "context"),
-                    "options": clean_options,
-                    "recommendation": _clean(decision.get("recommendation"), "recommendation"),
-                }
-            )
+    if procedure == "pr-check":
         return {
             "procedure": procedure,
-            "verdict": _clean(value.get("verdict"), "verdict"),
-            "review_url": _optional(value.get("review_url"), "review_url"),
-            "issues_filed": _strings(value.get("issues_filed"), "issues_filed"),
-            "decisions": clean_decisions,
+            "summary": _clean(value.get("summary"), "summary"),
+            **_issues(value),
         }
-    if procedure != "triage":
-        raise ValueError("unknown procedure")
     owner = _clean(value.get("owner"), "owner")
     if owner not in OWNERS:
         raise ValueError("invalid owner")
@@ -95,11 +71,10 @@ def validate(value: object, procedure: str) -> dict[str, Any]:
         "owner": owner,
         "retry": _clean(value.get("retry"), "retry"),
         "actions": _strings(value.get("actions"), "actions"),
-        "pull_request": _optional(value.get("pull_request"), "pull_request"),
+        **_issues(value),
         "paused_by_session": paused,
         "resumed_by_session": resumed,
         "next_step": _clean(value.get("next_step"), "next_step"),
-        "handoff": _optional(value.get("handoff"), "handoff"),
     }
 
 
@@ -107,15 +82,15 @@ RESULT_FILE = "watch-result.json"
 
 
 def procedure(row: dict[str, Any]) -> str:
-    """The headless procedure a dispatch runs: a PR review or a failure triage."""
-    return "review" if row["event_kind"] == "PR-READY" else "triage"
+    """The headless procedure a dispatch runs: a PR-READY factory check or a failure triage."""
+    return "pr-check" if row["event_kind"] == "PR-READY" else "triage"
 
 
 def read(path: str | Path, expected: str) -> dict[str, Any]:
     return validate(json.loads(Path(path).read_text(encoding="utf-8")), expected)
 
 
-def event_line(row: dict[str, Any], claim: Claim | None = None, run: Run | None = None) -> str:
+def event_line(row: dict[str, Any], run: Run | None = None) -> str:
     prefix = f"{row['event_kind']} {row['repository']}#{row['issue_number']}"
     if run is not None:
         if row["event_kind"] == "FAILURE":
@@ -123,12 +98,8 @@ def event_line(row: dict[str, Any], claim: Claim | None = None, run: Run | None 
                 f"{prefix} {run.kind} {run.id} {run.status} {run.finished_at} "
                 f"{json.dumps(run.result, sort_keys=True, separators=(',', ':'))[:200]}"
             )
-        if row["event_kind"] == "EVAL-DONE":
-            return f"{prefix} {run.id} {run.status} {run.finished_at}"
         if row["event_kind"] == "PR-READY":
             return f"{prefix} {run.kind} {run.reason} {run.id} {row.get('pr_url') or ''} {run.finished_at}"
-    if claim is not None and row["event_kind"] == "CLAIM":
-        return f"{prefix} {claim.kind} {claim.id} {claim.lifecycle} {row['event_at']}"
     return f"{prefix} {row.get('run_id') or row['claim_id']} {row.get('pr_url') or ''}".strip()
 
 
@@ -142,9 +113,9 @@ def triage(row: dict[str, Any], result: dict[str, Any], paused: bool) -> str:
         f"Retry: {result['retry']}",
         "Actions:",
         *(f"- {item}" for item in result["actions"]),
-        f"Pull request: {result['pull_request'] or 'none'}",
+        f"Issues filed: {', '.join(result['issues_filed']) or 'none'}",
+        f"Issues updated: {', '.join(result['issues_updated']) or 'none'}",
         f"Next step: {result['next_step']}",
-        f"Handoff: {result['handoff'] or 'none'}",
         f"Factory paused: {'yes' if paused else 'no'}",
         f"Paused by session: {'yes' if result['paused_by_session'] else 'no'}",
         f"Resumed by session: {'yes' if result['resumed_by_session'] else 'no'}",
@@ -155,25 +126,11 @@ def triage(row: dict[str, Any], result: dict[str, Any], paused: bool) -> str:
     return "\n".join(lines)
 
 
-def decisions(result: dict[str, Any], operator: str) -> str:
-    lines = ["Factory review decisions"]
-    if operator:
-        lines.append(f"@{operator}")
-    for index, decision in enumerate(result["decisions"], 1):
-        lines.extend([f"{index}. {decision['question']}", decision["context"]])
-        lines.extend(
-            f"- {option['label']}: {option['consequence']}" for option in decision["options"]
-        )
-        lines.append(f"Recommended: {decision['recommendation']}")
-    return "\n".join(lines)
-
-
 def notice(
     row: dict[str, Any],
     config_path: object,
     *,
     budget: bool,
-    claim: Claim | None = None,
     run: Run | None = None,
 ) -> str:
     description = (
@@ -183,7 +140,7 @@ def notice(
     )
     return "\n".join(
         (
-            event_line(row, claim, run),
+            event_line(row, run),
             description,
             f"Pull request: {row.get('pr_url') or 'none'}",
             f"Evidence path: {row.get('evidence_path') or 'none'}",

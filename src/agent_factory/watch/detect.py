@@ -17,7 +17,6 @@ if TYPE_CHECKING:
 
 _PR = re.compile(r"^https://github\.com/[^/]+/[^/]+/pull/(\d+)(?:/.*)?$")
 _FAILURES = frozenset({"failed", "interrupted", "cancelled", "timed_out"})
-_NONTERMINAL = frozenset({"reserved", "running", "observing"})
 
 
 def _nested_url(value: dict[str, Any]) -> str | None:
@@ -40,13 +39,10 @@ def detect(
             "enabled_at": now.isoformat(),
         }
         enabled_at = datetime.fromisoformat(str(current["enabled_at"]))
-        lower = max(
-            enabled_at, datetime.fromisoformat(str(current["handled_up_to"])) - timedelta(minutes=2)
-        )
         horizon = max(enabled_at, now - timedelta(days=7))
         grace_end = now - timedelta(minutes=grace_minutes)
         # Fetch a conservative superset; Python compares parsed timestamps exactly.
-        run_sql_lower = (min(lower, horizon) - timedelta(days=1)).isoformat()
+        run_sql_lower = (horizon - timedelta(days=1)).isoformat()
         runs = store._connection.execute(
             """SELECT r.*,c.repository,c.issue_number,c.outcome_json,
             consumed.key IS NOT NULL AS result_consumed
@@ -57,19 +53,18 @@ def detect(
         ).fetchall()
         for run in map(dict, runs):
             event_at = datetime.fromisoformat(run["finished_at"])
-            status = run["status"]
-            kind = run["kind"]
-            in_window = lower < event_at <= now
             result = watch_store.json_field(run, "result_json")
             event_kind = None
-            if status in _FAILURES and run["result_consumed"] and horizon < event_at <= grace_end:
+            if (
+                run["status"] in _FAILURES
+                and run["result_consumed"]
+                and horizon < event_at <= grace_end
+            ):
                 event_kind = "FAILURE"
-            elif in_window and kind == "eval" and status not in _FAILURES | _NONTERMINAL:
-                event_kind = "EVAL-DONE"
             elif (
                 horizon < event_at <= now
-                and kind in {"fix", "feature"}
-                and status == "completed"
+                and run["kind"] in {"fix", "feature"}
+                and run["status"] == "completed"
                 and result.get("outcome") == "pull-request"
             ):
                 event_kind = "PR-READY"
@@ -94,25 +89,7 @@ def detect(
                 event_at=run["finished_at"],
                 now=now.isoformat(),
             )
-        claim_sql_lower = (lower - timedelta(days=1)).isoformat()
-        for claim in store._connection.execute(
-            "SELECT * FROM claim WHERE created_at >= ?", (claim_sql_lower,)
-        ):
-            event_at = datetime.fromisoformat(claim["created_at"])
-            if lower < event_at <= now:
-                watch_store.insert(
-                    store,
-                    event_key=f"CLAIM:{claim['id']}",
-                    event_kind="CLAIM",
-                    claim_id=claim["id"],
-                    run_id=None,
-                    repository=claim["repository"],
-                    issue_number=claim["issue_number"],
-                    pr_number=None,
-                    pr_url=None,
-                    event_at=claim["created_at"],
-                    now=now.isoformat(),
-                )
+        # handled_up_to now records the last detection pass, which status shows.
         current["handled_up_to"] = now.isoformat()
         # set_setting opens its own transaction, so the cursor is upserted here directly.
         store._connection.execute(

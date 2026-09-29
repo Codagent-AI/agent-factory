@@ -383,7 +383,6 @@ class WatchConfig:
     daily_sessions: int = 20
     grace_minutes: int = 7
     timeout_minutes: int = 90
-    operator: str = ""
 
 
 def _watch_config(raw: object) -> WatchConfig:
@@ -416,15 +415,11 @@ def _watch_config(raw: object) -> WatchConfig:
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ConfigurationError(f"watch.{key} must be an integer >= {minimum}")
         limits[key] = value
-    operator = table.get("operator", defaults.operator)
-    if not isinstance(operator, str):
-        raise ConfigurationError("watch.operator must be a string")
     return WatchConfig(
         enabled=enabled,
         repository=repository,
         agent=agent,
         agents=dict(agents),
-        operator=operator,
         **limits,
     )
 

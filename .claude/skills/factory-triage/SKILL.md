@@ -1,11 +1,11 @@
 ---
-name: factory-watch
-description: Watch the live Agent Factory on Paul's Mac for technical failures, new claims, and finished evals; triage each event, and fix genuine factory defects through a tested PR that is deployed only after Paul merges it. Use when asked to watch, monitor, or babysit the factory or a running eval, or to handle a factory failure.
+name: factory-triage
+description: Diagnose a failed, interrupted, or timed-out Agent Factory run on Paul's Mac, and fix genuine factory defects through a tested PR that is deployed only after it merges. Use when asked to look into a factory failure or a stuck claim. The service's headless watch sessions follow its Headless PR-READY check and Headless triage sections, which file issues for factory defects and never fix them.
 ---
 
-# Factory watch
+# Factory triage
 
-The resident watches the live factory service and dispatches headless sessions for events. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins. Use the interactive loop below only for debugging.
+The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix or feature run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
 
 ## Standing rules
 
@@ -16,36 +16,6 @@ The resident watches the live factory service and dispatches headless sessions f
 - Never use bare `git stash`. Use a temporary WIP commit, or a stash with a unique tag that you apply by SHA.
 - Every Fly Machine the factory or you created must end up destroyed. Check `fly machines list -a agent-factory-sandbox` after Fly work.
 - Report solutions, not just problems: say what is wrong, what you did, and what Paul must decide.
-
-## Interactive debugging watcher
-
-Run it in the background and wait for it to exit:
-
-```sh
-.claude/skills/factory-watch/watch.sh               # all events after now
-.claude/skills/factory-watch/watch.sh --no-claims   # ignore new admissions
-```
-
-Options: `--since <ISO8601 UTC>` starts from an earlier time. `--grace-minutes N` (default 7) and `--interval SECONDS` (default 90) tune it. It reads `$AGENT_FACTORY_ROOT/state.sqlite3` (default `~/.agent-factory`) read-only.
-
-It exits after printing one or more events and a final `next: --since <time>` line. Handle the events, then restart it with exactly that `--since` value. Each event falls in one check window, so none is repeated or missed. To run it on a schedule, use `/loop` with this skill and carry the `--since` value between runs.
-
-## Events
-
-- **`CLAIM`**: the factory admitted work.
-  - It is expected when someone moved a card to Ready, or a Bug was routed to Ready with Owner=factory.
-  - Fix claims are admitted by Priority, then newest created.
-  - A settled fix claim starts fresh when its card is moved back to Ready.
-  - Confirm the cause from the issue timeline and the board fields. Human card moves do not appear in the issue timeline.
-  - Report only a pickup nobody could have caused.
-- **`EVAL-DONE`**: an eval run finished.
-  - Wait one tick for the factory to consume it.
-  - Then report: the verdict and gates, the automated score, cost and duration, the candidate PR, the results commit in `agent-evals`, and the human-review command.
-  - Also check that the provenance recorded the image digest and the `claude`/`codex` versions, and that no Fly Machine is left.
-- **`PR-READY`**: a fix or feature run (initial, recovery, or review round) finished with a pull request. The line gives the issue, kind, run reason, run id, and PR URL. Run the `factory-pr-review` skill for it, in the background, and restart the watcher right away. That skill reviews the PR, leaves feedback the factory acts on, files factory defects as issues, and then puts Paul's decisions to him one at a time.
-- **`FAILURE`**: a run is still failed, interrupted, cancelled, or timed out after the grace period. Follow "Handling a failure" below.
-
-If the user says they review bug cards themselves, do not summarize `needs-input` or `pull-request` outcomes. PR-READY reviews still run; report only what `factory-pr-review` says to report. Report only factory failures and eval results.
 
 ## Known non-failures
 
@@ -74,7 +44,7 @@ Pausing stops new admissions and launches. Running supervisors and Fly launchers
 
 ### 2. Diagnose
 
-1. Read the run row and its claim from the database the watcher reads: `$AGENT_FACTORY_ROOT/state.sqlite3` (default `~/.agent-factory/state.sqlite3`).
+1. Read the run row and its claim from the factory database: `$AGENT_FACTORY_ROOT/state.sqlite3` (default `~/.agent-factory/state.sqlite3`).
    - Run: `status`, `reason`, `attempt_number`, `result_json`, `evidence_path`, `plan_json`.
    - Claim: `lifecycle`, `outcome_json`, `frozen_spec_json`.
    - `agent-factory … status` shows the live view.
@@ -114,8 +84,8 @@ Work only in that worktree. Use the `codagent:implement-with-tdd` skill: write t
 
 Run `agent-validate run` in the worktree.
 
-- Fix review findings that are correct.
-- To skip a finding, set its `status` to `skipped` and put a concrete reason in `result` in the `validator_logs/review_*.json` file, then rerun.
+- Fix review findings that are correct, then mark each one with `agent-validate update-review fix <id> "<what changed>"` (`agent-validate update-review list` shows the ids).
+- To skip a finding, run `agent-validate update-review skip <id> "<concrete reason>"`, then rerun. Never edit `validator_logs` files directly.
 - If a finding keeps coming back, check whether the reviewer is right. Gather evidence (for example, capture the real error text) rather than skipping again.
 - Stop and ask Paul if the retry limit is reached.
 
@@ -141,7 +111,7 @@ Report only test counts you actually saw. Paul merges.
 
 ### 9. Verify
 
-Watch the next real run that exercises the fix, and confirm the specific behavior: for example, the retry happened, or the new provenance field is present. Clean up any temporary environment fix it replaces. Then restart the watcher.
+Watch the next real run that exercises the fix, and confirm the specific behavior: for example, the retry happened, or the new provenance field is present. Clean up any temporary environment fix it replaces.
 
 ## Hotfix exception
 
@@ -160,14 +130,38 @@ Never deploy unreviewed or unvalidated code this way.
 - Fly Machines: `fly machines list -a agent-factory-sandbox --json`.
 - Disk: `df -h ~` and `du -sh ~/.agent-factory/*`. Admission needs `minimum_free_gib` (5 GiB).
 
-## Service-driven watching
+## Headless sessions
 
-The resident now detects CLAIM, EVAL-DONE, PR-READY, and FAILURE during each cycle. CLAIM and EVAL-DONE are logged. PR-READY and FAILURE start short headless sessions when the watch budget, readiness, and concurrency cap permit. Use `agent-factory --config <local.toml> status` for the cursor, sessions, cost, deliveries, and decisions. The `watch.sh` loop remains available for debugging; stop any interactive watcher before deploying service-driven watching so it does not duplicate reviews.
+The service dispatches these through its `factory-watch` workflow. Read the brief at `brief_file` and use its `paths`, `fix_targets`, and `result_file`. Do not ask questions, and do not message other sessions. Use `paths.clone` (a throwaway checkout of this repository) as the working directory, `paths.scratch` for every temporary file, `paths.factory_python` as Python, and `paths.config` as the local configuration. Never use an operator checkout or the live release. Honor every item in the brief's `forbidden` list. A headless session never deploys or merges, and never fixes anything: it does not create branches, commit, push, or open a pull request, in any repository.
 
-`agent-factory --config <local.toml> watch redispatch <dispatch-id>` creates a new queued attempt for an ended review or triage dispatch. It does not restart a running session. A queued attempt waits while `[watch] enabled = false`.
+A factory defect is a defect in the factory stack: Agent Factory, the workflows and Agent Runner it runs, Agent Skills, and Agent Validator as the factory uses it. A defect in the product code a pull request changes is not one.
+
+### Filing a factory defect
+
+For each genuine factory defect:
+
+1. Pick the repository that owns it: Agent Factory (factory code and its packaged workflows), Agent Runner, Agent Skills, Agent Validator, or Agent Evals.
+2. Search its open issues first: `gh issue list -R OWNER/REPO --state open --search "<key terms>"`. When one already covers the defect, add the new evidence as a comment on it (`gh issue comment`) and record its URL in `issues_updated`. Do not file a duplicate.
+3. Otherwise write the body to a file in `paths.scratch` and run `gh issue create -R OWNER/REPO --title "<defect>" --body-file <file>`. The body gives concrete evidence: the pull request or run (link, run id, evidence path), the red or orange item or failure it came from, and a file, line, or log excerpt; then the cause as far as known and a proposed fix. Record its URL in `issues_filed`.
+4. Assign it to the factory when the owning repository is in the brief's `fix_targets`. From `paths.clone`, run `AGENT_FACTORY_CONFIG=<paths.config> <paths.factory_python> .claude/skills/factory-assign/assign.py OWNER/REPO N --apply fix`. It sets the native type Bug, Priority Low when Priority is empty, Owner=factory, and Status=Ready. Leave Priority Low unless the defect blocks work; then set High with `gh api graphql -f query='mutation($i:ID!){updateIssueFieldValue(input:{issueId:$i, issueField:{fieldId:"IFSS_kgDOAmcJrg", singleSelectOptionId:"IFSSO_kgDOBDQ5Cw"}}){issue{id}}}' -f i=<issue node id>`. When the repository is not a fix target, file the issue without assigning it and say so in the result.
+
+## Headless PR-READY check
+
+A fix or feature run finished with a pull request. Check what the run exposed about the factory; the pull request's own change is not your concern. Do not review the pull request's code, and do not post a review or comment on the pull request. Do not commit, push, or open a pull request.
+
+1. Read the pull request description: `gh pr view <number> -R <repository> --json title,body,url`. Factory descriptions mark attention items red (needs attention) or orange (worth a look).
+2. For each red and orange item, decide whether it points to a factory defect, for example a workflow step that misfired, a wrong resume, a validator run that misbehaved, or a misleading annotation. Items about the product change, and false alarms, are not factory defects; leave them.
+3. As needed, confirm from the run's evidence (`run.evidence_path` in the brief: logs, the Runner session's `audit.log`, the outcome file) and the code in `paths.clone`.
+4. File or update an issue for each genuine factory defect (see "Filing a factory defect").
+
+Write exactly one JSON object to `result_file` with `procedure: "pr-check"`, `summary` (one or two sentences: what you checked and what you found), `issues_filed` (array of issue URLs you created), and `issues_updated` (array of existing issue URLs you added evidence to). Leave both arrays empty when you found no factory defect. The resident posts nothing about this check; `status` lists the issues.
 
 ## Headless triage
 
-When dispatched by `factory-watch`, read the brief at `brief_file` and use its `paths` and `result_file`. Do not ask questions. Follow steps 2 through 4 of Handling a failure. The factory has already had an opportunity to start automatic recovery in this cycle. If a safe fix is needed, work only in the brief's clone on a new `fix/<name>` branch. Test, run `agent-validate run`, push, and open a PR. Never deploy, merge, message other sessions, or use an operator checkout or live release. You may pause or resume through the brief's `agent_factory` executable and config path when the evidence justifies it.
+The factory has already had an opportunity to start automatic recovery in this cycle. Follow steps 2 through 4 of Handling a failure, with these limits:
 
-Write exactly one JSON object to `result_file` with `procedure: "triage"`, `cause`, `evidence` (array of strings), `owner` (`factory code`, `Agent Runner`, `Agent Evals`, `Skills`, `environment`, or `transient`), `retry`, `actions` (array of strings), `pull_request` (URL or null), `paused_by_session`, `resumed_by_session` (booleans), `next_step`, and `handoff` (string or null). State the concrete evidence and recommended next step. The resident posts the result as the factory bot.
+- Diagnose from the brief's run and claim records, the evidence under `run.evidence_path`, and the code in `paths.clone`; reproduce when you safely can.
+- You may pause or resume the factory through `paths.agent_factory` with `--config <paths.config>` when the evidence justifies it, as in step 1: pause to protect later retries and other claims while the cause persists, and resume when you paused it and the cause is gone.
+- Do not fix anything. Do not commit, push, or open a pull request, and do not apply environment fixes. For a factory defect, file or update an issue (see "Filing a factory defect"). For a transient or environment cause, file no issue unless it exposed a real defect; say in `next_step` what Paul must do.
+
+Write exactly one JSON object to `result_file` with `procedure: "triage"`, `cause`, `evidence` (array of strings), `owner` (`factory code`, `Agent Runner`, `Agent Evals`, `Agent Validator`, `Skills`, `environment`, or `transient`), `retry`, `actions` (array of strings: what you did, such as pausing), `issues_filed` and `issues_updated` (arrays of issue URLs), `paused_by_session`, `resumed_by_session` (booleans), and `next_step`. State the concrete evidence and the recommended next step. The resident posts the result on the claim's issue as the factory bot.

@@ -130,10 +130,10 @@ See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
 ## Service-driven watcher
 
-The resident detects factory events and dispatches headless PR reviews and failure triage when `[watch] enabled` is true in shared configuration. Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, and audit. The operator's `gh` login must be a writer with push permission and must differ from the factory bot. To retry an ended review or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
+The watcher's only job is to make sure the factory itself works; it does not review the code the factory builds. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix or feature run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. It posts nothing on the PR. On `FAILURE` the session diagnoses the failed run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, filed issues, and audit. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
 
-The service watcher has been live since 2026-09-29. Never run the interactive
-`factory-watch` `watch.sh` loop while it is enabled: both would dispatch every
-event, so PRs would get duplicate reviews. A `factory-watch` session monitors
-the service's watch status and sessions and handles the decisions they surface.
-Run `watch.sh` only when `[watch] enabled` is false.
+The interactive `factory-watch` skill and its `watch.sh` loop are gone. Do not
+start a long-running watcher, `/loop`, or polling session: it duplicates the
+service's work and costs a session per poll. For an update on demand, use the
+`factory-status` skill. To investigate or fix a failure by hand, use
+`factory-triage`. To review a factory PR when Paul asks, use `factory-pr-review`.

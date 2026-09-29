@@ -130,7 +130,7 @@ The service SHALL poll GitHub every five minutes while independently supervising
 
 ### Requirement: Diagnose readiness with doctor
 
-`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH is authenticated as a login that has write access to the factory repository and is not the factory bot. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, logging of claim and eval-completion events, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
+`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH, which dispatched sessions use to file issues, is authenticated as a login that is not the factory bot and has write access to the factory repository, so the factory admits the issues it files. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
 
 Shared diagnostics SHALL remain distinct from checks supplied by each work kind and suite.
 
@@ -221,8 +221,8 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 
 #### Scenario: Diagnose a watch dispatch without a writer login
 
-- **WHEN** watching is enabled and `gh` on the service PATH is not authenticated, or is authenticated as the factory bot
-- **THEN** doctor fails the watch group naming the login problem and the action to take, reports the other groups independently, and pending review and triage dispatches wait without starting a session
+- **WHEN** watching is enabled and `gh` on the service PATH is not authenticated, is authenticated as the factory bot, or lacks write access to the factory repository
+- **THEN** doctor fails the `watch issue login` check naming the login problem and the action to take, reports the other groups independently, and pending PR-READY check and triage dispatches wait without starting a session
 
 #### Scenario: Run doctor with watching disabled
 
@@ -826,8 +826,7 @@ The shared configuration SHALL accept an optional `[watch]` section with these s
 - the concurrency cap (default 2, at least 1);
 - the per-day session budget (default 20, zero or more);
 - the failure grace period in minutes (default 7, zero or more);
-- the session timeout in minutes (default 90, at least 1);
-- an optional operator GitHub login that decisions comments mention.
+- the session timeout in minutes (default 90, at least 1).
 
 When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, or a value out of range, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, cap, budget, grace period, or timeout applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout.
 
@@ -851,20 +850,20 @@ When watching is enabled, configuration loading SHALL fail on a missing reposito
 When watching is enabled, `agent-factory status` SHALL show a watch section with:
 
 - whether watching is enabled;
-- the "handled up to" time;
+- the time of the last detection pass;
 - each `launched` dispatch with its event, claim, pull request when there is one, model profile, and elapsed time;
-- the number of `pending` dispatches, and why they wait: the concurrency cap, a failing watch doctor group, or a running review of the same pull request;
+- the number of `pending` dispatches, and why they wait: the concurrency cap, a failing watch doctor group, or a running check of the same pull request;
 - each ended dispatch whose usage delivery to the development-audit destination did not succeed;
 - the number of sessions started today against the budget, and today's known estimated cost;
 - every dispatch recorded `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted` whose claim is not yet observed Done, cancelled, or superseded;
 - each undelivered dispatch comment with its last failure reason;
-- each decisions comment posted for a claim that is not yet observed Done, cancelled, or superseded, with its pull request.
+- for each completed dispatch whose claim is not yet observed Done, cancelled, or superseded, the factory issues its session filed or updated, with the pull request, or the claim's issue for a triage.
 
 When watching is disabled, status SHALL show one line saying so, and it SHALL still list `launched` and `pending` dispatches. Status SHALL NOT start or change any dispatch.
 
 #### Scenario: Inspect a running triage
 
-- **WHEN** a triage session is running and one review dispatch waits for the cap
+- **WHEN** a triage session is running and one PR-READY check dispatch waits for the cap
 - **THEN** status shows the triage session's event, claim, profile, and elapsed time, and one pending dispatch waiting for the concurrency cap
 
 #### Scenario: Inspect the day's spend
@@ -874,8 +873,13 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 #### Scenario: Inspect a failed dispatch
 
-- **WHEN** a review dispatch timed out for a claim that is still in Review
+- **WHEN** a PR-READY check dispatch timed out for a claim that is still in Review
 - **THEN** status lists that dispatch as `timed-out` with its pull request and evidence path
+
+#### Scenario: Inspect the issues a check filed
+
+- **WHEN** a PR-READY check completed and filed one factory issue for a claim still in Review
+- **THEN** status shows the pull request and the filed issue's URL on one line
 
 ### Requirement: Redispatch a watch event
 
@@ -884,7 +888,7 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 #### Scenario: Redispatch an interrupted review
 
 - **WHEN** the operator redispatches an `interrupted` `PR-READY` dispatch
-- **THEN** a new pending attempt is queued, and the next cycle starts one review session for that pull request
+- **THEN** a new pending attempt is queued, and the next cycle starts one PR-READY check session for that pull request
 
 #### Scenario: Refuse a running dispatch
 
@@ -893,22 +897,32 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 ### Requirement: Document the service-driven watcher
 
-The operations documentation and the factory-watch skill SHALL describe service-driven watching as the normal mode:
+The operations documentation SHALL describe service-driven watching as the normal mode, and SHALL state that the watcher's job is to make sure the factory itself works, not to review the code the factory builds:
 
-- the four events and what each one does;
+- the two events and what each one does;
 - the `[watch]` settings and their defaults, and how to escalate a failure to a stronger model;
 - the budget and concurrency behavior, and the budget-exhausted comment;
-- the actions a dispatched session may and may not take;
+- the actions a dispatched session may and may not take, including that it files issues for factory defects and never fixes anything;
 - that triage runs after a failed claim's automatic retry and does not hold it;
-- the watch doctor group, including the writer `gh` login that reviews need;
+- the watch doctor group, including the `gh` login that files issues;
 - the watch section of status;
 - `watch redispatch`;
 - how to find a dispatch's evidence and usage.
 
-They SHALL state that an interactive watcher session is no longer needed, and that running one alongside service watching duplicates reviews and triage. They SHALL keep manual `watch.sh` use documented for debugging. The factory PR review procedure SHALL document its headless mode: decisions are returned in the result instead of asked.
+They SHALL state that no interactive watcher session is used. An on-demand `factory-status` skill SHALL report the factory's state once when asked, without watching or polling. A `factory-triage` skill SHALL hold the failure-handling procedure and both headless procedures that the watch workflow's sessions follow: the PR-READY check and the failure triage. The factory PR review skill and its reviewer agent SHALL have no headless mode; they review a pull request only when the operator asks.
 
 #### Scenario: Operate the service watcher
 
 - **WHEN** an operator follows the documentation to enable watching
-- **THEN** they can set the profile and budget, pass the watch doctor group, find running and failed dispatches in status, and redispatch a failed one
+- **THEN** they can set the profile and budget, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
+
+#### Scenario: Ask for a factory update
+
+- **WHEN** the operator asks an agent for a factory update
+- **THEN** the agent follows `factory-status`, reports once what waits on the operator, what is running, and what failed, and starts no watcher
+
+#### Scenario: Ask for a PR review
+
+- **WHEN** the operator asks an agent to review a factory pull request
+- **THEN** the agent follows `factory-pr-review` interactively; no watch session reviews it
 

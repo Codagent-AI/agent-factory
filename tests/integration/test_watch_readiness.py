@@ -36,7 +36,7 @@ def test_disabled_watch_has_no_launch_checks(tmp_path: Path) -> None:
     assert diagnostics(local, replace(original, watch=WatchConfig())) == []
 
 
-def test_writer_login_must_differ_from_bot_and_have_push(
+def test_issue_login_must_differ_from_bot_and_have_push(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import os
@@ -90,7 +90,8 @@ def test_writer_login_must_differ_from_bot_and_have_push(
     monkeypatch.setattr(PullRequestWorkspace, "resolve_mirror", resolved)
     token = cast(InstallationTokenProvider, lambda: "unused")
     bot_checks = diagnostics(local, shared, token)
-    assert any(check.name == "watch writer login" and not check.available for check in bot_checks)
+    assert any(check.name == "watch issue login" and not check.available for check in bot_checks)
     login.write_text("writer")
     writer_checks = diagnostics(local, shared, token)
-    assert any(check.name == "watch writer login" and check.available for check in writer_checks)
+    assert any(check.name == "watch issue login" and check.available for check in writer_checks)
+    assert not any(check.name == "watch writer login" for check in writer_checks)

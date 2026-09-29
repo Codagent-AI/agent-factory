@@ -12,7 +12,13 @@ from typing import TYPE_CHECKING
 
 from agent_factory.github import AppCredentials, InstallationTokenProvider
 from agent_factory.operations import Diagnostic
-from agent_factory.watch.session import FILES, WORKFLOW_DIR, WORKFLOW_FILE, inherited_environment
+from agent_factory.watch.session import (
+    CONTRACT,
+    FILES,
+    WORKFLOW_DIR,
+    WORKFLOW_FILE,
+    inherited_environment,
+)
 from agent_factory.work_kinds.pull_request import readiness as host
 from agent_factory.work_kinds.pull_request.launch import contract_marker, staged_config_text
 from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
@@ -58,7 +64,7 @@ def diagnostics(
     checks.append(
         Diagnostic(
             "watch workflow",
-            workflow.is_file() and contract_marker("factory-watch/1") in workflow.read_text(),
+            workflow.is_file() and contract_marker(CONTRACT) in workflow.read_text(),
             str(workflow),
             "Install the packaged watch workflow.",
             "watch",
@@ -124,23 +130,30 @@ def diagnostics(
                 "watch mirror", False, str(error), "Repair the watch repository mirror.", "watch"
             )
         )
+    # Watch sessions file factory-defect issues with this login. The factory admits only
+    # issues whose author can write to the repository, and never its own bot's.
     try:
         login = _gh("api", "user", "-q", ".login")
         push = _gh("api", f"repos/{shared.watch.repository}", "-q", ".permissions.push")
         valid = bool(login) and login.lower() != shared.bot_login.lower() and push == "true"
         checks.append(
             Diagnostic(
-                "watch writer login",
+                "watch issue login",
                 valid,
                 f"{login}; push={push}",
-                "Authenticate a writer with push permission in gh.",
+                "Authenticate gh as a login, other than the factory bot, with write access, "
+                "so the factory admits the issues watch sessions file.",
                 "watch",
             )
         )
     except (OSError, subprocess.SubprocessError) as error:
         checks.append(
             Diagnostic(
-                "watch writer login", False, str(error), "Authenticate gh as a writer.", "watch"
+                "watch issue login",
+                False,
+                str(error),
+                "Authenticate gh as a login that can file issues the factory admits.",
+                "watch",
             )
         )
     return [dataclasses.replace(check, group="watch") for check in checks]
