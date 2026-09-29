@@ -42,9 +42,10 @@ It exits after printing one or more events and a final `next: --since <time>` li
   - Wait one tick for the factory to consume it.
   - Then report: the verdict and gates, the automated score, cost and duration, the candidate PR, the results commit in `agent-evals`, and the human-review command.
   - Also check that the provenance recorded the image digest and the `claude`/`codex` versions, and that no Fly Machine is left.
+- **`PR-READY`**: a fix or feature run (initial, recovery, or review round) finished with a pull request. The line gives the issue, kind, run reason, run id, and PR URL. Run the `factory-pr-review` skill for it, in the background, and restart the watcher right away. That skill reviews the PR, leaves feedback the factory acts on, files factory defects as issues, and then puts Paul's decisions to him one at a time.
 - **`FAILURE`**: a run is still failed, interrupted, cancelled, or timed out after the grace period. Follow "Handling a failure" below.
 
-If the user says they review bug cards themselves, do not summarize `needs-input` or `pull-request` outcomes. Report only factory failures and eval results.
+If the user says they review bug cards themselves, do not summarize `needs-input` or `pull-request` outcomes. PR-READY reviews still run; report only what `factory-pr-review` says to report. Report only factory failures and eval results.
 
 ## Known non-failures
 

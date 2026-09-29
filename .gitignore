@@ -18,3 +18,4 @@ validator_logs
 !.claude/
 .claude/*
 !.claude/skills/
+!.claude/agents/
