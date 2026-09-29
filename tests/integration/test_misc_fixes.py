@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import shlex
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -756,6 +757,56 @@ def test_guest_exit_without_setup_marker_is_presuite_even_with_zero_status(tmp_p
     ):
         assert lifecycle._collect(artifact, 1) == 0  # pyright: ignore[reportPrivateUsage]
     assert (factory / "launch-stage.json").is_file()
+
+
+def test_fly_collection_skips_stale_runner_scratch_manifest_entry(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import Lifecycle
+
+    artifact = tmp_path / "artifact"
+    factory = artifact / ".factory"
+    factory.mkdir(parents=True)
+    lifecycle = Lifecycle({"fly": {"app": "app", "token_file": str(tmp_path / "token")}}, factory)
+    scratch = (
+        ".runtime/agent-runner-projects/p/runs/r/scratch/acceptance-test/repo/.git/objects/00/x"
+    )
+
+    def collect(_remote: str, destination: Path) -> None:
+        job = destination / ".factory/job/1"
+        job.mkdir(parents=True)
+        (destination / "evidence.txt").write_text("result")
+        (job / "files.txt").write_text(f"{scratch}\t9\t0\nevidence.txt\t6\t0\n")
+        (job / "exit-code").write_text("7")
+
+    with (
+        patch.object(lifecycle.transport, "command"),
+        patch.object(lifecycle.transport, "tar_get", side_effect=collect),
+    ):
+        assert lifecycle._collect(artifact, 1) == 7  # pyright: ignore[reportPrivateUsage]
+    assert (artifact / "evidence.txt").read_text() == "result"
+    assert not (artifact / scratch).exists()
+
+
+def test_fly_collection_still_rejects_non_scratch_mismatch(tmp_path: Path) -> None:
+    from agent_factory.fly import transport
+
+    listing = tmp_path / "files.txt"
+    listing.write_text("evidence.txt\t9\t0\n")
+    (tmp_path / "evidence.txt").write_text("result")
+    with pytest.raises(transport.CollectionError, match="does not match the manifest"):
+        transport._declared_files(listing, tmp_path, 1)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_fly_tar_get_excludes_runner_scratch(tmp_path: Path) -> None:
+    from agent_factory.fly.transport import FlyTransport
+
+    transport = FlyTransport("app", "machine")
+    with (
+        patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, "tar")) as run,
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        transport.tar_get("/artifacts", tmp_path / "collection")
+    command = shlex.split(run.call_args.args[0][-1])[-1]
+    assert "--exclude './.runtime/agent-runner-projects/*/runs/*/scratch'" in command
 
 
 def test_fly_versions_are_loaded_from_collected_guest_evidence(tmp_path: Path) -> None:

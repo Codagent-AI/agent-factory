@@ -13,8 +13,13 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
     artifacts = root / "artifacts"
     job = artifacts / ".factory/job/1"
     job.mkdir(parents=True)
+    scratch = (
+        ".runtime/agent-runner-projects/p/runs/r/scratch/acceptance-test/repo/.git/objects/00/x"
+    )
     (job / "job.sh").write_text(
-        '#!/bin/bash\necho hello > "$FACTORY_ROOT/artifacts/value"\nexit 7\n'
+        '#!/bin/bash\necho hello > "$FACTORY_ROOT/artifacts/value"\n'
+        f'mkdir -p "$FACTORY_ROOT/artifacts/{scratch.rsplit("/", 1)[0]}"\n'
+        f'echo temporary > "$FACTORY_ROOT/artifacts/{scratch}"\nexit 7\n'
     )
     (job / "job.sh").chmod(0o700)
     deadline = root / "var/lib/factory/deadline"
@@ -36,7 +41,9 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
             time.sleep(0.05)
         assert done.exists()
         assert (job / "exit-code").read_text().strip() == "7"
-        assert "value" in (job / "files.txt").read_text()
+        listed = (job / "files.txt").read_text()
+        assert "value\t" in listed
+        assert scratch not in listed
     finally:
         process.terminate()
         process.wait(timeout=5)

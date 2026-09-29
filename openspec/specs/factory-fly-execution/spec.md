@@ -107,7 +107,7 @@ While an attempt runs, the factory SHALL stream the Machine's suite output into 
 
 ### Requirement: Collect the whole artifact tree once, then destroy the Machine
 
-When the Machine writes its completion marker, the factory SHALL collect the repetition's entire artifact tree, including the suite's checkpoint, phase results, judging output, session state, and the built candidate output the human-review command serves, verify the collected tree against a file manifest the Machine wrote with its completion marker, and only then place it in the attempt's artifact directory and record the guest exit code. A collection that does not verify SHALL NOT be recorded as a result and SHALL settle the attempt as a lost Machine. When a limit or cancellation stops an attempt, the factory SHALL stop the job inside the Machine and collect before the attempt is finished. After the attempt is classified, the factory SHALL destroy the Machine unless the attempt is retained for same-Machine recovery or stopped for a quota hold as defined below. Collection SHALL be verified complete before the Machine is destroyed or stopped. If collection has not completed within the collection grace period, the Machine's own enforcement SHALL destroy it and the attempt SHALL be settled as a lost Machine. The posted human-review command SHALL work against the collected directory on the factory host without any Fly resource.
+When the Machine writes its completion marker, the factory SHALL collect the repetition's entire artifact tree, including the suite's checkpoint, phase results, judging output, session state, and the built candidate output the human-review command serves, verify the collected tree against a file manifest the Machine wrote with its completion marker, and only then place it in the attempt's artifact directory and record the guest exit code. Runner scratch folders (`.runtime/agent-runner-projects/<project>/runs/<run>/scratch/`) are temporary work, not evidence; they SHALL be left out of the manifest and the transfer, and a manifest entry under one SHALL be ignored rather than failing verification. A collection that does not verify SHALL NOT be recorded as a result and SHALL settle the attempt as a lost Machine. When a limit or cancellation stops an attempt, the factory SHALL stop the job inside the Machine and collect before the attempt is finished. After the attempt is classified, the factory SHALL destroy the Machine unless the attempt is retained for same-Machine recovery or stopped for a quota hold as defined below. Collection SHALL be verified complete before the Machine is destroyed or stopped. If collection has not completed within the collection grace period, the Machine's own enforcement SHALL destroy it and the attempt SHALL be settled as a lost Machine. The posted human-review command SHALL work against the collected directory on the factory host without any Fly resource.
 
 #### Scenario: Complete a repetition
 
@@ -123,6 +123,11 @@ When the Machine writes its completion marker, the factory SHALL collect the rep
 
 - **WHEN** the transfer of the artifact tree is interrupted so the collected files do not match the Machine's manifest
 - **THEN** no result is recorded from the partial tree and the attempt is settled as a lost Machine
+
+#### Scenario: Ignore a changed Runner scratch file
+
+- **WHEN** a file under a Runner scratch folder changes or disappears between the Machine writing its manifest and the transfer
+- **THEN** collection still verifies, the result is recorded, and the scratch folder is not in the repetition's host artifact directory
 
 #### Scenario: Cancel a running repetition
 

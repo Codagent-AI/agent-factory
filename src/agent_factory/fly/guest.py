@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping
 
-from agent_factory.fly.transport import mapping_field, string_field
+from agent_factory.fly.transport import RUNNER_SCRATCH_GLOB, mapping_field, string_field
 
 # The job's user owns the credential directories and the env file but not their
 # root-owned parents, so it cannot unlink them. It deletes the directories' contents
@@ -22,13 +22,14 @@ def guest_init_script() -> str:
     ``FACTORY_ROOT`` is deliberately a test seam; it is empty in a Machine, where
     the absolute paths below are the contract with the launcher.
     """
-    return r"""#!/usr/bin/env bash
+    script = r"""#!/usr/bin/env bash
 set -u
 ROOT="${FACTORY_ROOT:-}"
 ARTIFACTS="$ROOT/artifacts"
 DEADLINE_FILE="$ROOT/var/lib/factory/deadline"
 WATCHDOG_SECONDS="${FACTORY_WATCHDOG_SECONDS:-30}"
 KILL_GRACE_SECONDS="${FACTORY_KILL_GRACE_SECONDS:-30}"
+RUNNER_SCRATCH_PATH=RUNNER_SCRATCH_GLOB_VALUE
 mkdir -p "$ARTIFACTS/.factory/job" "$(dirname "$DEADLINE_FILE")"
 
 deadline() {
@@ -88,10 +89,13 @@ while :; do
     printf '%s\n' "$status" >"$directory/exit-code"
     # One real tab-separated line per file: path, size, mtime. GNU find does it in
     # a single process; the loop is the portable fallback. Neither stat flavour
-    # expands "\t" in a format, so tabs come from printf.
+    # expands "\t" in a format, so tabs come from printf. Runner scratch
+    # folders are temporary work, not evidence.
     (cd "$ARTIFACTS" && {
-      find . -path './.factory/staging' -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
-      find . -path './.factory/staging' -prune -o -type f -print | while IFS= read -r file; do
+      find . -path './.factory/staging' -prune -o \
+        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
+      find . -path './.factory/staging' -prune -o \
+        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -print | while IFS= read -r file; do
         size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
         mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
         printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
@@ -104,6 +108,7 @@ while :; do
   sleep "$WATCHDOG_SECONDS"
 done
 """
+    return script.replace("RUNNER_SCRATCH_GLOB_VALUE", shlex.quote("./" + RUNNER_SCRATCH_GLOB))
 
 
 def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
