@@ -6,6 +6,8 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+from agent_factory.github import IssueComment
+from agent_factory.watch import result
 from agent_factory.watch import store as watch_store
 
 if TYPE_CHECKING:
@@ -29,7 +31,58 @@ def queue(store: ClaimStore, row: dict[str, Any], purpose: str, body: str, targe
     watch_store.update(store, row["id"], deliveries_json=json.dumps(deliveries))
 
 
+def end(
+    store: ClaimStore,
+    dispatch_id: str,
+    state: str,
+    detail: str,
+    config_path: object,
+    *,
+    validated: dict[str, Any] | None = None,
+    operator: str = "",
+    **fields: object,
+) -> None:
+    """Record a dispatch's end state and queue the comment it owes, in one transaction.
+
+    A completed triage owes its triage comment and a completed review its decisions (when
+    there are any); a budget-exhausted dispatch owes a budget notice, and any other end
+    state an alert.
+    """
+    with store._transaction():  # pyright: ignore[reportPrivateUsage]
+        watch_store.update(
+            store,
+            dispatch_id,
+            state=state,
+            detail=detail,
+            finished_at=datetime.now(UTC).isoformat(),
+            **fields,
+        )
+        ended = watch_store.get(store, dispatch_id)
+        assert ended is not None
+        if state == "completed":
+            if validated is None:
+                return
+            if ended["event_kind"] == "FAILURE":
+                queue(
+                    store,
+                    ended,
+                    "triage",
+                    result.triage(ended, validated, store.is_paused()),
+                    "issue",
+                )
+            elif validated["decisions"]:
+                queue(store, ended, "decisions", result.decisions(validated, operator), "pr")
+            return
+        budget = state == "budget-exhausted"
+        claim = store.get_claim(ended["claim_id"])
+        run = store.get_run(ended["run_id"]) if ended["run_id"] else None
+        notice = result.notice(ended, config_path, budget=budget, claim=claim, run=run)
+        queue(store, ended, "budget" if budget else "alert", notice, "issue")
+
+
 def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:
+    # Each target's comments are listed at most once per pass, and new posts are added to it.
+    listed: dict[tuple[str, int], list[IssueComment]] = {}
     for row in watch_store.rows(store):
         deliveries = watch_store.json_field(row, "deliveries_json")
         for purpose, raw in deliveries.items():
@@ -39,7 +92,10 @@ def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:
             if item.get("comment_id"):
                 continue
             try:
-                comments = client.list_comment_records(row["repository"], item["number"])
+                target = (row["repository"], item["number"])
+                if target not in listed:
+                    listed[target] = client.list_comment_records(*target)
+                comments = listed[target]
                 found = next(
                     (
                         comment.id
@@ -49,9 +105,12 @@ def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:
                     ),
                     None,
                 )
-                item["comment_id"] = found or client.create_comment(
-                    row["repository"], item["number"], item["marker"] + "\n" + item["body"]
-                )
+                if found is None:
+                    body = item["marker"] + "\n" + item["body"]
+                    found = client.create_comment(row["repository"], item["number"], body)
+                    if found:
+                        comments.append(IssueComment(found, body, bot_login))
+                item["comment_id"] = found
                 item["failure"] = {}
             except Exception as error:
                 previous = item.get("failure", {})

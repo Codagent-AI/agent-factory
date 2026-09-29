@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import signal
 import time
+from contextlib import closing
 from pathlib import Path
 
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
@@ -79,15 +80,12 @@ def main() -> None:
     elif args.command == "watch":
         from agent_factory.watch.store import redispatch
 
-        store = ClaimStore(state)
-        try:
+        with closing(ClaimStore(state)) as store:
             try:
                 new_id = redispatch(store, args.dispatch_id)
             except ValueError as error:
                 print(str(error))
                 raise SystemExit(2) from error
-        finally:
-            store.close()
         print(new_id)
         if local is None or not SharedConfig.from_file(local.shared_config).watch.enabled:
             print("waits until watching is enabled")

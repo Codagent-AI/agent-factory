@@ -366,6 +366,13 @@ class FeatureConfig:
     contract: str = "factory-feature/1"
 
 
+# A role or dispatch model profile: `cli:model:effort`.
+PROFILE = re.compile(r"^([a-z]+):([^:]*):([^:]*)$")
+
+# Each integer watch setting and its smallest valid value; defaults come from WatchConfig.
+_WATCH_MINIMUMS = {"max_sessions": 1, "daily_sessions": 0, "grace_minutes": 0, "timeout_minutes": 1}
+
+
 @dataclass(frozen=True)
 class WatchConfig:
     enabled: bool = False
@@ -388,51 +395,37 @@ def _watch_config(raw: object) -> WatchConfig:
         raise ConfigurationError("watch.enabled must be a boolean")
     if not enabled:
         return WatchConfig()
-    from agent_factory.work_kinds.pull_request.launch import (
-        _PROFILE,  # pyright: ignore[reportPrivateUsage]
-    )
-
     repository = _string(table, "repository", "watch")
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise ConfigurationError("watch.repository must be owner/name")
     agent = _string(table, "agent", "watch")
-    if _PROFILE.fullmatch(agent) is None:
+    if PROFILE.fullmatch(agent) is None:
         raise ConfigurationError("watch.agent must be a cli:model:effort profile")
     agents: Mapping[str, Any] = _table(table.get("agents", {}), "watch.agents")
     for key, profile in agents.items():
         if (
             key not in {"PR-READY", "FAILURE"}
             or not isinstance(profile, str)
-            or _PROFILE.fullmatch(profile) is None
+            or PROFILE.fullmatch(profile) is None
         ):
             raise ConfigurationError(f"watch.agents.{key} must be a cli:model:effort profile")
-    for key, minimum in (
-        ("max_sessions", 1),
-        ("daily_sessions", 0),
-        ("grace_minutes", 0),
-        ("timeout_minutes", 1),
-    ):
-        value = table.get(
-            key,
-            {"max_sessions": 2, "daily_sessions": 20, "grace_minutes": 7, "timeout_minutes": 90}[
-                key
-            ],
-        )
+    defaults = WatchConfig()
+    limits: dict[str, int] = {}
+    for key, minimum in _WATCH_MINIMUMS.items():
+        value = table.get(key, getattr(defaults, key))
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ConfigurationError(f"watch.{key} must be an integer >= {minimum}")
-    operator = table.get("operator", "")
+        limits[key] = value
+    operator = table.get("operator", defaults.operator)
     if not isinstance(operator, str):
         raise ConfigurationError("watch.operator must be a string")
     return WatchConfig(
-        enabled,
-        repository,
-        agent,
-        dict(agents),
-        table.get("max_sessions", 2),
-        table.get("daily_sessions", 20),
-        table.get("grace_minutes", 7),
-        table.get("timeout_minutes", 90),
-        operator,
+        enabled=enabled,
+        repository=repository,
+        agent=agent,
+        agents=dict(agents),
+        operator=operator,
+        **limits,
     )
 
 

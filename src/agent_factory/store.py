@@ -120,6 +120,14 @@ class ClaimStore:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
+        self._ensure_watch_schema()
+
+    def _ensure_watch_schema(self) -> None:
+        """Create the watch tables and indexes idempotently, outside the versioned schema.
+
+        They are not a user_version bump, so the previous release, and supervisors still
+        running from it, can open the database after a rollback.
+        """
         required_watch_schema = {
             "watch_dispatch",
             "watch_dispatch_state",

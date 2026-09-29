@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from agent_factory.store import Claim, Run
+
 OWNERS = frozenset(
     {"factory code", "Agent Runner", "Agent Evals", "Skills", "environment", "transient"}
 )
@@ -101,15 +103,21 @@ def validate(value: object, procedure: str) -> dict[str, Any]:
     }
 
 
-def read(path: str | Path, procedure: str) -> dict[str, Any]:
-    return validate(json.loads(Path(path).read_text(encoding="utf-8")), procedure)
+RESULT_FILE = "watch-result.json"
 
 
-def event_line(row: dict[str, Any], claim: object = None, run: object = None) -> str:
-    from agent_factory.store import Claim, Run
+def procedure(row: dict[str, Any]) -> str:
+    """The headless procedure a dispatch runs: a PR review or a failure triage."""
+    return "review" if row["event_kind"] == "PR-READY" else "triage"
 
+
+def read(path: str | Path, expected: str) -> dict[str, Any]:
+    return validate(json.loads(Path(path).read_text(encoding="utf-8")), expected)
+
+
+def event_line(row: dict[str, Any], claim: Claim | None = None, run: Run | None = None) -> str:
     prefix = f"{row['event_kind']} {row['repository']}#{row['issue_number']}"
-    if isinstance(run, Run):
+    if run is not None:
         if row["event_kind"] == "FAILURE":
             return (
                 f"{prefix} {run.kind} {run.id} {run.status} {run.finished_at} "
@@ -119,7 +127,7 @@ def event_line(row: dict[str, Any], claim: object = None, run: object = None) ->
             return f"{prefix} {run.id} {run.status} {run.finished_at}"
         if row["event_kind"] == "PR-READY":
             return f"{prefix} {run.kind} {run.reason} {run.id} {row.get('pr_url') or ''} {run.finished_at}"
-    if isinstance(claim, Claim) and row["event_kind"] == "CLAIM":
+    if claim is not None and row["event_kind"] == "CLAIM":
         return f"{prefix} {claim.kind} {claim.id} {claim.lifecycle} {row['event_at']}"
     return f"{prefix} {row.get('run_id') or row['claim_id']} {row.get('pr_url') or ''}".strip()
 
@@ -165,8 +173,8 @@ def notice(
     config_path: object,
     *,
     budget: bool,
-    claim: object = None,
-    run: object = None,
+    claim: Claim | None = None,
+    run: Run | None = None,
 ) -> str:
     description = (
         "No agent ran because today's watch session budget was spent."

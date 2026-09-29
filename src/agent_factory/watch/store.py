@@ -13,6 +13,12 @@ if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
 
+# End states a review or triage dispatch can be redispatched from.
+ENDED = frozenset({"completed", "interrupted", "timed-out", "launch-failed", "budget-exhausted"})
+# End states of a dispatch whose session actually ran.
+SESSION_ENDED = frozenset({"completed", "timed-out", "interrupted"})
+
+
 def rows(store: ClaimStore, state: str | None = None) -> list[dict[str, Any]]:
     query = "SELECT * FROM watch_dispatch"
     args: tuple[str, ...] = ()
@@ -109,14 +115,20 @@ def claim_launch(
         return result.rowcount == 1
 
 
-def daily_count(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> int:
+def launched_today(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> list[dict[str, Any]]:
+    """Dispatches whose session started on `now`'s local day in the schedule timezone."""
     today = now.astimezone(timezone).date()
-    return sum(
-        datetime.fromisoformat(row[0]).astimezone(timezone).date() == today
+    return [
+        dict(row)
         for row in store._connection.execute(
-            "SELECT launched_at FROM watch_dispatch WHERE launched_at IS NOT NULL"
+            "SELECT * FROM watch_dispatch WHERE launched_at IS NOT NULL"
         )
-    )
+        if datetime.fromisoformat(row["launched_at"]).astimezone(timezone).date() == today
+    ]
+
+
+def daily_count(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> int:
+    return len(launched_today(store, timezone, now))
 
 
 def running_count(store: ClaimStore) -> int:
@@ -143,13 +155,7 @@ def redispatch(store: ClaimStore, dispatch_id: str) -> str:
         ).fetchone()
         if row is None:
             raise ValueError(f"unknown watch dispatch {dispatch_id}")
-        if row["event_kind"] not in {"PR-READY", "FAILURE"} or row["state"] not in {
-            "completed",
-            "interrupted",
-            "timed-out",
-            "launch-failed",
-            "budget-exhausted",
-        }:
+        if row["event_kind"] not in {"PR-READY", "FAILURE"} or row["state"] not in ENDED:
             raise ValueError(f"cannot redispatch {dispatch_id} in state {row['state']}")
         attempt = (
             store._connection.execute(

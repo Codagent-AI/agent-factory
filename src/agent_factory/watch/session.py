@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shlex
 import shutil
@@ -13,33 +12,44 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from agent_factory.supervisor import ProcessProbeError, process_start_identity
-from agent_factory.watch.result import event_line
+from agent_factory.supervisor import (
+    _INHERITED_ENVIRONMENT,
+    ProcessProbeError,
+    process_start_identity,
+)
+from agent_factory.watch.result import RESULT_FILE, event_line, procedure
 from agent_factory.work_kinds.pull_request.launch import (
+    SESSION_DIR_NAME,
     _exclude_from_git,
     _hide_tracked_file_from_git,
+    _private_file,
     _refuse_symlinked_staging,
     _refuse_tracked_workflow_files,
+    resolve_runner_executable,
     staged_config_text,
     tracked_config_text,
+    write_input,
 )
-from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
+from agent_factory.work_kinds.pull_request.workspace import (
+    PullRequestWorkspace,
+    _clone_at,
+    _git,
+    _require,
+)
 
 if TYPE_CHECKING:
     from agent_factory.config import LocalConfig, SharedConfig
     from agent_factory.github import InstallationTokenProvider
     from agent_factory.store import ClaimStore
 
-FILES = ("factory-watch-v1.0.yaml", "check-contract.sh", "check-result.sh")
+WORKFLOW_DIR = Path(__file__).parent / "workflow"
+WORKFLOW_FILE = "factory-watch-v1.0.yaml"
+FILES = (WORKFLOW_FILE, "check-contract.sh", "check-result.sh")
 
 
 def inherited_environment() -> dict[str, str]:
     """The same token-free operator environment used by readiness and the child."""
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key in {"PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "LANG", "LC_ALL"}
-    }
+    return {key: os.environ[key] for key in _INHERITED_ENVIRONMENT if key in os.environ}
 
 
 def paths(local: LocalConfig, dispatch_id: str) -> tuple[Path, Path]:
@@ -53,10 +63,6 @@ def remove_clone(local: LocalConfig, dispatch_id: str) -> None:
     shutil.rmtree(paths(local, dispatch_id)[1].parent, ignore_errors=True)
 
 
-def _run(*args: str) -> None:
-    subprocess.run(args, check=True, capture_output=True, text=True)
-
-
 def start(
     store: ClaimStore,
     row: dict[str, Any],
@@ -66,9 +72,7 @@ def start(
     token_provider: InstallationTokenProvider,
 ) -> dict[str, object]:
     evidence, clone = paths(local, row["id"])
-    evidence.mkdir(parents=True, exist_ok=True)
-    (evidence / "input").mkdir(exist_ok=True)
-    (evidence / "private").mkdir(exist_ok=True)
+    (evidence / "private").mkdir(parents=True, exist_ok=True)
     (evidence / "logs").mkdir(exist_ok=True)
     clone.parent.mkdir(parents=True, exist_ok=True)
     workspace = PullRequestWorkspace(
@@ -76,16 +80,19 @@ def start(
     )
     workspace.fetch_mirror(shared.watch.repository, token_provider())
     sha = workspace.resolve_mirror(shared.watch.repository, "main")
-    _run("git", "clone", "--local", str(workspace.mirror_path(shared.watch.repository)), str(clone))
-    _run("git", "-C", str(clone), "checkout", "--detach", sha)
-    _run(
-        "git",
-        "-C",
-        str(clone),
-        "remote",
-        "set-url",
-        "origin",
-        f"https://github.com/{shared.watch.repository}.git",
+    _clone_at(workspace.mirror_path(shared.watch.repository), clone, sha)
+    _require(
+        _git(
+            [
+                "-C",
+                str(clone),
+                "remote",
+                "set-url",
+                "origin",
+                f"https://github.com/{shared.watch.repository}.git",
+            ]
+        ),
+        "cannot point the watch clone at GitHub",
     )
     pr_source = None
     if row["event_kind"] == "PR-READY":
@@ -95,9 +102,8 @@ def start(
     _refuse_tracked_workflow_files(clone, FILES)
     catalog = clone / ".agent-runner" / "workflows"
     catalog.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).parent / "workflow"
     for name in FILES:
-        shutil.copyfile(source / name, catalog / name)
+        shutil.copyfile(WORKFLOW_DIR / name, catalog / name)
         if name.endswith(".sh"):
             (catalog / name).chmod(0o755)
     cli, model, effort = str(row["profile"]).split(":")
@@ -157,8 +163,8 @@ def start(
             **({"pr_source": str(pr_source)} if pr_source else {}),
         },
         "operator_login": shared.watch.operator,
-        "result_file": str(evidence / "watch-result.json"),
-        "procedure": "review" if row["event_kind"] == "PR-READY" else "triage",
+        "result_file": str(evidence / RESULT_FILE),
+        "procedure": procedure(row),
         "forbidden": [
             "Do not deploy, including through the hotfix exception, or merge",
             "Do not edit a release or the service clone",
@@ -170,13 +176,12 @@ def start(
             "Do not message other sessions or ask questions",
         ],
     }
-    (evidence / "input" / "brief.json").write_text(json.dumps(brief, indent=2), encoding="utf-8")
-    runner = shutil.which("agent-runner")
-    if runner is None:
-        raise RuntimeError("agent-runner unavailable")
+    brief_file = write_input(evidence, "brief.json", brief)
+    runner = resolve_runner_executable()
+    session_dir = evidence / SESSION_DIR_NAME
     q = shlex.quote
-    wrapper = evidence / "private" / "watch-run.sh"
-    wrapper.write_text(
+    wrapper = _private_file(
+        evidence / "private" / "watch-run.sh",
         "\n".join(
             (
                 "#!/bin/bash",
@@ -187,21 +192,20 @@ def start(
                 f"trap 'rm -rf {q(str(clone.parent))}' EXIT",
                 f"date -u +%FT%TZ > {q(str(evidence / 'started-at'))}",
                 f"cd {q(str(clone))}",
-                f"{q(runner)} run factory-watch --profile factory --session-dir {q(str(evidence / 'agent-runner-session'))} "
-                f"--param brief_file={q(str(evidence / 'input' / 'brief.json'))} "
+                f"{q(runner)} run factory-watch --profile factory --session-dir {q(str(session_dir))} "
+                f"--param brief_file={q(str(brief_file))} "
                 f"--param artifact_dir={q(str(evidence))} --param contract_version=factory-watch/1",
                 "status=$?",
                 f"{q(sys.executable)} -P -m agent_factory.audit host --runner {q(runner)} "
-                f"--session-dir {q(str(evidence / 'agent-runner-session'))} "
+                f"--session-dir {q(str(session_dir))} "
                 f"--project {q(str(clone))} --evidence {q(str(evidence))} || true",
                 f'printf \'{{"code": %d, "finished_at": "%s"}}\\n\' "$status" "$(date -u +%FT%TZ)" > {q(str(evidence / "exit.json"))}',
                 'exit "$status"',
                 "",
             )
         ),
-        encoding="utf-8",
+        0o700,
     )
-    wrapper.chmod(0o700)
     env = inherited_environment()
     with (evidence / "factory-watch.log").open("ab") as log:
         process = subprocess.Popen(

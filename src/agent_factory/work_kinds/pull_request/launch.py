@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from importlib.resources import as_file, files
 from pathlib import Path
 
-from agent_factory.config import LocalConfig
+from agent_factory.config import PROFILE, LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, registered
@@ -77,7 +77,6 @@ _AUTH_FLAGS = {
     "codex": "--mount-codex-auth",
     "cursor": "--mount-cursor-auth",
 }
-_PROFILE = re.compile(r"^([a-z]+):([^:]*):([^:]*)$")
 
 
 def image_tag(run_id: str) -> str:
@@ -324,7 +323,7 @@ def role_profiles(
     profiles: dict[str, tuple[str, str, str]] = {}
     for role in definition.roles:
         value = roles.get(role)
-        match = _PROFILE.match(value) if isinstance(value, str) else None
+        match = PROFILE.match(value) if isinstance(value, str) else None
         if match is None:
             raise ReadinessError(f"{definition.kind} role {role} is not a cli:model:effort profile")
         profiles[role] = (match.group(1), match.group(2), match.group(3))

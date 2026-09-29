@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from agent_factory.audit import AUDIT_FILE, METRICS_FILE
 from agent_factory.supervisor import (
     ProcessProbeError,
     process_identity_status,
@@ -15,6 +16,7 @@ from agent_factory.supervisor import (
 )
 from agent_factory.watch import deliver, result, session
 from agent_factory.watch import store as watch_store
+from agent_factory.work_kinds.pull_request.launch import SESSION_DIR_NAME
 
 if TYPE_CHECKING:
     from agent_factory.config import LocalConfig
@@ -30,7 +32,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _usage(row: dict[str, Any], evidence: Path, finished: datetime) -> dict[str, object]:
-    metrics = _read_json(evidence / "agent-runner-session" / "run-metrics.json").get("totals", {})
+    metrics = _read_json(evidence / SESSION_DIR_NAME / METRICS_FILE).get("totals", {})
     totals = cast(dict[str, Any], metrics) if isinstance(metrics, dict) else {}
     token_totals = totals.get("token_totals", {})
     tokens = cast(dict[str, Any], token_totals) if isinstance(token_totals, dict) else {}
@@ -69,43 +71,19 @@ def _finish(
     validated: dict[str, Any] | None = None,
     operator: str = "",
 ) -> None:
-    now = datetime.now(UTC)
     evidence = Path(row["evidence_path"])
-    audit = _read_json(evidence / "audit.json") or {"outcome": "missing"}
-    usage = _usage(row, evidence, now)
-    with store._transaction():  # pyright: ignore[reportPrivateUsage]
-        watch_store.update(
-            store,
-            row["id"],
-            state=state,
-            detail=detail,
-            finished_at=now.isoformat(),
-            result_json=json.dumps(validated or {}),
-            usage_json=json.dumps(usage),
-            audit_json=json.dumps(audit),
-        )
-        ended = watch_store.get(store, row["id"])
-        assert ended is not None
-        if state == "completed" and validated and row["event_kind"] == "FAILURE":
-            deliver.queue(
-                store, ended, "triage", result.triage(ended, validated, store.is_paused()), "issue"
-            )
-        elif state == "completed" and validated and validated["decisions"]:
-            deliver.queue(store, ended, "decisions", result.decisions(validated, operator), "pr")
-        elif state != "completed":
-            deliver.queue(
-                store,
-                ended,
-                "alert",
-                result.notice(
-                    ended,
-                    config_path,
-                    budget=False,
-                    claim=store.get_claim(ended["claim_id"]),
-                    run=store.get_run(ended["run_id"]) if ended["run_id"] else None,
-                ),
-                "issue",
-            )
+    deliver.end(
+        store,
+        row["id"],
+        state,
+        detail,
+        config_path,
+        validated=validated,
+        operator=operator,
+        result_json=json.dumps(validated or {}),
+        usage_json=json.dumps(_usage(row, evidence, datetime.now(UTC))),
+        audit_json=json.dumps(_read_json(evidence / AUDIT_FILE) or {"outcome": "missing"}),
+    )
     session.remove_clone(local, row["id"])
 
 
@@ -148,9 +126,8 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
             exit_detail = f"exit code {exit_record.get('code')}"
         else:
             exit_detail = ""
-        procedure = "review" if row["event_kind"] == "PR-READY" else "triage"
         try:
-            validated = result.read(evidence / "watch-result.json", procedure)
+            validated = result.read(evidence / result.RESULT_FILE, result.procedure(row))
         except (OSError, ValueError) as error:
             detail = exit_detail or f"invalid result: {error}"
             _finish(store, row, local, config_path, "interrupted", detail)

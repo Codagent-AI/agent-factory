@@ -20,25 +20,20 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
         watch = SharedConfig.from_file(local.shared_config).watch
     except (ConfigurationError, OSError):
         watch = WatchConfig()
+    now = datetime.now(UTC)
     dispatches = watch_store.rows(store)
     current = watch_store.cursor(store)
     if watch.enabled:
         output = [
             f"watch: enabled, handled up to {current.get('handled_up_to') if current else 'not started'}"
         ]
-        count = watch_store.daily_count(store, local.schedule.timezone, datetime.now(UTC))
-        today = datetime.now(UTC).astimezone(local.schedule.timezone).date()
+        today = watch_store.launched_today(store, local.schedule.timezone, now)
         cost = sum(
-            (watch_store.json_field(row, "usage_json").get("estimated_cost_usd") or 0)
-            for row in dispatches
-            if row["launched_at"]
-            and datetime.fromisoformat(row["launched_at"])
-            .astimezone(local.schedule.timezone)
-            .date()
-            == today
+            watch_store.json_field(row, "usage_json").get("estimated_cost_usd") or 0
+            for row in today
         )
         output.append(
-            f"watch sessions today: {count}/{watch.daily_sessions}, known cost ${cost:.2f}"
+            f"watch sessions today: {len(today)}/{watch.daily_sessions}, known cost ${cost:.2f}"
         )
     else:
         output = ["watch: disabled"]
@@ -47,10 +42,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
     for row in running:
         elapsed = max(
             0,
-            int(
-                (datetime.now(UTC) - datetime.fromisoformat(row["launched_at"])).total_seconds()
-                / 60
-            ),
+            int((now - datetime.fromisoformat(row["launched_at"])).total_seconds() / 60),
         )
         output.append(
             f"watch running: {row['id']} {row['event_kind']} {row['repository']}#{row['issue_number']} PR #{row['pr_number'] or '?'} {row['profile']} {elapsed}m"
@@ -81,13 +73,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
             and claim.lifecycle not in {"cancelled", "superseded"}
             and not claim.cleanup.get("done_observed_at")
         )
-        if current_claim and row["state"] in {
-            "completed",
-            "timed-out",
-            "interrupted",
-            "launch-failed",
-            "budget-exhausted",
-        }:
+        if current_claim and row["state"] in watch_store.ENDED:
             output.append(
                 f"watch ended: {row['id']} {row['event_kind']} {row['repository']}#{row['issue_number']} {row['state']} {row['evidence_path'] or ''}"
             )
@@ -102,7 +88,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
                 output.append(
                     f"watch undelivered: {row['id']} {purpose} → {item.get('target')} #{item.get('number')}: {detail}"
                 )
-        if row["state"] in {"completed", "timed-out", "interrupted"}:
+        if row["state"] in watch_store.SESSION_ENDED:
             audit = watch_store.json_field(row, "audit_json")
             if audit.get("outcome") != "delivered":
                 output.append(f"watch audit: {row['id']} {audit.get('outcome', 'missing')}")

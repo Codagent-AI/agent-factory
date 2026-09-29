@@ -12,14 +12,25 @@ from typing import TYPE_CHECKING
 
 from agent_factory.github import AppCredentials, InstallationTokenProvider
 from agent_factory.operations import Diagnostic
-from agent_factory.watch.session import inherited_environment
+from agent_factory.watch.session import FILES, WORKFLOW_DIR, WORKFLOW_FILE, inherited_environment
 from agent_factory.work_kinds.pull_request import readiness as host
-from agent_factory.work_kinds.pull_request.launch import staged_config_text
+from agent_factory.work_kinds.pull_request.launch import contract_marker, staged_config_text
 from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
 
 if TYPE_CHECKING:
     from agent_factory.config import LocalConfig, SharedConfig
-    from agent_factory.github import InstallationTokenProvider
+
+
+def _gh(*args: str) -> str:
+    """Run `gh` in the same token-free environment a dispatched session gets."""
+    return subprocess.run(
+        ["gh", *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=15,
+        env=inherited_environment(),
+    ).stdout.strip()
 
 
 def diagnostics(
@@ -43,11 +54,11 @@ def diagnostics(
     }
     checks.extend(host._role_cli_diagnostic(name) for name in sorted(adapters))
     checks.append(host._runner_settings_diagnostic())
-    workflow = Path(__file__).parent / "workflow" / "factory-watch-v1.0.yaml"
+    workflow = WORKFLOW_DIR / WORKFLOW_FILE
     checks.append(
         Diagnostic(
             "watch workflow",
-            workflow.is_file() and "# factory-contract: factory-watch/1" in workflow.read_text(),
+            workflow.is_file() and contract_marker("factory-watch/1") in workflow.read_text(),
             str(workflow),
             "Install the packaged watch workflow.",
             "watch",
@@ -63,8 +74,8 @@ def diagnostics(
                 staged_config_text(None, {"watcher": (cli, model, effort)}),
                 encoding="utf-8",
             )
-            for name in ("factory-watch-v1.0.yaml", "check-contract.sh", "check-result.sh"):
-                shutil.copyfile(workflow.parent / name, catalog / name)
+            for name in FILES:
+                shutil.copyfile(WORKFLOW_DIR / name, catalog / name)
             try:
                 validated = subprocess.run(
                     [
@@ -114,22 +125,8 @@ def diagnostics(
             )
         )
     try:
-        login = subprocess.run(
-            ["gh", "api", "user", "-q", ".login"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=15,
-            env=inherited_environment(),
-        ).stdout.strip()
-        push = subprocess.run(
-            ["gh", "api", f"repos/{shared.watch.repository}", "-q", ".permissions.push"],
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=15,
-            env=inherited_environment(),
-        ).stdout.strip()
+        login = _gh("api", "user", "-q", ".login")
+        push = _gh("api", f"repos/{shared.watch.repository}", "-q", ".permissions.push")
         valid = bool(login) and login.lower() != shared.bot_login.lower() and push == "true"
         checks.append(
             Diagnostic(
