@@ -184,8 +184,8 @@ steps:
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
     prompt: |
       Follow `.agent-runner/workflows/factory-define-rules.md`.
-      Read {{archived_dir}}/decisions.md and the review findings
-      in {{artifact_dir}}. Read acceptance-assumptions.md,
+      Read {{issue_file}} and its settled decisions, {{archived_dir}}/decisions.md,
+      and the review findings in {{artifact_dir}}. Read acceptance-assumptions.md,
       acceptance-preparation-status.txt, acceptance-flow-evidence.md,
       acceptance-findings.md from {{session_dir}}/output/. Also read
       {{artifact_dir}}/resume.json and commits after acceptance.
@@ -195,21 +195,36 @@ steps:
       a repository-relative path of a committed file, citing the line or range that
       shows the item (path:12 or path:12-18) where one exists, or a URL; any other
       path is shown as a link to the acceptance evidence.
-      Classify every review item into exactly one tier. Red: each failed or unverified
-      acceptance criterion, acceptance that did not complete, every known deviation
-      from the specifications, and a resume or continuation that fell back to a
-      fresh start in resume.json. Orange: choices the issue did not settle that change
-      scope, weaken a guarantee, affect other callers, or are costly to reverse; plan
-      revisions made in response to human comments; rejected high or medium review
-      findings; and commits added after acceptance that its evidence does not cover.
+      Classify every review item into exactly one tier, and make items that share
+      one root cause a single item in the highest tier any of them reaches, its
+      detail listing each symptom. Red: each acceptance criterion that failed, each
+      that could not be verified and that no automated test covers, acceptance that
+      did not complete, every known deviation from the specifications or from a
+      decision the issue settled, and a resume or continuation that fell back to a
+      fresh start in resume.json. Orange: choices the issue did not settle that
+      change scope, weaken a guarantee, affect other callers, or are costly to
+      reverse; plan revisions made in response to human comments; rejected high or
+      medium review findings; and commits added after acceptance that its evidence
+      does not cover. The item naming those commits states their size as `git diff
+      --shortstat <accepted_head> HEAD` prints it (N files changed, ...) and has a
+      sentence starting `Tests:` that names the tests covering them or says none do.
       Group related orange choices into one item per topic whose detail cites the
       decision IDs behind it, and order orange most important first: the pull request
       shows commits after acceptance first, then the most important remaining orange
-      items, up to five in total, and collapses the rest. Yellow: every other recorded
-      assumption or decision. White: passed acceptance criteria with evidence.
+      items, up to five in total, and collapses the rest. Yellow: each acceptance
+      criterion acceptance did not exercise but a named automated test covers,
+      naming that test in its detail and linking it where possible; every item that
+      only follows a decision the issue settled or an acceptance criterion, which is
+      never orange or red; and every other recorded assumption or decision. White:
+      passed acceptance criteria with evidence.
   - id: verify-classification
     command: python3 .agent-runner/workflows/verify-classification.py "{{artifact_dir}}/review-attention.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+    repair:
+      session: lead-agent
+      prompt: |
+        Correct {{artifact_dir}}/review-attention.json so it satisfies the
+        classification rules and fixes each reported problem. Change only that file.
   - id: seed-ci-status
     command: printf passed
     capture: ci_status

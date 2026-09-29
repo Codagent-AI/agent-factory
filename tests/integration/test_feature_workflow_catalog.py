@@ -98,13 +98,33 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     assert "capture: annotation_status" in feature
     assert 'annotation_status: "{{annotation_status}}"' in feature
     assert "mark-annotation-failed" in feature
+    classify_step = re.search(r"- id: classify\n(?:(?!  - id:).)*", feature, re.S)
+    assert classify_step
+    classify = " ".join(classify_step.group(0).split())
     for required_red in (
-        "failed or unverified",
+        "acceptance criterion that failed",
+        "could not be verified and that no automated test covers",
         "acceptance that did not complete",
-        "known deviation",
+        "known deviation from the specifications or from a decision the issue settled",
         "fell back to a",
     ):
-        assert required_red in feature
+        assert required_red in classify
+    assert "Read {{issue_file}} and its settled decisions" in classify
+    assert "share one root cause a single item" in classify
+    assert "only follows a decision the issue settled or an acceptance criterion" in classify
+    assert "git diff --shortstat <accepted_head> HEAD" in classify
+    assert "sentence starting `Tests:`" in classify
+    verify = re.search(r"- id: verify-classification\n(?:(?!  - id:).)*", feature, re.S)
+    assert verify
+    assert "repair:\n      session: lead-agent" in verify.group(0)
+    # A criterion acceptance did not exercise but a named automated test covers is
+    # not a failure: it is yellow and names the covering test, so it does not bury
+    # real red items.
+    assert "failed or unverified" not in classify
+    assert (
+        "Yellow: each acceptance criterion acceptance did not exercise but a named "
+        "automated test covers, naming that test in its detail"
+    ) in classify
     session = tmp_path / "session"
     output = session / "output"
     output.mkdir(parents=True)

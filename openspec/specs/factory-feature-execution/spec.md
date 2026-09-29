@@ -187,11 +187,11 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 
 ### Requirement: Classify review attention without blocking
 
-After the plan commit the feature workflow SHALL NOT stop for human input. Whether or not acceptance completed, and whether or not assumption review left decision-bearing assumptions, the workflow SHALL continue to finalization. Before finalizing, it SHALL classify every item a reviewer may need to examine into exactly one tier:
+After the plan commit the feature workflow SHALL NOT stop for human input. Whether or not acceptance completed, and whether or not assumption review left decision-bearing assumptions, the workflow SHALL continue to finalization. Before finalizing, it SHALL classify every item a reviewer may need to examine into exactly one tier, making items that share one root cause a single item in the highest tier any of them reaches:
 
-- red: an acceptance criterion that failed or could not be verified, acceptance that did not complete, a validator that stayed red after an acceptance fix, any known deviation from the specifications, and a resume or continuation that fell back to a fresh start;
-- orange: decision-bearing assumptions, which settle a choice the issue left open in a way that changes scope, weakens a guarantee, affects other callers, or is costly to reverse; plan revisions made in response to human comments; and commits added after acceptance ran, including those the finalization loop adds after classification, which acceptance evidence does not cover;
-- yellow: every other recorded assumption or decision;
+- red: an acceptance criterion that failed, or that could not be verified and that no automated test covers, acceptance that did not complete, a validator that stayed red after an acceptance fix, any known deviation from the specifications or from a decision the issue settled, and a resume or continuation that fell back to a fresh start;
+- orange: decision-bearing assumptions, which settle a choice the issue left open in a way that changes scope, weakens a guarantee, affects other callers, or is costly to reverse; plan revisions made in response to human comments; and commits added after acceptance ran, including those the finalization loop adds after classification, which acceptance evidence does not cover, where the classification's item for commits it saw states their diff size and whether tests cover them;
+- yellow: an acceptance criterion that acceptance did not exercise but that a named automated test covers, naming that test; an item that only follows a decision the issue settled or an acceptance criterion, which SHALL NOT be ranked higher; and every other recorded assumption or decision;
 - white: acceptance criteria that passed, with their evidence.
 
 Related orange assumptions SHALL be grouped into one item per topic that cites the decisions behind it, and orange items SHALL be ordered most important first. Each item SHALL cite the committed file, and the line or range within it where one applies, or the evidence that shows it. The classification SHALL be recorded in the attempt's evidence and used by `factory-feature-reporting`. After finalization, the workflow SHALL add an orange item for any commits made after acceptance that the classification did not cover, and the tier counts in the outcome SHALL be those of the final classification.
@@ -206,6 +206,31 @@ Related orange assumptions SHALL be grouped into one item per topic that cites t
 - **WHEN** the validator remains red after its bounded repair in an acceptance round
 - **THEN** acceptance and finalization continue, and the pull request lists the red validator, with its failing checks, as a red item
 
+#### Scenario: An automated test covers a criterion acceptance did not exercise
+
+- **WHEN** acceptance did not exercise an acceptance criterion but a named automated test covers it
+- **THEN** the workflow classifies the criterion as yellow, naming the covering test, rather than red
+
+#### Scenario: The change deviates from a settled issue decision
+
+- **WHEN** the implementation departs from a decision the issue settled
+- **THEN** the workflow classifies the deviation as red
+
+#### Scenario: An item only follows a settled decision
+
+- **WHEN** an assumption or choice only restates a decision the issue settled or an acceptance criterion
+- **THEN** the workflow classifies it as yellow at most
+
+#### Scenario: Several failures share one root cause
+
+- **WHEN** several failing criteria or findings come from one root cause
+- **THEN** the workflow records them as one item in the highest tier any of them reaches, listing each symptom
+
+#### Scenario: Commits follow acceptance
+
+- **WHEN** commits were added after the accepted head
+- **THEN** the orange item naming them states their diff size and whether tests cover them, and the workflow's classification check rejects an item that omits either
+
 #### Scenario: A decision-bearing assumption remains
 
 - **WHEN** assumption review leaves a decision-bearing assumption unresolved
@@ -218,7 +243,7 @@ Related orange assumptions SHALL be grouped into one item per topic that cites t
 
 ### Requirement: Finalize the feature pull request
 
-After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue without a closing keyword and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
+After classification, the feature workflow SHALL reuse the Runner's generic finalization workflow to mark the pull request ready, wait for CI, and address failures within its bounded loop. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue with a closing keyword, so GitHub links the pull request to the issue and closes the issue when the pull request merges, and SHALL identify the factory claim in a stable marker. The workflow SHALL return `pull-request` with the pull request reference when CI passes.
 
 #### Scenario: Finalize a passing pull request
 

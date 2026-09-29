@@ -7,6 +7,8 @@
 #              until the next tick consumes its fix-outcome.json)
 #   CLAIM      a newly admitted claim
 #   EVAL-DONE  an eval run that finished
+#   PR-READY   a fix or feature run (initial, recovery, or review round) that
+#              finished with a pull request ready for review
 #
 # Each event falls in exactly one check window, so restarting with the printed
 # "next: --since ..." value never repeats or skips an event. A FAILURE's window
@@ -77,6 +79,13 @@ while true; do
       from run r join claim c on c.id = r.claim_id
      where r.kind = 'eval' and r.finished_at > '$since' and r.finished_at <= '$now'
        and r.status not in ('failed', 'interrupted', 'cancelled', 'timed_out');
+    select 'PR-READY', c.repository||'#'||c.issue_number, r.kind, r.reason, r.id,
+           coalesce(json_extract(r.result_json, '$.pr.url'),
+                    json_extract(c.outcome_json, '$.pr.url')), r.finished_at
+      from run r join claim c on c.id = r.claim_id
+     where r.kind in ('fix', 'feature') and r.status = 'completed'
+       and json_extract(r.result_json, '$.outcome') = 'pull-request'
+       and r.finished_at > '$since' and r.finished_at <= '$now';
     select 'CLAIM', repository||'#'||issue_number, kind, id, lifecycle, created_at
       from claim
      where $claims = 1 and created_at > '$since' and created_at <= '$now';")
