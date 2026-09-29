@@ -1,7 +1,9 @@
+# pyright: reportPrivateUsage=false
 """INT-005: adoption, non-bot markers, recorded failures, retries, and targets."""
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -134,3 +136,58 @@ def test_marker_in_a_non_bot_comment_is_not_adopted(tmp_path: Path) -> None:
         assert saved["decisions"]["comment_id"] == "1"
     finally:
         store.close()
+
+
+def test_delivery_queries_only_rows_with_pending_comments(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        old = _review_row(store)
+        deliver.queue(store, old, "decisions", "Already delivered", "pr")
+        client = Comments()
+        deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
+        assert watch_store.pending_deliveries(store) == []
+
+        claim = store.create_claim(ClaimDraft("o/r", 6, "I", "P", "fix", "fp-2", {}))
+        now = datetime.now(UTC).isoformat()
+        watch_store.insert(
+            store,
+            event_key="PR-READY:next",
+            event_kind="PR-READY",
+            claim_id=claim.id,
+            run_id="next",
+            repository="o/r",
+            issue_number=6,
+            pr_number=71,
+            pr_url="https://github.com/o/r/pull/71",
+            event_at=now,
+            now=now,
+        )
+        next_row = next(
+            row for row in watch_store.rows(store) if row["event_key"] == "PR-READY:next"
+        )
+        deliver.queue(store, next_row, "decisions", "Still pending", "pr")
+        assert [row["id"] for row in watch_store.pending_deliveries(store)] == [next_row["id"]]
+        plan = store._connection.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM watch_dispatch WHERE delivery_pending=1"
+        ).fetchall()
+        assert any("watch_dispatch_delivery_pending" in str(row[3]) for row in plan)
+    finally:
+        store.close()
+
+
+def test_existing_watch_rows_backfill_pending_delivery_index(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    store = ClaimStore(path)
+    try:
+        row = _review_row(store)
+        deliver.queue(store, row, "decisions", "Still pending", "pr")
+    finally:
+        store.close()
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP INDEX watch_dispatch_delivery_pending")
+        connection.execute("ALTER TABLE watch_dispatch DROP COLUMN delivery_pending")
+    reopened = ClaimStore(path)
+    try:
+        assert [row["id"] for row in watch_store.pending_deliveries(reopened)] == [row["id"]]
+    finally:
+        reopened.close()

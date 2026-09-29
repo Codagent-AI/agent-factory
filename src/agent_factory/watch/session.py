@@ -75,6 +75,7 @@ def start(
     evidence, clone = paths(local, row["id"])
     (evidence / "private").mkdir(parents=True, exist_ok=True)
     (evidence / "logs").mkdir(exist_ok=True)
+    (evidence / "scratch").mkdir(exist_ok=True)
     clone.parent.mkdir(parents=True, exist_ok=True)
     workspace = PullRequestWorkspace(
         local.storage_root, local.repositories.agent_runner, local.repositories.agent_skills

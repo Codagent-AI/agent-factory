@@ -108,6 +108,14 @@ def _load(value: str) -> dict[str, object]:
     return cast(dict[str, object], parsed)
 
 
+def _has_pending_watch_delivery(value: str) -> bool:
+    deliveries = _load(value)
+    return any(
+        isinstance(item, dict) and not cast(dict[str, object], item).get("comment_id")
+        for item in deliveries.values()
+    )
+
+
 class ClaimStore:
     """SQLite claim history with explicit controller/supervisor write boundaries."""
 
@@ -143,9 +151,8 @@ class ClaimStore:
                 tuple(required_watch_schema),
             )
         }
-        if required_watch_schema <= existing_watch_schema:
-            return
-        self._connection.executescript("""
+        if not required_watch_schema <= existing_watch_schema:
+            self._connection.executescript("""
             CREATE TABLE IF NOT EXISTS watch_dispatch (
                 id TEXT PRIMARY KEY, event_key TEXT NOT NULL, attempt INTEGER NOT NULL,
                 event_kind TEXT NOT NULL, claim_id TEXT NOT NULL REFERENCES claim(id),
@@ -156,6 +163,7 @@ class ClaimStore:
                 launched_at TEXT, deadline_at TEXT, finished_at TEXT,
                 result_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}',
                 audit_json TEXT NOT NULL DEFAULT '{}', deliveries_json TEXT NOT NULL DEFAULT '{}',
+                delivery_pending INTEGER NOT NULL DEFAULT 0,
                 redispatch_of TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(event_key, attempt)
             );
@@ -164,6 +172,27 @@ class ClaimStore:
             CREATE INDEX IF NOT EXISTS watch_claim_created_at ON claim(created_at);
             CREATE INDEX IF NOT EXISTS watch_dispatch_launched_at ON watch_dispatch(launched_at);
         """)
+        columns = {
+            cast(str, row[1])
+            for row in self._connection.execute("PRAGMA table_info(watch_dispatch)")
+        }
+        with self._transaction():
+            if "delivery_pending" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE watch_dispatch ADD COLUMN delivery_pending "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                for row in self._connection.execute(
+                    "SELECT id, deliveries_json FROM watch_dispatch"
+                ):
+                    if _has_pending_watch_delivery(row["deliveries_json"]):
+                        self._connection.execute(
+                            "UPDATE watch_dispatch SET delivery_pending=1 WHERE id=?", (row["id"],)
+                        )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS watch_dispatch_delivery_pending "
+                "ON watch_dispatch(delivery_pending, event_at, event_key, attempt)"
+            )
 
     def close(self) -> None:
         self._connection.close()

@@ -119,6 +119,7 @@ def test_session_stages_and_launches_with_no_token_in_environment(
         assert isinstance(identity.get("pid"), int)
         brief = json.loads((evidence / "input" / "brief.json").read_text())
         assert brief["procedure"] == "triage"
+        assert Path(str(brief["paths"]["scratch"])).is_dir()
         assert "allowed_environment" not in json.dumps(brief)
         wrapper = (evidence / "private" / "watch-run.sh").read_text()
         assert wrapper.splitlines()[1].startswith("echo $$ > ")

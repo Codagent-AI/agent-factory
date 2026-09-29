@@ -9,6 +9,8 @@ from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
+from agent_factory.store import _has_pending_watch_delivery
+
 if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
@@ -27,6 +29,16 @@ def rows(store: ClaimStore, state: str | None = None) -> list[dict[str, Any]]:
         args = (state,)
     query += " ORDER BY event_at, event_key, attempt"
     return [dict(row) for row in store._connection.execute(query, args)]
+
+
+def pending_deliveries(store: ClaimStore) -> list[dict[str, Any]]:
+    return [
+        dict(row)
+        for row in store._connection.execute(
+            "SELECT * FROM watch_dispatch WHERE delivery_pending=1 "
+            "ORDER BY event_at,event_key,attempt"
+        )
+    ]
 
 
 def get(store: ClaimStore, dispatch_id: str) -> dict[str, Any] | None:
@@ -83,6 +95,10 @@ def insert(
 def update(store: ClaimStore, dispatch_id: str, **fields: object) -> None:
     if not fields:
         return
+    if "deliveries_json" in fields:
+        fields["delivery_pending"] = int(
+            _has_pending_watch_delivery(cast(str, fields["deliveries_json"]))
+        )
     fields["updated_at"] = datetime.now(UTC).isoformat()
     columns = ", ".join(f"{key} = ?" for key in fields)
     store._connection.execute(

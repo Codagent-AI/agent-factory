@@ -83,7 +83,7 @@ def end(
 def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:
     # Each target's comments are listed at most once per pass, and new posts are added to it.
     listed: dict[tuple[str, int], list[IssueComment]] = {}
-    for row in watch_store.rows(store):
+    for row in watch_store.pending_deliveries(store):
         deliveries = watch_store.json_field(row, "deliveries_json")
         for purpose, raw in deliveries.items():
             if not isinstance(raw, dict):
