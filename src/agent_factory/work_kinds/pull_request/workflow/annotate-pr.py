@@ -35,8 +35,8 @@ def login(item: dict[str, Any]) -> object:
 
 
 def missing_bot_review(number: int, head: str, url: str) -> dict[str, str] | None:
-    """CodeRabbit's check passes even when it was rate-limited or skipped the review,
-    so only its review of the final head counts as one."""
+    """A passing check alone is not a review: require a review of the final head
+    or its latest CodeRabbit status to say "Review completed"."""
     try:
         reviews = gh_pages(f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews")
         if any(
@@ -51,6 +51,8 @@ def missing_bot_review(number: int, head: str, url: str) -> dict[str, str] | Non
             (str(s.get("description") or "") for s in statuses if s.get("context") == "CodeRabbit"),
             "",
         )
+        if latest == "Review completed":
+            return None
     except (
         subprocess.CalledProcessError,
         json.JSONDecodeError,
