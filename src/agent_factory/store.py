@@ -108,6 +108,14 @@ def _load(value: str) -> dict[str, object]:
     return cast(dict[str, object], parsed)
 
 
+def _has_pending_watch_delivery(value: str) -> bool:
+    deliveries = _load(value)
+    return any(
+        isinstance(item, dict) and not cast(dict[str, object], item).get("comment_id")
+        for item in deliveries.values()
+    )
+
+
 class ClaimStore:
     """SQLite claim history with explicit controller/supervisor write boundaries."""
 
@@ -120,6 +128,71 @@ class ClaimStore:
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
+        self._ensure_watch_schema()
+
+    def _ensure_watch_schema(self) -> None:
+        """Create the watch tables and indexes idempotently, outside the versioned schema.
+
+        They are not a user_version bump, so the previous release, and supervisors still
+        running from it, can open the database after a rollback.
+        """
+        required_watch_schema = {
+            "watch_dispatch",
+            "watch_dispatch_state",
+            "watch_run_finished_at",
+            "watch_claim_created_at",
+            "watch_dispatch_launched_at",
+        }
+        placeholders = ",".join("?" * len(required_watch_schema))
+        existing_watch_schema = {
+            cast(str, row[0])
+            for row in self._connection.execute(
+                f"SELECT name FROM sqlite_master WHERE name IN ({placeholders})",
+                tuple(required_watch_schema),
+            )
+        }
+        if not required_watch_schema <= existing_watch_schema:
+            self._connection.executescript("""
+            CREATE TABLE IF NOT EXISTS watch_dispatch (
+                id TEXT PRIMARY KEY, event_key TEXT NOT NULL, attempt INTEGER NOT NULL,
+                event_kind TEXT NOT NULL, claim_id TEXT NOT NULL REFERENCES claim(id),
+                run_id TEXT, repository TEXT NOT NULL, issue_number INTEGER NOT NULL,
+                pr_number INTEGER, pr_url TEXT, event_at TEXT NOT NULL,
+                state TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', profile TEXT,
+                evidence_path TEXT, process_json TEXT NOT NULL DEFAULT '{}',
+                launched_at TEXT, deadline_at TEXT, finished_at TEXT,
+                result_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}',
+                audit_json TEXT NOT NULL DEFAULT '{}', deliveries_json TEXT NOT NULL DEFAULT '{}',
+                delivery_pending INTEGER NOT NULL DEFAULT 0,
+                redispatch_of TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(event_key, attempt)
+            );
+            CREATE INDEX IF NOT EXISTS watch_dispatch_state ON watch_dispatch(state);
+            CREATE INDEX IF NOT EXISTS watch_run_finished_at ON run(finished_at);
+            CREATE INDEX IF NOT EXISTS watch_claim_created_at ON claim(created_at);
+            CREATE INDEX IF NOT EXISTS watch_dispatch_launched_at ON watch_dispatch(launched_at);
+        """)
+        columns = {
+            cast(str, row[1])
+            for row in self._connection.execute("PRAGMA table_info(watch_dispatch)")
+        }
+        with self._transaction():
+            if "delivery_pending" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE watch_dispatch ADD COLUMN delivery_pending "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                for row in self._connection.execute(
+                    "SELECT id, deliveries_json FROM watch_dispatch"
+                ):
+                    if _has_pending_watch_delivery(row["deliveries_json"]):
+                        self._connection.execute(
+                            "UPDATE watch_dispatch SET delivery_pending=1 WHERE id=?", (row["id"],)
+                        )
+            self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS watch_dispatch_delivery_pending "
+                "ON watch_dispatch(delivery_pending, event_at, event_key, attempt)"
+            )
 
     def close(self) -> None:
         self._connection.close()

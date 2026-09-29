@@ -44,6 +44,7 @@ _GROUP_ORDER: tuple[DiagnosticGroup, ...] = (
     "eval-sandbox",
     "eval-fly",
     *(group for definition in registered() for group in definition.doctor_groups.values()),
+    "watch",
 )
 
 # host mode -> executable each configured role CLI adapter needs on PATH.
@@ -200,6 +201,10 @@ def doctor(
                 "Fix the shared configuration and private App key, then rerun doctor.",
             )
         )
+    if shared is not None and shared.watch.enabled:
+        from agent_factory.watch.readiness import diagnostics as watch_diagnostics
+
+        diagnostics.extend(watch_diagnostics(config, shared))
     return diagnostics
 
 
@@ -262,6 +267,10 @@ def status(
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
     lines.append(f"host attempts: {_host_attempts(store)}")
+    if config is not None:
+        from agent_factory.watch.status import lines as watch_lines
+
+        lines.extend(watch_lines(store, config))
     all_claims = store.all_claims()
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if include_all:

@@ -127,3 +127,7 @@ reached Done without a recorded Review observation.
   explicitly or use arrays.
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
+
+## Service-driven watcher
+
+The resident detects factory events and dispatches headless PR reviews and failure triage when `[watch] enabled` is true in shared configuration. Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, and audit. The operator's `gh` login must be a writer with push permission and must differ from the factory bot. To retry an ended review or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Stop the interactive `watch.sh` loop after deploying the service watcher. Disable watching through committed configuration; running sessions and comment delivery continue.

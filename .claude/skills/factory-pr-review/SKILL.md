@@ -42,3 +42,7 @@ Act on each answer before moving on:
 - a new issue: file it and assign it with `factory-assign`;
 - a merge: only Paul merges, unless he told you to merge this PR in this conversation;
 - "leave it": note it and move on.
+
+## Headless mode
+
+When a `factory-watch` brief requests `procedure: "review"`, review its pull request in the foreground and do not ask the operator questions. Give the `factory-pr-reviewer` agent the brief, its `paths`, `pull_request`, and `result_file`; tell it to follow its Headless (dispatched) mode. Use the brief's scratch directory for all temporary files. Wait for its review to finish. Write exactly one JSON object to `result_file` with `procedure: "review"`, `verdict` (string), `review_url` (string or null), `issues_filed` (array of strings), and `decisions` (at most ten objects with `question`, `context`, `options` as `label`/`consequence` pairs, and `recommendation`). Leave `decisions` empty when none need the operator. The resident posts any decisions as a bot comment on the PR.

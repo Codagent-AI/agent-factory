@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from importlib.resources import as_file, files
 from pathlib import Path
 
-from agent_factory.config import LocalConfig
+from agent_factory.config import PROFILE, LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, registered
@@ -77,7 +77,6 @@ _AUTH_FLAGS = {
     "codex": "--mount-codex-auth",
     "cursor": "--mount-cursor-auth",
 }
-_PROFILE = re.compile(r"^([a-z]+):([^:]*):([^:]*)$")
 
 
 def image_tag(run_id: str) -> str:
@@ -324,7 +323,7 @@ def role_profiles(
     profiles: dict[str, tuple[str, str, str]] = {}
     for role in definition.roles:
         value = roles.get(role)
-        match = _PROFILE.match(value) if isinstance(value, str) else None
+        match = PROFILE.match(value) if isinstance(value, str) else None
         if match is None:
             raise ReadinessError(f"{definition.kind} role {role} is not a cli:model:effort profile")
         profiles[role] = (match.group(1), match.group(2), match.group(3))
@@ -862,7 +861,7 @@ def _hide_tracked_file_from_git(repo_clone: Path, relative: str) -> None:
             )
 
 
-def _refuse_symlinked_staging(repo_clone: Path) -> None:
+def _refuse_symlinked_staging(repo_clone: Path, extra_files: tuple[str, ...] = ()) -> None:
     """The target repository controls the clone's contents, so a committed symlink at a
     staging path would make host planning write outside the clone as the operator."""
     workflows = PROJECT_WORKFLOWS
@@ -870,7 +869,7 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
         workflows.parent,
         workflows,
         PROJECT_CONFIG,
-        *(workflows / name for name in STAGED_FILES),
+        *(workflows / name for name in (*STAGED_FILES, *extra_files)),
     )
     for relative in candidates:
         if (repo_clone / relative).is_symlink():
@@ -880,10 +879,10 @@ def _refuse_symlinked_staging(repo_clone: Path) -> None:
             )
 
 
-def _refuse_tracked_workflow_files(repo_clone: Path) -> None:
+def _refuse_tracked_workflow_files(repo_clone: Path, extra_files: tuple[str, ...] = ()) -> None:
     """Staging over a catalog file the target commits would leave a modified tracked file,
     which the workflow's clean-tree gate rejects and finalize-pr could commit."""
-    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in STAGED_FILES]
+    names = [(PROJECT_WORKFLOWS / name).as_posix() for name in (*STAGED_FILES, *extra_files)]
     listed = subprocess.run(
         ["git", "-C", str(repo_clone), "ls-files", "--", *names],
         capture_output=True,

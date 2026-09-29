@@ -5,7 +5,7 @@ description: Watch the live Agent Factory on Paul's Mac for technical failures, 
 
 # Factory watch
 
-Watch the live factory service, wake on anything that needs a look, triage it, fix what is broken, then keep watching. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
+The resident watches the live factory service and dispatches headless sessions for events. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins. Use the interactive loop below only for debugging.
 
 ## Standing rules
 
@@ -17,7 +17,7 @@ Watch the live factory service, wake on anything that needs a look, triage it, f
 - Every Fly Machine the factory or you created must end up destroyed. Check `fly machines list -a agent-factory-sandbox` after Fly work.
 - Report solutions, not just problems: say what is wrong, what you did, and what Paul must decide.
 
-## Start the watcher
+## Interactive debugging watcher
 
 Run it in the background and wait for it to exit:
 
@@ -159,3 +159,15 @@ Never deploy unreviewed or unvalidated code this way.
 - Board and issue changes: use the `codagent-github-project` skill, which covers the Factory App token and board field IDs.
 - Fly Machines: `fly machines list -a agent-factory-sandbox --json`.
 - Disk: `df -h ~` and `du -sh ~/.agent-factory/*`. Admission needs `minimum_free_gib` (5 GiB).
+
+## Service-driven watching
+
+The resident now detects CLAIM, EVAL-DONE, PR-READY, and FAILURE during each cycle. CLAIM and EVAL-DONE are logged. PR-READY and FAILURE start short headless sessions when the watch budget, readiness, and concurrency cap permit. Use `agent-factory --config <local.toml> status` for the cursor, sessions, cost, deliveries, and decisions. The `watch.sh` loop remains available for debugging; stop any interactive watcher before deploying service-driven watching so it does not duplicate reviews.
+
+`agent-factory --config <local.toml> watch redispatch <dispatch-id>` creates a new queued attempt for an ended review or triage dispatch. It does not restart a running session. A queued attempt waits while `[watch] enabled = false`.
+
+## Headless triage
+
+When dispatched by `factory-watch`, read the brief at `brief_file` and use its `paths` and `result_file`. Do not ask questions. Follow steps 2 through 4 of Handling a failure. The factory has already had an opportunity to start automatic recovery in this cycle. If a safe fix is needed, work only in the brief's clone on a new `fix/<name>` branch. Test, run `agent-validate run`, push, and open a PR. Never deploy, merge, message other sessions, or use an operator checkout or live release. You may pause or resume through the brief's `agent_factory` executable and config path when the evidence justifies it.
+
+Write exactly one JSON object to `result_file` with `procedure: "triage"`, `cause`, `evidence` (array of strings), `owner` (`factory code`, `Agent Runner`, `Agent Evals`, `Skills`, `environment`, or `transient`), `retry`, `actions` (array of strings), `pull_request` (URL or null), `paused_by_session`, `resumed_by_session` (booleans), `next_step`, and `handoff` (string or null). State the concrete evidence and recommended next step. The resident posts the result as the factory bot.

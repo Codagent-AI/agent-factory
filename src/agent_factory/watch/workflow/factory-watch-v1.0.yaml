@@ -1,0 +1,33 @@
+# factory-contract: factory-watch/1
+name: factory-watch
+description: "Review a ready PR or triage a factory failure in a fresh headless session."
+hidden: true
+params:
+  - name: brief_file
+    required: true
+  - name: artifact_dir
+    required: true
+  - name: contract_version
+    required: true
+sessions:
+  - name: watcher
+    agent: watcher
+steps:
+  - id: check-contract
+    script: check-contract.sh
+    script_inputs:
+      expected_contract: factory-watch/1
+      declared_contract: "{{contract_version}}"
+  - id: watch
+    session: watcher
+    mode: autonomous
+    prompt: |
+      Read {{brief_file}} and follow its procedure without asking questions.
+      For review, follow .claude/skills/factory-pr-review/SKILL.md Headless mode.
+      For triage, follow .claude/skills/factory-watch/SKILL.md Headless triage.
+      Write exactly one JSON object to {{artifact_dir}}/watch-result.json in the
+      schema required by that headless procedure. Do not deploy or merge.
+  - id: check-result
+    script: check-result.sh
+    script_inputs:
+      result_file: "{{artifact_dir}}/watch-result.json"

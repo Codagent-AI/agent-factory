@@ -110,3 +110,9 @@ lead = "claude:claude-opus-5-5:high"
 implementor = "codex:gpt-6-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
 crosscheck = "codex:gpt-6-sol:high"
+
+[watch]
+enabled = true
+repository = "Codagent-AI/agent-factory"
+agent = "claude:claude-sonnet-5-5:medium"
+operator = "pacaplan"

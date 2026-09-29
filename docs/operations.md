@@ -464,3 +464,11 @@ period expires. Factory posts an expiry comment before releasing a published
 command's worktree. Factory does
 not run human ratings, assign an official pass, close the issue, merge a PR, or
 claim that a static plist proves live launchd acceptance.
+
+## Service-driven watch dispatch
+
+The resident runs the watch step once per cycle, including while admissions are paused or the main cycle fails. Configure `[watch]` in shared TOML with `enabled`, `repository`, `agent`, optional `agents.PR-READY` and `agents.FAILURE`, `max_sessions` (default 2), `daily_sessions` (default 20), `grace_minutes` (default 7), `timeout_minutes` (default 90), and optional `operator`. The profile syntax is `cli:model:effort`. Doctor includes a `watch` group when enabled. It checks Runner, CLI, mirror, and a writer `gh` login with push permission that differs from the factory bot.
+
+`status` shows the watch cursor, today's session count and known cost, running and pending work, ended dispatches, undelivered comments, audits, and open decisions. Run `agent-factory --config <local.toml> watch redispatch <id>` for an ended review or triage that needs another attempt. To stop new detection and launches, set `enabled = false` through a committed configuration change. Existing sessions are still supervised and comments are still delivered. Stop the interactive `.claude/skills/factory-watch/watch.sh` watcher before enabling service dispatch.
+
+A failed run can be missed when no cycle runs for seven days after its grace period. Timeouts are enforced at cycle granularity. A timeout can leave usage partial and audit missing. An unknown process identity keeps its concurrency slot until the probe resolves.

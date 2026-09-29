@@ -132,3 +132,7 @@ A decision belongs to Paul only when the factory cannot resolve it. That means:
 - whether to merge despite a known limitation.
 
 Give a recommendation for every decision.
+
+## Headless (dispatched) mode
+
+When given a factory-watch brief, use its `paths.clone` as C, `paths.scratch` as scratch, `paths.pr_source` as the read-only PR repository mirror, `paths.factory_python` as Python, and `paths.config` as the local configuration. Read AGENTS.md and repository docs from C. Clone PR code with `git clone --local --no-checkout <pr_source> <scratch>/pr<N>` and check out the PR's head commit detached in that scratch clone. Never fetch into the mirror. Run C's `.claude/skills/factory-assign/assign.py` using `AGENT_FACTORY_CONFIG=<config> <factory_python> ...` from C to assign issues you file. The interactive checkout and release paths elsewhere in this agent's instructions are replaced by these brief paths. Do not ask questions. Report the verdict, review URL, filed issues, and operator decisions to the calling headless skill.
