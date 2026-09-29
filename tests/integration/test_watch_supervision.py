@@ -158,6 +158,39 @@ def test_valid_result_completes_even_with_nonzero_exit(tmp_path: Path) -> None:
         store.close()
 
 
+def test_live_session_with_valid_result_completes_at_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        row = _launched(
+            store,
+            tmp_path,
+            "result-before-deadline",
+            launched=datetime.now(UTC) - timedelta(minutes=5),
+            timeout_minutes=1,
+            identity={"pid": 12345, "start": "known"},
+        )
+        (Path(row["evidence_path"]) / "watch-result.json").write_text(json.dumps(_TRIAGE))
+        terminated: list[object] = []
+
+        def alive(_identity: object) -> str:
+            return "alive"
+
+        monkeypatch.setattr(supervise, "process_identity_status", alive)
+        monkeypatch.setattr(supervise, "terminate_owned_process", terminated.append)
+        supervise.supervise(store, _local(tmp_path), tmp_path / "local.toml")
+        supervise.supervise(store, _local(tmp_path), tmp_path / "local.toml")
+        ended = _state(store, row)
+        assert ended["state"] == "completed"
+        assert ended["detail"] == "session deadline exceeded after result"
+        assert set(watch_store.json_field(ended, "deliveries_json")) == {"triage"}
+        assert watch_store.json_field(ended, "audit_json") == {"outcome": "missing"}
+        assert len(terminated) == 1
+    finally:
+        store.close()
+
+
 def test_dead_session_without_result_is_interrupted_and_alerted(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:

@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from agent_factory import audit
 from agent_factory.config import (
     CredentialsConfig,
     LimitsConfig,
@@ -34,9 +35,11 @@ def _git(*args: str) -> None:
     subprocess.run(["git", *args], check=True, capture_output=True)
 
 
+@pytest.mark.parametrize("audit_enabled", [False, True])
 def test_session_stages_and_launches_with_no_token_in_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_enabled: bool
 ) -> None:
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", audit_enabled)
     # All git and Runner effects stay under this isolated root.
     source = tmp_path / "source"
     _git("init", "-b", "main", str(source))
@@ -120,6 +123,7 @@ def test_session_stages_and_launches_with_no_token_in_environment(
         wrapper = (evidence / "private" / "watch-run.sh").read_text()
         assert wrapper.splitlines()[1].startswith("echo $$ > ")
         assert "must-not-pass" not in wrapper
+        assert ("-m agent_factory.audit host" in wrapper) is audit_enabled
         assert (clone / ".agent-runner" / "workflows" / "factory-watch-v1.0.yaml").is_file()
         for _ in range(100):
             if (evidence / "exit.json").is_file():

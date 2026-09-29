@@ -23,6 +23,7 @@ def test_detection_uses_current_grace_and_never_requeues(tmp_path: Path) -> None
         )
         run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
         store.finish_run(run.id, execution_status="failed", result={})
+        store.set_setting("consumed-results", run.id, {"complete": True})
         store._connection.execute(
             "UPDATE run SET finished_at=? WHERE id=?",
             ((now - timedelta(minutes=5)).isoformat(), run.id),
@@ -45,6 +46,7 @@ def _failed_run(store: ClaimStore, finished: datetime, key: str) -> str:
     )
     run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
     store.finish_run(run.id, execution_status="failed", result={})
+    store.set_setting("consumed-results", run.id, {"complete": True})
     store._connection.execute(
         "UPDATE run SET finished_at=? WHERE id=?", (finished.isoformat(), run.id)
     )
@@ -53,6 +55,52 @@ def _failed_run(store: ClaimStore, finished: datetime, key: str) -> str:
 
 def _failures(store: ClaimStore) -> list[str]:
     return [row["run_id"] for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
+
+
+def test_failure_waits_for_result_consumption(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 0, lambda: now - timedelta(minutes=10))
+        run_id = _failed_run(store, now - timedelta(minutes=5), "unconsumed")
+        store._connection.execute(
+            "DELETE FROM settings WHERE namespace='consumed-results' AND key=?", (run_id,)
+        )
+        detect.detect(store, 0, lambda: now)
+        assert _failures(store) == []
+        store.set_setting("consumed-results", run_id, {"complete": True})
+        detect.detect(store, 0, lambda: now + timedelta(minutes=3))
+        assert _failures(store) == [run_id]
+    finally:
+        store.close()
+
+
+def test_pr_ready_after_cursor_passes_finished_at(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        claim = store.create_claim(ClaimDraft("o/r", 14, "I", "P", "fix", "fp-pr", {}))
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        store.finish_run(run.id, execution_status="interrupted", result={})
+        finished = now - timedelta(minutes=5)
+        store._connection.execute(
+            "UPDATE run SET finished_at=? WHERE id=?", (finished.isoformat(), run.id)
+        )
+        detect.detect(store, 7, lambda: now)
+        assert not [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        store.normalize_terminal_result(
+            run.id,
+            execution_status="completed",
+            result={"outcome": "pull-request", "pr": {"url": "https://github.com/o/r/pull/14"}},
+        )
+        detect.detect(store, 7, lambda: now + timedelta(minutes=3))
+        detect.detect(store, 7, lambda: now + timedelta(minutes=4))
+        ready = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        assert len(ready) == 1
+        assert ready[0]["pr_number"] == 14
+    finally:
+        store.close()
 
 
 def test_grace_shrinking_to_zero_queues_a_waiting_failure_once(tmp_path: Path) -> None:

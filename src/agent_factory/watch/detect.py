@@ -48,8 +48,11 @@ def detect(
         # Fetch a conservative superset; Python compares parsed timestamps exactly.
         run_sql_lower = (min(lower, horizon) - timedelta(days=1)).isoformat()
         runs = store._connection.execute(
-            """SELECT r.*,c.repository,c.issue_number,c.outcome_json
-            FROM run r JOIN claim c ON c.id=r.claim_id WHERE r.finished_at >= ?""",
+            """SELECT r.*,c.repository,c.issue_number,c.outcome_json,
+            consumed.key IS NOT NULL AS result_consumed
+            FROM run r JOIN claim c ON c.id=r.claim_id
+            LEFT JOIN settings consumed ON consumed.namespace='consumed-results'
+            AND consumed.key=r.id WHERE r.finished_at >= ?""",
             (run_sql_lower,),
         ).fetchall()
         for run in map(dict, runs):
@@ -59,12 +62,12 @@ def detect(
             in_window = lower < event_at <= now
             result = watch_store.json_field(run, "result_json")
             event_kind = None
-            if status in _FAILURES and horizon < event_at <= grace_end:
+            if status in _FAILURES and run["result_consumed"] and horizon < event_at <= grace_end:
                 event_kind = "FAILURE"
             elif in_window and kind == "eval" and status not in _FAILURES | _NONTERMINAL:
                 event_kind = "EVAL-DONE"
             elif (
-                in_window
+                horizon < event_at <= now
                 and kind in {"fix", "feature"}
                 and status == "completed"
                 and result.get("outcome") == "pull-request"

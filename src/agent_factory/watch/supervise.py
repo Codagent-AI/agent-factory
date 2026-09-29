@@ -116,8 +116,26 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path, operator
             continue
         if status == "alive":
             if datetime.now(UTC) > datetime.fromisoformat(row["deadline_at"]):
+                try:
+                    validated = result.read(evidence / result.RESULT_FILE, result.procedure(row))
+                except (OSError, ValueError):
+                    validated = None
                 terminate_owned_process(identity)
-                _finish(store, row, local, config_path, "timed-out", "session deadline exceeded")
+                if validated is None:
+                    _finish(
+                        store, row, local, config_path, "timed-out", "session deadline exceeded"
+                    )
+                else:
+                    _finish(
+                        store,
+                        row,
+                        local,
+                        config_path,
+                        "completed",
+                        "session deadline exceeded after result",
+                        validated,
+                        operator,
+                    )
             continue
         exit_record = _read_json(evidence / "exit.json")
         if not exit_record:

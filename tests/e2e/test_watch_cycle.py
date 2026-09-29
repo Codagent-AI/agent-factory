@@ -68,6 +68,7 @@ def test_quiet_cycle_and_budget_zero_deliver_once(tmp_path: Path) -> None:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "eval", "fp", {}))
         run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
         store.finish_run(run.id, execution_status="failed", result={})
+        store.set_setting("consumed-results", run.id, {"complete": True})
         old = datetime.now(UTC) - timedelta(minutes=8)
         cursor_time = (old - timedelta(minutes=1)).isoformat()
         store.set_setting(
@@ -111,6 +112,7 @@ def test_failure_session_completes_and_delivers_once(
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "eval", "fp", {}))
         run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/failure")
         store.finish_run(run.id, execution_status="failed", result={})
+        store.set_setting("consumed-results", run.id, {"complete": True})
         old = datetime.now(UTC) - timedelta(minutes=1)
         cursor_time = (old - timedelta(minutes=1)).isoformat()
         store.set_setting(
@@ -120,10 +122,10 @@ def test_failure_session_completes_and_delivers_once(
             "UPDATE run SET finished_at=? WHERE id=?", (old.isoformat(), run.id)
         )
 
-        def ready(*_args: object) -> list[Diagnostic]:
+        def watch_ready(*_args: object) -> list[Diagnostic]:
             return []
 
-        monkeypatch.setattr(readiness, "diagnostics", ready)
+        monkeypatch.setattr(readiness, "diagnostics", watch_ready)
 
         def fake_start(
             _store: ClaimStore,
@@ -254,6 +256,137 @@ def test_ready_pr_decisions_go_to_pr(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert len(client.records) == 1
         assert "@writer" in client.records[0].body
         assert "Ship?" in client.records[0].body
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("url", [None, "https://example.com/not-a-pr"])
+def test_ready_pr_without_parseable_url_is_logged_without_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str | None
+) -> None:
+    from agent_factory.watch import session
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        local = _local(tmp_path)
+        shared = replace(
+            SharedConfig.from_file(Path("config/codagent.toml")),
+            watch=WatchConfig(True, "o/r", "claude:model:medium", daily_sessions=0),
+        )
+        claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "fix", "fp", {}))
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        store.finish_run(
+            run.id,
+            execution_status="completed",
+            result={"outcome": "pull-request", "pr": {"url": url}},
+        )
+        old = datetime.now(UTC) - timedelta(minutes=1)
+        store.set_setting(
+            "watch",
+            "cursor",
+            {
+                "enabled_at": (old - timedelta(minutes=1)).isoformat(),
+                "handled_up_to": old.isoformat(),
+            },
+        )
+        store._connection.execute(
+            "UPDATE run SET finished_at=? WHERE id=?", (old.isoformat(), run.id)
+        )
+
+        def no_start(*_args: object) -> None:
+            pytest.fail("session launched")
+
+        monkeypatch.setattr(session, "start", no_start)
+        client = Comments()
+        step(store, client, shared, local, tmp_path / "local.toml", lambda: "unused")  # type: ignore[arg-type]
+        ready = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        assert len(ready) == 1 and ready[0]["state"] == "logged"
+        assert client.records == []
+        assert watch_store.daily_count(store, local.schedule.timezone, datetime.now(UTC)) == 0
+    finally:
+        store.close()
+
+
+def test_interrupted_host_result_after_failed_board_cycle_starts_one_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from agent_factory.watch import readiness, session, supervise
+
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        local = _local(tmp_path)
+        shared = replace(
+            SharedConfig.from_file(Path("config/codagent.toml")),
+            watch=WatchConfig(True, "o/r", "claude:model:medium", grace_minutes=0),
+        )
+        claim = store.create_claim(ClaimDraft("o/r", 8, "I", "P", "fix", "fp", {}))
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        store.finish_run(run.id, execution_status="interrupted", result={})
+        finished = datetime.now(UTC) - timedelta(minutes=5)
+        store._connection.execute(
+            "UPDATE run SET finished_at=? WHERE id=?", (finished.isoformat(), run.id)
+        )
+        store.set_setting(
+            "watch",
+            "cursor",
+            {
+                "enabled_at": (finished - timedelta(minutes=1)).isoformat(),
+                "handled_up_to": (finished - timedelta(minutes=1)).isoformat(),
+            },
+        )
+        launches: list[str] = []
+
+        def watch_ready(*_args: object) -> list[Diagnostic]:
+            return []
+
+        monkeypatch.setattr(readiness, "diagnostics", watch_ready)
+
+        def fake_start(
+            _store: ClaimStore,
+            row: dict[str, Any],
+            _local: LocalConfig,
+            _shared: SharedConfig,
+            _config: Path,
+            _token: object,
+        ) -> dict[str, object]:
+            launches.append(row["id"])
+            return {"pid": 999999, "start": "known"}
+
+        monkeypatch.setattr(session, "start", fake_start)
+
+        def alive(_identity: object) -> str:
+            return "alive"
+
+        monkeypatch.setattr(supervise, "process_identity_status", alive)
+        client = Comments()
+
+        def failed_cycle() -> None:
+            try:
+                raise RuntimeError("board unavailable before result consumption")
+            finally:
+                step(store, client, shared, local, tmp_path / "local.toml", lambda: "unused")  # type: ignore[arg-type]
+
+        with pytest.raises(RuntimeError, match="board unavailable"):
+            failed_cycle()
+        assert watch_store.cursor(store) is not None
+        assert store.get_setting("consumed-results", run.id) is None
+        assert launches == []
+
+        store.normalize_terminal_result(
+            run.id,
+            execution_status="completed",
+            result={"outcome": "pull-request", "pr": {"url": "https://github.com/o/r/pull/8"}},
+        )
+        store.set_setting("consumed-results", run.id, {"complete": True})
+        step(store, client, shared, local, tmp_path / "local.toml", lambda: "unused")  # type: ignore[arg-type]
+        step(store, client, shared, local, tmp_path / "local.toml", lambda: "unused")  # type: ignore[arg-type]
+        ready = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
+        assert len(ready) == 1
+        assert ready[0]["state"] == "launched"
+        assert launches == [ready[0]["id"]]
+        assert not [row for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
     finally:
         store.close()
 

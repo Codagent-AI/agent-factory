@@ -26,6 +26,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+# Codagent-AI/agent-factory#60 will own the audit switch when it merges.
+AUDIT_ENABLED = False
 AUDIT_FILE = "audit.json"
 LIFECYCLE_FILE = "audit-lifecycle.json"
 METRICS_FILE = "run-metrics.json"

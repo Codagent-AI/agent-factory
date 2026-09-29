@@ -56,6 +56,15 @@ def dispatch(
             logger.info("watch event %s", result.event_line(row, claim, run))
             watch_store.update(store, row["id"], state="logged")
             continue
+        if row["event_kind"] == "PR-READY" and row["pr_number"] is None:
+            claim = store.get_claim(row["claim_id"])
+            run = store.get_run(row["run_id"]) if row["run_id"] else None
+            logger.info(
+                "watch event %s: no parseable pull request URL",
+                result.event_line(row, claim, run),
+            )
+            watch_store.update(store, row["id"], state="logged")
+            continue
         # The budget comes first so a spent budget is reported even when nothing could launch.
         if started_today >= watch.daily_sessions:
             deliver.end(

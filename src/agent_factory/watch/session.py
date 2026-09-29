@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from agent_factory import audit
 from agent_factory.supervisor import (
     _INHERITED_ENVIRONMENT,
     ProcessProbeError,
@@ -180,6 +181,15 @@ def start(
     runner = resolve_runner_executable()
     session_dir = evidence / SESSION_DIR_NAME
     q = shlex.quote
+    audit_command = (
+        [
+            f"{q(sys.executable)} -P -m agent_factory.audit host --runner {q(runner)} "
+            f"--session-dir {q(str(session_dir))} "
+            f"--project {q(str(clone))} --evidence {q(str(evidence))} || true"
+        ]
+        if audit.AUDIT_ENABLED
+        else []
+    )
     wrapper = _private_file(
         evidence / "private" / "watch-run.sh",
         "\n".join(
@@ -196,9 +206,7 @@ def start(
                 f"--param brief_file={q(str(brief_file))} "
                 f"--param artifact_dir={q(str(evidence))} --param contract_version=factory-watch/1",
                 "status=$?",
-                f"{q(sys.executable)} -P -m agent_factory.audit host --runner {q(runner)} "
-                f"--session-dir {q(str(session_dir))} "
-                f"--project {q(str(clone))} --evidence {q(str(evidence))} || true",
+                *audit_command,
                 f'printf \'{{"code": %d, "finished_at": "%s"}}\\n\' "$status" "$(date -u +%FT%TZ)" > {q(str(evidence / "exit.json"))}',
                 'exit "$status"',
                 "",
