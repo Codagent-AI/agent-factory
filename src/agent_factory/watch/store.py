@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any, cast
 from zoneinfo import ZoneInfo
 
@@ -115,20 +115,33 @@ def claim_launch(
         return result.rowcount == 1
 
 
+def _local_day_bounds(timezone: ZoneInfo, now: datetime) -> tuple[str, str]:
+    """The UTC isoformat bounds of `now`'s local day.
+
+    launched_at is always a UTC isoformat string, so these bounds compare correctly as text.
+    """
+    today = now.astimezone(timezone).date()
+    start = datetime.combine(today, time(), tzinfo=timezone)
+    end = datetime.combine(today + timedelta(days=1), time(), tzinfo=timezone)
+    return start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat()
+
+
 def launched_today(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> list[dict[str, Any]]:
     """Dispatches whose session started on `now`'s local day in the schedule timezone."""
-    today = now.astimezone(timezone).date()
     return [
         dict(row)
         for row in store._connection.execute(
-            "SELECT * FROM watch_dispatch WHERE launched_at IS NOT NULL"
+            "SELECT * FROM watch_dispatch WHERE launched_at >= ? AND launched_at < ?",
+            _local_day_bounds(timezone, now),
         )
-        if datetime.fromisoformat(row["launched_at"]).astimezone(timezone).date() == today
     ]
 
 
 def daily_count(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> int:
-    return len(launched_today(store, timezone, now))
+    return store._connection.execute(
+        "SELECT count(*) FROM watch_dispatch WHERE launched_at >= ? AND launched_at < ?",
+        _local_day_bounds(timezone, now),
+    ).fetchone()[0]
 
 
 def running_count(store: ClaimStore) -> int:
