@@ -1,50 +1,4 @@
-# factory-review-execution Specification
-
-## Purpose
-TBD - created by archiving change code-review. Update Purpose after archive.
-## Requirements
-### Requirement: Run the versioned review workflow
-
-The factory SHALL ship a packaged review workflow declaring contract `factory-review/1`, stage it beside the fix workflow and the shared implementation sub-workflow, and launch it through the execution path of the claim's kind, a fix claim's round as a fix attempt and a feature claim's round on the host as a feature attempt, on clones where the target is checked out on the PR branch at its recorded head. The factory SHALL write `review.json` into the attempt's artifact directory containing the repository, issue number, claim identifier, the claim's work kind, attempt number, the pull request number, URL, branch, base branch and head commit, the original issue title and body, and the eligible comments grouped by source (review summaries, unresolved inline threads with path, line, thread identifier and every comment in the thread, and conversation comments), each with author, identifier, body, and creation time. The workflow SHALL return exactly one structured outcome in `review-outcome.json` declaring its contract: `pull-request` with the PR reference and the identifiers it answered and changed, `needs-input` with reasons, `failed` with reasons, or a technical failure when the file is absent or invalid.
-
-#### Scenario: Launch a review round
-
-- **WHEN** a review round is admitted with a compatible Runner commit
-- **THEN** the attempt starts under its own supervisor with the review contract and `review.json` describes the PR and the eligible comments
-
-#### Scenario: Finish without an outcome
-
-- **WHEN** the workflow exits without writing `review-outcome.json`
-- **THEN** the factory records a technical failure and applies the recovery policy of the claim's kind
-
-### Requirement: Triage each comment and decide autonomously
-
-The review workflow SHALL read `review.json` and produce one decision per eligible comment or thread: `change` with a concrete plan when the comment asks for a code change the agent should make, or `answer` with the reply text when a reply suffices. When a comment is ambiguous, the agent SHALL decide itself which applies and explain its reading in the reply. It SHALL return `needs-input` only when reviewer requests conflict with each other, when a requested change on a fix pull request requires a non-trivial specification change, when a requested change requires changes outside the target repository, or when a genuinely open product decision must be made by a human; it SHALL name what needs deciding. A requested change that widens the original issue's scope SHALL still be made. On a feature pull request, a requested change that alters specified behavior SHALL be made rather than declined.
-
-#### Scenario: Requested change
-
-- **WHEN** an inline comment asks to rename a function and handle an edge case
-- **THEN** triage records a `change` with a plan for both, and the implementation step carries them out
-
-#### Scenario: Question only
-
-- **WHEN** a comment asks why an approach was chosen
-- **THEN** triage records an `answer` and no code change is made for that comment
-
-#### Scenario: Ambiguous remark
-
-- **WHEN** a comment says "this looks fragile" without asking for anything
-- **THEN** the agent decides whether to change the code or explain, and the reply states which it chose and why
-
-#### Scenario: Conflicting requests
-
-- **WHEN** two writers ask for incompatible changes to the same behaviour
-- **THEN** the workflow returns `needs-input` naming both requests and what must be decided, and pushes nothing
-
-#### Scenario: Change specified behavior on a feature pull request
-
-- **WHEN** a writer asks on a feature pull request for behavior that differs from the change's specifications
-- **THEN** triage records a `change` and the implementation updates both the code and the repository's specifications
+## MODIFIED Requirements
 
 ### Requirement: Implement, verify, and push on the existing branch
 
@@ -71,19 +25,7 @@ When any decision is `change`, the workflow SHALL implement the changes on the e
 - **WHEN** every decision in a round is `answer` and the PR branch already contains the target branch's current head
 - **THEN** the implementation sub-workflow is skipped, nothing is pushed, and the outcome is `pull-request` after the replies are posted
 
-### Requirement: Reply and resolve
-
-After implementation, the workflow SHALL reply once to each eligible thread or comment: in the thread for inline comments, as a PR conversation comment for review summaries and conversation comments. A `change` reply SHALL say what changed and where and reference the commit; an `answer` reply SHALL contain the answer. It SHALL then resolve each inline thread it handled successfully. Threads whose change was not pushed SHALL be answered but left unresolved. Replies SHALL be posted with the fix credential so they appear as the factory's PR identity.
-
-#### Scenario: Answered thread
-
-- **WHEN** the agent answers an inline question
-- **THEN** the thread carries the reply and is resolved, and a reviewer's later reply in that thread unresolves it and becomes eligible for the next round
-
-#### Scenario: Summary review
-
-- **WHEN** the eligible comment is a review summary body
-- **THEN** the reply is a PR conversation comment referencing that review
+## ADDED Requirements
 
 ### Requirement: Merge the target branch into a feature pull request before triage
 
@@ -116,4 +58,3 @@ For a review round on a feature pull request, the factory SHALL fetch the target
 
 - **WHEN** a review round is admitted on a fix pull request whose base branch gained commits
 - **THEN** the round runs on the PR branch at its recorded head without merging the base branch
-

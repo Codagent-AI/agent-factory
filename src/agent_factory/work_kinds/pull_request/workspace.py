@@ -99,6 +99,7 @@ class PullRequestWorkspace:
                 "--git-dir",
                 str(mirror),
                 "log",
+                "--first-parent",
                 "--format=%(trailers:key=Factory-Checkpoint,valueonly)",
                 "FETCH_HEAD",
                 *exclusions,

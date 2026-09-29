@@ -93,7 +93,8 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     ):
         assert re.search(rf"- id: {step}\n(?:(?!  - id:).)*factory-resume-skip.sh", define, re.S)
     assert "tools: [call_agent]" not in feature + define
-    assert "agent-validator" not in feature + define
+    assert "agent-validator run" in feature
+    assert "agent-validator" not in define
     assert "capture: annotation_status" in feature
     assert 'annotation_status: "{{annotation_status}}"' in feature
     assert "mark-annotation-failed" in feature
@@ -158,3 +159,65 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert report.read_text() == "preserve me"
+
+
+def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    ids = re.findall(r"^  - id: ([\w-]+)$", text, re.MULTILINE)
+    ordered = (
+        "prepare-branch",
+        "resolve-merge",
+        "check-merge",
+        "record-merge-stop",
+        "continue-change",
+        "create-change",
+    )
+    indexes = [ids.index(step) for step in ordered]
+    assert indexes == sorted(indexes)
+    assert re.search(r"  - name: base_head\n    default: \"\"", text)
+    for name in ordered[1:-1]:
+        block = text.split(f"  - id: {name}\n", 1)[1].split("\n  - id: ", 1)[0]
+        assert "skip_if:" in block
+        assert "feature-outcome.json" in block
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+    staged = launch.stage_workflow(tmp_path, "factory-feature/1", FEATURE)
+    for name in (
+        "merge-base.sh",
+        "continue-change.sh",
+        "check-merge.sh",
+        "record-merge-stop.sh",
+        "review-merge-base.sh",
+        "record-review-merge-stop.sh",
+    ):
+        assert name in launch.STAGED_FILES
+        path = staged / name
+        assert path.is_file()
+        assert path.stat().st_mode & 0o111
+    assert "{{base_head}}" in text
+
+
+@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
+    text = (PACKAGE / workflow).read_text()
+    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    for required in (
+        "merge-conflict.json",
+        "conflicted",
+        "git commit --no-edit",
+        "agent-validator run",
+        "follow-up commits",
+        "any file, including new files",
+        "reset",
+        "rebase",
+        "squash",
+        "amend",
+        "merge-stop.json",
+        "questions",
+        "direction_summary",
+        "leave the merge in progress",
+    ):
+        assert required in prompt
+    assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")

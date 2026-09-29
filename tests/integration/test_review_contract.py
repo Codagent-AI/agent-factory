@@ -1,10 +1,14 @@
 """Review-loop contracts for factory fix claims."""
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -136,6 +140,7 @@ def test_host_wrapper_runs_the_review_workflow_with_its_input_file(tmp_path: Pat
     assert f"--param review_file={evidence / 'input' / 'review.json'}" in exec_line
     assert f"--param artifact_dir={evidence}" in exec_line
     assert "--param contract_version=factory-review/1" in exec_line
+    assert "--param base_head=" not in exec_line
 
 
 def test_container_script_runs_the_review_workflow_from_the_artifacts_mount() -> None:
@@ -378,3 +383,409 @@ def test_unreadable_gh_output_is_recorded_as_a_failed_restore(tmp_path: Path) ->
     )
     assert result.returncode != 0
     assert (tmp_path / "description-restore-failed").is_file()
+
+
+@pytest.mark.parametrize(
+    ("validator", "ci", "expected"),
+    [
+        ("passed", "passed", "pull-request"),
+        ("failed", "", "failed"),
+        ("passed", "failed", "failed"),
+    ],
+)
+def test_merge_only_review_maps_implementation_result(
+    tmp_path: Path, validator: str, ci: str, expected: str
+) -> None:
+    result_path = tmp_path / "implement-result.json"
+    result_path.write_text(
+        json.dumps({"validator": {"status": validator}, "ci": {"status": ci}, "head_sha": "abc"})
+    )
+    outcome_path = tmp_path / "review-outcome.json"
+    done = _script(
+        "record-review-outcome.sh",
+        {
+            "decision": json.dumps(
+                {"needs_input": [], "items": [{"id": "t1", "decision": "answer"}]}
+            ),
+            "changes_needed": "false",
+            "merge_status": "merged",
+            "result_path": str(result_path),
+            "outcome_path": str(outcome_path),
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["outcome"] == expected
+    assert outcome["answered"] == ["t1"]
+
+
+def test_review_merge_no_base_is_a_noop(tmp_path: Path) -> None:
+    from tests.integration.test_feature_workflow_scripts import repository, run
+
+    repo, _ = repository(tmp_path)
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": "fix"}))
+    evidence = tmp_path / "evidence"
+    result = run(
+        str(Path(launch.__file__).parent / "workflow/review-merge-base.sh"),
+        str(review),
+        str(evidence),
+        cwd=repo,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "none"
+    assert not (evidence / "base-merge.json").exists()
+
+
+def test_review_merge_stop_does_not_push_branch(tmp_path: Path) -> None:
+    from tests.integration.test_feature_workflow_scripts import git, repository, run
+
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "review")
+    (repo / "choice.txt").write_text("review\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "review change")
+    previous = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-u", "origin", "review")
+    git(repo, "checkout", "main")
+    (repo / "choice.txt").write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base change")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "review")
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": "feature", "base_head": base}))
+    evidence = tmp_path / "evidence"
+    script = str(Path(launch.__file__).parent / "workflow/review-merge-base.sh")
+    merged = run(script, str(review), str(evidence), cwd=repo)
+    assert merged.returncode == 0, merged.stderr
+    assert merged.stdout == "conflict"
+    (evidence / "merge-stop.json").write_text(
+        json.dumps(
+            {
+                "questions": ["Choose a value"],
+                "direction_summary": "Need direction",
+            }
+        )
+    )
+    stopped = run(
+        str(Path(launch.__file__).parent / "workflow/record-review-merge-stop.sh"),
+        str(evidence),
+        cwd=repo,
+    )
+    assert stopped.returncode == 0, stopped.stderr
+    assert git(repo, "rev-parse", "HEAD") == previous
+    assert git(remote, "rev-parse", "refs/heads/review") == previous
+    outcome = json.loads((evidence / "review-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["answered"] == outcome["changed"] == []
+    assert "choice.txt" in outcome["reasons"][0]
+
+
+@pytest.mark.parametrize("kind", ["feature", "fix"])
+def test_int008_review_payload_uses_current_base_only_for_features(
+    tmp_path: Path, kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    from agent_factory.config import LocalConfig, SharedConfig
+    from agent_factory.store import ClaimDraft, ClaimStore
+    from agent_factory.work_kinds.pull_request import handler
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE, FIX
+    from agent_factory.work_kinds.pull_request.workspace import PullRequestWorkspace
+    from tests.integration.test_feature_workflow_scripts import git, repository
+    from tests.integration.test_fix_gestures import _LOCAL_BASE, _SHARED_BASE
+
+    repo, remote = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "review")
+    (repo / "work.txt").write_text("review work\n")
+    git(repo, "add", "work.txt")
+    git(repo, "commit", "-m", "review work")
+    review_head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "review")
+    git(repo, "checkout", "main")
+    (repo / "base.txt").write_text("new base\n")
+    git(repo, "add", "base.txt")
+    git(repo, "commit", "-m", "new base")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "main")
+    storage = tmp_path / "storage"
+    mirror = storage / "mirrors/example__work.git"
+    mirror.parent.mkdir(parents=True)
+    git(tmp_path, "clone", "--mirror", str(remote), str(mirror))
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            7,
+            "I7",
+            "P7",
+            kind,
+            "fp",
+            {
+                "target": {"repository": "example/work", "branch": "main"},
+                "revisions": {"target": admission, "runner": admission, "skills": admission},
+                "roles": {},
+            },
+        )
+    )
+    credential = tmp_path / "credential.env"
+    credential.write_text("GH_TOKEN=test-token\n")
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    local = replace(
+        local,
+        storage_root=storage,
+        credentials=replace(local.credentials, fix_environment=credential),
+        fix=replace(local.fix, execution="host"),
+    )
+    definition = FEATURE if kind == "feature" else FIX
+    shared = SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n")
+    work_kind = handler.PullRequestHandler(
+        definition, shared, local, workspace=PullRequestWorkspace(storage, repo, repo)
+    )
+    work_kind.attach_store(store)
+    prepared = work_kind.prepare_review(claim, {"branch": "review", "head_sha": review_head})
+    review_payload = cast(Mapping[str, object], prepared.payload["review"])
+    assert review_payload.get("base_head") == (base if kind == "feature" else None)
+
+    def host_plan(**_kwargs: object) -> object:
+        return object()
+
+    monkeypatch.setattr(launch, "build_host_plan", host_plan)
+    run = store.reserve_run(
+        claim.id, kind, reason="review", evidence_path=str(tmp_path / "evidence")
+    )
+    work_kind.plan(claim, run, prepared)
+    evidence = Path(run.evidence_path) / "attempt-1"
+    written = json.loads((evidence / "input/review.json").read_text())
+    assert written.get("base_head") == (base if kind == "feature" else None)
+    if kind == "feature":
+        assert written["target_at_admission"] == admission
+
+
+def _review_step(workflow: str, step: str) -> str:
+    return workflow.split(f"  - id: {step}\n", 1)[1].split("\n  - id: ", 1)[0]
+
+
+def _render(template: str, evidence: Path, changes: str, merge: str) -> str:
+    return (
+        template.replace("{{artifact_dir}}", str(evidence))
+        .replace("{{changes_needed}}", changes)
+        .replace("{{merge_status}}", merge)
+    )
+
+
+def _push_round(evidence: Path, changes: str, merge: str) -> str:
+    """What the decide-push step captures for these triage and merge results."""
+    import textwrap
+
+    block = _review_step(launch.packaged_workflow_text(launch.REVIEW_CONTRACT), "decide-push")
+    body = block.split("    command: |\n", 1)[1].split("\n    capture:", 1)[0]
+    command = _render(textwrap.dedent(body), evidence, changes, merge)
+    return subprocess.run(["sh", "-c", command], capture_output=True, text=True, check=True).stdout
+
+
+def _review_skips(block: str, evidence: Path, changes: str, merge: str) -> bool:
+    import re
+
+    line = re.search(r"^    skip_if: 'sh: (.*)'$", block, re.MULTILINE)
+    assert line is not None
+    command = _render(line.group(1), evidence, changes, merge)
+    if "{{push_round}}" in command:
+        command = command.replace("{{push_round}}", _push_round(evidence, changes, merge))
+    return subprocess.run(["sh", "-c", command], capture_output=True).returncode == 0
+
+
+def test_review_skip_conditions_read_only_always_defined_variables() -> None:
+    """Agent Runner fails a step whose skip_if names an undefined variable.
+
+    A merge stop skips triage, so every variable a later skip_if reads must be a parameter
+    or the capture of an earlier step that always runs.
+    """
+    import re
+
+    workflow = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    header, _, body = workflow.partition("\nsteps:\n")
+    defined = set(re.findall(r"^  - name: (\S+)$", header.split("\nsessions:", 1)[0], re.M))
+    undefined: dict[str, set[str]] = {}
+    for block in body.split("\n  - id: ")[1:]:
+        step = block.split("\n", 1)[0].strip()
+        skip = re.search(r"^    skip_if: (.*)$", block, re.MULTILINE)
+        if skip is not None:
+            missing = set(re.findall(r"\{\{(\w+)\}\}", skip.group(1))) - defined
+            if missing:
+                undefined[step] = missing
+        capture = re.search(r"^    capture: (\w+)$", block, re.MULTILINE)
+        if capture is not None and skip is None:
+            defined.add(capture.group(1))
+    assert undefined == {}
+
+
+@pytest.mark.parametrize(
+    ("changes", "merge", "implement"),
+    [
+        ("false", "current", False),
+        ("false", "none", False),
+        ("false", "merged", True),
+        ("false", "conflict", True),
+        ("true", "none", True),
+        ("needs-input", "merged", False),
+    ],
+)
+def test_int008_review_guards_route_merge_only_and_needs_input(
+    tmp_path: Path, changes: str, merge: str, implement: bool
+) -> None:
+    workflow = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    for step in ("save-description", "implement", "restore-description"):
+        assert (
+            _review_skips(_review_step(workflow, step), tmp_path, changes, merge) is not implement
+        )
+    for step in ("triage", "respond", "record-outcome"):
+        if step == "respond":
+            assert _review_skips(_review_step(workflow, step), tmp_path, changes, merge) is (
+                changes == "needs-input"
+            )
+        else:
+            assert not _review_skips(_review_step(workflow, step), tmp_path, changes, merge)
+    (tmp_path / "review-outcome.json").write_text("{}\n")
+    for step in (
+        "triage",
+        "save-description",
+        "implement",
+        "restore-description",
+        "respond",
+        "record-outcome",
+    ):
+        assert _review_skips(_review_step(workflow, step), tmp_path, changes, merge)
+
+
+def test_int008_current_answer_only_round_skips_validator(tmp_path: Path) -> None:
+    outcome_path = tmp_path / "review-outcome.json"
+    done = _script(
+        "record-review-outcome.sh",
+        {
+            "decision": json.dumps(
+                {"needs_input": [], "items": [{"id": "a", "decision": "answer"}]}
+            ),
+            "changes_needed": "false",
+            "merge_status": "current",
+            "outcome_path": str(outcome_path),
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["outcome"] == "pull-request"
+    assert outcome["validator"] == {"status": "skipped"}
+
+
+def test_int008_merge_only_prompt_and_implementation_default() -> None:
+    review = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    respond = _review_step(review, "respond")
+    for phrase in (
+        "base-merge.json",
+        "merge_commit",
+        "git fetch origin",
+        "git merge-base",
+        "origin/{{branch_name}}",
+        "merge was not pushed",
+        "acceptance evidence",
+    ):
+        assert phrase in respond
+    implementation = (
+        Path(launch.__file__).parent / "workflow/factory-implement-v1.0.yaml"
+    ).read_text()
+    assert '  - name: implement_plan\n    required: false\n    default: "true"' in implementation
+    assert "skip_if: 'sh: test \"{{implement_plan}}\" = false'" in _review_step(
+        implementation, "implement-plan"
+    )
+
+
+def test_int008_resolved_merge_with_triage_needs_input_does_not_push(tmp_path: Path) -> None:
+    from tests.integration.test_feature_workflow_scripts import git, repository, run
+
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "review")
+    (repo / "choice.txt").write_text("review\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "-m", "review")
+    remote_head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "review")
+    git(repo, "checkout", "main")
+    (repo / "choice.txt").write_text("target\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "-m", "target")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "review")
+    evidence = tmp_path / "evidence"
+    review_file = tmp_path / "review.json"
+    review_file.write_text(json.dumps({"base_head": base}))
+    merge = run(
+        str(Path(launch.__file__).parent / "workflow/review-merge-base.sh"),
+        str(review_file),
+        str(evidence),
+        cwd=repo,
+    )
+    assert merge.returncode == 0 and merge.stdout == "conflict", merge.stderr
+    (repo / "choice.txt").write_text("both\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "--no-edit")
+    checked = run(
+        str(Path(launch.__file__).parent / "workflow/check-merge.sh"), str(evidence), cwd=repo
+    )
+    assert checked.returncode == 0, checked.stderr
+    assert json.loads((evidence / "base-merge.json").read_text())["merge_commit"] == git(
+        repo, "rev-parse", "HEAD"
+    )
+    workflow = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
+    assert _review_skips(_review_step(workflow, "implement"), evidence, "needs-input", "conflict")
+    done = _script(
+        "record-review-outcome.sh",
+        {
+            "decision": json.dumps({"needs_input": ["Choose direction"], "items": []}),
+            "changes_needed": "needs-input",
+            "merge_status": "conflict",
+            "outcome_path": str(evidence / "review-outcome.json"),
+        },
+    )
+    assert done.returncode == 0, done.stderr
+    assert json.loads((evidence / "review-outcome.json").read_text())["outcome"] == "needs-input"
+    assert git(remote, "rev-parse", "refs/heads/review") == remote_head
+
+
+@pytest.mark.parametrize("moved", [False, True])
+def test_int008_review_merge_current_or_clean(tmp_path: Path, moved: bool) -> None:
+    from tests.integration.test_feature_workflow_scripts import git, repository, run
+
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "review")
+    (repo / "work.txt").write_text("review\n")
+    git(repo, "add", "work.txt")
+    git(repo, "commit", "-m", "review")
+    before = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "main")
+    if moved:
+        (repo / "base.txt").write_text("target\n")
+        git(repo, "add", "base.txt")
+        git(repo, "commit", "-m", "target")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "review")
+    evidence = tmp_path / "evidence"
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"base_head": base}))
+    merged = run(
+        str(Path(launch.__file__).parent / "workflow/review-merge-base.sh"),
+        str(review),
+        str(evidence),
+        cwd=repo,
+    )
+    assert merged.returncode == 0, merged.stderr
+    assert merged.stdout == ("merged" if moved else "current")
+    record = json.loads((evidence / "base-merge.json").read_text())
+    assert record["status"] == merged.stdout
+    if moved:
+        assert record["merge_commit"] == git(repo, "rev-parse", "HEAD")
+        assert git(repo, "show", "-s", "--format=%P", "HEAD") == f"{before} {base}"
+    else:
+        assert git(repo, "rev-parse", "HEAD") == before
+        assert "merge_commit" not in record

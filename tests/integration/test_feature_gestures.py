@@ -630,7 +630,7 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -640,6 +640,12 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
     store.finish_run(run.id, execution_status="failed", result=result)
 
     class Workspace(PullRequestWorkspace):
+        def fetch_mirror(self, repository: str, token: str | None) -> None:
+            pass
+
+        def resolve_mirror(self, repository: str, branch: str) -> str:
+            return "a" * 40
+
         def feature_checkpoint(
             self,
             repository: str,
@@ -700,7 +706,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
 ) -> None:
     """The first attempt records continuation_head as ""; the retry must still read checkpoints."""
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -709,7 +715,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
     _git("add", "base", cwd=work)
     _git("commit", "-m", "base", cwd=work)
     base_sha = _git("rev-parse", "HEAD", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(
         ClaimDraft(
@@ -720,7 +726,7 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": base_sha, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -794,7 +800,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     prior claim's plan: restarting from the target would redo definition and then fail
     to push over the branch it already pushed (#15 claim d5b85ace)."""
     remote = tmp_path / "remote.git"
-    _git("init", "--bare", str(remote))
+    _git("init", "--bare", "--initial-branch=master", str(remote))
     work = tmp_path / "work"
     _git("clone", str(remote), str(work))
     _git("config", "user.name", "Test", cwd=work)
@@ -803,7 +809,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     _git("add", "base", cwd=work)
     _git("commit", "-m", "base", cwd=work)
     target_branch = _git("branch", "--show-current", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     _git("checkout", "-b", "factory/feature-12-prior", cwd=work)
     (work / "plan").write_text("prior plan")
     _git("add", "plan", cwd=work)
@@ -814,7 +820,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
     _git("add", "target", cwd=work)
     _git("commit", "-m", "target", cwd=work)
     target_head = _git("rev-parse", "HEAD", cwd=work)
-    _git("push", "origin", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD:refs/heads/master", cwd=work)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(
         ClaimDraft(
@@ -825,7 +831,7 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
             "feature",
             "fp",
             {
-                "target": {"repository": "example/work"},
+                "target": {"repository": "example/work", "branch": "master"},
                 "revisions": {"target": target_head, "runner": "b" * 40, "skills": "c" * 40},
                 "roles": {},
             },
@@ -916,7 +922,7 @@ def test_int006_failed_claim_continues_prior_planned_branch(
         "feature",
         "fp",
         {
-            "target": {"repository": "example/work"},
+            "target": {"repository": "example/work", "branch": "master"},
             "revisions": {"target": "a" * 40, "runner": "b" * 40, "skills": "c" * 40},
             "roles": {},
         },
@@ -936,6 +942,12 @@ def test_int006_failed_claim_continues_prior_planned_branch(
     current = store.supersede_and_create(previous.id, draft)
 
     class Workspace(PullRequestWorkspace):
+        def fetch_mirror(self, repository: str, token: str | None) -> None:
+            pass
+
+        def resolve_mirror(self, repository: str, branch: str) -> str:
+            return "a" * 40
+
         def feature_checkpoint(
             self,
             repository: str,
@@ -1052,3 +1064,255 @@ def test_int006_feature_review_admission_names_pr_and_feedback(
         "https://github.com/example/work/pull/7" in event.body and "comment-9" in event.body
         for event in store.pending_events(claim.id)
     )
+
+
+def test_checkpoint_ignores_later_target_history_after_merge(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", "--initial-branch=master", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    admission = _git("rev-parse", "HEAD", cwd=work)
+    main = _git("branch", "--show-current", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "-b", "claim", cwd=work)
+    (work / "plan").write_text("plan")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "plan", "-m", "Factory-Checkpoint: planned", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", main, cwd=work)
+    (work / "other").write_text("other")
+    _git("add", "other", cwd=work)
+    _git("commit", "-m", "other feature", "-m", "Factory-Checkpoint: archived", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "claim", cwd=work)
+    _git("merge", "--no-ff", "--no-edit", main, cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    mirror = tmp_path / "storage" / "mirrors" / "example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+    assert workspace.feature_checkpoint("example/work", "claim", base_sha=admission) == "planned"
+
+
+def test_int006_resume_points_survive_two_target_merges(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", "--initial-branch=master", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base\n")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    admission = _git("rev-parse", "HEAD", cwd=work)
+    main = _git("branch", "--show-current", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    _git("checkout", "-b", "prior", cwd=work)
+    (work / "prior").write_text("implemented\n")
+    _git("add", "prior", cwd=work)
+    _git("commit", "-m", "prior", "-m", "Factory-Checkpoint: implemented", cwd=work)
+    prior_head = _git("rev-parse", "HEAD", cwd=work)
+    _git("checkout", "-b", "claim", cwd=work)
+    (work / "plan").write_text("planned\n")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "plan", "-m", "Factory-Checkpoint: planned", cwd=work)
+    _git("push", "origin", "claim", cwd=work)
+    _git("checkout", main, cwd=work)
+    _git("checkout", "-b", "other", cwd=work)
+    (work / "other").write_text("other\n")
+    _git("add", "other", cwd=work)
+    _git("commit", "-m", "other", "-m", "Factory-Checkpoint: archived", cwd=work)
+    _git("checkout", main, cwd=work)
+    _git("merge", "--no-ff", "--no-edit", "other", cwd=work)
+    (work / "squash").write_text("squash\n")
+    _git("add", "squash", cwd=work)
+    _git("commit", "-m", "squash", "-m", "Factory-Checkpoint: archived", cwd=work)
+    mirror = tmp_path / "storage/mirrors/example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    workspace = PullRequestWorkspace(tmp_path / "storage", work, work)
+
+    def checkpoint(exclude: str | None = None) -> str | None:
+        return workspace.feature_checkpoint(
+            "example/work", "claim", base_sha=admission, exclude_sha=exclude
+        )
+
+    def assert_resumes() -> None:
+        current = checkpoint(prior_head)
+        assert current == "planned"
+        assert handler.feature_resume_point(None, None, current, False, False) == "implement"
+        assert (
+            handler.feature_resume_point("needs-input", "design", current, False, False) == "design"
+        )
+        assert handler.feature_resume_point(None, None, current, True, False) == "verify"
+        assert handler.feature_resume_point(None, None, current, False, True) == "implement"
+        assert checkpoint() == "planned"
+
+    assert_resumes()
+    for number in (1, 2):
+        if number == 2:
+            (work / "later").write_text("later\n")
+            _git("add", "later", cwd=work)
+            _git("commit", "-m", "later", "-m", "Factory-Checkpoint: archived", cwd=work)
+        _git("checkout", "claim", cwd=work)
+        _git("merge", "--no-ff", "--no-edit", main, cwd=work)
+        _git("push", "origin", "claim", cwd=work)
+        assert_resumes()
+        _git("checkout", main, cwd=work)
+    # A continuation with no checkpoint of its own still reads the inherited one
+    # only when its exclusion is dropped.
+    _git("checkout", "-b", "continuation", prior_head, cwd=work)
+    _git("push", "origin", "continuation", cwd=work)
+
+    def assert_continuation() -> None:
+        assert (
+            workspace.feature_checkpoint(
+                "example/work", "continuation", base_sha=admission, exclude_sha=prior_head
+            )
+            is None
+        )
+        inherited = workspace.feature_checkpoint("example/work", "continuation", base_sha=admission)
+        assert inherited == "implemented"
+        assert handler.feature_resume_point(None, None, inherited, False, True) == "implement"
+
+    assert_continuation()
+    for number in (1, 2):
+        if number == 2:
+            _git("checkout", main, cwd=work)
+            (work / "latest").write_text("latest\n")
+            _git("add", "latest", cwd=work)
+            _git("commit", "-m", "latest", "-m", "Factory-Checkpoint: archived", cwd=work)
+            _git("checkout", "continuation", cwd=work)
+        _git("merge", "--no-ff", "--no-edit", main, cwd=work)
+        _git("push", "origin", "continuation", cwd=work)
+        assert_continuation()
+
+
+@pytest.mark.parametrize(
+    ("stopped_step", "expected_resume"),
+    [("implement", "implement"), ("preflight", "")],
+)
+def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
+    tmp_path: Path, stopped_step: str, expected_resume: str
+) -> None:
+    remote = tmp_path / "remote.git"
+    _git("init", "--bare", "--initial-branch=master", str(remote))
+    work = tmp_path / "work"
+    _git("clone", str(remote), str(work))
+    _git("config", "user.name", "Test", cwd=work)
+    _git("config", "user.email", "test@example.com", cwd=work)
+    (work / "base").write_text("base\n")
+    _git("add", "base", cwd=work)
+    _git("commit", "-m", "base", cwd=work)
+    admission = _git("rev-parse", "HEAD", cwd=work)
+    target_branch = _git("branch", "--show-current", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    draft = ClaimDraft(
+        "example/work",
+        12,
+        "I12",
+        "P12",
+        "feature",
+        "fp",
+        {
+            "target": {"repository": "example/work", "branch": target_branch},
+            "revisions": {"target": admission, "runner": "b" * 40, "skills": "c" * 40},
+            "roles": {},
+        },
+    )
+    previous = store.create_claim(draft)
+    prior_branch = f"factory/feature-12-{previous.id[:8]}"
+    _git("checkout", "-b", prior_branch, cwd=work)
+    (work / "plan").write_text("plan\n")
+    _git("add", "plan", cwd=work)
+    _git("commit", "-m", "plan", "-m", "Factory-Checkpoint: planned", cwd=work)
+    prior_head = _git("rev-parse", "HEAD", cwd=work)
+    _git("push", "origin", "HEAD", cwd=work)
+    previous_run = store.reserve_run(
+        previous.id, "feature", reason="initial", evidence_path=str(tmp_path / "prior-evidence")
+    )
+    store.finish_run(
+        previous_run.id,
+        execution_status="completed",
+        result={
+            "outcome": "failed",
+            "reasons": ["blocked"],
+            "branch": prior_branch,
+        },
+    )
+    store.set_claim_lifecycle(previous.id, "settled", {"verdict": "failed"})
+    current = store.supersede_and_create(previous.id, draft)
+    branch = f"factory/feature-12-{current.id[:8]}"
+    _git("push", "origin", f"HEAD:refs/heads/{branch}", cwd=work)
+    mirror = tmp_path / "storage/mirrors/example__work.git"
+    mirror.parent.mkdir(parents=True)
+    _git("clone", "--mirror", str(remote), str(mirror))
+    store.set_preparation(
+        current.id,
+        {
+            "branch_name": branch,
+            "continuation_head": prior_head,
+            "resume": {"branch": branch, "head_sha": prior_head},
+        },
+    )
+    run = store.reserve_run(
+        current.id, "feature", reason="initial", evidence_path=str(tmp_path / "current-evidence")
+    )
+    store.finish_run(
+        run.id,
+        execution_status="completed",
+        result={
+            "outcome": "needs-input",
+            "stopped_step": stopped_step,
+            "questions": ["Resolve choice"],
+            "direction_summary": "Need direction",
+            "branch": branch,
+        },
+    )
+
+    class Workspace(PullRequestWorkspace):
+        def prepare_clones(
+            self, claim_id: str, attempt: int, repository: str, revisions: Mapping[str, object]
+        ) -> dict[str, str]:
+            return {name: str(tmp_path) for name in ("repo", "runner", "skills")}
+
+    class GitHub:
+        def get_branch(self, repository: str, name: str) -> BranchInfo | None:
+            return BranchInfo(name, prior_head) if name in {branch, prior_branch} else None
+
+        def list_open_pull_requests_for_head(
+            self, repository: str, name: str
+        ) -> list[PullRequestInfo]:
+            return []
+
+        def list_open_factory_pull_requests_for_issue(
+            self, repository: str, number: int
+        ) -> list[PullRequestInfo]:
+            return []
+
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    local = replace(
+        local, credentials=replace(local.credentials, fix_environment=tmp_path / "credential.env")
+    )
+    feature = handler.PullRequestHandler(
+        FEATURE,
+        SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n"),
+        local,
+        workspace=Workspace(tmp_path / "storage", work, work),
+    )
+    feature.attach_store(store)
+    feature.attach_github(GitHub())  # type: ignore[arg-type]
+    feature._issue_input = lambda _claim: {"comments": [{"body": "Resolve choice"}]}  # type: ignore[method-assign]
+    prepared = feature.prepare(store.get_claim(current.id) or current)
+    # After a preflight stop the definition starts afresh (empty resume point) but still builds
+    # on the pushed branch, which holds only the prior head, so its pushes fast-forward.
+    assert prepared.payload["prior_branch"] == prior_branch
+    assert prepared.payload["resume_from"] == expected_resume
+    assert prepared.payload["base_head"] == admission
+    assert prepared.payload["resume_fallback"] == ""

@@ -236,6 +236,17 @@ from Running to Ready. The same claim resumes at the stopped definition step;
 a preflight stop for a repository without `openspec/` starts fresh after it is
 initialized. Bot and non-writer comments do not resume work. A technical
 failure resumes from the latest pushed checkpoint when one is available.
+Each feature resume and continuation merges the current configured target branch
+into the claim branch before work continues. The admission target, Runner, and
+Skills revisions remain frozen for that claim. A merge conflict is resolved
+within the attempt when possible; otherwise Factory asks a question naming the
+conflicting files and keeps the pushed branch. Answer in a new writer comment.
+You can fix the cause on the target branch or commit directly to the claim
+branch; the next attempt fetches and merges the target again. Feature pull
+request review rounds also merge the current target before triage. A rollback
+to a release without first-parent checkpoint reading can select a checkpoint
+from merged target history, so inspect claims resumed since deployment before
+rolling back and re-admit affected claims.
 
 To continue a settled failed feature, drag its card from Review to Ready.
 Factory creates a new claim and, when the earlier branch has a plan checkpoint,

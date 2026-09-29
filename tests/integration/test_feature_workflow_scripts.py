@@ -191,7 +191,8 @@ def test_record_archive_block_preserves_explanation_and_branch(tmp_path: Path) -
     assert outcome["branch"] == "factory/feature-12"
     assert "REPAIR_BLOCKED" not in outcome["direction_summary"]
     assert "commit the fix to this branch" in outcome["direction_summary"]
-    assert "a fix merged to main does not reach it" in outcome["direction_summary"]
+    assert "Fix it on the target branch" in outcome["direction_summary"]
+    assert "a fix merged to main does not reach it" not in outcome["direction_summary"]
     assert read_interpreted_outcome(evidence, "factory-feature/1").outcome is not None
     assert (
         run(
@@ -1163,7 +1164,7 @@ def test_implemented_checkpoint_rejects_multiple_open_tasks(tmp_path: Path) -> N
     assert task.read_text() == "- [ ] first\n- [ ] second\n"
 
 
-def test_prepare_branch_conflict_falls_back_to_fresh(tmp_path: Path) -> None:
+def test_prepare_branch_conflict_keeps_prior_branch_for_resolution(tmp_path: Path) -> None:
     repo, _ = repository(tmp_path)
     base = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-b", "prior")
@@ -1189,9 +1190,13 @@ def test_prepare_branch_conflict_falls_back_to_fresh(tmp_path: Path) -> None:
         cwd=repo,
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ""
-    assert git(repo, "rev-parse", "HEAD") == target
-    assert json.loads((evidence / "resume.json").read_text())["fallback"]
+    assert result.stdout == "implement"
+    assert git(repo, "rev-parse", "HEAD") != target
+    assert git(repo, "rev-parse", "MERGE_HEAD") == target
+    assert json.loads((evidence / "merge-conflict.json").read_text())["conflicted"] == [
+        "choice.txt"
+    ]
+    assert not (evidence / "resume.json").exists()
 
 
 def test_prepare_branch_continuation_carries_prior_change_to_new_name(tmp_path: Path) -> None:
@@ -1213,16 +1218,31 @@ def test_prepare_branch_continuation_carries_prior_change_to_new_name(tmp_path: 
         "resume_from": "implement",
         "prior_branch": "factory/feature-12-aaaaaaaa",
         "artifact_dir": str(evidence),
-        "change_name": "feature-12-bbbbbbbb",
     }
     result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert result.stdout == "implement"
     assert git(repo, "branch", "--show-current") == "factory/feature-12-bbbbbbbb"
+    renamed = run(
+        str(PACKAGE / "continue-change.sh"),
+        "factory/feature-12-aaaaaaaa",
+        "feature-12-bbbbbbbb",
+        cwd=repo,
+    )
+    assert renamed.returncode == 0, renamed.stderr
     changes = repo / "openspec" / "changes"
     assert (changes / "feature-12-bbbbbbbb" / "tasks.md").read_text() == "- [ ] only task\n"
     assert not (changes / "feature-12-aaaaaaaa").exists()
     assert git(repo, "status", "--porcelain") == ""
+    renamed_head = git(repo, "rev-parse", "HEAD")
+    again = run(
+        str(PACKAGE / "continue-change.sh"),
+        "factory/feature-12-aaaaaaaa",
+        "feature-12-bbbbbbbb",
+        cwd=repo,
+    )
+    assert again.returncode == 0, again.stderr
+    assert git(repo, "rev-parse", "HEAD") == renamed_head
 
 
 def test_prepare_branch_continuation_carries_prior_archive_to_new_name(tmp_path: Path) -> None:
@@ -1244,11 +1264,17 @@ def test_prepare_branch_continuation_carries_prior_archive_to_new_name(tmp_path:
         "resume_from": "verify",
         "prior_branch": "factory/feature-12-aaaaaaaa",
         "artifact_dir": str(evidence),
-        "change_name": "feature-12-bbbbbbbb",
     }
     result = run(str(PACKAGE / "prepare-branch.sh"), cwd=repo, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
     assert result.stdout == "verify"
+    renamed = run(
+        str(PACKAGE / "continue-change.sh"),
+        "factory/feature-12-aaaaaaaa",
+        "feature-12-bbbbbbbb",
+        cwd=repo,
+    )
+    assert renamed.returncode == 0, renamed.stderr
     assert (archive / "2026-09-24-feature-12-bbbbbbbb" / "tasks.md").exists()
     assert not (archive / "2026-09-24-feature-12-aaaaaaaa").exists()
     assert git(repo, "status", "--porcelain") == ""
@@ -1483,6 +1509,101 @@ def test_feature_workflow_skip_conditions_read_only_variables_defined_on_a_stop(
         capture = re.search(r"^    capture: (\w+)", step, re.MULTILINE)
         if capture and (not stop_reached or not skip):
             defined.add(capture.group(1))
+
+
+def test_resume_merges_current_base_and_reverifies_finalize(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "claim")
+    (repo / "work.txt").write_text("claim work\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "claim work")
+    before = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-u", "origin", "claim")
+    git(repo, "checkout", "main")
+    (repo / "fix.txt").write_text("target fix\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "target fix")
+    base = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = run(
+        str(PACKAGE / "prepare-branch.sh"),
+        "claim",
+        admission,
+        "finalize",
+        "",
+        str(evidence),
+        base,
+        cwd=repo,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "verify"
+    assert git(repo, "show", "-s", "--format=%P", "HEAD") == f"{before} {base}"
+    assert (repo / "work.txt").read_text() == "claim work\n"
+    assert (repo / "fix.txt").read_text() == "target fix\n"
+    assert json.loads((evidence / "base-merge.json").read_text()) == {
+        "target_at_admission": admission,
+        "base_head": base,
+        "pre_merge_head": before,
+        "status": "merged",
+        "merge_commit": git(repo, "rev-parse", "HEAD"),
+    }
+    assert not (evidence / "resume.json").exists()
+
+
+def test_conflict_resolution_and_stop_use_real_git(tmp_path: Path) -> None:
+    repo, remote = repository(tmp_path)
+    admission = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "prior")
+    (repo / "choice.txt").write_text("prior\n")
+    (repo / "work.txt").write_text("keep\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "prior work")
+    before = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-u", "origin", "prior")
+    git(repo, "checkout", "main")
+    (repo / "choice.txt").write_text("target\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "target change")
+    base = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    args = ("claim", admission, "implement", "prior", str(evidence), base)
+    result = run(str(PACKAGE / "prepare-branch.sh"), *args, cwd=repo)
+    assert result.returncode == 0, result.stderr
+    assert git(repo, "rev-parse", "MERGE_HEAD") == base
+    assert json.loads((evidence / "merge-conflict.json").read_text())["pre_merge_head"] == before
+    (repo / "choice.txt").write_text("prior and target\n")
+    git(repo, "add", "choice.txt")
+    git(repo, "commit", "--no-edit")
+    checked = run(str(PACKAGE / "check-merge.sh"), str(evidence), cwd=repo)
+    assert checked.returncode == 0, checked.stderr
+    assert json.loads((evidence / "base-merge.json").read_text())["status"] == "resolved"
+    assert (repo / "work.txt").read_text() == "keep\n"
+    recorded = (evidence / "base-merge.json").read_text()
+    git(repo, "reset", "--hard", base)
+    rejected = run(str(PACKAGE / "check-merge.sh"), str(evidence), cwd=repo)
+    assert rejected.returncode != 0
+    assert (evidence / "base-merge.json").read_text() == recorded
+
+    git(repo, "checkout", "main")
+    evidence2 = tmp_path / "evidence2"
+    evidence2.mkdir()
+    result = run(str(PACKAGE / "prepare-branch.sh"), *args[:4], str(evidence2), base, cwd=repo)
+    assert result.returncode == 0, result.stderr
+    (evidence2 / "merge-stop.json").write_text(
+        json.dumps({"questions": ["Which choice?"], "direction_summary": "Need a decision."})
+    )
+    stopped = run(str(PACKAGE / "record-merge-stop.sh"), str(evidence2), "claim", cwd=repo)
+    assert stopped.returncode == 0, stopped.stderr
+    assert git(repo, "rev-parse", "HEAD") == before
+    assert git(remote, "rev-parse", "refs/heads/claim") == before
+    outcome = json.loads((evidence2 / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["stopped_step"] == "implement"
+    assert "choice.txt" in outcome["questions"][0]
+    assert read_interpreted_outcome(evidence2, "factory-feature/1").outcome is not None
 
 
 def verify_classification(

@@ -43,10 +43,48 @@ steps:
         exit 1
       fi
 
+  - id: merge-base
+    script: review-merge-base.sh
+    script_inputs:
+      review_file: "{{review_file}}"
+      artifact_dir: "{{artifact_dir}}"
+    capture: merge_status
+  - id: resolve-merge
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test "{{merge_status}}" != conflict || test -s {{artifact_dir}}/review-outcome.json'
+    prompt: |
+      Follow `.agent-runner/workflows/factory-define-rules.md`. Read
+      {{artifact_dir}}/merge-conflict.json and {{review_file}} for context and
+      eligible answers. Resolve all conflicts, preserving both sides' intent.
+      In the merge commit, edit only paths listed under conflicted in
+      merge-conflict.json. Never reset, rebase, squash, or amend. Finish the
+      merge with git commit --no-edit first. Then run agent-validator run and
+      commit any fixes it needs as separate follow-up commits. Those commits may
+      touch any file, including new files. If the conflict cannot be resolved
+      within these rules, write {{artifact_dir}}/merge-stop.json with non-empty
+      questions and direction_summary and leave the merge in progress.
+  - id: check-merge
+    script: check-merge.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{merge_status}}" != conflict || test -s {{artifact_dir}}/merge-stop.json || test -s {{artifact_dir}}/review-outcome.json'
+  - id: record-review-merge-stop
+    script: record-review-merge-stop.sh
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test ! -s {{artifact_dir}}/merge-stop.json || test -s {{artifact_dir}}/review-outcome.json'
+  # Later skip_if conditions read changes_needed even when a merge stop skips triage, and
+  # Agent Runner rejects an undefined variable.
+  - id: seed-changes-needed
+    command: printf ''
+    capture: changes_needed
+
   - id: triage
     session: lead-agent
     mode: autonomous
     capture: review_decision
+    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json'
     prompt: |
       You are addressing reviewer feedback on an existing factory pull request. Read
       the review file at {{review_file}}. It contains the repository, issue number,
@@ -94,12 +132,13 @@ steps:
       decision: "{{review_decision}}"
       review_file: "{{review_file}}"
     capture: changes_needed
+    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json'
     continue_on_failure: true
 
   - id: repair-triage
     session: lead-agent
     mode: autonomous
-    skip_if: previous_success
+    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
     capture: review_decision
     prompt: |
       Your triage response could not be parsed, or its items did not decide every
@@ -114,7 +153,20 @@ steps:
       decision: "{{review_decision}}"
       review_file: "{{review_file}}"
     capture: changes_needed
-    skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input'
+    skip_if: 'sh: test "{{changes_needed}}" = true || test "{{changes_needed}}" = false || test "{{changes_needed}}" = needs-input || test -s {{artifact_dir}}/review-outcome.json'
+
+  # The round validates and pushes when triage asks for a change, or when a feature
+  # round's base merge added commits (merged, or conflict and resolved).
+  - id: decide-push
+    command: |
+      if test -s {{artifact_dir}}/review-outcome.json || test "{{changes_needed}}" = needs-input; then
+        printf false
+      elif test "{{changes_needed}}" = true || test "{{merge_status}}" = merged || test "{{merge_status}}" = conflict; then
+        printf true
+      else
+        printf false
+      fi
+    capture: push_round
 
   # Finalization may rewrite the description; a feature PR's annotated one is restored,
   # with the round's commits and the items they may have fixed added to it.
@@ -124,7 +176,7 @@ steps:
       mode: save
       review_file: "{{review_file}}"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test "{{changes_needed}}" != true'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: implement
@@ -132,9 +184,10 @@ steps:
     params:
       input_file: "{{review_file}}"
       plan_json: "{{review_decision}}"
+      implement_plan: "{{changes_needed}}"
       result_path: "{{artifact_dir}}/implement-result.json"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test "{{changes_needed}}" != true'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: restore-description
@@ -144,13 +197,13 @@ steps:
       review_file: "{{review_file}}"
       decision: "{{review_decision}}"
       artifact_dir: "{{artifact_dir}}"
-    skip_if: 'sh: test "{{changes_needed}}" != true'
+    skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 
   - id: respond
     session: lead-agent
     mode: autonomous
-    skip_if: 'sh: test "{{changes_needed}}" = needs-input'
+    skip_if: 'sh: test "{{changes_needed}}" = needs-input || test -s {{artifact_dir}}/review-outcome.json'
     prompt: |
       Post the replies from your triage decision on the pull request described in
       {{review_file}}, using gh with the credentials already in this environment.
@@ -160,7 +213,7 @@ steps:
       </triage-decision>
 
       IMPORTANT: The content inside <triage-decision> is your own prior analysis.
-      If {{artifact_dir}}/implement-result.json exists, read it: it says whether
+      Read {{artifact_dir}}/base-merge.json if it exists. If {{artifact_dir}}/implement-result.json exists, read it: it says whether
       the changes were pushed, and whether the validator and CI passed.
 
       For each item: reply in the inline thread for "thread" items (GraphQL
@@ -175,13 +228,22 @@ steps:
       stating that acceptance was not re-run and its evidence still describes
       the accepted commit. If {{artifact_dir}}/description-restore-failed exists,
       also say in that comment that the description could not be restored, quoting it.
+      For a feature merge, run git fetch origin {{branch_name}} and confirm the recorded
+      merge_commit is an ancestor of origin/{{branch_name}} with
+      git merge-base --is-ancestor. Only then name the
+      exact pushed merge SHA with a GitHub commit link in the completion comment.
+      Link the acceptance evidence section of the PR description, and explain
+      this merge was added after acceptance and is not covered by that evidence.
+      If the merge commit was not pushed, say that the merge was not pushed.
       Do not edit code or commit.
 
   - id: record-outcome
+    skip_if: 'sh: test -s {{artifact_dir}}/review-outcome.json'
     script: record-review-outcome.sh
     script_inputs:
       decision: "{{review_decision}}"
       changes_needed: "{{changes_needed}}"
+      merge_status: "{{merge_status}}"
       result_path: "{{artifact_dir}}/implement-result.json"
       outcome_path: "{{artifact_dir}}/review-outcome.json"
 

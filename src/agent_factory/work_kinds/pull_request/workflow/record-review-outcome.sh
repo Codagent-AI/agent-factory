@@ -24,6 +24,7 @@ if not isinstance(parsed, dict):
 outcome_path = parsed.get("outcome_path") or "/artifacts/review-outcome.json"
 result_path = parsed.get("result_path") or "/artifacts/implement-result.json"
 changes_needed = parsed.get("changes_needed") or "false"
+merge_status = parsed.get("merge_status") or "none"
 
 decoder = json.JSONDecoder()
 text = parsed.get("decision") or ""
@@ -50,7 +51,7 @@ needs_input = [str(reason) for reason in decision.get("needs_input") or []]
 outcome = {"contract": "factory-review/1", "answered": answered, "changed": changed}
 if needs_input:
     outcome.update({"outcome": "needs-input", "reasons": needs_input})
-elif changes_needed == "true":
+elif changes_needed == "true" or merge_status in {"merged", "conflict"}:
     try:
         with open(result_path) as handle:
             result = json.load(handle)
