@@ -829,6 +829,35 @@ def test_annotate_pr_flags_a_rate_limited_bot_review_first(tmp_path: Path) -> No
     assert result["body"].index("No CodeRabbit review") < result["body"].index("Scope")
 
 
+def test_annotate_pr_adds_nothing_when_the_bot_completed_a_review_without_comments(
+    tmp_path: Path,
+) -> None:
+    statuses = json.dumps(
+        [
+            {"context": "CodeRabbit", "description": "Review completed"},
+            {"context": "CodeRabbit", "description": "Review in progress"},
+        ]
+    )
+    result = annotate_with_bot_state(tmp_path, "[[]]", statuses)
+    assert [item["title"] for item in result["flags"]["orange"]] == ["Scope"]
+
+
+def test_annotate_pr_flags_the_latest_rate_limit_after_an_older_completed_review(
+    tmp_path: Path,
+) -> None:
+    statuses = json.dumps(
+        [
+            {"context": "CodeRabbit", "description": "Review rate limited"},
+            {"context": "CodeRabbit", "description": "Review completed"},
+        ]
+    )
+    result = annotate_with_bot_state(tmp_path, "[[]]", statuses)
+    assert [item["title"] for item in result["flags"]["orange"]] == [
+        "No CodeRabbit review of the final head",
+        "Scope",
+    ]
+
+
 def test_annotate_pr_flags_a_skipped_bot_review(tmp_path: Path) -> None:
     statuses = json.dumps(
         [
