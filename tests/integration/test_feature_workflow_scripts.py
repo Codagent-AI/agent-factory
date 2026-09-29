@@ -488,7 +488,7 @@ def test_annotate_pr_orders_tiers_and_adds_later_commits(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     rendered = body.read_text()
     assert rendered.index("🔴") < rendered.index("🟠") < rendered.index("🟡")
-    assert "Refs #7" in rendered and "agent-factory:claim:claim-7" in rendered
+    assert "Closes #7" in rendered and "agent-factory:claim:claim-7" in rendered
     assert "<details>" in rendered and accepted in rendered
     assert "fix CI" in rendered
     flags = json.loads((evidence / "review-attention.json").read_text())
@@ -855,7 +855,7 @@ def test_annotate_pr_ignores_a_review_by_a_deleted_account(tmp_path: Path) -> No
 
 
 def shown_review_items(rendered: str) -> list[str]:
-    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Closes #7")]
     return [
         line.split("]")[0].removeprefix("- [")
         for line in review_first.splitlines()
@@ -880,7 +880,7 @@ def test_annotate_pr_opens_with_issue_and_shows_only_red_and_top_orange(
         },
     )
     assert rendered.startswith("**Feature for #7:** Add a flag\n")
-    review_first = rendered[rendered.index("# Review first") : rendered.index("Refs #7")]
+    review_first = rendered[rendered.index("# Review first") : rendered.index("Closes #7")]
     assert "### 🟠 Orange (7)" in review_first
     assert shown_review_items(rendered) == [
         "red one",
@@ -895,6 +895,29 @@ def test_annotate_pr_opens_with_issue_and_shows_only_red_and_top_orange(
     collapsed = rendered[rendered.index("<details><summary>2 more orange") :]
     for title in ("orange 5", "orange 6", "yellow one", "yellow two"):
         assert f"[{title}]" in collapsed
+
+
+def test_annotate_pr_closes_the_issue_with_exactly_one_keyword(tmp_path: Path) -> None:
+    """GitHub links a pull request to its issue (the board's "linked pull request", and
+    closing the issue on merge) only through a closing keyword. The description is
+    regenerated on every annotation, so it must carry the keyword itself, exactly once."""
+    import re
+
+    rendered = render_annotated_body(
+        tmp_path,
+        lambda accepted, _later: {
+            "red": [],
+            "orange": [],
+            "yellow": [],
+            "white": [],
+            "accepted_head": accepted,
+            "later_commits": [],
+        },
+    )
+    keywords = re.findall(r"(?i)\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#7\b", rendered)
+    assert keywords == ["Closes #7"]
+    # The factory's own lookup of a claim's open pull requests must still find it.
+    assert re.search(r"(?i)\b(?:refs|closes)\s+#7\b", rendered)
 
 
 def test_annotate_pr_keeps_a_classifier_item_naming_later_commits_visible(
