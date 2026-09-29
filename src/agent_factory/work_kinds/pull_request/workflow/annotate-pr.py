@@ -248,9 +248,13 @@ def main() -> None:
     )
     if hidden or flags["yellow"]:
         lines.extend([f"{others} are collapsed below the change summary.", ""])
+    # A closing keyword is GitHub's only link from a pull request to its issue: without
+    # it the board shows no linked pull request and merging leaves the issue open. The
+    # factory targets the issue's own repository, so the short `#N` form resolves. The
+    # post-merge sync still runs and closes an issue that is already closed as a no-op.
     lines.extend(
         [
-            f"Refs #{issue['number']}",
+            f"Closes #{issue['number']}",
             f"<!-- agent-factory:claim:{issue['claim_id']} -->",
             "",
             "## Change summary",

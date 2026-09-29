@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Deploy the latest Agent Factory and Agent Runner to the live service.
+# Deploy the latest Agent Factory, Agent Runner, and Agent Validator to the live service.
 #
-# Usage: scripts/deploy.sh [--no-runner] [ref]
+# Usage: scripts/deploy.sh [--no-runner] [--no-validator] [ref]
 #   ref          factory ref to deploy (default: origin/main)
 #   --no-runner  leave the Agent Runner checkout and the installed runner alone
+#   --no-validator  leave the Agent Validator checkout and build alone
 #
 # Agent Factory: each deploy is an immutable release, a detached worktree of the
 # service clone at ~/.agent-factory/releases/<commit> with its own venv. The
@@ -32,14 +33,17 @@
 # AGENT_FACTORY_PLIST (default
 # ~/Library/LaunchAgents/com.codagent.agent-factory.plist),
 # AGENT_FACTORY_RUNNER_CHECKOUT (default: [repositories] agent_runner in the
-# local configuration).
+# local configuration), AGENT_FACTORY_VALIDATOR_CHECKOUT (default:
+# [repositories] agent_validator, or a sibling of agent_runner).
 set -euo pipefail
 
 build_runner=true
+build_validator=true
 ref=origin/main
 while (($#)); do
   case $1 in
     --no-runner) build_runner=false ;;
+    --no-validator) build_validator=false ;;
     -*) printf 'deploy: unknown option: %s\n' "$1" >&2; exit 2 ;;
     *) ref=$1 ;;
   esac
@@ -71,6 +75,7 @@ was_paused=false
 grep -q '^paused: true$' <<<"$status_text" && was_paused=true
 # shellcheck source=scripts/slots.sh
 source "$(dirname "$0")/slots.sh"
+source "$(dirname "$0")/validator.sh"
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $base/.git ]]; then
@@ -83,11 +88,16 @@ short=${sha:0:12}
 release=$releases/$short
 executable=$release/.venv/bin/agent-factory
 
+runner=${AGENT_FACTORY_RUNNER_CHECKOUT:-}
+if [[ -z $runner ]]; then
+  runner=$(sed -n 's/^agent_runner = "\(.*\)"$/\1/p' "$config" | head -n 1)
+fi
+if [[ $runner == '~/'* ]]; then runner=$HOME/${runner#'~/'}; fi
+if [[ $build_validator == true ]]; then
+  validator_checkout
+  validator_preflight
+fi
 if [[ $build_runner == true ]]; then
-  runner=${AGENT_FACTORY_RUNNER_CHECKOUT:-}
-  if [[ -z $runner ]]; then
-    runner=$(sed -n 's/^agent_runner = "\(.*\)"$/\1/p' "$config" | head -n 1)
-  fi
   # Only the source moves here; the installed runner changes at make build, after the pause.
   runner_status=0
   "$(dirname "$0")/update-runner.sh" "$runner" || runner_status=$?
@@ -121,6 +131,13 @@ say "paused the factory"
 if [[ $build_runner == true ]]; then
   make -s -C "$runner" build >/dev/null || die "make build failed in $runner; the factory stays paused"
   say "built Agent Runner at $(git -C "$runner" rev-parse --short HEAD) in $runner"
+fi
+if [[ $build_validator == true ]]; then
+  if validator_status=$("$executable" --config "$config" status); then
+    validator_build "$validator_status"
+  else
+    warn "could not read factory status with the new release; skipping the Agent Validator update and build"
+  fi
 fi
 
 # Point the LaunchAgent and the local configuration at the release. The plist gets the

@@ -592,7 +592,7 @@ def test_record_triage_accepts_a_decision_wrapped_in_a_json_array(tmp_path: Path
     assert result.stdout == "true"
 
 
-def _shell_templates(text: str) -> list[str]:
+def shell_templates(text: str) -> list[str]:
     """Every workflow field Agent Runner interpolates as shell: commands and sh: skip_ifs."""
     templates: list[str] = []
     lines = text.splitlines()
@@ -623,7 +623,7 @@ def _shell_templates(text: str) -> list[str]:
     return templates
 
 
-def _single_quoted_placeholders(template: str) -> list[str]:
+def single_quoted_placeholders(template: str) -> list[str]:
     """Port of Agent Runner's shellQuoteContext: placeholders it refuses to interpolate."""
     refused: list[str] = []
     for match in re.finditer(r"\{\{\s*([\w.]+)\s*\}\}", template):
@@ -656,12 +656,12 @@ def _single_quoted_placeholders(template: str) -> list[str]:
 def test_no_shell_step_interpolates_a_parameter_inside_single_quotes() -> None:
     """Agent Runner fails a step at run time when a placeholder sits inside single quotes;
     -validate does not catch it, so the live host attempt hit it in verify-outcome."""
-    templates = _shell_templates(_workflow_text())
+    templates = shell_templates(_workflow_text())
     assert any("fix-outcome.json" in template for template in templates)
     refused = {
         template.strip().splitlines()[0]: names
         for template in templates
-        if (names := _single_quoted_placeholders(template))
+        if (names := single_quoted_placeholders(template))
     }
     assert refused == {}
 
@@ -679,7 +679,7 @@ def test_no_shell_step_interpolates_a_parameter_inside_single_quotes() -> None:
 def test_single_quote_scan_matches_agent_runner_quote_states(
     template: str, refused: list[str]
 ) -> None:
-    assert _single_quoted_placeholders(template) == refused
+    assert single_quoted_placeholders(template) == refused
 
 
 def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
@@ -691,7 +691,7 @@ def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
             "    skip_if: previous_success",
         )
     )
-    assert _shell_templates(text) == [
+    assert shell_templates(text) == [
         "sh: test {{a}} != x",
         "sh: test {{b}} != x",
         "sh: test {{c}} != x",

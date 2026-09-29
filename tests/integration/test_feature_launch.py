@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from importlib.resources import files
 from pathlib import Path
 
@@ -10,6 +11,40 @@ import pytest
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.work_kinds.pull_request import launch
 from agent_factory.work_kinds.pull_request.kinds import FEATURE
+from tests.integration.test_host_launch import ROLES, Built, validator_fixture
+
+
+def test_feature_host_plan_records_reported_validator_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    built = Built(tmp_path, monkeypatch)
+    built.runner.write_text(
+        '#!/bin/sh\ncase "$1" in\n'
+        "  -validate) exit 0 ;;\n"
+        '  -version) echo "stub-runner 1.2.3" ;;\n'
+        '  run) echo "Usage: agent-runner run <workflow> '
+        '[--session-dir <path>] [--param key=value]" ;;\n'
+        "esac\n"
+    )
+    checkout, old, executable = validator_fixture(tmp_path, built.runner.parent, "echo placeholder")
+    executable.write_text(f"#!/bin/sh\necho '{old[:7]} old'\n")
+    monkeypatch.setenv("PATH", f"{built.runner.parent}:/usr/bin:/bin")
+    plan = launch.build_host_plan(
+        evidence=built.evidence,
+        repo_clone=built.clone,
+        credential_copy=built.credential,
+        roles={**ROLES, "crosscheck": "codex:m:high"},
+        branch="factory/feature-7-claim",
+        contract="factory-feature/1",
+        definition=FEATURE,
+        change_name="feature-7-claim",
+        validator_checkout=checkout,
+    )
+    provenance = json.loads((built.evidence / "host-provenance.json").read_text())
+    assert plan.ownership_hints["validator_commit"] == old
+    assert provenance["validator_commit"] == old
+    assert provenance["validator_executable"] == str(executable.resolve())
+    assert old in provenance["note"]
 
 
 def test_feature_host_command_starts_fresh_with_change_name() -> None:

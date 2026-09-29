@@ -186,6 +186,7 @@ def test_int006_host_attempt_passes_resume_and_prior_branch() -> None:
 def test_int006_resume_point_follows_stop_checkpoint_or_continuation() -> None:
     feature_resume_point = handler.feature_resume_point
     assert feature_resume_point("needs-input", "design", None, False, False) == "design"
+    assert feature_resume_point("needs-input", "archive", "implemented", False, False) == "archive"
     assert feature_resume_point("needs-input", "preflight", None, False, False) == ""
     assert feature_resume_point(None, None, "planned", False, False) == "implement"
     assert feature_resume_point(None, None, "implemented", False, False) == "archive"
@@ -237,6 +238,39 @@ def test_int006_definition_stop_reports_questions_direction_and_branch(tmp_path:
     assert "feature slot: free" in observed
     assert "blocked: example/work#12" in observed
     assert "factory/feature-12-abcd" in observed
+
+
+def test_archive_stop_blocks_claim_without_recovery_and_posts_explanation(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 12, "I12", "P12", "feature", "feature:example/work#12", {})
+    )
+    feature = handler.PullRequestHandler(
+        FEATURE,
+        SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n"),
+        LocalConfig.from_toml(_LOCAL_BASE),
+    )
+    feature.attach_store(store)
+    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    explanation = "Main spec contains a stray delta header outside the change directory."
+    store.finish_run(
+        run.id,
+        execution_status="failed",
+        result={
+            "outcome": "needs-input",
+            "stopped_step": "archive",
+            "reasons": [explanation],
+            "questions": [explanation],
+            "direction_summary": "Implementation is complete and pushed. Resume at archive.",
+            "branch": "factory/feature-12-abcd",
+        },
+    )
+    runs = store.runs_for_claim(claim.id)
+    assert not handler._needs_recovery(runs[-1])
+    assert feature.next_unit(claim, runs) == (None, "initial")
+    feature.settle(claim, runs)
+    assert any(explanation in event.body for event in store.pending_events(claim.id))
+    assert "blocked: example/work#12" in status(store)
 
 
 def test_int006_preflight_stop_reports_fresh_next_attempt(tmp_path: Path) -> None:
