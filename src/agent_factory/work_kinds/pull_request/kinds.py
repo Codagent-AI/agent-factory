@@ -86,6 +86,7 @@ FEATURE_STAGED_FILES = (
     "verify-feature-outcome.py",
     "annotate-pr.sh",
     "annotate-pr.py",
+    "mark-later-commits.py",
     "check-contract.sh",
     "record-outcome.sh",
 )

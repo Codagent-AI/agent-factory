@@ -1483,3 +1483,226 @@ def test_feature_workflow_skip_conditions_read_only_variables_defined_on_a_stop(
         capture = re.search(r"^    capture: (\w+)", step, re.MULTILINE)
         if capture and (not stop_reached or not skip):
             defined.add(capture.group(1))
+
+
+def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
+    tmp_path: Path,
+) -> None:
+    """Classification runs before finalization's last fixes, so an item may already be
+    fixed by a later commit; the item then says which commit changed its linked file."""
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
+    (repo / "settings.go").write_text('enabled == "true"\n')
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "settings.go").write_text("enabled is a bool\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: read enabled as a YAML bool")
+    later = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [
+                    {
+                        "title": "Known deviation",
+                        "detail": "True reads as off",
+                        "link": "settings.go:1",
+                    },
+                    {"title": "Unverified", "detail": "no run", "link": "openspec/.keep"},
+                ],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(evidence),
+            str(issue),
+            "change",
+            "openspec/changes/archive/2026-09-25-change",
+        ],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = body.read_text().splitlines()
+    deviation = next(line for line in lines if line.startswith("- [Known deviation]"))
+    unverified = next(line for line in lines if line.startswith("- [Unverified]"))
+    assert f"may be fixed by `{later[:7]}`" in deviation
+    assert "may be fixed by" not in unverified
+
+
+REVIEW_GH_STUB = (
+    '#!/bin/sh\nif [ "$1" = pr ] && [ "$2" = view ]; then\n'
+    "  python3 -c 'import json,sys; "
+    'print(json.dumps({"body": open(sys.argv[1], newline="").read()}))\' "$GH_BODY"\n'
+    'elif [ "$1" = api ]; then\n'
+    '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$GH_BODY" ;; esac; done\n'
+    "fi\n"
+)
+
+
+def test_review_round_description_keeps_the_layout_and_reflects_the_round(
+    tmp_path: Path,
+) -> None:
+    """A review round restores the factory's description over the agent's rewrite, but the
+    restored description still shows what the round did: the round's commits and the
+    feedback it addressed, every commit after acceptance, and which items those commits
+    may have fixed. Lines added outside the factory's items, such as a closing keyword,
+    are kept."""
+    import os
+
+    from agent_factory.work_kinds.pull_request import launch
+
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "factory/feature-7")
+    (repo / "spec.md").write_text("smoke passes\n")
+    (repo / "plan.md").write_text("AT-001\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "run.sh").write_text("cleanup\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: defer early signals")
+    round_start = git(repo, "rev-parse", "HEAD")
+    (repo / "spec.md").write_text("smoke passes with a lead auditor\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: align smoke fixture with lead auditor")
+    fixture = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    (repo / "unrelated").write_text("main moved\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "main work")
+    git(repo, "checkout", "-q", "factory/feature-7")
+    git(repo, "merge", "--no-ff", "-m", "Merge main", "main")
+    merge = git(repo, "rev-parse", "HEAD")
+
+    blob = "https://github.com/o/r/blob/factory/feature-7"
+    saved = "\n".join(
+        [
+            "**Feature for #7:** Clean up smoke leftovers",
+            "",
+            "# Review first",
+            "",
+            "### 🔴 Red (2)",
+            f"- [Spec deviation]({blob}/spec.md#L1): the smoke fails on this host",
+            f"- [AT-001 unverified]({blob}/plan.md#L1): no success run",
+            "",
+            "### 🟠 Orange (1)",
+            f"- [Commits after acceptance](#acceptance-evidence): {round_start[:12]} "
+            "(fix: defer early signals)",
+            "",
+            "Closes #7",
+            "<!-- agent-factory:claim:claim-7 -->",
+            "",
+            "## Change summary",
+            "",
+            "Feature: Clean up smoke leftovers.",
+            "",
+            '<details id="acceptance-evidence"><summary>Acceptance evidence</summary>',
+            "",
+            f"Acceptance ran against `{accepted}`.",
+            "",
+            f"Later commits: `{round_start}`",
+            "",
+            "</details>",
+            "",
+        ]
+    )
+    body = tmp_path / "body.md"
+    body.write_text(saved)
+    staged = launch.stage_workflow(tmp_path / "stage", launch.REVIEW_CONTRACT)
+    review = tmp_path / "review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "kind": "feature",
+                "head_sha": round_start,
+                "pull_request": {"number": 9, "head_sha": round_start},
+            }
+        )
+    )
+    decision = {
+        "needs_input": [],
+        "items": [
+            {
+                "id": "c1",
+                "source": "comment",
+                "decision": "change",
+                "reply": "Fixed the audit-warning blocker\n(A1/L1).",
+                "plan": "Configure the lead agent in the fixture.",
+            },
+            {"id": "c2", "source": "comment", "decision": "answer", "reply": "No change."},
+            {"id": "c3", "source": "comment", "decision": "change", "reply": "Kept </details>"},
+        ],
+    }
+    stub = tmp_path / "bin" / "gh"
+    stub.parent.mkdir()
+    stub.write_text(REVIEW_GH_STUB)
+    stub.chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub.parent}:{os.environ['PATH']}", "GH_BODY": str(body)}
+
+    def describe(mode: str) -> None:
+        payload = {
+            "mode": mode,
+            "review_file": str(review),
+            "artifact_dir": str(tmp_path),
+            "decision": json.dumps(decision),
+        }
+        result = subprocess.run(
+            [str(staged / "review-description.sh")],
+            cwd=repo,
+            env=env,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+
+    describe("save")
+    rewritten = "# Review follow-up\n\nA1/L1 fixed.\n\n" + saved
+    body.write_text(rewritten)
+    describe("restore")
+
+    restored = body.read_text()
+    assert restored.startswith("**Feature for #7:** Clean up smoke leftovers\n\n# Review first")
+    assert "Closes #7" in restored
+    assert (tmp_path / "pr-description-overwritten.md").read_text() == rewritten
+    lines = restored.splitlines()
+    commits_item = next(line for line in lines if line.startswith("- [Commits after acceptance]"))
+    for sha in (round_start, fixture, merge):
+        assert sha[:12] in commits_item
+    assert "main work" not in commits_item
+    later_line = next(line for line in lines if line.startswith("Later commits:"))
+    for sha in (round_start, fixture, merge):
+        assert sha in later_line
+    deviation = next(line for line in lines if line.startswith("- [Spec deviation]"))
+    unverified = next(line for line in lines if line.startswith("- [AT-001 unverified]"))
+    assert f"may be fixed by `{fixture[:7]}`" in deviation
+    assert "may be fixed by" not in unverified
+    follow_up = restored.split("### 🔁 Review round", 1)[1].split("## Change summary")[0]
+    assert fixture[:7] in follow_up and "align smoke fixture with lead auditor" in follow_up
+    assert f"- `{merge[:7]}` Merge main" in follow_up
+    assert f"- `{round_start[:7]}`" not in follow_up and "main work" not in follow_up
+    assert "Fixed the audit-warning blocker (A1/L1)." in follow_up
+    assert "No change." not in follow_up
+    assert "Kept &lt;/details&gt;" in follow_up and "</details>" not in follow_up
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
