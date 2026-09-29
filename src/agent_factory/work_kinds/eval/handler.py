@@ -111,6 +111,7 @@ class EvalHandler:
                 execution=local.eval_execution,
                 fly=local.fly,
                 total_seconds=local.limits.total_seconds,
+                unreviewed_retention_days=local.limits.unreviewed_retention_days,
             ),
             manager=GitWorktreeManager(local.storage_root, sources),
             fallback_seconds=local.limits.codex_reset_fallback_seconds,
@@ -512,6 +513,36 @@ class EvalHandler:
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
         if self._worktree_cleanup is not None:
             self._worktree_cleanup.reconcile(claim.id, board_status=board_status)
+
+    def release(self, claim: Claim) -> bool:
+        return (
+            self._worktree_cleanup.release(claim.id)
+            if self._worktree_cleanup is not None
+            else False
+        )
+
+    def expiry_message(self, claim: Claim) -> str:
+        events = claim.reporting.get("events")
+        commands: list[str] = []
+        results: list[str] = []
+        if isinstance(events, Mapping):
+            for key, value in cast(Mapping[str, object], events).items():
+                if isinstance(value, Mapping):
+                    body = cast(Mapping[str, object], value).get("body")
+                    if isinstance(body, str):
+                        if key.endswith(":review-command"):
+                            commands.extend(
+                                line for line in body.splitlines() if line.startswith("Run: ")
+                            )
+                        elif ":results:" in key:
+                            results.extend(re.findall(r"https://github\.com/[^\s)]+", body))
+        return (
+            "The human-review command has expired. The retained suite worktree is being "
+            "removed. Submit a new request to review a fresh run.\n\n"
+            + "\n".join(commands)
+            + "\n\nAutomated results: "
+            + ("\n".join(results) if results else "retained result records on the factory Mac")
+        )
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
         body = _completion_message(run.unit_key, stored_result)

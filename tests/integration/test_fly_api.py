@@ -367,3 +367,156 @@ def test_create_reports_a_400_that_persists_with_fly_reason(tmp_path: Path) -> N
         assert raised.value.status == 400
         assert "failed to get manifest" in str(raised.value)
         assert api.machines == {}
+
+
+def test_registry_list_and_digest_delete_use_basic_auth(fly: Harness) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {
+        "base": "sha256:" + "b" * 64,
+        "claim-one": digest,
+        "claim-two": "sha256:" + "c" * 64,
+        "deployment-one": "sha256:" + "d" * 64,
+    }
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    assert client.list_tags("registry.fly.io/app") == sorted(fly.api.registry_tags)
+    assert client.resolve_manifest("registry.fly.io/app:claim-one") == digest
+    assert client.delete_manifest("registry.fly.io/app", digest) is True
+    assert "claim-one" not in fly.api.registry_tags
+    assert client.delete_manifest("registry.fly.io/app", digest) is False
+    for request in fly.api.requests:
+        if str(request["path"]).startswith("/v2/"):
+            assert str(cast(dict[str, str], request["headers"])["Authorization"]).startswith(
+                "Basic "
+            )
+    with pytest.raises(ValueError):
+        client.delete_manifest("registry.fly.io/app", "claim-two")
+    assert len(fly.requests("DELETE")) == 2
+
+
+def test_registry_list_follows_internal_repository_pagination_link(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_link_internal_name = True
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    assert client.list_tags("registry.fly.io/app") == sorted(fly.api.registry_tags)
+    assert any(
+        str(request["path"]).startswith("/v2/internal-repo/tags/list")
+        for request in fly.api.requests
+    )
+
+
+def test_registry_list_refuses_pagination_into_another_repository(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_link_path = "/v2/other-repo/tags/list"
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    # A partial listing could hide a tag sharing a claim's digest, so it is an error.
+    with pytest.raises(FlyApiError, match="unsafe next page"):
+        client.list_tags("registry.fly.io/app")
+    assert not any(
+        str(request["path"]).startswith("/v2/other-repo/") for request in fly.api.requests
+    )
+
+
+def test_registry_list_refuses_a_name_missing_from_the_first_page(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    fly.api.registry_unnamed_pages = {0}
+    fly.api.registry_tags = {f"claim-{number}": f"sha256:{number:064x}" for number in range(5)}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+
+    # A later page cannot adopt a name the first page did not report.
+    with pytest.raises(FlyApiError, match="changed repository between pages"):
+        client.list_tags("registry.fly.io/app")
+
+
+def test_registry_refusal_keeps_status_and_reason(fly: Harness) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {"claim-one": digest}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append((405, {"error": "UNSUPPORTED"}))
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", digest)
+    assert raised.value.status == 405
+    assert "UNSUPPORTED" in str(raised.value)
+    assert fly.api.registry_tags["claim-one"] == digest
+
+
+@pytest.mark.parametrize("status", [401, 500])
+def test_registry_delete_errors_include_status_and_reason(fly: Harness, status: int) -> None:
+    digest = "sha256:" + "a" * 64
+    fly.api.registry_enabled = True
+    fly.api.registry_tags = {"claim-one": digest}
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append((status, {"error": "registry unavailable"}))
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", digest)
+    assert raised.value.status == status
+    assert "registry unavailable" in str(raised.value)
+
+
+def test_registry_connection_reset_is_a_typed_error(fly: Harness) -> None:
+    fly.api.registry_enabled = True
+    client = FlyMachinesClient(
+        "app",
+        fly.client.token_file,
+        base_url=fly.api.base_url,
+        registry_base_url=fly.api.base_url,
+    )
+    fly.api.registry_delete_failures.append("reset")
+    with pytest.raises(FlyApiError) as raised:
+        client.delete_manifest("registry.fly.io/app", "sha256:" + "a" * 64)
+    assert "manifest deletion could not be completed" in str(raised.value)
+
+
+@pytest.mark.parametrize("operation", ["list_tags", "delete_manifest"])
+def test_registry_operations_cannot_use_a_cleartext_non_loopback_endpoint(
+    fly: Harness, operation: str
+) -> None:
+    # The constructor rejects the endpoint before either operation can send a token.
+    before = len(fly.api.requests)
+    with pytest.raises(ValueError, match="HTTPS"):
+        client = FlyMachinesClient(
+            "app",
+            fly.client.token_file,
+            base_url=fly.api.base_url,
+            registry_base_url="http://registry.example.test",
+        )
+        if operation == "list_tags":
+            client.list_tags("registry.fly.io/app")
+        else:
+            client.delete_manifest("registry.fly.io/app", "sha256:" + "a" * 64)
+    assert len(fly.api.requests) == before

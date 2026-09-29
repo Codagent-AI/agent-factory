@@ -49,7 +49,7 @@ def sync_claim(
     sync = claim.reporting.get("sync")
     if isinstance(sync, Mapping) and cast(Mapping[str, object], sync).get("completed"):
         return
-    pr = _find_pr(store, claim, definition)
+    pr = find_pr(store, claim, definition)
     if pr is None:
         return
     number, _url = pr
@@ -93,13 +93,13 @@ def pending_sync(store: ClaimStore, claim: Claim, definition: PullRequestKind = 
     if (
         claim.kind != definition.kind
         or claim.lifecycle != "settled"
-        or _find_pr(store, claim, definition) is None
+        or find_pr(store, claim, definition) is None
     ):
         return False
     return not sync_state(claim).get("completed")
 
 
-def _find_pr(
+def find_pr(
     store: ClaimStore, claim: Claim, definition: PullRequestKind = FIX
 ) -> tuple[int, str] | None:
     candidates: list[object] = [claim.outcome.get("pr")]

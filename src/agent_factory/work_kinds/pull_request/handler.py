@@ -316,7 +316,9 @@ class PullRequestHandler:
     def attach_store(self, store: ClaimStore) -> None:
         self._store = store
         self._cleanup = PullRequestCleanup(
-            store, private_root=self._local.storage_root.expanduser() / "private"
+            store,
+            private_root=self._local.storage_root.expanduser() / "private",
+            claim_directory=self._workspace.claim_directory,
         )
 
     def attach_installation_token(self, provider: Callable[[], str]) -> None:
@@ -1221,6 +1223,12 @@ class PullRequestHandler:
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
         if self._cleanup is not None:
             self._cleanup.reconcile(claim.id, board_status=board_status)
+
+    def release(self, claim: Claim) -> bool:
+        return self._cleanup.release(claim.id) if self._cleanup is not None else False
+
+    def expiry_message(self, claim: Claim) -> str:
+        return ""
 
 
 def attempt_evidence(run: Run) -> Path:

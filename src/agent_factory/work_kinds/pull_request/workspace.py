@@ -117,7 +117,10 @@ class PullRequestWorkspace:
         )
 
     def attempt_directory(self, claim_id: str, attempt: int) -> Path:
-        return self._root / "clones" / _safe(claim_id) / str(attempt)
+        return self.claim_directory(claim_id) / str(attempt)
+
+    def claim_directory(self, claim_id: str) -> Path:
+        return self._root / "clones" / _safe(claim_id)
 
     def prepare_clones(
         self, claim_id: str, attempt: int, repository: str, revisions: Mapping[str, object]

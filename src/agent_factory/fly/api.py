@@ -5,12 +5,13 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -48,6 +49,7 @@ _MANIFEST_MEDIA_TYPES = (
     "application/vnd.docker.distribution.manifest.list.v2+json",
     "application/vnd.docker.distribution.manifest.v2+json",
 )
+DIGEST_PATTERN = re.compile(r"sha256:[0-9a-fA-F]{64}")
 
 _RATE_LIMIT_ATTEMPTS = 6
 # Fly answers 400 "failed to get manifest ..." to a create whose image it cannot
@@ -164,9 +166,7 @@ class FlyMachinesClient:
                     )
             except HTTPError as error:
                 if error.code != 429 or attempt == _RATE_LIMIT_ATTEMPTS - 1:
-                    reason = _http_reason(error)
-                    detail = f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}"
-                    raise FlyApiError(path, error.code, detail, reason) from error
+                    raise _http_error(path, error) from error
                 self._sleep(_retry_after(error.headers.get("Retry-After"), attempt))
             except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise FlyApiError(path, detail="request could not be completed") from error
@@ -311,6 +311,14 @@ class FlyMachinesClient:
     def get_app(self) -> Mapping[str, object]:
         return _mapping(self._request(f"/v1/apps/{self.app}"))
 
+    def _registry_request(self, url: str, method: str) -> Request:
+        request = Request(url, method=method)
+        # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
+        # user name and the token as the password.
+        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
+        request.add_header("Authorization", f"Basic {credentials}")
+        return request
+
     def resolve_manifest(self, image: str) -> str:
         if "@" in image:
             repository, tag = image.split("@", 1)
@@ -320,22 +328,93 @@ class FlyMachinesClient:
             )
         repo = repository.removeprefix("registry.fly.io/")
         path = f"/v2/{repo}/manifests/{tag}"
-        request = Request(f"{self.registry_base_url}{path}", method="GET")
-        # registry.fly.io rejects a bearer token; it takes HTTP basic auth with any
-        # user name and the token as the password.
-        credentials = base64.b64encode(f"x:{self._token()}".encode()).decode()
-        request.add_header("Authorization", f"Basic {credentials}")
+        request = self._registry_request(f"{self.registry_base_url}{path}", "GET")
         request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
         try:
             with _OPENER.open(request, timeout=20) as response:
                 digest = response.headers.get("Docker-Content-Digest")
         except HTTPError as error:
-            raise FlyApiError(path, error.code, f"HTTP {error.code}") from error
+            raise _http_error(path, error) from error
         except (URLError, OSError) as error:
             raise FlyApiError(path, detail="manifest could not be resolved") from error
         if not digest:
             raise FlyApiError(path, detail="registry did not return a digest")
         return digest
+
+    def list_tags(self, repository: str) -> list[str]:
+        repo = repository.removeprefix("registry.fly.io/")
+        path = f"/v2/{repo}/tags/list"
+        url = f"{self.registry_base_url}{path}"
+        tags: list[str] = []
+        visited: set[str] = set()
+        # Fly names the repository by an internal id in the listing; every page must name the
+        # same one, so a page from another repository cannot hide a tag sharing a digest.
+        listed_name: str | None = None
+        while True:
+            first_page = not visited
+            if url in visited:
+                raise FlyApiError(path, detail="registry repeated a tag-list page")
+            visited.add(url)
+            request = self._registry_request(url, "GET")
+            try:
+                with _OPENER.open(request, timeout=20) as response:
+                    data: object = json.loads(response.read())
+                    link = response.headers.get("Link")
+            except HTTPError as error:
+                raise _http_error(path, error) from error
+            except (URLError, OSError, ValueError) as error:
+                raise FlyApiError(path, detail="tag list could not be read") from error
+            if not isinstance(data, dict):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            raw_tags = cast(Mapping[str, object], data).get("tags")
+            if raw_tags is not None and not isinstance(raw_tags, list):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            name = cast(Mapping[str, object], data).get("name")
+            if name is not None and not isinstance(name, str):
+                raise FlyApiError(path, detail="registry returned an invalid tag list")
+            if first_page:
+                listed_name = name
+            elif name != listed_name:
+                raise FlyApiError(path, detail="registry changed repository between pages")
+            values = cast(list[object], raw_tags) if raw_tags is not None else []
+            tags.extend(tag for tag in values if isinstance(tag, str))
+            match = re.search(r'<([^>]+)>;\s*rel="next"', link or "")
+            if not match:
+                return tags
+            next_url = urljoin(url, match.group(1))
+            base = urlsplit(self.registry_base_url)
+            next_page = urlsplit(next_url)
+            next_repo = re.fullmatch(r"/v2/([^/]+)/tags/list", next_page.path)
+            if (
+                (next_page.scheme, next_page.netloc) != (base.scheme, base.netloc)
+                or next_repo is None
+                or next_repo.group(1) not in {repo, listed_name}
+                or next_page.fragment
+            ):
+                raise FlyApiError(path, detail="registry returned an unsafe next page")
+            url = next_url
+
+    def delete_manifest(self, repository: str, digest: str) -> bool:
+        if not DIGEST_PATTERN.fullmatch(digest):
+            raise ValueError("registry deletion requires a SHA-256 digest")
+        repo = repository.removeprefix("registry.fly.io/")
+        path = f"/v2/{repo}/manifests/{digest}"
+        request = self._registry_request(f"{self.registry_base_url}{path}", "DELETE")
+        try:
+            with _OPENER.open(request, timeout=20) as response:
+                return response.status in (200, 202)
+        except HTTPError as error:
+            if error.code == 404:
+                return False
+            raise _http_error(path, error) from error
+        except (URLError, OSError) as error:
+            raise FlyApiError(path, detail="manifest deletion could not be completed") from error
+
+
+def _http_error(path: str, error: HTTPError) -> FlyApiError:
+    reason = _http_reason(error)
+    detail = f"HTTP {error.code}: {reason}" if reason else f"HTTP {error.code}"
+    return FlyApiError(path, error.code, detail, reason)
 
 
 def _mapping(value: object) -> Mapping[str, object]:

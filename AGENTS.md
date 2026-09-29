@@ -105,15 +105,20 @@ validator's end-to-end tests. Commit any pin through a PR.
   reinstalled for each claim.
 - The registry can take about a minute to serve a just-pushed image; Fly then
   answers a Machine create with HTTP 400 `failed to get manifest`.
-- Old `claim-` tags are not removed yet (see
-  https://github.com/Codagent-AI/agent-factory/issues/15).
+- A finished eval claim's own `claim-` manifest is deleted by digest once the
+  claim uniquely owns it and no Machine holds it. Skips and errors show in
+  `status`.
 
 ## Disk space
 
 Admission stops below `minimum_free_gib` (5 GiB). Space goes mainly to
-`~/.agent-factory/artifacts` and `clones`, which are cleaned only after a card
-reaches Done, and to Docker Desktop's disk image. Automated cleanup is tracked
-in https://github.com/Codagent-AI/agent-factory/issues/15.
+`~/.agent-factory/artifacts` and `clones`, and to Docker Desktop's disk image.
+The terminal sweep releases cancelled and superseded claims as soon as they are
+quiescent and prunes their evidence after `evidence_retention_days`. Settled
+claims outside Done are released and pruned after `unreviewed_retention_days`.
+Done claims are cleaned after the Done observation and pruned after
+`evidence_retention_days` from that observation, including settled claims that
+reached Done without a recorded Review observation.
 
 ## Shell on this Mac
 

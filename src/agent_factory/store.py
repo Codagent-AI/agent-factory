@@ -20,6 +20,7 @@ from typing import cast
 
 SCHEMA_VERSION = 4
 NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
+TERMINAL_LIFECYCLES = frozenset({"settled", "cancelled", "superseded"})
 
 
 class NonterminalRunError(RuntimeError):
@@ -56,6 +57,7 @@ class Claim:
     preparation: dict[str, object]
     reporting: dict[str, object]
     cleanup: dict[str, object]
+    updated_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -260,14 +262,31 @@ class ClaimStore:
         rows = self._connection.execute("SELECT * FROM claim ORDER BY created_at").fetchall()
         return [_claim(row) for row in rows]
 
+    def terminal_claims(self) -> list[Claim]:
+        rows = self._connection.execute(
+            "SELECT * FROM claim WHERE lifecycle IN ('settled', 'cancelled', 'superseded')"
+        ).fetchall()
+        return [_claim(row) for row in rows]
+
     def set_claim_lifecycle(
         self, claim_id: str, lifecycle: str, outcome: Mapping[str, object]
     ) -> None:
         with self._transaction():
-            self._connection.execute(
-                "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
-                (lifecycle, _dump(outcome), _now(), claim_id),
-            )
+            now = _now()
+            if lifecycle in TERMINAL_LIFECYCLES:
+                self._connection.execute(
+                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ?, "
+                    "cleanup_json = CASE WHEN lifecycle = ? AND "
+                    "json_extract(cleanup_json, '$.terminal_at') IS NOT NULL "
+                    "THEN cleanup_json ELSE "
+                    "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ?",
+                    (lifecycle, _dump(outcome), now, lifecycle, now, claim_id),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
+                    (lifecycle, _dump(outcome), now, claim_id),
+                )
 
     def set_preparation(self, claim_id: str, preparation: Mapping[str, object]) -> None:
         """Persist owned preparation references before external work begins."""
@@ -280,9 +299,17 @@ class ClaimStore:
     def set_cleanup(self, claim_id: str, cleanup: Mapping[str, object]) -> None:
         """Persist worktree cleanup progress independently from suite evidence."""
         with self._transaction():
+            current = self._connection.execute(
+                "SELECT cleanup_json FROM claim WHERE id = ?", (claim_id,)
+            ).fetchone()
+            saved = dict(cleanup)
+            if current is not None:
+                terminal_at = _load(cast(str, current[0])).get("terminal_at")
+                if terminal_at is not None and "terminal_at" not in saved:
+                    saved["terminal_at"] = terminal_at
             self._connection.execute(
                 "UPDATE claim SET cleanup_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(cleanup), _now(), claim_id),
+                (_dump(saved), _now(), claim_id),
             )
 
     def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
@@ -296,8 +323,10 @@ class ClaimStore:
             if active is not None:
                 raise NonterminalRunError("cannot supersede a claim with active execution")
             self._connection.execute(
-                "UPDATE claim SET lifecycle = 'superseded', updated_at = ? WHERE id = ?",
-                (_now(), claim_id),
+                "UPDATE claim SET lifecycle = 'superseded', updated_at = ?, "
+                "cleanup_json = CASE WHEN lifecycle = 'superseded' THEN cleanup_json "
+                "ELSE json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ?",
+                (now := _now(), now, claim_id),
             )
             self._insert_claim(draft, replacement_id)
         replacement = self.get_claim(replacement_id)
@@ -360,6 +389,14 @@ class ClaimStore:
                         evidence_path,
                         _now(),
                     ),
+                )
+                self._connection.execute(
+                    "UPDATE claim SET cleanup_json = json_remove("
+                    "json_set(json_set(cleanup_json, '$.complete', json('false')), "
+                    "'$.review_observed', json('false')), '$.terminal_at', "
+                    "'$.terminal_at_backfilled', '$.sweep_complete', "
+                    "'$.retention.pruned_at') WHERE id = ?",
+                    (claim_id,),
                 )
             except sqlite3.IntegrityError as error:
                 raise NonterminalRunError(
@@ -654,7 +691,42 @@ class ClaimStore:
         events[key]["comment_id"] = comment_id
         reporting = dict(claim.reporting)
         reporting["events"] = events
+        failures = reporting.get("delivery_failures")
+        if isinstance(failures, dict):
+            remaining = dict(cast(dict[str, object], failures))
+            resolved = remaining.pop(key, None)
+            if resolved is not None:
+                history = dict(cast(Mapping[str, object], reporting.get("delivery_history") or {}))
+                history[key] = resolved
+                reporting["delivery_history"] = history
+            reporting["delivery_failures"] = remaining
         self._set_reporting(claim_id, reporting)
+
+    def clear_delivered_failures(self, claim_id: str) -> None:
+        """Repair failure markers left by older versions after a report succeeded."""
+        claim = self.get_claim(claim_id)
+        if claim is None:
+            return
+        failures = claim.reporting.get("delivery_failures")
+        if not isinstance(failures, Mapping):
+            return
+        events = _events(claim.reporting)
+        remaining = {
+            key: value
+            for key, value in cast(Mapping[str, object], failures).items()
+            if not events.get(key, {}).get("comment_id")
+        }
+        if len(remaining) != len(cast(Mapping[str, object], failures)):
+            history = dict(
+                cast(Mapping[str, object], claim.reporting.get("delivery_history") or {})
+            )
+            for key, value in cast(Mapping[str, object], failures).items():
+                if key not in remaining:
+                    history[key] = value
+            self._set_reporting(
+                claim_id,
+                {**claim.reporting, "delivery_failures": remaining, "delivery_history": history},
+            )
 
     def set_claim_sync(self, claim_id: str, sync: Mapping[str, object]) -> None:
         """Persist post-merge working-clone sync progress so a restart never repeats it."""
@@ -748,6 +820,7 @@ def _claim(row: sqlite3.Row) -> Claim:
         preparation=_load(cast(str, row["preparation_json"])),
         reporting=_load(cast(str, row["reporting_json"])),
         cleanup=_load(cast(str, row["cleanup_json"])),
+        updated_at=cast(str, row["updated_at"]),
     )
 
 

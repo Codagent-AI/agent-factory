@@ -6,13 +6,15 @@ import shutil
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from agent_factory.config import LocalConfig
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
+from agent_factory.store import TERMINAL_LIFECYCLES, Claim, ClaimStore, Run
 from agent_factory.work_kinds.base import WorkKindHandler
 from agent_factory.work_kinds.pull_request.kinds import registered
-from agent_factory.work_kinds.pull_request.sync import pending_sync
+
+if TYPE_CHECKING:
+    from agent_factory.terminal import PullRequestReader
 
 _FIX_ATTEMPT_REMOVE = (
     "logs",
@@ -40,14 +42,33 @@ def reconcile(
     *,
     handler: WorkKindHandler | None = None,
 ) -> None:
-    """Observe a Done board status and prune eligible evidence, both every poll."""
+    """Compatibility wrapper for the board observation and pruning paths."""
+    observe_done(store, claim, board_status, now)
+    prune_due(store, local, store.get_claim(claim.id) or claim, board_status, now, handler=handler)
+
+
+def observe_done(store: ClaimStore, claim: Claim, board_status: str, now: datetime) -> None:
     cleanup = dict(claim.cleanup)
     if _observe_done(cleanup, board_status, now):
         store.set_cleanup(claim.id, cleanup)
-    retention_days = local.limits.evidence_retention_days
-    if not _eligible(store, claim, cleanup, board_status, now, retention_days, handler):
+
+
+def prune_due(
+    store: ClaimStore,
+    local: LocalConfig,
+    claim: Claim,
+    board_status: str | None,
+    now: datetime,
+    *,
+    handler: WorkKindHandler | None = None,
+    client: PullRequestReader | None = None,
+    sync_cache: dict[str, bool] | None = None,
+) -> None:
+    cleanup = dict(claim.cleanup)
+    if not _eligible(store, local, claim, cleanup, board_status, now, client, sync_cache):
         return
-    _prune(store, claim, cleanup, now, handler)
+    fresh = store.get_claim(claim.id) or claim
+    _prune(store, fresh, dict(fresh.cleanup), now, handler)
 
 
 def _observe_done(cleanup: dict[str, object], board_status: str, now: datetime) -> bool:
@@ -64,46 +85,51 @@ def _observe_done(cleanup: dict[str, object], board_status: str, now: datetime) 
 
 def _eligible(
     store: ClaimStore,
+    local: LocalConfig,
     claim: Claim,
     cleanup: Mapping[str, object],
-    board_status: str,
+    board_status: str | None,
     now: datetime,
-    retention_days: int,
-    handler: WorkKindHandler | None,
+    client: PullRequestReader | None,
+    sync_cache: dict[str, bool] | None = None,
 ) -> bool:
     # Cheapest checks first: an already-pruned or not-yet-eligible claim costs no queries.
     retention = cleanup.get("retention")
     if isinstance(retention, Mapping) and cast(Mapping[str, object], retention).get("pruned_at"):
         return False
-    if board_status != "Done":
+    if cleanup.get("complete") is not True:
         return False
-    observed_at = cleanup.get("done_observed_at")
-    if not isinstance(observed_at, str):
+    from agent_factory.terminal import idle_and_reported, sync_pending, terminal_time
+
+    if board_status == "Done" and claim.lifecycle == "settled":
+        observed_at = cleanup.get("done_observed_at")
+        if not isinstance(observed_at, str):
+            return False
+        try:
+            observed = datetime.fromisoformat(observed_at)
+        except ValueError:
+            return False
+        if now - observed < timedelta(days=local.limits.evidence_retention_days):
+            return False
+    elif claim.lifecycle in TERMINAL_LIFECYCLES:
+        days = (
+            local.limits.unreviewed_retention_days
+            if claim.lifecycle == "settled"
+            else local.limits.evidence_retention_days
+        )
+        if now - terminal_time(store, claim) < timedelta(days=days):
+            return False
+    else:
         return False
-    try:
-        observed = datetime.fromisoformat(observed_at)
-    except ValueError:
+    if not idle_and_reported(store, claim):
         return False
-    if now - observed < timedelta(days=retention_days):
-        return False
-    runs = store.runs_for_claim(claim.id)
-    if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
-        return False
-    if store.pending_events(claim.id) or claim.reporting.get("delivery_failures"):
-        return False
-    if (
-        handler.pending_sync(claim)
-        if handler is not None
-        else any(pending_sync(store, claim, definition) for definition in registered())
-    ):
-        return False
-    # Retention is for finished claims. A settled claim also waits on its Review-then-Done
-    # clone, image, and credential cleanup. A cancelled claim releases those as soon as
-    # execution stops and a superseded claim never has a cleanup pass, so neither waits on
-    # `complete`. Active, waiting, and blocked claims may still need their evidence.
-    if claim.lifecycle in {"cancelled", "superseded"}:
-        return True
-    return claim.lifecycle == "settled" and cleanup.get("complete") is True
+    if claim.lifecycle == "settled":
+        if client is not None:
+            return not sync_pending(store, claim, client, sync_cache)
+        from agent_factory.work_kinds.pull_request.sync import pending_sync
+
+        return not any(pending_sync(store, claim, definition) for definition in registered())
+    return True
 
 
 def _prune(
@@ -127,7 +153,13 @@ def _prune(
             errors.append({"path": str(path), "error": str(error)})
     removed = [str(path) for path in targets if not path.exists()]
     retention = dict(cast(Mapping[str, object], cleanup.get("retention") or {}))
-    retention["removed"] = removed
+    previous = retention.get("removed")
+    old = (
+        [path for path in cast(list[object], previous) if isinstance(path, str)]
+        if isinstance(previous, list)
+        else []
+    )
+    retention["removed"] = list(dict.fromkeys([*old, *removed]))
     retention["errors"] = errors
     if not errors:
         retention["pruned_at"] = now.isoformat()

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -85,6 +86,7 @@ class LocalRegistryClient(fly_api.FlyMachinesClient):
     def __init__(self, app, token_file, **kw):
         super().__init__(app, token_file, registry_base_url={url!r}, **kw)
 fly_backend.FlyMachinesClient = LocalRegistryClient
+fly_api.FlyMachinesClient = LocalRegistryClient
 """
 
 
@@ -478,6 +480,86 @@ def test_e2e_001_fly_eval_survives_a_restart_and_settles_a_lost_machine(factory:
     status = factory.cli("status")
     assert "Machine:" not in status
     assert "blocking condition" not in status
+
+
+def test_terminal_registry_retry_does_not_block_overdue_machine_disposal(factory: Factory) -> None:
+    data = json.loads(factory.board.read_text())
+    data["items"][0]["content"]["body"] = str(data["items"][0]["content"]["body"]).replace(
+        "repetitions=3", "repetitions=1"
+    )
+    factory.board.write_text(json.dumps(data))
+    api, store = factory.api, factory.store
+    api.registry_enabled = True
+    factory.cli("tick")
+    run = factory.active()
+    _wait(lambda: factory.run(run.id).progress.get("image_build") is not None, factory)
+    build = cast(dict[str, object], factory.run(run.id).progress["image_build"])
+    digest = cast(str, build["digest"])
+    tag = cast(str, build["tag"])
+    api.registry_tags = {
+        tag: digest,
+        "base": "sha256:" + "b" * 64,
+        "deployment-one": "sha256:" + "c" * 64,
+        "claim-other": "sha256:" + "d" * 64,
+    }
+    _wait(lambda: "machine-1" in api.machines, factory)
+    factory.guests.finish("machine-1", REVIEWABLE)
+    _wait(lambda: factory.run(run.id).status == "completed", factory)
+    other = store.create_claim(ClaimDraft("example/evals", 9, "I9", "P9", "eval", "fp", {}))
+    other_run = store.reserve_run(
+        other.id, "rep-1", reason="initial", evidence_path=str(factory.roots / "other")
+    )
+    store.finish_run(other_run.id, execution_status="cancelled", result={})
+    store.set_claim_lifecycle(other.id, "cancelled", {})
+    api.machines["machine-overdue"] = {
+        "id": "machine-overdue",
+        "state": "stopped",
+        "config": {
+            "metadata": {
+                "factory-owner": "agent-factory",
+                "claim_id": other.id,
+                "run_id": other_run.id,
+                "deadline_epoch": "1",
+            }
+        },
+    }
+    store.set_setting(
+        "runtime",
+        f"fly:machine:{other_run.id}",
+        {
+            "machine_id": "machine-overdue",
+            "run_id": other_run.id,
+            "claim_id": other.id,
+            "decision": "destroy",
+            "deadline_epoch": 1,
+            "state": "stopped",
+        },
+    )
+    api.registry_delete_failures.append(500)
+    factory.cli("tick")
+    claim = store.get_claim(run.claim_id)
+    assert claim is not None and claim.lifecycle == "settled"
+    assert factory.deletes("machine-overdue") == 1
+    assert store.get_setting("runtime", f"fly:machine:{other_run.id}") is None
+    assert "HTTP 500" in str(
+        cast(dict[str, dict[str, object]], claim.cleanup["registry"])[digest]["error"]
+    )
+    assert "HTTP 500" in factory.cli("status")
+    assert not store.get_setting("runtime", "fly:cleanup-failed")
+    registry = dict(cast(dict[str, dict[str, object]], claim.cleanup["registry"]))
+    registry[digest] = {
+        **registry[digest],
+        "next_retry_at": datetime(2000, 1, 1, tzinfo=UTC).isoformat(),
+    }
+    store.set_cleanup(claim.id, {**claim.cleanup, "registry": registry})
+    factory.cli("tick")
+    assert tag not in api.registry_tags
+    assert {"base", "deployment-one", "claim-other"} <= api.registry_tags.keys()
+    deletes = [r for r in api.requests if r["method"] == "DELETE" and "/v2/" in str(r["path"])]
+    assert all(str(r["path"]).endswith("/" + digest) for r in deletes)
+    before = len([r for r in api.requests if "/v2/" in str(r["path"])])
+    factory.cli("tick")
+    assert len([r for r in api.requests if "/v2/" in str(r["path"])]) == before
 
 
 def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -> None:

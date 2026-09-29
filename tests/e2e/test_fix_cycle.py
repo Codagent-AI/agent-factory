@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 
 from agent_factory.config import SharedConfig
-from agent_factory.store import ClaimStore, Run
+from agent_factory.store import ClaimDraft, ClaimStore, Run
 
 REPOSITORY = "example/work"
 FIX_TOKEN = "fix-token-value"
@@ -109,7 +109,7 @@ while not (out / 'finish').exists():
 script = (out / 'finish').read_text()
 if script.strip() == 'crash':
     sys.exit(3)
-(out / 'fix-outcome.json').write_text(script)
+(out / ('review-outcome.json' if args[1] == 'factory-review' else 'fix-outcome.json')).write_text(script)
 """
 
 CODEX = """#!/bin/sh
@@ -155,6 +155,9 @@ elif endpoint == 'graphql':
         result = {{'data': {{'node': {{'fields': {{'nodes': s['fields'], 'pageInfo': {{'hasNextPage': False}}}}}}}}}}
     elif 'query Items' in q:
         result = {{'data': {{'node': {{'items': {{'nodes': s['items'], 'pageInfo': {{'hasNextPage': False}}}}}}}}}}
+    elif 'query ReviewActivity' in q:
+        empty = {{'nodes': [], 'pageInfo': {{'hasNextPage': False}}}}
+        result = {{'data': {{'repository': {{'pullRequest': {{'reviews': empty, 'reviewThreads': empty}}}}}}}}
     else:
         item = next(x for x in s['items'] if x['id'] == v['item']); vals = item['fieldValues']['nodes']
         vals[:] = [x for x in vals if x['field']['id'] != v['field']]
@@ -884,6 +887,211 @@ def test_e2e_002_host_fix_journey_reports_cleans_up_and_prunes(tmp_path: Path) -
         assert cast(dict[str, Any], claim.cleanup["retention"])["pruned_at"]
     finally:
         (artifact / "finish").touch()
+        h.store.close()
+
+
+def test_terminal_host_fix_releases_then_reopens_for_writer_review(tmp_path: Path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    h = Harness(tmp_path, execution="host")
+    h.tick()
+    first = h.active_run()
+    first_artifact = h.wait_started(first)
+    later: list[Path] = []
+    try:
+        h.finish(first_artifact, "crash")
+        h.tick()
+        retry = h.active_run()
+        assert retry.reason == "recovery"
+        second_artifact = h.wait_started(retry)
+        later.append(second_artifact)
+        branch = h.branch_for(first.claim_id)
+        _git(h.working, "push", "-q", "origin", f"HEAD:refs/heads/{branch}")
+        data = h.state()
+        data["branches"][branch] = _git(h.working, "rev-parse", "HEAD")
+        h.update(branches=data["branches"])
+        h.finish(second_artifact, _pr_outcome(branch))
+        h.tick()
+        claim = h.store.get_claim(first.claim_id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert h.status() == "review"
+        clone_root = h.root / "clones" / claim.id
+        assert (clone_root / "0").exists() and (clone_root / "1").exists()
+        h.store.set_cleanup(
+            claim.id,
+            {
+                **claim.cleanup,
+                "terminal_at": (datetime.now(UTC) - timedelta(days=31)).isoformat(),
+            },
+        )
+        h.tick()
+        assert not clone_root.exists()
+        assert h.state()["issue"]["state"] == "open"
+
+        assert not (h.root / "private" / first.id).exists()
+        assert not (h.root / "private" / retry.id).exists()
+        assert h.store.get_claim(claim.id).cleanup["complete"] is True  # type: ignore[union-attr]
+        data = h.state()
+        data["comments"].append(
+            {
+                "id": 999,
+                "body": "Please add a regression test for this PR.",
+                "user": {"login": "writer"},
+                "created_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        h.update(comments=data["comments"])
+        h.tick()
+        review = h.active_run()
+        assert review.reason == "review" and review.claim_id == claim.id
+        review_artifact = h.wait_started(review)
+        later.append(review_artifact)
+        deadline = time.monotonic() + 5
+        while (
+            not (review_artifact / "agent-runner-session/state.json").exists()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert (review_artifact / "agent-runner-session/state.json").exists()
+        assert (clone_root / "2").exists()
+        assert h.store.get_claim(claim.id).cleanup["complete"] is False  # type: ignore[union-attr]
+        h.finish(
+            review_artifact,
+            json.dumps(
+                {
+                    "contract": "factory-review/1",
+                    "outcome": "pull-request",
+                    "answered": [],
+                    "changed": [],
+                }
+            ),
+        )
+        h.tick()
+        settled = h.store.get_claim(claim.id)
+        assert settled is not None and settled.lifecycle == "settled", [
+            (r.attempt_number, r.reason, r.status, r.result.get("reason"), r.result.get("failure"))
+            for r in h.store.runs_for_claim(claim.id)
+        ]
+        assert settled.cleanup["terminal_at"] != claim.cleanup["terminal_at"]
+        h.tick()
+        assert clone_root.exists()
+        h.store.set_cleanup(
+            claim.id,
+            {
+                **settled.cleanup,
+                "terminal_at": (datetime.now(UTC) - timedelta(days=31)).isoformat(),
+            },
+        )
+        h.tick()
+        assert not clone_root.exists()
+
+        # A superseded claim releases its old clones while the replacement owns new ones.
+        old = h.store.create_claim(ClaimDraft(REPOSITORY, 2, "I2", "P2", "fix", "old", {}))
+        old_root = h.root / "clones" / old.id
+        (old_root / "0").mkdir(parents=True)
+        h.store.set_preparation(old.id, {"clones": {"repo": str(old_root / "0")}})
+        h.store.set_claim_lifecycle(old.id, "superseded", {})
+        data = h.state()
+        next_item = json.loads(json.dumps(data["items"][0]))
+        next_item["id"] = "P2"
+        next_item["content"]["id"] = "I2"
+        next_item["content"]["number"] = 2
+        for field in next_item["fieldValues"]["nodes"]:
+            if field["field"]["id"] == h.shared.project.status.id:
+                field["optionId"] = h.shared.project.status.option("ready")
+        next_item["fieldValues"]["nodes"] = [
+            field
+            for field in next_item["fieldValues"]["nodes"]
+            if field["field"]["id"] != h.shared.project.verdict.id
+        ]
+        data["items"].append(next_item)
+        h.update(items=data["items"])
+        h.tick()
+        fresh_run = h.active_run()
+        assert fresh_run.claim_id != old.id
+        fresh_artifact = h.wait_started(fresh_run)
+        later.append(fresh_artifact)
+        fresh_root = h.root / "clones" / fresh_run.claim_id
+        assert not old_root.exists() and fresh_root.exists()
+        assert h.store.get_run(fresh_run.id).status in {"running", "observing"}  # type: ignore[union-attr]
+        h.finish(fresh_artifact, _pr_outcome(h.branch_for(fresh_run.claim_id), number=217))
+        h.tick()
+
+        # A dirty working clone blocks on-board sync. An off-board merged PR remains held.
+        pending: list[tuple[str, Path, Path]] = []
+        data = h.state()
+        board_item = json.loads(json.dumps(data["items"][0]))
+        board_item["id"] = "P3"
+        board_item["content"]["id"] = "I3"
+        board_item["content"]["number"] = 3
+        data["items"].append(board_item)
+        data["pr_states"].update(
+            {
+                "215": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"},
+                "216": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"},
+            }
+        )
+        h.update(items=data["items"], pr_states=data["pr_states"])
+        for number, item_id in ((3, "P3"), (4, "P4")):
+            claim_pending = h.store.create_claim(
+                ClaimDraft(REPOSITORY, number, f"I{number}", item_id, "fix", "pending", {})
+            )
+            evidence = h.root / "artifacts" / f"{claim_pending.id}-fix"
+            (evidence / "attempt-1/logs").mkdir(parents=True)
+            (evidence / "attempt-1/logs/old.log").write_text("pending")
+            run_pending = h.store.reserve_run(
+                claim_pending.id, "fix", reason="initial", evidence_path=str(evidence)
+            )
+            h.store.finish_run(run_pending.id, execution_status="completed", result={})
+            h.store.set_setting("consumed-results", run_pending.id, {"complete": True})
+            pending_root = h.root / "clones" / claim_pending.id
+            (pending_root / "0").mkdir(parents=True)
+            (pending_root / "0/owned").write_text("pending")
+            h.store.set_preparation(claim_pending.id, {"clones": {"repo": str(pending_root / "0")}})
+            h.store.set_claim_lifecycle(
+                claim_pending.id,
+                "settled",
+                {
+                    "pr": {
+                        "number": 212 + number,
+                        "url": f"https://github.com/{REPOSITORY}/pull/{212 + number}",
+                    }
+                },
+            )
+            saved = h.store.get_claim(claim_pending.id)
+            assert saved is not None
+            h.store.set_cleanup(
+                claim_pending.id,
+                {
+                    **saved.cleanup,
+                    "terminal_at": (datetime.now(UTC) - timedelta(days=31)).isoformat(),
+                },
+            )
+            pending.append((claim_pending.id, pending_root, evidence))
+        dirty = h.working / "lib.py"
+        original = dirty.read_text()
+        dirty.write_text(original + "\n# block sync\n")
+        h.tick()
+        assert all(
+            root.exists() and (evidence / "attempt-1/logs").exists()
+            for _, root, evidence in pending
+        ), pending
+        text = h.cli("status")
+        assert text.count("pending sync:") >= 2
+        dirty.write_text(original)
+        h.tick()
+        h.tick()
+        assert not pending[0][1].exists()
+        assert not (pending[0][2] / "attempt-1/logs").exists()
+        assert h.store.get_claim(pending[0][0]).cleanup["retention"]["pruned_at"]  # type: ignore[union-attr,index]
+        assert pending[1][1].exists()
+        assert (pending[1][2] / "attempt-1/logs").exists()
+        off_board = h.store.get_claim(pending[1][0])
+        assert off_board is not None and not off_board.reporting.get("sync")
+    finally:
+        (first_artifact / "finish").touch()
+        for artifact in later:
+            (artifact / "finish").touch()
         h.store.close()
 
 

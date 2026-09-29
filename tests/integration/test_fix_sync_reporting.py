@@ -222,6 +222,9 @@ def test_successful_merge_closes_issue_and_records_completion(tmp_path: Path) ->
         check=True,
     )
     subprocess.run(["git", "-C", str(seed), "push", "-u", "origin", "main"], check=True)
+    subprocess.run(
+        ["git", "-C", str(origin), "symbolic-ref", "HEAD", "refs/heads/main"], check=True
+    )
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", str(origin), str(clone)], check=True)
 

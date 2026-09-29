@@ -275,3 +275,16 @@ def test_local_config_rejects_non_positive_evidence_retention_days() -> None:
     )
     with pytest.raises(ConfigurationError, match="evidence_retention_days"):
         LocalConfig.from_toml(text)
+
+
+def test_local_config_unreviewed_retention_defaults_and_requires_positive_days() -> None:
+    assert LocalConfig.from_toml(_LOCAL_BASE).limits.unreviewed_retention_days == 30
+    configured = _LOCAL_BASE.replace(
+        "[limits]\nminimum_free_gib = 8",
+        "[limits]\nminimum_free_gib = 8\nunreviewed_retention_days = 45",
+    )
+    assert LocalConfig.from_toml(configured).limits.unreviewed_retention_days == 45
+    with pytest.raises(ConfigurationError, match="unreviewed_retention_days"):
+        LocalConfig.from_toml(
+            configured.replace("unreviewed_retention_days = 45", "unreviewed_retention_days = 0")
+        )

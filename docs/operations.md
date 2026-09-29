@@ -416,38 +416,51 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image; both are cleaned up once the claim reaches Done, but
-mirrors persist and grow slowly with history. When a reviewed card moves to
-Done, Factory removes only its recorded owned worktrees, clones, and images;
+per-run Docker image. Once a reviewed card reaches Done, Factory releases its
+recorded owned worktrees, clones, images, and credential copies. Cancelled and
+superseded claims are released as soon as their runs stop and reporting is
+delivered. Settled claims still outside Done are released after `[limits]
+unreviewed_retention_days` (default 30) from their terminal transition.
+If a settled claim reaches Done without a recorded Review observation, Factory
+releases it on the first quiescent poll after recording the Done observation,
+without posting a human-review expiry report.
+Release also covers claims whose cards have left the Project. A merged PR with
+an incomplete post-merge sync holds its files. Mirrors persist with history.
+Factory removes only its recorded owned worktrees, clones, and images;
 it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
 only prunes evidence under the rule below.
 
-**Evidence retention.** A configurable retention period, `[limits]
-evidence_retention_days` (default 14), bounds how long a settled claim's
-evidence is kept. The clock starts the first time Factory durably observes a
-claim's card as Done; observing any other status resets it, so moving a card
-back out of Done and later returning it to Done restarts the period from that
-later observation. Once the period has elapsed since that observation, and
-the claim has no non-terminal or unverified run, no unfinished reporting, no
-pending post-merge sync, and (for a non-superseded claim) its worktree, clone,
-image, and credential cleanup has completed, the next tick prunes that
+**Evidence retention.** `[limits] evidence_retention_days` (default 14) starts
+from the first durable Done observation for a settled claim. Leaving Done
+resets that observation. For cancelled and superseded claims it starts from
+the recorded terminal transition, even if the card never reaches Done.
+Settled claims outside Done use `unreviewed_retention_days` from that
+transition. A new run reopens release and retention. Once the applicable
+period has elapsed, release has completed, and no run, reporting, or merged
+PR sync is pending, the next tick prunes that
 claim's evidence: logs, Runner and agent session state, and agent output
 under each attempt's artifact directory (and, for a host attempt, its
 recorded Runner session directory). It keeps the fix outcome or eval result
 and provenance records, the attempt's issue input, and never touches
 candidate branches, PRs, mirrors, SQLite history, or the operator's working
-clones. A superseded claim is pruned on the same conditions judged on its own
-runs and reporting, without waiting on cleanup it never performs. Pruning is
+clones. Pruning is
 retried on later polls if a removal fails; `claim.cleanup.retention` records
 what was removed and any failures — inspect it with `status --all` or by
 reading the claim's row in `state.sqlite3` directly. This check runs from the
-per-claim loop on every tick, so history predating this rule is covered
-automatically: the first tick after upgrading records the Done observation
-for old claims and prunes them only after the retention period from that
-observation, not retroactively.
+store-driven terminal sweep on every tick, including off-board claims. Old
+terminal claims receive a one-time conservative terminal time from their
+last update. Old Done claims first record their Done observation after upgrade.
+
+Finished Fly eval images are removed by digest only when the claim's own
+`claim-` tag still resolves to that digest and no other tag shares it. A
+registry error or ownership skip remains in `status` and is retried. Registry
+cleanup is independent of Fly Machine disposal; `base`, `deployment-`, and
+unrecorded tags are never deletion targets.
 
 For a ready-for-human-review result, use the absolute, quoted command in the
 Factory report on the Mac holding its retained artifacts and harness worktree.
-That command is available until the reviewed item moves to Done. Factory does
+That command is available until the item moves to Done or the unreviewed
+period expires. Factory posts an expiry comment before releasing a published
+command's worktree. Factory does
 not run human ratings, assign an official pass, close the issue, merge a PR, or
 claim that a static plist proves live launchd acceptance.

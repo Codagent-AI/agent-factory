@@ -172,7 +172,7 @@ def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> No
     assert controller.presentation(claim.id).status != "Review"
 
 
-def test_delivery_diagnostics_survive_later_event_acknowledgement(tmp_path: Path) -> None:
+def test_delivery_diagnostics_move_to_history_after_acknowledgement(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     controller = Controller(
         store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
@@ -183,9 +183,12 @@ def test_delivery_diagnostics_survive_later_event_acknowledgement(tmp_path: Path
 
     controller.deliver_reports(claim.id)
 
-    assert (
-        store.delivery_failures(claim.id)["accepted"]["error"] == "GitHubApiError: temporary outage"
-    )
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    assert store.delivery_failures(claim.id) == {}
+    history = saved.reporting["delivery_history"]
+    assert isinstance(history, dict)
+    assert history["accepted"]["error"] == "GitHubApiError: temporary outage"
 
 
 def test_nondefault_bot_recovers_a_lost_successful_comment_response(tmp_path: Path) -> None:
@@ -467,3 +470,24 @@ def test_report_redacts_credentials_in_failure_diagnostics(tmp_path: Path) -> No
     assert "authentication failed" in body
     assert "[redacted]" in body
     store.close()
+
+
+def test_old_delivered_failure_marker_is_repaired_without_reposting(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    comments = Comments()
+    controller = Controller(
+        store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
+    )
+    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    assert claim is not None
+    controller.deliver_reports(claim.id)
+    posted = len(comments.posted)
+    store.record_delivery_failure(claim.id, "accepted", GitHubApiError("old failure"))
+    controller.deliver_reports(claim.id)
+    assert len(comments.posted) == posted
+    assert store.delivery_failures(claim.id) == {}
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    history = saved.reporting["delivery_history"]
+    assert isinstance(history, dict)
+    assert "old failure" in history["accepted"]["error"]

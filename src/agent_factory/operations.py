@@ -1308,9 +1308,7 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
     still costs its own per-claim query, since it is only reached for the settled or
     cancelled claims this function does not already resolve without one.
     """
-    if claim.lifecycle == "superseded":
-        return False
-    if claim.lifecycle not in {"settled", "cancelled"}:
+    if claim.lifecycle not in {"settled", "cancelled", "superseded"}:
         return True
     if claim.id in active_by_claim:
         return True
@@ -1323,6 +1321,10 @@ def _is_live(store: ClaimStore, claim: Claim, active_by_claim: Mapping[str, Run]
     if any(pending_sync(store, claim, definition) for definition in registered()):
         return True
     if claim.cleanup.get("last_error") is not None:
+        return True
+    if claim.cleanup.get("sync_check_error") is not None:
+        return True
+    if _registry_problems(claim):
         return True
     return claim.lifecycle == "settled" and claim.cleanup.get("complete") is not True
 
@@ -1341,7 +1343,34 @@ def _sync_lines(store: ClaimStore, claim: Claim) -> list[str]:
 
 def _cleanup_lines(claim: Claim) -> list[str]:
     error = claim.cleanup.get("last_error")
-    return [f"cleanup errors: {error}"] if error is not None else []
+    lines = [f"cleanup errors: {error}"] if error is not None else []
+    sync_error = claim.cleanup.get("sync_check_error")
+    if sync_error is not None:
+        lines.append(f"PR state unreadable: {sync_error}")
+    for digest, tag, reason in _registry_problems(claim):
+        lines.append(f"registry image {tag}@{digest[:19]}: {reason}")
+    failures = claim.reporting.get("delivery_failures")
+    if isinstance(failures, Mapping) and "review-expired" in failures:
+        lines.append(f"review expiry not delivered: {failures['review-expired']}")
+    elif any(
+        event.key == "review-expired" and event.comment_id is None for event in _events(claim)
+    ):
+        lines.append("review expiry not delivered: pending")
+    return lines
+
+
+def _registry_problems(claim: Claim) -> list[tuple[str, object, object]]:
+    """Digest, tag, and reason of each recorded registry image that failed or was skipped."""
+    problems: list[tuple[str, object, object]] = []
+    registry = claim.cleanup.get("registry")
+    if isinstance(registry, Mapping):
+        for digest, value in cast(Mapping[str, object], registry).items():
+            if isinstance(value, Mapping):
+                record = cast(Mapping[str, object], value)
+                reason = record.get("error") or record.get("skipped")
+                if reason:
+                    problems.append((digest, record.get("tag", "?"), reason))
+    return problems
 
 
 def _events(claim: Claim) -> list[Event]:

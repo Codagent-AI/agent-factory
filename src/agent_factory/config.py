@@ -157,6 +157,7 @@ class LimitsConfig:
     codex_reset_fallback_seconds: int
     memory_reservation_gib: int = 3
     evidence_retention_days: int = 14
+    unreviewed_retention_days: int = 30
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,9 @@ class LocalConfig:
                 ),
                 evidence_retention_days=_optional_positive_int(
                     limits, "evidence_retention_days", "limits", 14
+                ),
+                unreviewed_retention_days=_optional_positive_int(
+                    limits, "unreviewed_retention_days", "limits", 30
                 ),
             ),
             credentials=CredentialsConfig(
