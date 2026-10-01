@@ -3,7 +3,7 @@
 Run it with the live release's interpreter, so the check is the code the service runs:
 
     ~/.agent-factory/releases/current/.venv/bin/python assign.py OWNER/REPO NUMBER
-    ~/.agent-factory/releases/current/.venv/bin/python assign.py OWNER/REPO NUMBER --apply fix
+    ~/.agent-factory/releases/current/.venv/bin/python assign.py OWNER/REPO NUMBER --apply feature
 
 Board reads and writes use the Factory App token; issue type, Priority and labels use
 Paul's gh login. Tokens stay in process memory and are never printed.
@@ -56,6 +56,7 @@ class Factory:
         self.paul = GitHubClient(SubprocessGhRunner(), lambda: paul_gh("auth", "token"))
         self.handlers = work_kinds.handlers(self.shared, self.local)
         self.targets = {target.repository for target in self.shared.fix.targets}
+        self.feature_targets: set[str] = self.targets if self.shared.feature is not None else set()
 
     def cards(self) -> list[ProjectQueueItem]:
         project = self.shared.project
@@ -67,10 +68,16 @@ class Factory:
             return "eval"
         if source.repository in self.targets and source.issue_type == routing.bug_type:
             return "fix"
+        if source.repository in self.feature_targets and source.issue_type == routing.feature_type:
+            return "feature"
         return None
 
     def wanted_type(self, kind: str) -> str:
-        return self.shared.routing.eval_type if kind == "eval" else self.shared.routing.bug_type
+        return {
+            "eval": self.shared.routing.eval_type,
+            "fix": self.shared.routing.bug_type,
+            "feature": self.shared.routing.feature_type,
+        }[kind]
 
     def eval_problem(self, source: SourceItem) -> str | None:
         handler = self.handlers["eval"]
@@ -100,16 +107,20 @@ def report(factory: Factory, repository: str, number: int, kind: str | None) -> 
     print(f"kind: {kind or 'unknown (type is ' + str(source.issue_type) + ')'}")
     print(f"state: {source.state} [{mark(source.state.lower() == 'open')}]")
     is_target = repository in factory.targets
+    is_feature_target = repository in factory.feature_targets
     is_eval_source = repository == shared.routing.eval_source
     if kind is None:
-        print(f"repository: fix target {is_target}, eval source {is_eval_source}")
+        print(
+            f"repository: fix target {is_target}, feature target {is_feature_target}, "
+            f"eval source {is_eval_source}"
+        )
     else:
-        in_scope = is_eval_source if kind == "eval" else is_target
+        in_scope = {"eval": is_eval_source, "fix": is_target, "feature": is_feature_target}[kind]
         print(f"repository takes {kind} work: [{mark(in_scope)}]")
     wanted = factory.wanted_type(kind) if kind else None
     print(f"type: {source.issue_type} [{mark(wanted is not None and source.issue_type == wanted)}]")
     print(f"labels: {', '.join(sorted(source.labels)) or '(none)'}")
-    if kind == "fix":
+    if kind in {"fix", "feature"}:
         print(f"needs-input label absent: [{mark('needs-input' not in source.labels)}]")
     if kind == "eval":
         label = shared.routing.eval_label
@@ -182,13 +193,15 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
     shared = factory.shared
     source = factory.app.get_source_item(repository, number)
     scope = shared.routing.eval_source if kind == "eval" else None
-    if (kind == "eval" and repository != scope) or (
-        kind == "fix" and repository not in factory.targets
+    if (
+        (kind == "eval" and repository != scope)
+        or (kind == "fix" and repository not in factory.targets)
+        or (kind == "feature" and repository not in factory.feature_targets)
     ):
         sys.exit(f"refused: {repository} does not take {kind} work")
     if source.state.lower() != "open":
         sys.exit("refused: the issue is closed")
-    if kind == "fix" and "needs-input" in source.labels:
+    if kind in {"fix", "feature"} and "needs-input" in source.labels:
         sys.exit("refused: needs-input is set; answer the factory's question first")
     if factory.app.get_permission(repository, source.author) not in WRITER_PERMISSIONS:
         sys.exit(f"refused: author {source.author} lacks write permission")
@@ -236,7 +249,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("repository", help="OWNER/REPO")
     parser.add_argument("number", type=int)
-    parser.add_argument("--apply", choices=("fix", "eval"), help="set the missing fields")
+    parser.add_argument(
+        "--apply", choices=("fix", "eval", "feature"), help="set the missing fields"
+    )
     parser.add_argument("--retype", action="store_true", help="replace a different issue type")
     arguments = parser.parse_args()
     factory = Factory()

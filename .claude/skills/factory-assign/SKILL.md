@@ -1,6 +1,6 @@
 ---
 name: factory-assign
-description: Hand one GitHub issue to the live Agent Factory on Paul's Mac. Sets what admission needs (issue type, board Owner=factory and Status=Ready, a default Priority, the eval label), runs one tick, and confirms the factory claimed the issue. Use when asked to assign an issue to the factory, have the factory pick up, fix, or run issue X, queue a Bug or an Eval for the factory, or make sure the factory picks it up.
+description: Hand one GitHub issue to the live Agent Factory on Paul's Mac. Sets what admission needs (issue type, board Owner=factory and Status=Ready, a default Priority, the eval label), runs one tick, and confirms the factory claimed the issue. Use when asked to assign an issue to the factory, have the factory pick up, fix, or run issue X, queue a Bug, Feature, or Eval for the factory, or make sure the factory picks it up.
 ---
 
 # Factory assign
@@ -20,15 +20,17 @@ The tick admits a card when all of the following hold (`work_kinds/*/handler.py`
 
 - **Fix**: an open issue in a `[fix] targets` repository of the live shared config, with native type **Bug**, no `needs-input` label, and an author who has write, maintain, or admin permission. The card needs Owner=factory and Status=Ready.
 - **Eval**: an open issue in `[routing] eval_source` (`agent-evals`) with native type **Eval** and an author who has write permission. The card needs Owner=factory and Status=Ready, and the body must parse: exactly one fenced eval TOML block with supported keys. The `eval-request` label is routing's trigger, not an admission gate. Still add it, because it is the documented convention.
-- **Both**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the kind's slot is free, and the kind's readiness checks pass (disk floor, credentials, Fly). The tick admits at most one card. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
+- **Feature**: an open issue in a configured feature target repository, with native type **Feature**, no `needs-input` label, an author with write, maintain, or admin permission, and Owner=factory and Status=Ready. Check the live release's feature targets and handler before changing a card. The `blocked` label and GitHub blocked-by relationship do not veto admission; keep a dependent feature in Backlog until its prerequisite has landed, even if Owner=factory.
+- **All kinds**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the kind's slot is free, and the kind's readiness checks pass (disk floor, credentials, Fly). The tick admits at most one card. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
 - **Earlier claims**: an active claim is reused. A settled fix starts again when its card returns to Ready. A settled eval starts again when its parsed eval settings change (edits to prose or formatting do not count), even with its Verdict still set; with unchanged settings, only once its Verdict is cleared. Ask Paul before clearing a Verdict.
 
 ## 1. Choose the kind
 
 - An Eval in `agent-evals` is an **eval**.
 - A Bug in a fix target is a **fix**.
+- A Feature in a configured feature target is a **feature**. Do not `--apply fix` to a Feature.
 - If the type is unset, choose fix only when the issue describes a defect and the repository is a fix target.
-- Otherwise ask Paul. For example, ask when the issue is a Feature or Task, or when it is an `agent-evals` issue without a type.
+- Otherwise ask Paul when the kind genuinely cannot be inferred, for example a Task or an `agent-evals` issue without a type.
 
 ## 2. Check, then set
 
@@ -37,10 +39,10 @@ Run the helper with the release's interpreter, from this repository's root:
 ```sh
 PY=~/.agent-factory/releases/current/.venv/bin/python
 $PY .claude/skills/factory-assign/assign.py OWNER/REPO NUMBER                 # read-only check
-$PY .claude/skills/factory-assign/assign.py OWNER/REPO NUMBER --apply fix     # or --apply eval
+$PY .claude/skills/factory-assign/assign.py OWNER/REPO NUMBER --apply feature # or fix / eval
 ```
 
-The check prints each requirement as `ok` or `MISSING`. It also prints what the factory's own `snapshot` makes of the card, the cards ranked ahead of it, any claims, and a `result:` line. It exits 0 when the issue is admissible or already claimed.
+The check prints each requirement as `ok` or `MISSING`. It also prints what the factory's own `snapshot` makes of the card, the cards ranked ahead of it, any claims, and a `result:` line. It exits 0 when the issue is admissible or already claimed. A dependent Feature may deliberately have Owner=factory and Status=Backlog; it is assigned but not queued for admission. Do not use `--apply feature` to bypass that dependency: GitHub blocked-by relationships and the `blocked` label do not prevent Factory admission.
 
 - If the result is `already claimed`, skip to the report. `--apply` refuses such an issue: moving a blocked claim's card to Ready resumes that claim, so do it only when Paul asks.
 - If the check shows a requirement Paul must resolve (closed issue, wrong repository, author without write permission, `needs-input`, or an invalid eval body), stop and report it. `--apply` refuses these too.
@@ -58,7 +60,7 @@ It uses Paul's `gh` login for the type, labels, and Priority, and the Factory Ap
 ## 3. Check capacity
 
 ```sh
-PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml status | grep -E '^(paused|eval slot|fix slot|readiness|quota|admission window)'
+PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml status | grep -E '^(paused|eval slot|fix slot|feature slot|readiness|quota|admission window)'
 ```
 
 If the factory is paused, the kind's slot is busy, a `readiness:<kind>` line reports a failure, or the admission window is closed, say so. The card waits in Ready and is admitted once the condition clears. A tick will not help, so stop here and report.
