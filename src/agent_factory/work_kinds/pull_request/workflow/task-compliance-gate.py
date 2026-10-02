@@ -247,6 +247,22 @@ def main() -> int:
     )
     merge = artifacts / "base-merge.json"
     target_ref = head = tree = base = digest = ""
+    record: dict[str, Any] = {
+        "result": "not-run",
+        "reason": "",
+        "phase": phase,
+        "target_head": target_head,
+        "target_ref": target_ref,
+        "base": base,
+        "declaring_entry_points": [],
+        "uncovered_paths": [],
+        "reviewed_head": head,
+        "reviewed_tree": tree,
+        "tasks_file": str(tasks),
+        "tasks_sha256": digest,
+        "violations": [],
+        "runs": runs,
+    }
     try:
         target_ref = (
             str(cast(dict[str, Any], json.loads(merge.read_text()))["base_head"])
@@ -265,45 +281,26 @@ def main() -> int:
         runs.append(
             {"phase": phase, "head": head, "result": "not-run", "reason": reason, "evidence": ""}
         )
-        save(
-            path,
-            {
-                "result": "not-run",
-                "reason": reason,
-                "phase": phase,
-                "target_head": target_head,
-                "target_ref": target_ref,
-                "base": base,
-                "declaring_entry_points": [],
-                "uncovered_paths": [],
-                "reviewed_head": head,
-                "reviewed_tree": tree,
-                "tasks_file": str(tasks),
-                "tasks_sha256": digest,
-                "violations": [],
-                "runs": runs,
-            },
+        record.update(
+            reason=reason,
+            target_ref=target_ref,
+            base=base,
+            reviewed_head=head,
+            reviewed_tree=tree,
+            tasks_sha256=digest,
         )
+        save(path, record)
         print(json.dumps({"result": "not-run", "reason": reason}))
         return 0
     if reusable(old, head, base, target_ref, digest):
         return int(old["result"] == "failed")
-    record: dict[str, Any] = {
-        "result": "not-run",
-        "reason": "",
-        "phase": phase,
-        "target_head": target_head,
-        "target_ref": target_ref,
-        "base": base,
-        "declaring_entry_points": [],
-        "uncovered_paths": [],
-        "reviewed_head": head,
-        "reviewed_tree": tree,
-        "tasks_file": str(tasks),
-        "tasks_sha256": digest,
-        "violations": [],
-        "runs": runs,
-    }
+    record.update(
+        target_ref=target_ref,
+        base=base,
+        reviewed_head=head,
+        reviewed_tree=tree,
+        tasks_sha256=digest,
+    )
     entries: list[str] = []
     try:
         listing = subprocess.run(
