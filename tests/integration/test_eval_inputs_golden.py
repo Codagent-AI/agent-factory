@@ -87,11 +87,15 @@ def test_frozen_and_reporting_golden(
 
 
 @pytest.mark.parametrize(
-    "shape", ["default_docker", "validator_fly", "fixture_docker", "combined_fly", "overrides"]
+    "shape",
+    ["default_docker", "validator_fly", "fixture_docker", "combined_fly", "overrides", "legacy"],
 )
 def test_report_golden(tmp_path: Path, shape: str) -> None:
-    saved = json.loads((GOLDENS / f"{shape}.json").read_text(encoding="utf-8"))
+    saved_shape = "default_docker" if shape == "legacy" else shape
+    saved = json.loads((GOLDENS / f"{saved_shape}.json").read_text(encoding="utf-8"))
     frozen_spec = json.loads(saved["frozen_spec"])
+    if shape == "legacy":
+        del frozen_spec["settings"]["agent_validator_ref"]
     store = ClaimStore(tmp_path / "reports.sqlite3")
     claim = store.create_claim(
         ClaimDraft("repo", 1, "issue", "item", "eval", saved["fingerprint"], frozen_spec)
@@ -246,6 +250,43 @@ def test_suite_plan_golden(
     if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
         path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
     assert normalized == json.loads(path.read_text(encoding="utf-8"))
+    recovery_plans: dict[str, object] = {}
+    for name, checkpoint in (("retry", False), ("resume", True)):
+        recovery_artifact = tmp_path / name
+        if checkpoint:
+            recovery_artifact.mkdir()
+            (recovery_artifact / "run-state.json").write_text(
+                json.dumps({"schema_version": 1}), encoding="utf-8"
+            )
+        recovery_plan = adapter.plan(
+            frozen,
+            worktrees,
+            recovery_artifact,
+            recovery=True,
+            pre_checkpoint_proven=not checkpoint,
+            claim_id=claim.id,
+            run_id=name,
+            unit_key="rep-1",
+        )
+        recovery_manifest = None
+        if execution == "fly":
+            recovery_manifest = json.loads(
+                (recovery_artifact / ".factory" / "manifest.json").read_text(encoding="utf-8")
+            )
+            recovery_manifest["nonce"] = "<nonce>"
+        recovery_plans[name] = {
+            "argv": list(recovery_plan.argv),
+            "manifest": recovery_manifest,
+        }
+    recovery_normalized = json.loads(
+        json.dumps(recovery_plans).replace(str(tmp_path), "<tmp>").replace(claim.id, "<claim>")
+    )
+    recovery_path = GOLDENS / (
+        f"recovery_{execution}_{fixture}{'_validator' if validator else ''}.json"
+    )
+    if os.environ.get("CAPTURE_EVAL_RECOVERY_GOLDENS") == "1":
+        recovery_path.write_text(json.dumps(recovery_normalized, indent=2) + "\n", encoding="utf-8")
+    assert recovery_normalized == json.loads(recovery_path.read_text(encoding="utf-8"))
     assert manager.remove(worktrees) == {}
     store.close()
 
@@ -414,3 +455,63 @@ def test_rejection_golden(case: str, body: str) -> None:
     if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
         path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
     assert actual == json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("case", ["fixture_flags", "validator_docker_hold"])
+def test_readiness_reason_golden(tmp_path: Path, case: str) -> None:
+    from collections.abc import Callable
+    from inspect import signature
+    from types import SimpleNamespace
+    from typing import cast
+
+    from agent_factory.config import LocalConfig
+    from agent_factory.suites.and_scene import AndSceneAdapter, GitWorktreeManager, ReadinessError
+    from tests.integration.test_and_scene_adapter import (
+        _git,  # pyright: ignore[reportPrivateUsage]
+        _sources,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkey_date = "2001-01-01T00:00:00Z"
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("GIT_AUTHOR_DATE", monkey_date)
+        patch.setenv("GIT_COMMITTER_DATE", monkey_date)
+        sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", str(source))
+    store = ClaimStore(tmp_path / "readiness.sqlite3")
+    if case == "fixture_flags":
+        worktrees = GitWorktreeManager(tmp_path / "factory", sources).prepare("claim", revisions)
+        environment = tmp_path / "candidate.env"
+        environment.write_text("CANDIDATE_TOKEN=test\n", encoding="utf-8")
+        adapter = AndSceneAdapter(environment_file=environment)
+        if "fixture_pinned" in signature(adapter.readiness).parameters:
+            legacy_readiness = cast(Callable[..., str | None], adapter.readiness)
+            reason = legacy_readiness(worktrees, fixture_pinned=True)
+        else:
+            reason = adapter.readiness(worktrees, pinned={"fixture"})
+    else:
+        frozen = {
+            "suite": "and-scene",
+            "settings": {},
+            "revisions": {**revisions, "validator": "b" * 40},
+        }
+        claim = store.create_claim(
+            ClaimDraft("repo", 1, "issue", "item", "eval", "fingerprint", frozen)
+        )
+        local = cast(LocalConfig, SimpleNamespace(eval_execution="docker"))
+        handler = EvalHandler(
+            EvalDefaults("main", "main", {}, False, 1),
+            local=local,
+            manager=GitWorktreeManager(tmp_path / "factory", sources),
+            adapter=AndSceneAdapter(environment_file=tmp_path / "unused.env"),
+        )
+        with pytest.raises(ReadinessError) as error:
+            handler.prepare(claim)
+        reason = str(error.value)
+    assert reason is not None
+    actual = reason.replace(str(tmp_path), "<tmp>")
+    path = GOLDENS / f"readiness_{case}.json"
+    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
+        path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
+    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    store.close()
