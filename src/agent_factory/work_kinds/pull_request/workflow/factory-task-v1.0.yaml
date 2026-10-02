@@ -45,25 +45,12 @@ steps:
       re-attempts. Decide whether this Task is bounded, low-risk maintenance
       under the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
       Decline with doable=false when it crosses that boundary, naming where it
-      belongs and the exact decision needed. Accept the delegated choices the
-      boundary allows.
-
-      Worked examples: agent-factory#74 (Ruff, vulture, jscpd and check-only CI)
-      qualifies with measured/baselined thresholds; agent-validator#174 qualifies
-      but must retain exports reachable from public entry points; agent-evals#53
-      qualifies only if CI, .nvmrc or Docker already pins its Node version.
+      belongs and the exact decision needed. Decline an open threshold or
+      other decision the issue leaves open.
 
       Return only JSON with exactly doable (boolean), reasons (string array),
-      plan (string), choices (string array), gates (array of objects with name,
-      command and violation), and user_visible (boolean). When declining, the
-      reasons themselves must state where the work belongs and the decision
-      needed; leave plan empty.
-
-      List every new or tightened gate. Each command must be the exact,
-      placeholder-free shell command the delivered gate runs; a threshold that
-      is only known after measuring belongs in the tool's configuration file
-      that command reads, not in the command. An issue-stated rejection
-      criterion is the violation of the gate it tests, not a separate gate.
+      plan (string), and user_visible (boolean). When declining, the reasons
+      must state where the work belongs and the decision needed; leave plan empty.
 
   - id: record-triage
     script: record-triage.sh
@@ -83,7 +70,7 @@ steps:
     capture: triage_decision
     prompt: |
       Re-read {{issue_file}} and return exactly one JSON object with doable,
-      reasons, plan, choices, gates, and user_visible. No prose or code fence.
+      reasons, plan, and user_visible. No prose or code fence.
 
   - id: recheck-triage
     script: record-triage.sh
@@ -95,10 +82,6 @@ steps:
       decision_path: "{{artifact_dir}}/task-triage.json"
     capture: doable
     skip_if: 'sh: test "{{doable}}" = true || test "{{doable}}" = false'
-
-  - id: has-triage-gates
-    command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/task-triage.json" gates
-    capture: has_gates
 
   - id: triage-user-visible
     command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/task-triage.json" user_visible
@@ -140,11 +123,8 @@ steps:
         mode: autonomous
         prompt: |
           Implement the plan in {{artifact_dir}}/task-triage.json without a
-          red-test-first requirement. Follow bounded choices: use target when
-          measured within it, otherwise set and record the measured baseline;
-          never loosen further. Run repository tests, linters and validator.
-          Write {{artifact_dir}}/task-choices.json as an array of objects with
-          choice, evidence and result. Commit changes as [{{step_id}}] chore: ...
+          red-test-first requirement. Run repository tests, linters and validator.
+          Commit changes as [{{step_id}}] chore: ...
       - id: initial-validator
         workflow: builtin:core/run-validator-v1.0.yaml
       - id: initial-validation-gate
@@ -166,103 +146,24 @@ steps:
           if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then printf passed; else printf failed; exit 1; fi
         capture: validator_status
         skip_if: 'sh: test "{{validator_status}}" = passed'
-      - id: exercise-gates
-        session: tester-agent
-        mode: autonomous
-        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{has_gates}}" != true'
-        prompt: |
-          For every gate in {{artifact_dir}}/task-triage.json, run its exact
-          command on the delivered tree. Plant its described violation, save
-          git diff to gates/<name>/planted.patch, rerun the same command and
-          revert the plant. Save positive.log and negative.log and write
-          gate-exercises.json with [{name, command, positive:{command,exit,log},
-          negative:{command,exit,log,patch}}]. Paths are relative to
-          {{artifact_dir}}. Leave the tree clean. Do not commit.
-      - id: verify-gate-exercises
-        session: lead-agent
-        mode: autonomous
-        skip_if: 'sh: test ! -s {{artifact_dir}}/gate-exercises.json'
-        prompt: |
-          Independently inspect every planted patch and negative log in
-          {{artifact_dir}}/gate-exercises.json. Write gate-verdicts.json with
-          [{name, confirmed, diagnostic, criterion_met, reason}]. Diagnostic
-          must be a verbatim negative-log line identifying the violation, absent
-          from the positive log. criterion_met is true when the plant satisfies the
-          issue-stated rejection criterion for that gate, and also true when
-          the issue states no criterion for that gate. Do not edit code.
-      - id: check-gate-exercises
-        command: |
-          if test "{{has_gates}}" != true || python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
-        capture: gate_status
-        continue_on_failure: true
-      - id: repair-gates
-        session: implementor-agent
-        mode: autonomous
-        skip_if: 'sh: test "{{gate_status}}" = passed'
-        prompt: |
-          Repair the gate that failed its planted violation so that its
-          triage-named command in {{artifact_dir}}/task-triage.json rejects the
-          described violation. Keep that command; change the tool configuration
-          or code it checks. Run checks and commit as [{{step_id}}] chore: ...
-      - id: re-exercise-gates
-        session: tester-agent
-        mode: autonomous
-        skip_if: 'sh: test "{{gate_status}}" = passed'
-        prompt: |
-          The gates may have been repaired. Repeat every positive exercise with
-          its triage-named command, plant the triage-described violation afresh
-          against the repaired gate, rerun the same command, revert the plant,
-          and replace the evidence in {{artifact_dir}}/gate-exercises.json.
-      - id: re-verify-gates
-        session: lead-agent
-        mode: autonomous
-        skip_if: 'sh: test "{{gate_status}}" = passed'
-        prompt: |
-          Independently inspect the repeated gate exercises and replace
-          {{artifact_dir}}/gate-verdicts.json with confirmed diagnostic verdicts.
-          criterion_met is true when the plant satisfies the
-          issue-stated rejection criterion for that gate, and also true when
-          the issue states no criterion for that gate.
-      - id: recheck-gates
-        command: |
-          if python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
-        capture: gate_status
-        skip_if: 'sh: test "{{gate_status}}" = passed'
-        continue_on_failure: true
-      - id: mark-gates-failed
-        command: printf failed
-        capture: validator_status
-        skip_if: 'sh: test "{{gate_status}}" = passed'
-      - id: record-gate-failure
-        command: |
-          python3 - "{{artifact_dir}}/task-triage.json" <<'PY'
-          import json, sys
-          from pathlib import Path
-          gates = json.loads(Path(sys.argv[1]).read_text())["gates"]
-          print(json.dumps([f"gate {gate['name']} does not reject violations" for gate in gates]), end="")
-          PY
-        capture: failure_reasons
-        skip_if: 'sh: test "{{gate_status}}" = passed'
       - id: test-flows
         session: tester-agent
         mode: autonomous
         capture: test_flow_report
-        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{user_visible}}" != true'
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{user_visible}}" != true'
         prompt: |
           Exercise representative user-facing tooling flows changed by this Task.
           Report concrete evidence, defects and limitations. Do not edit code.
       - id: scope-floor-for-review
         command: python3 .agent-runner/workflows/task-scope-floor.py "{{scope_base}}"
         capture: scope_floor
-        skip_if: 'sh: test "{{gate_status}}" != passed'
       - id: review-task
         session: lead-agent
         mode: autonomous
         capture: review_report
-        skip_if: 'sh: test "{{gate_status}}" != passed'
         prompt: |
-          Review the complete diff, validator, task choices, gate exercises,
-          tester report and scope floor {{scope_floor}}. Identify concrete
+          Review the complete diff, validator, tester report and scope floor
+          {{scope_floor}}. Identify concrete
           correctness or task-boundary findings. Do not edit code.
       - id: record-pre-findings-head
         command: git rev-parse HEAD
@@ -270,28 +171,21 @@ steps:
       - id: address-findings
         session: implementor-agent
         mode: autonomous
-        skip_if: 'sh: test "{{gate_status}}" != passed'
         prompt: |
           Address in-scope findings from {{review_report}} and tester evidence.
-          Compare all changes since {{pre_findings_head}}. Write
-          {{artifact_dir}}/gate-changes.json as {"gates":[{"name":string,
-          "command":string,"violation":string}]} listing every gate added or
-          tightened in this step, even when the list is empty. Commit changes
-          as [{{step_id}}] chore: ... Do not widen Task scope.
+          Commit changes as [{{step_id}}] chore: ... Do not widen Task scope.
       - id: final-validator
         workflow: builtin:core/run-validator-v1.0.yaml
-        skip_if: 'sh: test "{{gate_status}}" != passed'
       - id: final-validation-gate
         command: |
           mkdir -p "{{artifact_dir}}/logs"
           if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
         capture: validator_status
-        skip_if: 'sh: test "{{gate_status}}" != passed'
         continue_on_failure: true
       - id: repair-final-validation
         session: implementor-agent
         mode: autonomous
-        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{validator_status}}" = passed'
+        skip_if: 'sh: test "{{validator_status}}" = passed'
         prompt: |
           Repair final validation, ensure a clean committed tree, and commit
           changes as [{{step_id}}] chore: ...
@@ -300,15 +194,13 @@ steps:
           mkdir -p "{{artifact_dir}}/logs"
           if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
         capture: validator_status
-        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{validator_status}}" = passed'
+        skip_if: 'sh: test "{{validator_status}}" = passed'
       - id: prepush-guard
         workflow: factory-task-guard-v1.0.yaml
         params:
           base: "{{scope_base}}"
           mode: prepush
           artifact_dir: "{{artifact_dir}}"
-          gates_file: "{{artifact_dir}}/task-triage.json"
-          gate_changes_file: "{{artifact_dir}}/gate-changes.json"
         skip_if: 'sh: test "{{validator_status}}" != passed'
       - id: read-prepush-scope
         command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
@@ -340,9 +232,6 @@ steps:
           base: "{{scope_base}}"
           mode: postfinalize
           artifact_dir: "{{artifact_dir}}"
-          gates_file: "{{artifact_dir}}/task-triage.json"
-          gate_changes_file: "{{artifact_dir}}/gate-changes.json"
-          prefinalize_head: "{{prefinalize_head}}"
         skip_if: 'sh: test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
         # A guard that stops after the push must still reach record-outcome with the PR,
         # which reports it `failed` because scope-postfinalize.json is not complete.

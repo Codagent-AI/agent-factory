@@ -33,20 +33,17 @@ def test_task_workflow_catalog_validates(tmp_path: Path) -> None:
         assert result.returncode == 0, f"{name}: {result.stderr}"
 
 
-def test_task_pre_push_guard_rechecks_gates_after_findings() -> None:
+def test_task_pre_push_guard_checks_scope_after_findings() -> None:
     task = (WORKFLOW / "factory-task-v1.0.yaml").read_text()
     guard = (WORKFLOW / "factory-task-guard-v1.0.yaml").read_text()
     after_findings = task.split("  - id: address-findings", 1)[1]
     before_push = after_findings.split("  - id: finalize-pr", 1)[0]
     assert "prepush-guard" in before_push
-    assert 'gates_file: "{{artifact_dir}}/task-triage.json"' in before_push
-    assert 'gate_changes_file: "{{artifact_dir}}/gate-changes.json"' in before_push
-    assert "re-exercise-gates" in guard
-    assert "check-gate-exercises.py" in guard
-    assert "inventory-gates" in guard
-    assert "derive-diff-gates" in guard
-    assert "check-gate-inventory.py" in guard
+    assert "scope-floor" in guard
+    assert "task-scope-review" in guard
     assert "scope-{{mode}}.json" in guard
+    assert "gate-exercises" not in task + guard
+    assert "gate-inventory" not in task + guard
     # Non-chore CI repair subjects are evidence only; they never mark a scope crossing.
     assert "record-chore-subjects" in guard
     assert "mark-nonchore-crossing" not in guard

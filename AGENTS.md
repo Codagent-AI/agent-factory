@@ -118,12 +118,11 @@ inactivity/execution/total limits of 900/7200/10800 seconds. `doctor` reports
 Task triage declines runtime behavior or public interface changes, persisted
 data and OpenSpec specification changes, credentials, release/deploy settings,
 branch protection, work outside the target, oversized work, or an unbounded
-product, compatibility, or threshold choice. Delegated choices are allowed
-when the issue or repository bounds them: meet a measured target, otherwise
-record the measured baseline without loosening it. Dev toolchain and check-only
-CI changes are in scope; release, publish, version, sign, tag, and deploy
-configuration is not. Each new or tightened gate needs a positive run and a
-planted negative exercise confirmed by another session. Task commits and PR
+product, compatibility, or threshold choice. Development tools, development
+dependencies, CI, docs, behavior-preserving refactors and cleanups are in scope;
+release, publish, version, sign, tag, and deploy configuration is not. An open
+threshold or other decision left by the issue declines with `needs-input`.
+Task commits and PR
 titles use `chore:`. Task review rounds stop with `needs-input` when requested
 changes cross the same boundary.
 

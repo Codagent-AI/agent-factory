@@ -83,7 +83,7 @@ def test_declined_task_blocks_then_relaunches(tmp_path: Path) -> None:
                 {
                     "contract": "factory-task/1",
                     "outcome": "needs-input",
-                    "reasons": ["threshold is unbounded; belongs in a Feature"],
+                    "reasons": ["needs an open design decision; belongs in a Feature"],
                 }
             ),
         )
@@ -100,7 +100,7 @@ def test_declined_task_blocks_then_relaunches(tmp_path: Path) -> None:
         data["comments"].append(
             {
                 "id": 950,
-                "body": "Use a 2% baseline",
+                "body": "Use the existing CI convention",
                 "user": {"login": "writer"},
                 "created_at": "2099-01-01T00:00:00Z",
             }
@@ -111,7 +111,9 @@ def test_declined_task_blocks_then_relaunches(tmp_path: Path) -> None:
         assert retry.reason == "unblock" and retry.attempt_number == 1
         second = h.wait_started(retry)
         issue = json.loads((second / "input/issue.json").read_text())
-        assert [comment["body"] for comment in issue["comments"]] == ["Use a 2% baseline"]
+        assert [comment["body"] for comment in issue["comments"]] == [
+            "Use the existing CI convention"
+        ]
         assert "needs-input" not in h.state()["labels"]
         h.finish(second, task_pr(h.branch_for(claim.id)))
         h.tick()

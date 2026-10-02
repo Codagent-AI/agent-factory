@@ -110,7 +110,7 @@ if validator_status == "passed" and scope_path and not scope.get("complete"):
     outcome = {
         "contract": contract,
         "outcome": "failed",
-        "reasons": ["pre-push Task scope guard did not complete"],
+        "reasons": scope.get("reasons") or ["pre-push Task scope guard did not complete"],
         "validator": {"status": "passed"},
     }
 elif post_error is not None:
@@ -118,7 +118,7 @@ elif post_error is not None:
         [f"post-finalize Task scope evidence is unreadable: {post_error}"], validator_status
     )
 elif post_required and not post_scope.get("complete"):
-    outcome = failed_with_pr(["post-finalize Task scope guard did not complete"])
+    outcome = failed_with_pr(post_scope.get("reasons") or ["post-finalize Task scope guard did not complete"])
 elif scope.get("crossed"):
     outcome = {
         "contract": contract,

@@ -977,8 +977,8 @@ The operator documentation (`AGENTS.md` and `docs/operations.md`) SHALL describe
 
 - the native Task type, and that a Task reaches the factory only by moving it to Ready;
 - the `[task]` shared and local settings and their defaults, and the task-host doctor group;
-- what triage declines, the bounded-choice rule, and the boundary between toolchain work and release configuration;
-- the `chore:` commit and pull request convention and the gate exercises;
+- what triage declines and the boundary between maintenance work and release configuration;
+- the `chore:` commit and pull request convention;
 - that review rounds on a task pull request stop on out-of-scope requests;
 - that rolling back to a release without the task kind leaves open task claims unhandled, so they should be settled or cancelled first.
 

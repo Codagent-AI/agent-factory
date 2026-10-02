@@ -102,9 +102,8 @@ TASK_STAGED_FILES = (
     "factory-task-v1.0.yaml",
     "check-contract.sh",
     "record-triage.sh",
+    "decision_json.py",
     "record-outcome.sh",
-    "check-gate-exercises.py",
-    "check-gate-inventory.py",
     "annotate-chore-pr.sh",
 )
 

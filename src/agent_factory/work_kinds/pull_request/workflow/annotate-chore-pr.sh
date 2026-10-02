@@ -38,8 +38,6 @@ def evidence(name):
 
 
 section = (f"{evidence_marker}\n## Task evidence\n"
-           f"Choices: `{evidence('task-choices.json')}`\n"
-           f"Gate exercises: `{evidence('gate-exercises.json')}`\n"
            f"Non-chore CI commits: `{evidence('nonchore-commits.json')}`\n{evidence_end}")
 if evidence_marker in body:
     before, old_section = body.split(evidence_marker, 1)
@@ -47,7 +45,7 @@ if evidence_marker in body:
         after = old_section.split(evidence_end, 1)[1]
     else:
         # The end marker was edited away; consume only the section's known lines.
-        known = re.match(r"\n## Task evidence\nChoices: .*?\nGate exercises: .*?\nNon-chore CI commits: .*?\n", old_section, re.DOTALL)
+        known = re.match(r"\n## Task evidence\n(?:Choices: .*?\nGate exercises: .*?\n)?Non-chore CI commits: .*?\n", old_section, re.DOTALL)
         if known is None:
             print("failed", end="")
             raise SystemExit(1)

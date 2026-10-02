@@ -19,13 +19,6 @@ Feature" for a behavior or specification change.
 
 ## In scope
 
-Development tools, dev dependencies, linters and type checkers, check-only CI jobs
-(lint, type, test, duplication, dead code), docs, and behavior-preserving refactors.
-
-## Delegated choices
-
-Accept a choice the issue hands to the work when the issue or the repository bounds it:
-
-- use a stated target when the measurements meet it;
-- otherwise record the measured baseline, and never loosen it;
-- baseline any finding that cannot be fixed without changing behavior.
+Tooling and development dependencies, CI, docs, behavior-preserving refactors and
+cleanups. Decline an open threshold or other decision the issue leaves open with
+`needs-input`, naming that decision.

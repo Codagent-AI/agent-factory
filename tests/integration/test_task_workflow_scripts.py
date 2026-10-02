@@ -49,8 +49,6 @@ def test_record_triage_task_decline_and_fix_default_are_distinct(tmp_path: Path)
         "doable": False,
         "reasons": ["belongs in a Feature"],
         "plan": "",
-        "choices": [],
-        "gates": [],
         "user_visible": False,
     }
     path = tmp_path / "task-outcome.json"
@@ -82,7 +80,7 @@ def test_record_triage_task_decline_and_fix_default_are_distinct(tmp_path: Path)
     assert json.loads(fix.read_text())["contract"] == "factory-fix/1"
 
 
-def test_record_triage_requires_task_fields_under_a_configured_contract(tmp_path: Path) -> None:
+def test_record_triage_requires_visibility_under_a_configured_contract(tmp_path: Path) -> None:
     # The Task contract is configurable, so the Task schema must not depend on its name.
     script = WORKFLOW / "record-triage.sh"
     incomplete: dict[str, object] = {"doable": True, "reasons": [], "plan": "Tighten lint."}
@@ -96,7 +94,7 @@ def test_record_triage_requires_task_fields_under_a_configured_contract(tmp_path
         },
     )
     assert result.returncode != 0
-    assert "choices, gates, and user_visible" in result.stderr
+    assert "user_visible" in result.stderr
 
 
 def test_task_scope_floor_and_commit_normalization(tmp_path: Path) -> None:
@@ -160,124 +158,6 @@ def test_normalize_chore_commits_refuses_pushed_commits_and_merge(tmp_path: Path
     assert git(repo, "rev-parse", "HEAD") == head
 
 
-def test_gate_exercise_requires_matching_command_and_confirmed_diagnostic(tmp_path: Path) -> None:
-    repo, _ = repository(tmp_path)
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    (evidence / "task-triage.json").write_text(
-        json.dumps({"gates": [{"name": "lint", "command": "make lint"}]})
-    )
-    (evidence / "good.log").write_text("clean\n")
-    (evidence / "bad.log").write_text("lint: planted violation\n")
-    (evidence / "plant.patch").write_text("diff --git a/x b/x\n")
-    exercise = {
-        "name": "lint",
-        "command": "make lint",
-        "positive": {"command": "make lint", "exit": 0, "log": "good.log"},
-        "negative": {"command": "make lint", "exit": 1, "log": "bad.log", "patch": "plant.patch"},
-    }
-    (evidence / "gate-exercises.json").write_text(json.dumps([exercise]))
-    (evidence / "gate-verdicts.json").write_text(
-        json.dumps(
-            [
-                {
-                    "name": "lint",
-                    "confirmed": True,
-                    "criterion_met": True,
-                    "diagnostic": "lint: planted violation",
-                    "reason": "",
-                }
-            ]
-        )
-    )
-    checker = str(WORKFLOW.resolve() / "check-gate-exercises.py")
-    assert run(["python3", checker, str(evidence)], cwd=repo).returncode == 0
-    negative = exercise["negative"]
-    assert isinstance(negative, dict)
-    negative["command"] = "make test"
-    (evidence / "gate-exercises.json").write_text(json.dumps([exercise]))
-    assert run(["python3", checker, str(evidence)], cwd=repo).returncode != 0
-
-
-def test_final_gate_inventory_merges_sources_instead_of_requiring_agreement(
-    tmp_path: Path,
-) -> None:
-    """Acceptance F6: independent sessions naming one check differently add an exercise."""
-    evidence = tmp_path / "evidence"
-    evidence.mkdir()
-    checker = str(WORKFLOW.resolve() / "check-gate-inventory.py")
-    triage = evidence / "task-triage.json"
-    inventory = evidence / "final-gates-prepush.json"
-    changes = evidence / "gate-changes.json"
-    derived = evidence / "diff-gates-prepush.json"
-    lint = {"name": "ruff-strict-lint", "command": "ruff check .", "violation": "B006 default"}
-    dup = {"name": "jscpd", "command": "npx --yes jscpd src", "violation": "50+ token copy"}
-    triage.write_text(json.dumps({"gates": [lint, dup]}))
-    command = ["python3", checker, str(triage), str(inventory), str(changes), str(derived)]
-
-    def final() -> list[dict[str, str]]:
-        return json.loads(inventory.read_text())["gates"]
-
-    # R1: the lead dropped jscpd and kept triage's lint command; the implementor pinned
-    # jscpd; the tester derived what CI actually runs under the same name.
-    inventory.write_text(json.dumps({"gates": [lint]}))
-    changes.write_text(json.dumps({"gates": [{**dup, "command": "npx --yes jscpd@4.3.0 src"}]}))
-    full_lint = "ruff check . && ruff format --check ."
-    derived.write_text(
-        json.dumps({"gates": [{**lint, "command": full_lint, "violation": "unformatted file"}]})
-    )
-    result = run(command)
-    assert result.returncode == 0, result.stderr
-    assert [(gate["name"], gate["command"]) for gate in final()] == [
-        ("ruff-strict-lint", "ruff check ."),
-        ("jscpd", "npx --yes jscpd src"),
-        ("jscpd (changed)", "npx --yes jscpd@4.3.0 src"),
-        ("ruff-strict-lint (diff)", full_lint),
-    ]
-    # The lead reusing a triage gate's name for another command cannot drop the triage
-    # command: it is restored under a unique name and exercised.
-    inventory.write_text(json.dumps({"gates": [{**lint, "command": "true"}, dup]}))
-    changes.write_text(json.dumps({"gates": []}))
-    derived.write_text(json.dumps({"gates": []}))
-    assert run(command).returncode == 0
-    assert ("ruff-strict-lint (triage)", "ruff check .") in [
-        (gate["name"], gate["command"]) for gate in final()
-    ]
-    # R2: a review round whose two sessions named the same check differently.
-    c4 = {
-        "name": "ruff C4 (flake8-comprehensions) lint rule",
-        "command": "ruff check --select C4 .",
-    }
-    inventory.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
-    review = evidence / "review-gates.json"
-    review.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
-    derived.write_text(
-        json.dumps(
-            {"gates": [{"name": "ruff-lint-C4", "command": "ruff check .", "violation": "C400"}]}
-        )
-    )
-    result = run(["python3", checker, str(review), str(inventory), "", str(derived)])
-    assert result.returncode == 0, result.stderr
-    assert {gate["name"] for gate in final()} == {c4["name"], "ruff-lint-C4"}
-    # The same command under another name is already covered: no duplicate exercise.
-    derived.write_text(
-        json.dumps({"gates": [{"name": "c4", "command": c4["command"], "violation": "C400"}]})
-    )
-    inventory.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
-    assert run(["python3", checker, str(review), str(inventory), "", str(derived)]).returncode == 0
-    assert len(final()) == 1
-    # A gate that cannot be exercised still stops the guard.
-    derived.write_text(json.dumps({"gates": [{"name": "new", "command": "make new"}]}))
-    failed = run(["python3", checker, str(review), str(inventory), "", str(derived)])
-    assert failed.returncode != 0
-    assert "needs a name, command and violation" in failed.stderr
-    (evidence / "gate-exercises.json").write_text("[]")
-    (evidence / "gate-verdicts.json").write_text("[]")
-    inventory.write_text(json.dumps({"gates": [lint]}))
-    exercise_checker = str(WORKFLOW.resolve() / "check-gate-exercises.py")
-    assert run(["python3", exercise_checker, str(evidence), str(inventory)]).returncode != 0
-
-
 def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path) -> None:
     script = (WORKFLOW / "record-outcome.sh").resolve()
     pre = tmp_path / "scope-prepush.json"
@@ -303,7 +183,7 @@ def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path
     assert "pr" not in outcome
     pre.write_text(json.dumps({"crossed": False, "reasons": [], "complete": True}))
     post.write_text(
-        json.dumps({"crossed": True, "reasons": ["gate exercise failed"], "complete": True})
+        json.dumps({"crossed": True, "reasons": ["scope boundary crossed"], "complete": True})
     )
     # CI repair moved HEAD past the recorded pre-finalize head, so the post guard applies.
     (tmp_path / "clone").mkdir()
@@ -378,8 +258,6 @@ def test_annotate_chore_pr_is_idempotent_and_records_title_failure(tmp_path: Pat
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    (evidence / "task-choices.json").write_text('[{"choice":"baseline"}]')
-    (evidence / "gate-exercises.json").write_text("[]")
     state = tmp_path / "pr.json"
     state.write_text(json.dumps({"body": "Original", "title": "fix: lint", "patches": []}))
     bin_dir = tmp_path / "bin"
@@ -435,11 +313,11 @@ else:
     assert "agent-factory:task-evidence" in saved["body"]
     assert annotate(env).returncode == 0
     assert len(json.loads(state.read_text())["patches"]) == 1
-    (evidence / "gate-exercises.json").write_text('[{"name":"new-gate"}]')
+    (evidence / "nonchore-commits.json").write_text('["fix: ci repair"]')
     assert annotate(env).returncode == 0
     saved = json.loads(state.read_text())
     assert len(saved["patches"]) == 2
-    assert "new-gate" in saved["body"]
+    assert "fix: ci repair" in saved["body"]
     assert saved["body"].count("agent-factory:task-evidence -->") == 1
     saved["body"] = saved["body"].replace(
         "<!-- agent-factory:task-evidence-end -->", "\n\nHuman note"
@@ -449,6 +327,18 @@ else:
     saved = json.loads(state.read_text())
     assert "Human note" in saved["body"]
     assert "agent-factory:task-evidence-end" in saved["body"]
+    saved["body"] = (
+        saved["body"]
+        .replace(
+            "Non-chore CI commits:", "Choices: `[]`\nGate exercises: `[]`\nNon-chore CI commits:"
+        )
+        .replace("<!-- agent-factory:task-evidence-end -->", "\n\nLegacy note")
+    )
+    state.write_text(json.dumps(saved))
+    assert annotate(env).returncode == 0
+    saved = json.loads(state.read_text())
+    assert "Legacy note" in saved["body"]
+    assert "Gate exercises:" not in saved["body"]
     saved["title"] = "fix: lint"
     state.write_text(json.dumps(saved))
     failure = annotate({**env, "FAIL_TITLE": "1"})
@@ -494,20 +384,18 @@ def test_scope_state_chore_check_and_json_flag_helpers(tmp_path: Path) -> None:
     scope.write_text(json.dumps({"crossed": False, "reasons": []}) + "\n")
     assert run(["python3", scope_state, "complete", str(scope)]).returncode == 0
     assert run(["python3", scope_state, "status", str(scope)]).stdout == "clean"
-    marked = run(["python3", scope_state, "cross", str(scope), "gate exercise failed"])
+    marked = run(["python3", scope_state, "cross", str(scope), "scope boundary crossed"])
     assert marked.returncode == 0, marked.stderr
     assert json.loads(scope.read_text()) == {
         "crossed": True,
-        "reasons": ["gate exercise failed"],
+        "reasons": ["scope boundary crossed"],
         "complete": True,
     }
     assert run(["python3", scope_state, "status", str(scope)]).stdout == "crossed"
 
     flag = str(WORKFLOW.resolve() / "json-flag.py")
     triage = tmp_path / "task-triage.json"
-    assert run(["python3", flag, str(triage), "gates"]).stdout == "false"
-    triage.write_text(json.dumps({"gates": [{"name": "dup"}], "user_visible": False}))
-    assert run(["python3", flag, str(triage), "gates"]).stdout == "true"
+    triage.write_text(json.dumps({"user_visible": False}))
     assert run(["python3", flag, str(triage), "user_visible"]).stdout == "false"
 
     (tmp_path / "git").mkdir()
@@ -585,8 +473,6 @@ def test_task_decline_reasons_carry_the_route_from_the_plan(tmp_path: Path) -> N
         "doable": False,
         "reasons": ["changes normalize_whitespace's return values"],
         "plan": "This belongs in a Feature, not a Task: decide the new casing rule.",
-        "choices": [],
-        "gates": [],
         "user_visible": False,
     }
     output = tmp_path / "task-outcome.json"
@@ -639,3 +525,78 @@ def test_review_field_reads_review_json_strictly(tmp_path: Path) -> None:
     )
     assert missing.returncode != 0
     assert "no kind" in missing.stderr
+
+
+def test_record_scope_extracts_one_decision_from_fences_or_prose(tmp_path: Path) -> None:
+    script = WORKFLOW / "record-scope.sh"
+    decision = '{"crossed": false, "reasons": []}'
+    answers = (f"```json\n{decision}\n```", f"Review complete: {decision} Done.")
+    for index, answer in enumerate(answers):
+        scope = tmp_path / f"scope-{index}.json"
+        payload = {"floor": "[]", "decision": answer, "scope_path": str(scope)}
+        result = run(["sh", str(script)], data=payload)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "clean"
+        assert json.loads(scope.read_text()) == {"crossed": False, "reasons": []}
+
+
+def test_record_scope_refuses_ambiguous_or_missing_verdict(
+    tmp_path: Path,
+) -> None:
+    script = WORKFLOW / "record-scope.sh"
+    scope = tmp_path / "scope-prepush.json"
+    decision = '{"crossed": false, "reasons": []}'
+    cases = (
+        (f"{decision}\n{decision}", "2 decision objects"),
+        ("no verdict", "no decision object"),
+    )
+    for answer, detail in cases:
+        payload = {"floor": "[]", "decision": answer, "scope_path": str(scope)}
+        result = run(["sh", str(script)], data=payload)
+        assert result.returncode != 0
+        assert detail in result.stderr
+        recorded = json.loads(scope.read_text())
+        assert recorded["crossed"] is True
+        assert "scope verdict could not be parsed" in recorded["reasons"][0]
+        output = tmp_path / "task-outcome.json"
+        outcome = run(
+            ["sh", str(WORKFLOW / "record-outcome.sh")],
+            data={
+                "contract": "factory-task/1",
+                "outcome_path": str(output),
+                "validator_status": "passed",
+                "scope_path": str(scope),
+            },
+        )
+        assert outcome.returncode == 0, outcome.stderr
+        assert recorded["reasons"] == json.loads(output.read_text())["reasons"]
+
+
+def test_review_outcome_preserves_unparseable_scope_reason(tmp_path: Path) -> None:
+    reason = "Task scope guard: scope verdict could not be parsed (no decision object)"
+    result_path = tmp_path / "implement-result.json"
+    result_path.write_text(
+        json.dumps(
+            {
+                "validator": {"status": "passed"},
+                "ci": {"status": "passed"},
+                "scope": {"prepush": {"crossed": True, "complete": False, "reasons": [reason]}},
+            }
+        )
+    )
+    outcome_path = tmp_path / "review-outcome.json"
+    result = run(
+        ["sh", str(WORKFLOW / "record-review-outcome.sh")],
+        data={
+            "decision": json.dumps(
+                {"needs_input": [], "items": [{"id": "review-1", "decision": "change"}]}
+            ),
+            "changes_needed": "true",
+            "result_path": str(result_path),
+            "outcome_path": str(outcome_path),
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["outcome"] == "failed"
+    assert outcome["reasons"] == [reason]

@@ -39,7 +39,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "factory-task-guard-v1.0.yaml",
     "task-scope-floor.py",
     "record-scope.sh",
-    "check-gate-inventory.py",
+    "decision_json.py",
     "check-chore-subjects.py",
     "normalize-chore-commits.py",
     "scope-state.py",

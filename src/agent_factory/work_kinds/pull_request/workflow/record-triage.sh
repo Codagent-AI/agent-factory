@@ -7,10 +7,11 @@ set -eu
 
 payload=$(cat)
 
-PAYLOAD="$payload" python3 - <<'PY'
+PAYLOAD="$payload" PYTHONPATH="$(dirname "$0")${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 import json
 import os
 import sys
+from decision_json import decision_objects
 
 try:
     parsed = json.loads(os.environ["PAYLOAD"])
@@ -26,8 +27,8 @@ decision_raw = parsed.get("decision")
 contract = parsed.get("contract", "factory-fix/1")
 accept_field = parsed.get("accept_field", "fixable")
 decision_path = parsed.get("decision_path")
-# Only Task triage answers with "doable"; it also returns the delegated choices, the gates
-# to exercise, and visibility. The contract is configurable, so it cannot identify a Task.
+# Only Task triage answers with "doable" and user visibility. The contract
+# is configurable, so it cannot identify a Task.
 task_schema = accept_field == "doable"
 if not isinstance(contract, str) or not contract or not isinstance(accept_field, str) or not accept_field:
     print("record-triage: contract and accept_field must be non-empty strings", file=sys.stderr)
@@ -41,31 +42,6 @@ if not isinstance(decision_raw, str):
 
 
 
-def decision_objects(text):
-    """Every JSON object in the captured text that has the decision's shape.
-
-    The prompt asks for exactly one object and nothing else, but real agents still
-    add prose or a markdown fence around it. A single left-to-right pass decodes at
-    each opening brace and skips past what it decoded; only objects carrying a boolean
-    'fixable', a 'reasons' list, and a 'plan' string count as candidates, so an
-    illustrative object in prose is ignored
-    and the caller can refuse an answer that offers more than one decision.
-    """
-    decoder = json.JSONDecoder()
-    candidates = []
-    index = text.find("{")
-    while index != -1:
-        try:
-            value, end = decoder.raw_decode(text, index)
-        except json.JSONDecodeError:
-            index = text.find("{", index + 1)
-            continue
-        if is_decision(value):
-            candidates.append(value)
-        index = text.find("{", max(end, index + 1))
-    return candidates
-
-
 def is_decision(value):
     basic = (
         isinstance(value, dict)
@@ -75,17 +51,7 @@ def is_decision(value):
     )
     if not basic or not task_schema:
         return basic
-    return (
-        isinstance(value.get("choices"), list)
-        and all(isinstance(choice, str) for choice in value["choices"])
-        and isinstance(value.get("gates"), list)
-        and all(
-            isinstance(gate, dict)
-            and all(isinstance(gate.get(key), str) and gate[key] for key in ("name", "command", "violation"))
-            for gate in value["gates"]
-        )
-        and isinstance(value.get("user_visible"), bool)
-    )
+    return isinstance(value.get("user_visible"), bool)
 
 
 try:
@@ -98,7 +64,7 @@ except json.JSONDecodeError as exc:
 # Valid JSON that is not itself a decision (an array holding one, say) gets the same
 # search as prose does.
 if not is_decision(decision):
-    candidates = decision_objects(decision_raw)
+    candidates = decision_objects(decision_raw, is_decision)
     if len(candidates) > 1:
         print(
             f"record-triage: triage decision is ambiguous: {len(candidates)} decision objects",
@@ -116,7 +82,7 @@ if not isinstance(decision, dict):
     sys.exit(2)
 
 if task_schema and not is_decision(decision):
-    print("record-triage: task decision needs choices, gates, and user_visible", file=sys.stderr)
+    print("record-triage: task decision needs user_visible", file=sys.stderr)
     sys.exit(2)
 
 fixable = decision.get(accept_field)

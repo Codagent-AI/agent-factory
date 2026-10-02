@@ -130,24 +130,12 @@ steps:
     capture: ci_status
     skip_if: 'sh: test "{{validator_status}}" != passed'
 
-  - id: discover-review-gates
-    session: lead-agent
-    mode: autonomous
-    prompt: |
-      Inspect the complete {{scope_base}}..HEAD review diff and identify every
-      new or tightened gate, including check-only CI jobs and issue-stated
-      rejection criteria. Write {{artifact_dir}}/review-gates.json as
-      {"gates":[{"name":string,"command":string,"violation":string}]}.
-      Use an empty list only if the diff changes no gate. Do not edit code.
-    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
-
   - id: prepush-task-guard
     workflow: factory-task-guard-v1.0.yaml
     params:
       base: "{{scope_base}}"
       mode: prepush
       artifact_dir: "{{artifact_dir}}"
-      gates_file: "{{artifact_dir}}/review-gates.json"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
     # write-result reports an incomplete guard; scope_status then stays crossed, so
     # nothing is pushed.
@@ -198,8 +186,6 @@ steps:
       base: "{{scope_base}}"
       mode: postfinalize
       artifact_dir: "{{artifact_dir}}"
-      gates_file: "{{artifact_dir}}/review-gates.json"
-      prefinalize_head: "{{prefinalize_head}}"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed || test "{{scope_status}}" = crossed || test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
     continue_on_failure: true
 
@@ -222,10 +208,10 @@ steps:
               scope[mode] = json.loads(source.read_text())
       if result["validator"]["status"] == "passed" and not scope.get("prepush", {}).get("complete"):
           scope["prepush"] = {"crossed": True, "complete": False,
-                              "reasons": ["pre-push Task scope guard did not complete"]}
+                              "reasons": scope.get("prepush", {}).get("reasons") or ["pre-push Task scope guard did not complete"]}
       if "{{prefinalize_head}}" != result["head_sha"] and not scope.get("postfinalize", {}).get("complete"):
           scope["postfinalize"] = {"crossed": True, "complete": False,
-                                   "reasons": ["post-finalize Task scope guard did not complete"]}
+                                   "reasons": scope.get("postfinalize", {}).get("reasons") or ["post-finalize Task scope guard did not complete"]}
       result["scope"] = scope
       path.write_text(json.dumps(result) + "\n")
       PY

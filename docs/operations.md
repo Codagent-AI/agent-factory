@@ -298,15 +298,12 @@ claims waiting for review.
 
 Triage declines behavior, public API or CLI, persisted data, OpenSpec specs,
 credentials, release/deploy configuration, branch protection, cross-repository
-work, oversized changes, and unbounded product, compatibility, or threshold
-decisions. A choice explicitly bounded by the issue or existing repository
-settings is allowed. Use the requested gate target when measured results meet
-it; otherwise record and keep the measured baseline. Development tools, dev
-dependencies, and CI jobs that only check are in scope. Publishing, versioning,
+work, oversized changes, and product, compatibility, threshold, or other
+decisions the issue leaves open. Development tools and dependencies, CI, docs,
+behavior-preserving refactors and cleanups are in scope. Publishing, versioning,
 signing, tagging, and deploying are release configuration and out of scope.
-New or tightened gates are exercised on the delivered tree and on a planted
-violation, with the negative diagnostic confirmed by another session. Pre-push
-and post-finalize scope guards check the complete diff. Task commits and PR
+The pre-push and post-finalize scope guards check the complete diff.
+Task commits and PR
 titles use `chore:`; review rounds stop for out-of-scope feedback.
 
 Before enabling `[task]`, audit Ready Task cards in every fix target and move
