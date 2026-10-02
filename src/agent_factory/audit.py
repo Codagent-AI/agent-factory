@@ -1,11 +1,12 @@
 """Post-run development audits run while the factory audit switch is on.
 
 Agent Runner auto-audits only ``openspec/`` and ``spec-driven/`` workflows, so the factory
-owns the audit of its own runs. A host fix or review attempt replays the audit inside its
-launch wrapper, while the attempt's staged profile config is still in the clone
-(``python -m agent_factory.audit host``). An eval audits inside its sandbox, which holds
-no reporting connection, so the resident delivers the collected reports from the host
-when it consumes the attempt (:func:`deliver_collected`).
+owns the audit of its own runs. While :data:`AUDIT_ENABLED` is on, a host fix, feature, or
+review attempt replays the audit inside its launch wrapper, while the attempt's staged
+profile config is still in the clone (``python -m agent_factory.audit host``). An eval
+audits inside its sandbox, which holds no reporting connection, so the resident delivers
+the collected reports from the host when it consumes the attempt
+(:func:`deliver_collected`).
 
 Either path leaves ``audit.json`` in the attempt's evidence. The audit never changes the
 attempt's own outcome: an undelivered audit is reported through :func:`settle`, which

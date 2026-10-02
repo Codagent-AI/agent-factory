@@ -586,9 +586,9 @@ def _consume_results(
 def _settle_audit(store: ClaimStore, claim: Claim, run: Run) -> None:
     """Skip settlement while audits are off; otherwise report undelivered metrics.
 
-    Every factory run is audited: a host attempt audits inside its launch wrapper, and an
-    eval's sandbox-assembled reports are delivered from here. The attempt's own result is
-    never changed by its audit.
+    While audits are on, every factory run is audited: a host attempt audits inside its
+    launch wrapper, and an eval's sandbox-assembled reports are delivered from here. The
+    attempt's own result is never changed by its audit.
     """
     if not audit.AUDIT_ENABLED:
         return
