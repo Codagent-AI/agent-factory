@@ -207,7 +207,9 @@ if contract == "factory-feature/1":
             loaded = json.loads(Path(compliance_path).read_text())
             if (isinstance(loaded, dict)
                 and loaded.get("result") in ("passed", "failed", "not-run", "not-declared")
-                and all(isinstance(loaded.get(key), str) and loaded[key] for key in ("base", "reviewed_head", "tasks_sha256"))):
+                and ((loaded.get("result") == "not-run" and isinstance(loaded.get("reason"), str))
+                     or all(isinstance(loaded.get(key), str) and loaded[key]
+                            for key in ("base", "reviewed_head", "tasks_sha256")))):
                 compliance = {
                     key: loaded[key] for key in ("result", "reason", "base", "reviewed_head", "tasks_sha256")
                     if key in loaded

@@ -2061,12 +2061,41 @@ def test_feature_outcome_qualifies_validator_status(
             json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
             == "incomplete"
         )
+        record_path.write_text(
+            json.dumps({"result": "not-run", "reason": "binding failed: bad base", "base": ""})
+        )
+        rerun = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+        assert rerun.returncode == 0, rerun.stderr
+        assert json.loads((tmp_path / "feature-outcome.json").read_text())["task_compliance"] == {
+            "result": "not-run",
+            "reason": "binding failed: bad base",
+            "base": "",
+        }
     payload["validator_status"] = "failed"
     run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
     assert (
         json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
         == "failed"
     )
+
+
+def test_task_compliance_record_rejects_non_object_json(tmp_path: Path) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("annotate_pr", PACKAGE / "annotate-pr.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    (tmp_path / "task-compliance.json").write_text("[]")
+
+    assert module.task_compliance_record(tmp_path) == {
+        "result": "not-run",
+        "reason": "no task-compliance record",
+    }
+    (tmp_path / "task-compliance.json").write_text(
+        json.dumps({"result": "not-run", "reason": "binding failed: bad base", "base": ""})
+    )
+    assert module.task_compliance_record(tmp_path)["reason"] == "binding failed: bad base"
 
 
 @pytest.mark.parametrize(
