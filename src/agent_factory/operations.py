@@ -1284,6 +1284,8 @@ def _audit_lines(
             evidence = Path(run.evidence_path)
             summary = audit.read_summary(evidence)
             if summary is None:
+                if not audit.AUDIT_ENABLED:
+                    continue
                 if not (evidence / audit.HOST_SESSION_DIR / audit.METRICS_FILE).is_file():
                     continue
                 outcome, reason = audit.MISSING, "the attempt recorded no post-run audit"

@@ -56,6 +56,14 @@ resident's restart. The script:
    still uses.
 
 Agent Evals needs no deploy: each eval admission fetches `harness_ref`.
+A deploy is needed only for Agent Factory changes. Changes merged to `main` of
+Agent Runner, Agent Validator, Agent Skills, or Agent Evals reach the next eval
+admission with no deploy and no pin change: admission resolves each ref to a
+commit and freezes it, and the claim's `frozen-inputs` comment lists them. A
+claim already admitted keeps its frozen revisions. The live service runs evals
+on Fly (`execution` in the local config). The Validator reviewer an eval uses
+comes from the and-scene fixture's `.validator/config.yml`, which Agent Evals
+pins (see its `AGENTS.md`), not from this repository.
 
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
 by hand before deploying. To run `tick` by hand from a shell, put
@@ -158,7 +166,7 @@ See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
 ## Service-driven watcher
 
-The watcher's only job is to make sure the factory itself works; it does not review the code the factory builds. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix, feature, or task run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. It posts nothing on the PR. On `FAILURE` the session diagnoses the failed run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, filed issues, and audit. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
+The watcher's only job is to make sure the factory itself works; it does not review the code the factory builds. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix, feature, or task run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. It posts nothing on the PR. On `FAILURE` (a failed attempt, including a fix, feature, or task run that completed with outcome `failed`), the session diagnoses the run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. `needs-input` outcomes are not triaged. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, filed issues, and audit. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
 
 Do not start a general long-running watcher, `/loop`, or polling session: it
 duplicates the service's work and costs a session per poll. To follow specific

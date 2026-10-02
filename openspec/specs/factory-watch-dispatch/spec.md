@@ -7,14 +7,14 @@ TBD - created by archiving change feature-61-51640878. Update Purpose after arch
 
 When watching is enabled, every factory cycle, whether started by the resident or by `tick`, SHALL detect watch events after it consumes attempt results. It SHALL detect them whether the factory is paused or not, and whether the admission window is open or not. The watcher exists to make sure the factory itself works, so the factory SHALL detect only two event kinds:
 
-- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, and which still has that status once the failure grace period has passed since it finished;
+- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix, feature, or task attempt recorded `completed` with the `failed` outcome, once the failure grace period has passed since it finished. A `needs-input` outcome is never a failure event;
 - `PR-READY`: a fix, feature, or task attempt that completed with the `pull-request` outcome. This includes initial, recovery, and review-round attempts.
 
 A newly admitted claim and a finished eval SHALL NOT be detected as events. The factory SHALL keep a durable watch cursor holding the time watching was enabled and the time of the last detection pass, and each cycle SHALL record its detection time there. `PR-READY` detection SHALL scan eligible fix, feature, and task attempts completed with the `pull-request` outcome, finished after watching was enabled and within the last 7 days, and not previously detected.
 
 `FAILURE` detection SHALL NOT depend on that point. Each cycle SHALL detect every attempt that meets all of these conditions:
 
-- it has a failure status;
+- it has a failure status, or it is a completed fix or feature attempt with the `failed` outcome;
 - it finished after watching was enabled and within the last 7 days;
 - it finished at least the currently configured grace period ago;
 - its result has been consumed (`consumed-results` exists for the attempt);
@@ -51,6 +51,16 @@ So a change to the grace period can neither skip a failure nor detect it twice. 
 
 - **WHEN** a Fly eval attempt is recorded `failed` and is still `failed` when the grace period has passed
 - **THEN** the first cycle after the grace period detects one `FAILURE` event for that attempt
+
+#### Scenario: A fix attempt completes with outcome failed
+
+- **WHEN** a fix attempt is recorded `completed` with outcome `failed` and its result is consumed
+- **THEN** the first cycle after the grace period detects exactly one `FAILURE` event, and no `PR-READY`
+
+#### Scenario: A fix attempt completes with needs-input
+
+- **WHEN** a fix attempt is recorded `completed` with outcome `needs-input` and its result is consumed
+- **THEN** no event is detected after the grace period
 
 #### Scenario: The grace period shrinks while a failure waits
 
@@ -292,7 +302,7 @@ Each dispatch that started a session SHALL record:
 - its input and output tokens;
 - its estimated cost.
 
-Tokens and cost SHALL come from the session's Agent Runner metrics. When a value cannot be read, or the Runner reports it as incomplete, it SHALL be recorded as unavailable, with the Runner's coverage, rather than as zero. The factory SHALL record each session's usage metrics in its dispatch record and status. The watch-session post-run audit SHALL run only when the audit switch is enabled; it is disabled by default pending Codagent-AI/agent-factory#60. When disabled, no metrics are sent to the development-audit destination and the audit outcome is recorded as missing. When enabled, audit delivery and its outcome SHALL be recorded. A session terminated at its timeout skips that audit, and its delivery SHALL be recorded as missing.
+Tokens and cost SHALL come from the session's Agent Runner metrics. When a value cannot be read, or the Runner reports it as incomplete, it SHALL be recorded as unavailable, with the Runner's coverage, rather than as zero. The factory SHALL record each session's usage metrics in its dispatch record and status. The watch-session post-run audit SHALL run only when the factory audit switch that governs all post-run audits is on. That switch is off pending Codagent-AI/agent-factory#60. When disabled, no metrics are sent to the development-audit destination and the audit outcome is recorded as missing. When enabled, audit delivery and its outcome SHALL be recorded. A session terminated at its timeout skips that audit, and its delivery SHALL be recorded as missing.
 
 #### Scenario: A completed review records its usage
 
@@ -376,4 +386,3 @@ A dispatched session that finds a defect in the factory stack SHALL first search
 
 - **WHEN** a session finds a new Agent Validator defect and Agent Validator is a fix target
 - **THEN** it files a Bug issue in Agent Validator with the evidence, sets Owner factory, Status Ready, and Priority Low, and reports the issue as filed
-

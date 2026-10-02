@@ -57,6 +57,105 @@ def _failures(store: ClaimStore) -> list[str]:
     return [row["run_id"] for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
 
 
+def _fix_run(
+    store: ClaimStore, finished: datetime, key: str, *, status: str, outcome: str, consumed: bool
+) -> str:
+    claim = store.create_claim(
+        ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", "fix", f"fp-{key}", {})
+    )
+    run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
+    store.finish_run(run.id, execution_status=status, result={"outcome": outcome})
+    if consumed:
+        store.set_setting("consumed-results", run.id, {"complete": True})
+    store._connection.execute(
+        "UPDATE run SET finished_at=? WHERE id=?", (finished.isoformat(), run.id)
+    )
+    return run.id
+
+
+def test_completed_failed_outcome_waits_for_grace_then_queues_failure(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        run_id = _fix_run(
+            store,
+            now - timedelta(minutes=5),
+            "failed-outcome",
+            status="completed",
+            outcome="failed",
+            consumed=True,
+        )
+        detect.detect(store, 7, lambda: now)
+        assert watch_store.rows(store) == []
+        detect.detect(store, 7, lambda: now + timedelta(minutes=3))
+        rows = watch_store.rows(store)
+        assert len(rows) == 1
+        assert rows[0]["event_key"] == f"FAILURE:{run_id}"
+        assert rows[0]["event_kind"] == "FAILURE"
+    finally:
+        store.close()
+
+
+def test_completed_needs_input_outcome_queues_no_event(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        _fix_run(
+            store,
+            now - timedelta(minutes=8),
+            "needs-input",
+            status="completed",
+            outcome="needs-input",
+            consumed=True,
+        )
+        detect.detect(store, 7, lambda: now)
+        assert watch_store.rows(store) == []
+    finally:
+        store.close()
+
+
+def test_failed_status_and_outcome_queue_one_failure_across_cycles(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        run_id = _fix_run(
+            store,
+            now - timedelta(minutes=8),
+            "double-failure",
+            status="failed",
+            outcome="failed",
+            consumed=True,
+        )
+        detect.detect(store, 7, lambda: now)
+        detect.detect(store, 7, lambda: now + timedelta(minutes=1))
+        assert _failures(store) == [run_id]
+        assert len(watch_store.rows(store)) == 1
+    finally:
+        store.close()
+
+
+def test_completed_failed_outcome_waits_for_result_consumption(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        _fix_run(
+            store,
+            now - timedelta(minutes=8),
+            "unconsumed-outcome",
+            status="completed",
+            outcome="failed",
+            consumed=False,
+        )
+        detect.detect(store, 7, lambda: now)
+        assert watch_store.rows(store) == []
+    finally:
+        store.close()
+
+
 def test_failure_waits_for_result_consumption(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
