@@ -5,7 +5,7 @@ description: Give Paul an on-demand update on the live Agent Factory — what is
 
 # Factory status
 
-Take one snapshot of the factory and report it. Do not start a watcher, a `/loop`, or background polling: the resident detects events and dispatches its own factory-defect checks of ready PRs and failure triage (`AGENTS.md`, "Service-driven watcher"). Read `AGENTS.md` first.
+Take one snapshot of the factory and report it. Do not start a watcher, a `/loop`, or background polling (to follow specific issues until they stop, use `factory-watch`): the resident detects events and dispatches its own factory-defect checks of ready PRs and failure triage (`AGENTS.md`, "Service-driven watcher"). Read `AGENTS.md` first.
 
 Never print tokens, credential files, or anything under `~/.agent-factory/private/`. Filter output before showing it.
 
