@@ -124,9 +124,10 @@ steps:
     skip_if: 'sh: test "{{gate_recheck}}" = passed'
 
   # CI repair commits are already pushed: their non-chore subjects are recorded for the
-  # PR description (annotate-chore-pr.sh) and never change the outcome.
+  # PR description (annotate-chore-pr.sh) and never change the outcome. Exit 3 means
+  # "recorded some"; any other failure stops the guard, so it is reported incomplete.
   - id: record-chore-subjects
-    command: python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json" || true
+    command: python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json" || test $? -eq 3
     skip_if: 'sh: test "{{mode}}" != postfinalize'
 
   - id: complete-guard

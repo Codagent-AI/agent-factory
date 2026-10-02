@@ -483,8 +483,11 @@ def test_scope_state_chore_check_and_json_flag_helpers(tmp_path: Path) -> None:
     assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 0
     assert json.loads(listing.read_text()) == []
     git(repo, "commit", "-q", "--allow-empty", "-m", "[fix-pr] fix: ci")
-    assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 1
+    assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 3
     assert json.loads(listing.read_text()) == ["[fix-pr] fix: ci"]
+    # An operational failure (here an unknown base) is not "non-chore subjects found".
+    broken = run(["python3", checker, "no-such-revision", str(listing)], cwd=repo)
+    assert broken.returncode not in (0, 3)
 
 
 def test_nonchore_ci_repair_commit_is_recorded_without_changing_the_outcome(
@@ -575,3 +578,29 @@ def test_task_decline_reasons_carry_the_route_from_the_plan(tmp_path: Path) -> N
         },
     )
     assert json.loads(fix.read_text())["reasons"] == ["r"]
+
+
+def test_review_field_reads_review_json_strictly(tmp_path: Path) -> None:
+    script = str((WORKFLOW / "review-field.sh").resolve())
+    review = tmp_path / "review.json"
+    review.write_text(json.dumps({"kind": "task", "head_sha": "abc123"}))
+    is_task = run(
+        ["sh", script], data={"review_file": str(review), "field": "kind", "equals": "task"}
+    )
+    assert is_task.stdout == "true", is_task.stderr
+    head = run(["sh", script], data={"review_file": str(review), "field": "head_sha"})
+    assert head.stdout == "abc123"
+    review.write_text(json.dumps({"kind": "fix", "head_sha": "abc123"}))
+    assert (
+        run(
+            ["sh", script], data={"review_file": str(review), "field": "kind", "equals": "task"}
+        ).stdout
+        == "false"
+    )
+    # A record without its kind stops the round instead of reading as a non-task round.
+    review.write_text(json.dumps({"head_sha": "abc123"}))
+    missing = run(
+        ["sh", script], data={"review_file": str(review), "field": "kind", "equals": "task"}
+    )
+    assert missing.returncode != 0
+    assert "no kind" in missing.stderr

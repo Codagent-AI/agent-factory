@@ -12,7 +12,11 @@ import os
 
 data = json.loads(os.environ["PAYLOAD"])
 with open(data["review_file"]) as handle:
-    value = json.load(handle).get(data["field"], "")
+    value = json.load(handle).get(data["field"])
+# review.json always carries kind and head_sha; a record without them must stop the round
+# rather than quietly read as a non-task round.
+if not isinstance(value, str) or not value:
+    raise SystemExit(f"review-field: review.json has no {data['field']} string")
 expected = data.get("equals")
 print(str(value == expected).lower() if expected is not None else value, end="")
 PY

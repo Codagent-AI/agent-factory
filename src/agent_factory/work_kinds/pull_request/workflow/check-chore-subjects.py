@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Record non-chore subjects without rewriting them; exit 1 when there are any."""
+"""Record non-chore subjects without rewriting them.
+
+Exits 3 when there are any, so callers can tell that apart from an operational failure
+(git or the evidence write), which exits with any other non-zero status.
+"""
 
 import json
 import re
 import subprocess
 import sys
 from pathlib import Path
+
+NONCHORE_FOUND = 3
 
 
 def check(base: str, output: Path) -> None:
@@ -18,7 +24,7 @@ def check(base: str, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(bad) + "\n")
     if bad:
-        sys.exit(1)
+        sys.exit(NONCHORE_FOUND)
 
 
 if __name__ == "__main__":
