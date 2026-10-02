@@ -227,7 +227,7 @@ def test_final_gate_inventory_retains_triage_gates_and_checks_new_gate(tmp_path:
 
 
 def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path) -> None:
-    script = WORKFLOW / "record-outcome.sh"
+    script = (WORKFLOW / "record-outcome.sh").resolve()
     pre = tmp_path / "scope-prepush.json"
     post = tmp_path / "scope-postfinalize.json"
     output = tmp_path / "task-outcome.json"
@@ -253,20 +253,29 @@ def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path
     post.write_text(
         json.dumps({"crossed": True, "reasons": ["gate exercise failed"], "complete": True})
     )
-    payload["post_guard_required"] = "true"
-    result = run(["sh", str(script)], data=payload)
+    # CI repair moved HEAD past the recorded pre-finalize head, so the post guard applies.
+    (tmp_path / "clone").mkdir()
+    repo, prefinalize = repository(tmp_path / "clone")
+    (repo / "ci.txt").write_text("repair\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "[fix-pr] ci repair")
+    payload["prefinalize_head"] = prefinalize
+    result = run(["sh", str(script)], cwd=repo, data=payload)
     assert result.returncode == 0, result.stderr
     outcome = json.loads(output.read_text())
     assert outcome["outcome"] == "failed"
     assert outcome["pr"]["url"] == "https://github.com/example/repo/pull/3"
     post.unlink()
-    assert run(["sh", str(script)], data=payload).returncode == 0
+    assert run(["sh", str(script)], cwd=repo, data=payload).returncode == 0
     assert (
         "post-finalize Task scope guard did not complete"
         in json.loads(output.read_text())["reasons"]
     )
+    payload["prefinalize_head"] = git(repo, "rev-parse", "HEAD")
+    assert run(["sh", str(script)], cwd=repo, data=payload).returncode == 0
+    assert json.loads(output.read_text())["outcome"] == "pull-request"
     post.write_text("{")
-    assert run(["sh", str(script)], data=payload).returncode == 0
+    assert run(["sh", str(script)], cwd=repo, data=payload).returncode == 0
     malformed = json.loads(output.read_text())
     assert malformed["outcome"] == "failed"
     assert malformed["pr"]["url"] == "https://github.com/example/repo/pull/3"
@@ -423,3 +432,41 @@ def test_review_scope_crossings_map_to_needs_input_and_failed(tmp_path: Path) ->
         outcome = json.loads(outcome_path.read_text())
         assert outcome["outcome"] == expected
         assert outcome["reasons"] == ["belongs in a Feature"]
+
+
+def test_scope_state_chore_check_and_json_flag_helpers(tmp_path: Path) -> None:
+    scope_state = str(WORKFLOW.resolve() / "scope-state.py")
+    scope = tmp_path / "scope-prepush.json"
+    status = run(["python3", scope_state, "status", str(scope)])
+    assert status.stdout == "crossed"  # a missing guard result never permits a push
+    scope.write_text(json.dumps({"crossed": False, "reasons": []}) + "\n")
+    assert run(["python3", scope_state, "complete", str(scope)]).returncode == 0
+    assert run(["python3", scope_state, "status", str(scope)]).stdout == "clean"
+    bad = tmp_path / "nonchore.json"
+    bad.write_text(json.dumps(["fix: a", "feat: b"]))
+    marked = run(["python3", scope_state, "cross", str(scope), "non-chore CI commits", str(bad)])
+    assert marked.returncode == 0, marked.stderr
+    assert json.loads(scope.read_text()) == {
+        "crossed": True,
+        "reasons": ["non-chore CI commits: fix: a, feat: b"],
+        "complete": True,
+    }
+    assert run(["python3", scope_state, "status", str(scope)]).stdout == "crossed"
+
+    flag = str(WORKFLOW.resolve() / "json-flag.py")
+    triage = tmp_path / "task-triage.json"
+    assert run(["python3", flag, str(triage), "gates"]).stdout == "false"
+    triage.write_text(json.dumps({"gates": [{"name": "dup"}], "user_visible": False}))
+    assert run(["python3", flag, str(triage), "gates"]).stdout == "true"
+    assert run(["python3", flag, str(triage), "user_visible"]).stdout == "false"
+
+    (tmp_path / "git").mkdir()
+    repo, base = repository(tmp_path / "git")
+    checker = str(WORKFLOW.resolve() / "check-chore-subjects.py")
+    listing = tmp_path / "subjects.json"
+    git(repo, "commit", "-q", "--allow-empty", "-m", "[implement-task] chore: tidy")
+    assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 0
+    assert json.loads(listing.read_text()) == []
+    git(repo, "commit", "-q", "--allow-empty", "-m", "[fix-pr] fix: ci")
+    assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 1
+    assert json.loads(listing.read_text()) == ["[fix-pr] fix: ci"]

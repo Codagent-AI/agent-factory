@@ -80,9 +80,8 @@ steps:
     prompt: |
       Implement the in-scope review plan from {{input_file}} and {{plan_json}}.
       No red-test-first requirement applies. Run relevant checks and validator.
-      Keep the Task boundary: no runtime behavior, public API or CLI, persisted
-      data, OpenSpec specifications, credentials, release/deploy configuration,
-      branch protection or unbounded compatibility change. Commit as
+      Keep within the Task boundary in
+      `.agent-runner/workflows/factory-task-boundary.md`. Commit as
       [{{step_id}}] chore: ... Do not rerun acceptance.
 
   - id: run-validator
@@ -159,20 +158,18 @@ steps:
 
   - id: check-review-chore-commits
     command: |
-      python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json"
-      if python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/nonchore-commits.json").read_text())'; then printf passed; else printf failed; exit 1; fi
+      if python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json"; then printf passed; else printf failed; exit 1; fi
     capture: chore_status
     continue_on_failure: true
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
 
   - id: record-nonchore-crossing
     command: |
-      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-prepush.json"); v=json.loads(p.read_text()); v["crossed"]=True; v["reasons"].append("review commits must have chore: subjects"); p.write_text(json.dumps(v)+"\n")'
+      python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-prepush.json" "review commits must have chore: subjects"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed || test "{{chore_status}}" = passed'
 
   - id: read-prepush-scope
-    command: |
-      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-prepush.json"); v=json.loads(p.read_text()) if p.is_file() else {}; print("clean" if v.get("complete") and not v.get("crossed") else "crossed", end="")'
+    command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
     capture: scope_status
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
 

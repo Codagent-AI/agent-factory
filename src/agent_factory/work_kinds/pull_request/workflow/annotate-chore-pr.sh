@@ -30,26 +30,28 @@ if f"Refs #{issue['number']}" not in body:
     body = f"Refs #{issue['number']}\n" + body
 evidence_marker = "<!-- agent-factory:task-evidence -->"
 evidence_end = "<!-- agent-factory:task-evidence-end -->"
-choices_path = artifact_dir / "task-choices.json"
-gates_path = artifact_dir / "gate-exercises.json"
-choices = choices_path.read_text() if choices_path.exists() else "[]"
-gates = gates_path.read_text() if gates_path.exists() else "[]"
-nonchore_path = artifact_dir / "nonchore-commits.json"
-nonchore = nonchore_path.read_text() if nonchore_path.exists() else "[]"
+
+
+def evidence(name):
+    path = artifact_dir / name
+    return path.read_text().strip() if path.exists() else "[]"
+
+
 section = (f"{evidence_marker}\n## Task evidence\n"
-           f"Choices: `{choices.strip()}`\nGate exercises: `{gates.strip()}`\n"
-           f"Non-chore CI commits: `{nonchore.strip()}`\n{evidence_end}")
+           f"Choices: `{evidence('task-choices.json')}`\n"
+           f"Gate exercises: `{evidence('gate-exercises.json')}`\n"
+           f"Non-chore CI commits: `{evidence('nonchore-commits.json')}`\n{evidence_end}")
 if evidence_marker in body:
     before, old_section = body.split(evidence_marker, 1)
     if evidence_end in old_section:
         after = old_section.split(evidence_end, 1)[1]
     else:
-        # Legacy annotations had no end marker; consume only their known lines.
-        legacy = re.match(r"\n## Task evidence\nChoices: .*?\nGate exercises: .*?\nNon-chore CI commits: .*?\n", old_section, re.DOTALL)
-        if legacy is None:
+        # The end marker was edited away; consume only the section's known lines.
+        known = re.match(r"\n## Task evidence\nChoices: .*?\nGate exercises: .*?\nNon-chore CI commits: .*?\n", old_section, re.DOTALL)
+        if known is None:
             print("failed", end="")
             raise SystemExit(1)
-        after = old_section[legacy.end():]
+        after = old_section[known.end():]
     body = before + section + after
 else:
     body += "\n\n" + section

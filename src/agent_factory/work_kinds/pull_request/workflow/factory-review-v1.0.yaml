@@ -80,12 +80,8 @@ steps:
     command: printf ''
     capture: changes_needed
 
-  - id: read-kind
-    command: python3 -c 'import json; print(json.load(open("{{review_file}}"))["kind"], end="")'
-    capture: review_kind
-
   - id: is-task
-    command: 'if test "{{review_kind}}" = task; then printf true; else printf false; fi'
+    command: python3 -c 'import json; print(str(json.load(open("{{review_file}}"))["kind"] == "task").lower(), end="")'
     capture: is_task
 
   - id: read-scope-base
@@ -118,9 +114,7 @@ steps:
       existing evidence still names the commit it describes.
 
       On a task pull request, judge every requested change against the Task
-      boundary: no runtime behavior, public API/CLI, persisted data, OpenSpec
-      specifications, credentials, release or deploy configuration, branch
-      protection, runtime dependency or unbounded compatibility change. Put
+      boundary in `.agent-runner/workflows/factory-task-boundary.md`. Put
       every out-of-scope request in needs_input, naming the request and whether
       it belongs in a Bug or Feature. Implement nothing when needs_input is set.
 
@@ -199,8 +193,6 @@ steps:
       mode: save
       review_file: "{{review_file}}"
       artifact_dir: "{{artifact_dir}}"
-      task_scope: "{{is_task}}"
-      scope_base: "{{scope_base}}"
     skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
 

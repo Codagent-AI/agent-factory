@@ -42,22 +42,11 @@ steps:
     capture: triage_decision
     prompt: |
       Read {{issue_file}}, including eligible comments and prior factory PR on
-      re-attempts. Decide whether this Task is bounded, low-risk maintenance.
-      Decline with doable=false when it would change runtime behavior, public
-      API or CLI, OpenSpec specifications, persisted data, credentials, release
-      or deploy configuration, branch protection, runtime dependencies, or a
-      shipped runtime requirement without an explicitly requested value already
-      used by the repository. Decline work outside this repository, work too
-      large for one reviewable PR, or an open product, design, compatibility, or
-      threshold choice. Name "belongs in a Bug" for a defect, "belongs in a
-      Feature" for behavior or specification changes, and the exact decision.
-      Accept delegated bounded choices: use a stated target when measurements
-      meet it, otherwise use the measured baseline without loosening it; baseline
-      findings that cannot be fixed without behavior change. Development tools,
-      dev dependencies and check-only CI jobs are in scope; publishing,
-      versioning, signing, tagging and deployment are release work and out of
-      scope. A repository-pinned Node version can bound an explicit engines
-      request; an unpinned version cannot.
+      re-attempts. Decide whether this Task is bounded, low-risk maintenance
+      under the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
+      Decline with doable=false when it crosses that boundary, naming where it
+      belongs and the exact decision needed. Accept the delegated choices the
+      boundary allows.
 
       Worked examples: agent-factory#74 (Ruff, vulture, jscpd and check-only CI)
       qualifies with measured/baselined thresholds; agent-validator#174 qualifies
@@ -100,9 +89,13 @@ steps:
     capture: doable
     skip_if: 'sh: test "{{doable}}" = true || test "{{doable}}" = false'
 
-  - id: seed-post-guard-required
-    command: printf false
-    capture: post_guard_required
+  - id: has-triage-gates
+    command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/task-triage.json" gates
+    capture: has_gates
+
+  - id: triage-user-visible
+    command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/task-triage.json" user_visible
+    capture: user_visible
 
   - id: seed-prefinalize-head
     command: printf ''
@@ -130,6 +123,9 @@ steps:
       - id: seed-annotation-status
         command: printf failed
         capture: annotation_status
+      - id: seed-scope-status
+        command: printf crossed
+        capture: scope_status
       - id: create-branch
         command: git checkout -b "{{branch_name}}"
       - id: implement-task
@@ -166,8 +162,7 @@ steps:
       - id: exercise-gates
         session: tester-agent
         mode: autonomous
-        skip_if: >-
-          sh: test "{{validator_status}}" != passed || python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("gates")'
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{has_gates}}" != true'
         prompt: |
           For every gate in {{artifact_dir}}/task-triage.json, run its exact
           command on the delivered tree. Plant its described violation, save
@@ -188,7 +183,7 @@ steps:
           from the positive log. Do not edit code.
       - id: check-gate-exercises
         command: |
-          if python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("gates")'; then printf passed; elif python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
+          if test "{{has_gates}}" != true || python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
         capture: gate_status
         continue_on_failure: true
       - id: repair-gates
@@ -230,8 +225,7 @@ steps:
         session: tester-agent
         mode: autonomous
         capture: test_flow_report
-        skip_if: >-
-          sh: test "{{gate_status}}" != passed || python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("user_visible")'
+        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{user_visible}}" != true'
         prompt: |
           Exercise representative user-facing tooling flows changed by this Task.
           Report concrete evidence, defects and limitations. Do not edit code.
@@ -294,11 +288,14 @@ steps:
           gates_file: "{{artifact_dir}}/task-triage.json"
           gate_changes_file: "{{artifact_dir}}/gate-changes.json"
         skip_if: 'sh: test "{{validator_status}}" != passed'
+      - id: read-prepush-scope
+        command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
+        capture: scope_status
+        skip_if: 'sh: test "{{validator_status}}" != passed'
       - id: normalize-chore-commits
         command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
         continue_on_failure: true
-        skip_if: >-
-          sh: test "{{validator_status}}" != passed || test ! -s "{{artifact_dir}}/scope-prepush.json" || python3 -c 'import json; from pathlib import Path; v=json.loads(Path("{{artifact_dir}}/scope-prepush.json").read_text()); assert v["crossed"] or not v.get("complete")'
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{scope_status}}" != clean'
       - id: record-prefinalize-head
         command: git rev-parse HEAD
         capture: prefinalize_head
@@ -309,8 +306,7 @@ steps:
         workflow: builtin:core/finalize-pr-v1.0.yaml
         params:
           ci_fix_cycles: "3"
-        skip_if: >-
-          sh: test "{{validator_status}}" != passed || test ! -s "{{artifact_dir}}/scope-prepush.json" || python3 -c 'import json; from pathlib import Path; v=json.loads(Path("{{artifact_dir}}/scope-prepush.json").read_text()); assert v["crossed"] or not v.get("complete")'
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{scope_status}}" != clean'
         continue_on_failure: true
       - id: mark-ci-failed
         command: printf failed
@@ -326,9 +322,6 @@ steps:
           gate_changes_file: "{{artifact_dir}}/gate-changes.json"
           prefinalize_head: "{{prefinalize_head}}"
         skip_if: 'sh: test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
-      - id: postfinalize-required
-        command: 'if test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"; then printf false; else printf true; fi'
-        capture: post_guard_required
       - id: record-pr-details
         command: |
           branch=$(git branch --show-current)
@@ -357,7 +350,6 @@ steps:
       reasons: "{{failure_reasons}}"
       scope_path: "{{artifact_dir}}/scope-prepush.json"
       post_scope_path: "{{artifact_dir}}/scope-postfinalize.json"
-      post_guard_required: "{{post_guard_required}}"
       prefinalize_head: "{{prefinalize_head}}"
 
   - id: verify-outcome

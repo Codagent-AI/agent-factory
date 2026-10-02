@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record already pushed non-chore subjects without rewriting them."""
+"""Record non-chore subjects without rewriting them; exit 1 when there are any."""
 
 import json
 import re
@@ -17,6 +17,8 @@ def check(base: str, output: Path) -> None:
     ]
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(bad) + "\n")
+    if bad:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

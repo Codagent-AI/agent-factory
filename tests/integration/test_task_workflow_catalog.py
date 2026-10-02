@@ -48,4 +48,4 @@ def test_task_pre_push_guard_rechecks_gates_after_findings() -> None:
     assert "check-gate-inventory.py" in guard
     assert "scope-{{mode}}.json" in guard
     assert "mark-nonchore-crossing" in guard
-    assert "non-chore CI commits:" in guard
+    assert "non-chore CI commits" in guard

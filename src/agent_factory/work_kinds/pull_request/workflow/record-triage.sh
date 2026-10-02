@@ -26,6 +26,8 @@ decision_raw = parsed.get("decision")
 contract = parsed.get("contract", "factory-fix/1")
 accept_field = parsed.get("accept_field", "fixable")
 decision_path = parsed.get("decision_path")
+# Task triage also returns the delegated choices, the gates to exercise, and visibility.
+task_schema = contract == "factory-task/1"
 if not isinstance(contract, str) or not contract or not isinstance(accept_field, str) or not accept_field:
     print("record-triage: contract and accept_field must be non-empty strings", file=sys.stderr)
     sys.exit(2)
@@ -70,7 +72,7 @@ def is_decision(value):
         and isinstance(value.get("reasons"), list)
         and isinstance(value.get("plan"), str)
     )
-    if not basic or accept_field != "doable":
+    if not basic or not task_schema:
         return basic
     return (
         isinstance(value.get("choices"), list)
@@ -112,7 +114,7 @@ if not isinstance(decision, dict):
     print("record-triage: triage decision must be a JSON object", file=sys.stderr)
     sys.exit(2)
 
-if accept_field == "doable" and not is_decision(decision):
+if task_schema and not is_decision(decision):
     print("record-triage: task decision needs choices, gates, and user_visible", file=sys.stderr)
     sys.exit(2)
 

@@ -19,42 +19,41 @@ def normalize(subject: str) -> str:
     return prefix + "chore: " + rest
 
 
+# One git log record per commit: hash, parents, tree, attribution, then the full message.
+LOG_FIELDS = ("%H", "%P", "%T", "%an", "%ae", "%aI", "%cn", "%ce", "%cI", "%B")
+ATTRIBUTION = (
+    "AUTHOR_NAME",
+    "AUTHOR_EMAIL",
+    "AUTHOR_DATE",
+    "COMMITTER_NAME",
+    "COMMITTER_EMAIL",
+    "COMMITTER_DATE",
+)
+
+
 def run(base: str) -> None:
     branch = git("symbolic-ref", "--quiet", "HEAD")
     if git("status", "--porcelain"):
         raise ValueError("working tree is not clean")
-    commits = git("rev-list", "--reverse", f"{base}..HEAD").splitlines()
+    log = git("log", "--reverse", "--format=" + "%x00".join(LOG_FIELDS) + "%x1e", f"{base}..HEAD")
+    commits = [record.lstrip("\n").split("\x00") for record in log.split("\x1e") if record.strip()]
     # A review round's branch has an upstream, but its own new commits are not on it yet.
     # Only commits that some remote-tracking ref already contains are published history.
-    if commits and git("for-each-ref", "--contains", commits[0], "refs/remotes"):
+    if commits and git("for-each-ref", "--contains", commits[0][0], "refs/remotes"):
         raise ValueError("commit already pushed in range")
-    if any(len(git("rev-list", "--parents", "-n", "1", commit).split()) != 2 for commit in commits):
+    if any(len(parents.split()) != 1 for _, parents, *_ in commits):
         raise ValueError("merge commit in unpushed range")
     parent = base
-    for commit in commits:
-        message = git("show", "-s", "--format=%B", commit)
-        subject, separator, body = message.partition("\n")
+    for _, _, tree, *attribution, message in commits:
+        subject, separator, body = message.strip().partition("\n")
         new_message = normalize(subject) + (separator + body if separator else "")
         env = os.environ.copy()
-        for key, fmt in (
-            ("AUTHOR_NAME", "%an"),
-            ("AUTHOR_EMAIL", "%ae"),
-            ("AUTHOR_DATE", "%aI"),
-            ("COMMITTER_NAME", "%cn"),
-            ("COMMITTER_EMAIL", "%ce"),
-            ("COMMITTER_DATE", "%cI"),
-        ):
-            env["GIT_" + key] = git("show", "-s", f"--format={fmt}", commit)
-        parent = git(
-            "commit-tree",
-            git("rev-parse", f"{commit}^{{tree}}"),
-            "-p",
-            parent,
-            env=env,
-            input=new_message + "\n",
+        env.update(
+            {f"GIT_{key}": value for key, value in zip(ATTRIBUTION, attribution, strict=True)}
         )
+        parent = git("commit-tree", tree, "-p", parent, env=env, input=new_message + "\n")
     if commits:
-        git("update-ref", branch, parent, commits[-1])
+        git("update-ref", branch, parent, commits[-1][0])
         git("reset", "--hard", parent)
 
 

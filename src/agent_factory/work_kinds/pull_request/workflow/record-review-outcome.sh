@@ -59,14 +59,19 @@ elif changes_needed == "true" or merge_status in {"merged", "conflict"}:
         result = None
     validator = (result or {}).get("validator", {}).get("status") if isinstance(result, dict) else None
     ci = (result or {}).get("ci", {}).get("status") if isinstance(result, dict) else None
-    scope = (result or {}).get("scope", {}) if isinstance(result, dict) else {}
-    pre = scope.get("prepush", {}) if isinstance(scope, dict) else {}
-    post = scope.get("postfinalize", {}) if isinstance(scope, dict) else {}
-    if isinstance(pre, dict) and pre.get("crossed") and not pre.get("complete", True):
+
+    def as_dict(value):
+        return value if isinstance(value, dict) else {}
+
+    # Task rounds carry their guard results under "scope"; other kinds have none.
+    scope = as_dict(as_dict(result).get("scope"))
+    pre = as_dict(scope.get("prepush"))
+    post = as_dict(scope.get("postfinalize"))
+    if pre.get("crossed") and not pre.get("complete", True):
         outcome.update({"outcome": "failed", "reasons": pre.get("reasons") or ["pre-push Task scope guard did not complete"]})
-    elif isinstance(pre, dict) and pre.get("crossed"):
+    elif pre.get("crossed"):
         outcome.update({"outcome": "needs-input", "reasons": pre.get("reasons") or ["Task scope crossed before push"]})
-    elif isinstance(post, dict) and post.get("crossed"):
+    elif post.get("crossed"):
         outcome.update({"outcome": "failed", "reasons": post.get("reasons") or ["Task scope crossed after CI repair"]})
     elif result is None:
         outcome.update(

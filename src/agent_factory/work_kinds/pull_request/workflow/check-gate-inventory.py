@@ -7,20 +7,18 @@ from pathlib import Path
 from typing import Any
 
 
+def load_gates(path: Path | None) -> list[dict[str, Any]]:
+    return json.loads(path.read_text())["gates"] if path is not None else []
+
+
 def check(
     triage_file: Path,
     inventory_file: Path,
     changes_file: Path | None = None,
     diff_file: Path | None = None,
 ) -> None:
-    triage: list[dict[str, Any]] = json.loads(triage_file.read_text())["gates"]
-    inventory: list[dict[str, Any]] = json.loads(inventory_file.read_text())["gates"]
-    changes: list[dict[str, Any]] = (
-        json.loads(changes_file.read_text())["gates"] if changes_file is not None else []
-    )
-    derived: list[dict[str, Any]] = (
-        json.loads(diff_file.read_text())["gates"] if diff_file is not None else []
-    )
+    triage = load_gates(triage_file)
+    inventory = load_gates(inventory_file)
     names = [gate["name"] for gate in inventory]
     if len(names) != len(set(names)):
         raise ValueError("gate names must be unique")
@@ -29,14 +27,13 @@ def check(
         current = by_name.get(gate["name"])
         if current is None or not current.get("command") or not current.get("violation"):
             raise ValueError(f"triage gate {gate['name']} is missing")
-    for gate in changes:
-        current = by_name.get(gate["name"])
-        if current is None or current.get("command") != gate.get("command"):
-            raise ValueError(f"changed gate {gate['name']} is missing or stale")
-    for gate in derived:
-        current = by_name.get(gate["name"])
-        if current is None or current.get("command") != gate.get("command"):
-            raise ValueError(f"diff gate {gate['name']} is missing or stale")
+    # Gates the implementor changed and gates derived from the diff must both be in the
+    # inventory with their current command.
+    for source, path in (("changed", changes_file), ("diff", diff_file)):
+        for gate in load_gates(path):
+            current = by_name.get(gate["name"])
+            if current is None or current.get("command") != gate.get("command"):
+                raise ValueError(f"{source} gate {gate['name']} is missing or stale")
     for gate in inventory:
         if not all(
             isinstance(gate.get(field), str) and gate[field]

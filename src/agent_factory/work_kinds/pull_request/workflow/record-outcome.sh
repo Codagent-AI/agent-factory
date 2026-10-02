@@ -77,13 +77,12 @@ if post_path and Path(post_path).exists():
             raise ValueError("post-finalize scope is not a JSON object")
     except (OSError, ValueError) as exc:
         post_error = str(exc)
-post_required = parsed.get("post_guard_required") == "true"
+# Finalization's CI repair moved HEAD, so the post-finalize guard had to run.
+post_required = False
 prefinalize_head = parsed.get("prefinalize_head")
 if isinstance(prefinalize_head, str) and prefinalize_head:
     current_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
-    post_required = post_required or (
-        current_head.returncode == 0 and current_head.stdout.strip() != prefinalize_head
-    )
+    post_required = current_head.returncode == 0 and current_head.stdout.strip() != prefinalize_head
 
 
 def pr_reference():
@@ -95,7 +94,19 @@ def pr_reference():
     }
 
 
-if contract == "factory-task/1" and validator_status == "passed" and scope_path and not scope.get("complete"):
+def failed_with_pr(reasons, validator="passed"):
+    """A Task outcome whose pull request stays open for a human after a guard failure."""
+    return {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": reasons,
+        "pr": pr_reference(),
+        "validator": {"status": validator},
+        "ci": {"status": ci_status or "failed"},
+    }
+
+
+if validator_status == "passed" and scope_path and not scope.get("complete"):
     outcome = {
         "contract": contract,
         "outcome": "failed",
@@ -103,23 +114,11 @@ if contract == "factory-task/1" and validator_status == "passed" and scope_path 
         "validator": {"status": "passed"},
     }
 elif post_error is not None:
-    outcome = {
-        "contract": contract,
-        "outcome": "failed",
-        "reasons": [f"post-finalize Task scope evidence is unreadable: {post_error}"],
-        "pr": pr_reference(),
-        "validator": {"status": validator_status},
-        "ci": {"status": ci_status or "failed"},
-    }
+    outcome = failed_with_pr(
+        [f"post-finalize Task scope evidence is unreadable: {post_error}"], validator_status
+    )
 elif post_required and not post_scope.get("complete"):
-    outcome = {
-        "contract": contract,
-        "outcome": "failed",
-        "reasons": ["post-finalize Task scope guard did not complete"],
-        "pr": pr_reference(),
-        "validator": {"status": "passed"},
-        "ci": {"status": ci_status or "failed"},
-    }
+    outcome = failed_with_pr(["post-finalize Task scope guard did not complete"])
 elif scope.get("crossed"):
     outcome = {
         "contract": contract,
@@ -128,14 +127,7 @@ elif scope.get("crossed"):
         "validator": {"status": "passed"},
     }
 elif post_scope.get("crossed"):
-    outcome = {
-        "contract": contract,
-        "outcome": "failed",
-        "reasons": post_scope.get("reasons") or ["Task scope crossed after CI repair"],
-        "pr": pr_reference(),
-        "validator": {"status": "passed"},
-        "ci": {"status": ci_status or "failed"},
-    }
+    outcome = failed_with_pr(post_scope.get("reasons") or ["Task scope crossed after CI repair"])
 elif validator_status != "passed":
     outcome = {
         "contract": contract,

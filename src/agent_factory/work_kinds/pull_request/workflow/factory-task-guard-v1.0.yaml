@@ -43,12 +43,8 @@ steps:
     mode: autonomous
     capture: scope_decision
     prompt: |
-      Review the complete git diff {{base}}..HEAD against the Task boundary.
-      Task work may change development tools, dev dependencies, checks, docs,
-      and behavior-preserving refactors. It must not change runtime behavior,
-      public APIs or CLI, persisted data, OpenSpec specifications, credentials,
-      release or deploy configuration, branch protection, runtime dependencies,
-      or shipped runtime requirements without an explicit bounded request.
+      Review the complete git diff {{base}}..HEAD against the Task boundary in
+      `.agent-runner/workflows/factory-task-boundary.md`.
       The deterministic floor found these definite crossings: {{scope_floor}}.
       Return only JSON {"crossed": boolean, "reasons": [strings]}. Name each
       crossing and whether it belongs in a Bug or Feature. Do not edit files.
@@ -94,8 +90,7 @@ steps:
     skip_if: 'sh: test ! -f "{{gates_file}}"'
 
   - id: has-gates
-    command: |
-      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/final-gates-{{mode}}.json"); print("true" if p.is_file() and json.loads(p.read_text()).get("gates") else "false", end="")'
+    command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/final-gates-{{mode}}.json" gates
     capture: has_gates
 
   - id: re-exercise-gates
@@ -126,22 +121,18 @@ steps:
     continue_on_failure: true
 
   - id: record-gate-crossing
-    command: |
-      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-{{mode}}.json"); v=json.loads(p.read_text()); v["crossed"]=True; v["reasons"].append("gate exercise could not confirm final head"); p.write_text(json.dumps(v)+"\n")'
+    command: python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-{{mode}}.json" "gate exercise could not confirm final head"
     skip_if: 'sh: test "{{gate_recheck}}" = passed'
 
   - id: check-chore-subjects
     command: |
-      python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json"
-      if python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/nonchore-commits.json").read_text())'; then printf clean; else printf crossed; fi
+      if python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json"; then printf clean; else printf crossed; fi
     capture: chore_status
     skip_if: 'sh: test "{{mode}}" != postfinalize'
 
   - id: mark-nonchore-crossing
-    command: |
-      python3 -c 'import json; from pathlib import Path; evidence=Path("{{artifact_dir}}"); bad=json.loads((evidence/"nonchore-commits.json").read_text()); p=evidence/"scope-postfinalize.json"; v=json.loads(p.read_text()); v["crossed"]=True; v["reasons"].append("non-chore CI commits: " + ", ".join(bad)); p.write_text(json.dumps(v)+"\n")'
+    command: python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-postfinalize.json" "non-chore CI commits" "{{artifact_dir}}/nonchore-commits.json"
     skip_if: 'sh: test "{{mode}}" != postfinalize || test "{{chore_status}}" = clean'
 
   - id: complete-guard
-    command: |
-      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-{{mode}}.json"); v=json.loads(p.read_text()); v["complete"]=True; p.write_text(json.dumps(v)+"\n")'
+    command: python3 .agent-runner/workflows/scope-state.py complete "{{artifact_dir}}/scope-{{mode}}.json"

@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+RELEASE_WORDS = re.compile(r"release|publish|deploy", re.I)
+RELEASE_TRIGGER = re.compile(r"\b(release|publish|deploy)\b|tags\s*:", re.I)
+
 
 def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True)
@@ -25,15 +28,11 @@ def release_workflow(text: str) -> bool:
             continue
         if not line[0].isspace():
             in_triggers = stripped.startswith("on:")
-            if in_triggers and re.search(
-                r"\b(release|publish|deploy)\b|tags\s*:", stripped[3:], re.I
-            ):
+            if in_triggers and RELEASE_TRIGGER.search(stripped[3:]):
                 return True
-            if stripped.startswith("name:") and re.search(
-                r"release|publish|deploy", stripped, re.I
-            ):
+            if stripped.startswith("name:") and RELEASE_WORDS.search(stripped):
                 return True
-        elif in_triggers and re.search(r"\b(release|publish|deploy)\b|tags\s*:", stripped, re.I):
+        elif in_triggers and RELEASE_TRIGGER.search(stripped):
             return True
     return False
 
@@ -48,7 +47,7 @@ def crossings(base: str) -> list[str]:
             or (
                 path.startswith(".github/workflows/")
                 and (
-                    re.search(r"release|publish|deploy", name)
+                    RELEASE_WORDS.search(name)
                     or release_workflow(content_at("HEAD", path))
                     or release_workflow(content_at(base, path))
                 )
