@@ -56,6 +56,14 @@ resident's restart. The script:
    still uses.
 
 Agent Evals needs no deploy: each eval admission fetches `harness_ref`.
+A deploy is needed only for Agent Factory changes. Changes merged to `main` of
+Agent Runner, Agent Validator, Agent Skills, or Agent Evals reach the next eval
+admission with no deploy and no pin change: admission resolves each ref to a
+commit and freezes it, and the claim's `frozen-inputs` comment lists them. A
+claim already admitted keeps its frozen revisions. The live service runs evals
+on Fly (`execution` in the local config). The Validator reviewer an eval uses
+comes from the and-scene fixture's `.validator/config.yml`, which Agent Evals
+pins (see its `AGENTS.md`), not from this repository.
 
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
 by hand before deploying. To run `tick` by hand from a shell, put
