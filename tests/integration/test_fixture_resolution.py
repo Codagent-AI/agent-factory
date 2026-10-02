@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -36,6 +37,9 @@ def test_fixture_requires_a_published_origin_commit(tmp_path: Path) -> None:
     git(source, "tag", "-a", "published", "-m", "tag", tagged)
     git(source, "push", "--quiet", "origin", "refs/tags/published")
     git(source, "reset", "--hard", base)
+    for number in range(30):
+        git(source, "tag", f"bulk-{number:02d}", base)
+    git(source, "push", "--quiet", "origin", "--tags")
 
     checkout = tmp_path / "checkout"
     subprocess.run(["git", "clone", "--quiet", str(bare), str(checkout)], check=True)
@@ -44,7 +48,9 @@ def test_fixture_requires_a_published_origin_commit(tmp_path: Path) -> None:
     initial_head = git(checkout, "rev-parse", "HEAD")
     assert resolve_fixture(checkout, "eval/fixture-x") == branch
     assert resolve_fixture(checkout, branch[:8]) == branch
-    assert resolve_fixture(checkout, tagged) == tagged
+    with patch("agent_factory.work_kinds.eval.handler.subprocess.run", wraps=subprocess.run) as run:
+        assert resolve_fixture(checkout, tagged) == tagged
+    assert run.call_count < 10
     assert git(checkout, "rev-parse", "HEAD") == initial_head
 
     git(checkout, "config", "user.name", "Tests")

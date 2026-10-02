@@ -1024,23 +1024,37 @@ def resolve_fixture(checkout: Path | None, ref: str) -> str:
         )
     listed: dict[str, str] = {}
     for line in tags.stdout.splitlines():
-        commit, _, name = line.partition("\t")
-        if name.startswith("refs/tags/"):
-            listed[name.removesuffix("^{}")] = commit
-    for tag_sha in listed.values():
-        try:
-            ancestor = subprocess.run(
-                ["git", "-C", str(checkout), "merge-base", "--is-ancestor", sha, tag_sha],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=60,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise ReadinessError(
-                prefix + "cannot inspect origin tags; check the checkout"
-            ) from error
-        if ancestor.returncode == 0:
+        object_id, _, name = line.partition("\t")
+        if name.startswith("refs/tags/") and not name.endswith("^{}"):
+            listed[name] = object_id
+    try:
+        containing = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "for-each-ref",
+                "--contains",
+                sha,
+                "--format=%(refname)%09%(objectname)",
+                "refs/tags/",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReadinessError(prefix + "cannot inspect origin tags; check the checkout") from error
+    if containing.returncode != 0:
+        stderr = containing.stderr.strip()
+        detail = _public_diagnostic(stderr.splitlines()[-1]) if stderr else "no detail"
+        raise ReadinessError(
+            prefix + f"cannot inspect origin tags (git exit {containing.returncode}): {detail}"
+        )
+    for line in containing.stdout.splitlines():
+        name, _, object_id = line.partition("\t")
+        if listed.get(name) == object_id:
             return sha
     raise ReadinessError(
         prefix + f"fixture commit {sha[:12]} is not published on {FIXTURE_REPOSITORY}; "
