@@ -230,8 +230,18 @@ def test_final_gate_inventory_merges_sources_instead_of_requiring_agreement(
     assert result.returncode == 0, result.stderr
     assert [(gate["name"], gate["command"]) for gate in final()] == [
         ("ruff-strict-lint", "ruff check ."),
-        ("jscpd", "npx --yes jscpd@4.3.0 src"),
+        ("jscpd", "npx --yes jscpd src"),
+        ("jscpd (changed)", "npx --yes jscpd@4.3.0 src"),
         ("ruff-strict-lint (diff)", full_lint),
+    ]
+    # The lead reusing a triage gate's name for another command cannot drop the triage
+    # command: it is restored under a unique name and exercised.
+    inventory.write_text(json.dumps({"gates": [{**lint, "command": "true"}, dup]}))
+    changes.write_text(json.dumps({"gates": []}))
+    derived.write_text(json.dumps({"gates": []}))
+    assert run(command).returncode == 0
+    assert ("ruff-strict-lint (triage)", "ruff check .") in [
+        (gate["name"], gate["command"]) for gate in final()
     ]
     # R2: a review round whose two sessions named the same check differently.
     c4 = {

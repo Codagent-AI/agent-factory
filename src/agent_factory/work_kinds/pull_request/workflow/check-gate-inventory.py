@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Merge a guard's gate sources into the final inventory every gate is exercised from.
 
-The lead's inventory is the starting point. Triage gates it dropped are restored, the
-implementor's changed gates replace the command of the gate they name, and every gate the
-independent diff derivation found whose command is not already listed is added. Two
-sessions describing one check with different names or commands therefore cost an extra
-exercise, never a skipped gate and never a stopped attempt. The merged list is written
-back over the inventory file. A gate without a name, command and violation still fails.
+The lead's inventory is the starting point. Every triage gate, implementor-changed gate,
+and independently derived gate whose command is not already listed is added, renamed if
+its name is taken. No source can drop another's command: a reused name with a different
+command adds an exercise, never a skipped gate and never a stopped attempt. The merged list
+is written back over the inventory file. A gate without a name, command and violation
+still fails.
 """
 
 import json
@@ -44,19 +44,10 @@ def merge(
             name = f"{name} ({source})"
         final.append({**gate, "name": name})
 
-    for gate in triage:
-        if named(gate.get("name")) is None and not listed(gate.get("command")):
-            add(gate, "triage")
-    for gate in changes:
-        current = named(gate.get("name"))
-        if current is not None:
-            # The implementor's recorded change is the latest command for that gate.
-            current.update({key: gate[key] for key in ("command", "violation") if gate.get(key)})
-        elif not listed(gate.get("command")):
-            add(gate, "changed")
-    for gate in derived:
-        if not listed(gate.get("command")):
-            add(gate, "diff")
+    for source, gates in (("triage", triage), ("changed", changes), ("diff", derived)):
+        for gate in gates:
+            if not listed(gate.get("command")):
+                add(gate, source)
     for gate in final:
         if not all(isinstance(gate.get(field), str) and gate[field] for field in FIELDS):
             raise ValueError(f"gate {gate.get('name')!r} needs a name, command and violation")
