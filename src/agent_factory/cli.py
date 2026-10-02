@@ -85,7 +85,7 @@ def main() -> None:
     if args.command == "tick":
         _tick(state, args.config)
     elif args.command == "pinned-claims":
-        with closing(ClaimStore(state)) as store:
+        with closing(ClaimStore(state, read_only=True)) as store:
             for claim in store.all_claims():
                 revisions = claim.frozen_spec.get("revisions")
                 if (
