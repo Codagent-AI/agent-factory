@@ -430,7 +430,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-facto
 
 On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an
 immutable release. It also updates and builds Agent Validator from `origin/main`
-when the checkout is safe and no host fix or feature attempt runs. Use
+when the checkout is safe and no host fix, feature, or task attempt runs. Use
 `--no-validator` to skip that step. A host installation needs a one-time link
 from `agent-validator` on the LaunchAgent PATH to the checkout's `dist/index.js`;
 `doctor` checks it and reports whether the build is behind `origin/main`.
@@ -502,7 +502,7 @@ claim that a static plist proves live launchd acceptance.
 
 The watcher makes sure the factory itself works. It does not review the code the factory builds. The resident runs the watch step once per cycle, including while admissions are paused or the main cycle fails, and dispatches one fresh headless session (the packaged `factory-watch` workflow, contract `factory-watch/2`, in a throwaway checkout of `[watch] repository`) for each of two events:
 
-- `PR-READY`: a fix or feature run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). It posts nothing on the pull request and does not review its code.
+- `PR-READY`: a fix, feature, or task run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). It posts nothing on the pull request and does not review its code.
 - `FAILURE`: an attempt stayed `failed`, `interrupted`, `cancelled`, or `timed_out` past `grace_minutes`, and its result was consumed. Triage runs after the claim's own automatic retry has had its chance and never holds that retry. The session diagnoses the cause, may pause or resume the factory for containment, and files or updates an issue for a factory defect. The factory posts its cause, evidence, owner, actions, issues, pause state, and next step as one factory-bot comment on the claim's issue. For a transient or environment cause it files no issue unless there is a real defect, and says what the operator must do.
 
 Neither session fixes anything: no branches, commits, pushes, or pull requests. Neither deploys, merges, touches a release, the service clone, or the operator's checkout, or fetches into the factory's mirrors. Both follow the `factory-triage` skill ("Headless PR-READY check", "Headless triage").

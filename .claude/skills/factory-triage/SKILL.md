@@ -5,7 +5,7 @@ description: Diagnose a failed, interrupted, or timed-out Agent Factory run on P
 
 # Factory triage
 
-The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix or feature run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
+The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix, feature, or task run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
 
 ## Standing rules
 
@@ -147,7 +147,7 @@ For each genuine factory defect:
 
 ## Headless PR-READY check
 
-A fix or feature run finished with a pull request. Check what the run exposed about the factory; the pull request's own change is not your concern. Do not review the pull request's code, and do not post a review or comment on the pull request. Do not commit, push, or open a pull request.
+A fix, feature, or task run finished with a pull request. Check what the run exposed about the factory; the pull request's own change is not your concern. Do not review the pull request's code, and do not post a review or comment on the pull request. Do not commit, push, or open a pull request.
 
 1. Read the pull request description: `gh pr view <number> -R <repository> --json title,body,url`. Factory descriptions mark attention items red (needs attention) or orange (worth a look).
 2. For each red and orange item, decide whether it points to a factory defect, for example a workflow step that misfired, a wrong resume, a validator run that misbehaved, or a misleading annotation. Items about the product change, and false alarms, are not factory defects; leave them.
