@@ -87,6 +87,8 @@ Before launching any attempt for a bug, including a recovery retry or a fresh cl
 
 On each Project poll, the factory SHALL treat placement of an open issue from a configured fix target with native `Type=Bug` in `Status=Ready` as an explicit handoff and set `Owner=factory` before admission when the issue author has effective write, maintain, or admin access, regardless of the prior or missing Owner value. A GitHub issue assignee SHALL NOT be required. The factory SHALL then select open issues with native `Type=Bug`, `Owner=factory`, and `Status=Ready`, whose authors have effective write, maintain, or admin access verified again at admission, that carry no `needs-input` label, and that have no applicable admission hold. Selection SHALL rank eligible bugs by the Project Priority field, highest first with unset values last, then by newest creation time; repository SHALL NOT affect the order. An ineligible bug SHALL NOT prevent selection of a later eligible bug. Eval, bug, and feature selection SHALL be independent: each kind fills only its own execution slot. Bugs SHALL carry no per-issue execution overrides; role profiles, branches, limits, and window come from factory configuration.
 
+A `needs-input` label the factory added for a pre-claim revision readiness failure SHALL NOT block a later admission check. The factory SHALL remove that label when readiness passes. An author-added `needs-input` label remains ineligible.
+
 #### Scenario: Ready placement assigns factory ownership
 
 - **WHEN** a human moves an open configured Bug to Ready with Owner unset or set to human
@@ -118,4 +120,3 @@ On each Project poll, the factory SHALL treat placement of an open issue from a 
 
 - **WHEN** a user changes a bug's Priority during active fix execution
 - **THEN** the active fix continues and the new ranking governs subsequent selection
-

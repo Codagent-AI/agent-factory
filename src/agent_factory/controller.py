@@ -339,13 +339,18 @@ class Controller:
                 continue
             self._store.acknowledge_event(claim.id, event.key, comment_id or "acknowledged")
 
-    def report_request_readiness(self, snapshot: RequestSnapshot, reason: str) -> None:
+    def report_request_readiness(
+        self, snapshot: RequestSnapshot, reason: str, *, factory_label: bool = False
+    ) -> None:
         """Persist pre-claim failures and deliver corrective feedback without accepting inputs."""
         key = f"{snapshot.repository}:{snapshot.issue_number}"
         receipt = self._store.get_setting("request-readiness", key)
+        label = {"label": "factory"} if factory_label else {}
         if receipt and receipt.get("reason") == reason and receipt.get("comment_id"):
+            if factory_label and receipt.get("label") != "factory":
+                self._store.set_setting("request-readiness", key, {**receipt, **label})
             return
-        self._store.set_setting("request-readiness", key, {"reason": reason})
+        self._store.set_setting("request-readiness", key, {"reason": reason, **label})
         digest = hashlib.sha256(reason.encode()).hexdigest()
         marker = f"<!-- agent-factory:request-readiness:{digest} -->"
         existing = next(
@@ -368,7 +373,9 @@ class Controller:
             )
         )
         self._store.set_setting(
-            "request-readiness", key, {"reason": reason, "comment_id": comment_id or "acknowledged"}
+            "request-readiness",
+            key,
+            {"reason": reason, "comment_id": comment_id or "acknowledged", **label},
         )
 
     def _invalid_feedback(self, snapshot: RequestSnapshot, explanation: str) -> None:

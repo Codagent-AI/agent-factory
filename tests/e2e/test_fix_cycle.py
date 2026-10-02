@@ -174,11 +174,19 @@ elif '/comments' in endpoint:
         result = s['comments']
 elif '/labels' in endpoint:
     if 'POST' in args:
+        added = set(body['labels']) - set(s['labels'])
         s['labels'] = sorted(set(s['labels']) | set(body['labels'])); result = []
+        s['events'].extend({{'event': 'labeled', 'label': {{'name': name}}, 'actor': {{'login': {bot_login!r}}}}} for name in added)
     elif 'DELETE' in args:
-        s['labels'] = [l for l in s['labels'] if l != endpoint.rsplit('/', 1)[1]]; result = []
+        removed = endpoint.rsplit('/', 1)[1]
+        s['labels'] = [l for l in s['labels'] if l != removed]; result = []
+        s['events'].append({{'event': 'unlabeled', 'label': {{'name': removed}}, 'actor': {{'login': {bot_login!r}}}}})
     else:
         result = [{{'name': l}} for l in s['labels']]
+elif '/events?' in endpoint:
+    if s.get('events_error'):
+        sys.stderr.write('gh: temporary failure\\n'); sys.exit(1)
+    result = s['events']
 elif re.fullmatch(r'repos/[^/]+/[^/]+/issues/\\d+', endpoint):
     issue = s['issue']
     if 'PATCH' in args:
@@ -197,6 +205,8 @@ elif '/pulls?' in endpoint:
     result = [{{'html_url': pr['url'], 'number': pr['number'], 'head': {{'sha': pr['sha'], 'ref': pr['branch']}}, 'body': pr.get('body', ''), 'draft': pr.get('draft', False)}} for pr in s['pulls'] if head is None or pr['branch'] == head]
 else:
     raise Exception('Unexpected gh request ' + repr(args))
+for item in s['items']:
+    item['content']['labels']['nodes'] = [{{'name': label}} for label in s['labels']]
 p.write_text(json.dumps(s)); print(json.dumps(result))
 """
 
@@ -383,6 +393,7 @@ fix_environment = "{tmp_path / "fix.env"}"
                         },
                     ],
                     "labels": [],
+                    "events": [],
                     "permissions": {"writer": "write", "rando": "read"},
                     "branches": {},
                     "pulls": [],
@@ -537,6 +548,118 @@ def test_e2e_002_ready_bug_without_owner_is_assigned_to_factory_and_launched(
         h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))
     finally:
         (artifact / "finish").touch()
+        h.store.close()
+
+
+def test_preclaim_readiness_label_retries_without_manual_intervention(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    origin = tmp_path / "runner-origin.git"
+    _git(tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    try:
+        h.tick()
+        assert h.store.claims_for_item("P1") == []
+        assert h.state()["labels"] == ["needs-input"]
+        assert len([body for body in h.comments() if "Waiting for revision readiness" in body]) == 1
+        receipt = h.store.get_setting("request-readiness", f"{REPOSITORY}:1")
+        assert receipt is not None
+        assert "Cannot fetch" in str(receipt["reason"])
+        assert receipt["comment_id"]
+        assert receipt["label"] == "factory"
+
+        h.tick()
+        assert len([body for body in h.comments() if "Waiting for revision readiness" in body]) == 1
+
+        _git(tmp_path / "runner", "remote", "set-url", "origin", str(origin))
+        h.tick()
+        assert len(h.store.claims_for_item("P1")) == 1
+        assert h.state()["labels"] == []
+        assert h.store.get_setting("request-readiness", f"{REPOSITORY}:1") == {}
+        artifact = h.wait_started(h.active_run())
+        h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))
+    finally:
+        h.store.close()
+
+
+def test_author_needs_input_label_stays_ineligible(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    try:
+        h.update(labels=["needs-input"])
+        h.tick()
+        h.tick()
+        assert h.store.claims_for_item("P1") == []
+        assert h.state()["labels"] == ["needs-input"]
+        assert h.store.get_setting("request-readiness", f"{REPOSITORY}:1") is None
+    finally:
+        h.store.close()
+
+
+def test_external_readiness_label_removal_relinquishes_factory_ownership(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    _git(tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    try:
+        h.tick()
+        receipt = h.store.get_setting("request-readiness", f"{REPOSITORY}:1")
+        assert receipt is not None and receipt["label"] == "factory"
+
+        h.store.set_paused(True)
+        h.update(labels=[])
+        h.tick()
+        receipt = h.store.get_setting("request-readiness", f"{REPOSITORY}:1")
+        assert receipt is not None and "label" not in receipt
+
+        h.update(labels=["needs-input"])
+        _git(
+            tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "runner-origin.git")
+        )
+        h.store.set_paused(False)
+        h.tick()
+        assert h.store.claims_for_item("P1") == []
+        assert h.state()["labels"] == ["needs-input"]
+    finally:
+        h.store.close()
+
+
+def test_author_relabel_between_polls_relinquishes_factory_ownership(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    _git(tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    try:
+        h.tick()
+        state = h.state()
+        state["events"].extend(
+            [
+                {
+                    "event": "unlabeled",
+                    "label": {"name": "needs-input"},
+                    "actor": {"login": "writer"},
+                },
+                {
+                    "event": "labeled",
+                    "label": {"name": "needs-input"},
+                    "actor": {"login": "writer"},
+                },
+            ]
+        )
+        h.update(events=state["events"])
+        _git(
+            tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "runner-origin.git")
+        )
+        h.tick()
+        assert h.store.claims_for_item("P1") == []
+        assert h.state()["labels"] == ["needs-input"]
+    finally:
+        h.store.close()
+
+
+def test_label_history_failure_leaves_card_for_later_retry(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    _git(tmp_path / "runner", "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    try:
+        h.tick()
+        h.update(events_error=True)
+        h.tick()
+        assert h.store.claims_for_item("P1") == []
+        assert h.state()["labels"] == ["needs-input"]
+    finally:
         h.store.close()
 
 

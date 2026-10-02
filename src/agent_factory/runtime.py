@@ -26,6 +26,7 @@ from agent_factory.controller import (
 )
 from agent_factory.github import (
     AppCredentials,
+    GitHubApiError,
     GitHubClient,
     InstallationTokenProvider,
     ProjectQueueItem,
@@ -260,8 +261,9 @@ def cycle(state: Path, config_path: Path) -> None:
         for card in cards:
             snapshot = None
             handler: WorkKindHandler | None = None
+            candidate_card = _readiness_labelled(store, client, shared, card)
             for candidate in registered.values():
-                snapshot = candidate.snapshot(card, client, shared)
+                snapshot = candidate.snapshot(candidate_card, client, shared)
                 if snapshot is not None:
                     handler = candidate
                     break
@@ -297,6 +299,7 @@ def cycle(state: Path, config_path: Path) -> None:
             except ReadinessError as error:
                 controller.report_request_readiness(snapshot, str(error))
                 client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                controller.report_request_readiness(snapshot, str(error), factory_label=True)
                 continue
             store.set_setting(
                 "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
@@ -319,6 +322,38 @@ def cycle(state: Path, config_path: Path) -> None:
             except (WorktreeError, ReadinessError) as error:
                 _hold_for_readiness(store, claim.id, error)
                 _report(store, controller, client, shared, card, claim.id, handler)
+
+
+def _readiness_labelled(
+    store: ClaimStore, client: GitHubClient, shared: SharedConfig, card: ProjectQueueItem
+) -> ProjectQueueItem:
+    """Let a pre-claim readiness label through admission only while the factory owns it."""
+    key = f"{card.source.repository}:{card.source.number}"
+    receipt = store.get_setting("request-readiness", key)
+    if not receipt or receipt.get("label") != "factory":
+        return card
+    if "needs-input" not in card.source.labels:
+        store.set_setting(
+            "request-readiness", key, {k: v for k, v in receipt.items() if k != "label"}
+        )
+        return card
+    if card.source.issue_type in {shared.routing.bug_type, shared.routing.feature_type}:
+        try:
+            factory_added = (
+                client.attention_label_actor(card.source.repository, card.source.number)
+                == shared.bot_login
+            )
+        except GitHubApiError:
+            return card
+    else:
+        factory_added = True
+    if not factory_added:
+        store.set_setting(
+            "request-readiness", key, {k: v for k, v in receipt.items() if k != "label"}
+        )
+        return card
+    source = replace(card.source, labels=card.source.labels - {"needs-input"})
+    return replace(card, source=source)
 
 
 def _hold_for_readiness(store: ClaimStore, claim_id: str, error: Exception) -> None:
