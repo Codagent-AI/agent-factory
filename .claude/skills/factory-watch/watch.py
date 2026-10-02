@@ -156,6 +156,9 @@ class Watched:
                         busy.append("awaiting watcher detection")
                     else:
                         parts.append("WATCH EVENT MISSING")
+                # A completed run whose product outcome failed is not a watcher event.
+                if run["status"] == "completed" and outcome == "failed" and not dispatches:
+                    parts.append("NO TRIAGE (outcome failed, not a watcher event)")
         else:
             parts.append("no claim")
         if not busy:

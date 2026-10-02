@@ -28,7 +28,7 @@ An issue counts as progressing while any of these hold:
 - that run ended with a PR-READY or FAILURE event and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
 - its card is queued: open, Owner=factory, Status=Ready, and no `needs-input` label.
 
-Each state change prints one line, and each issue prints a `STOPPED` line when it stops. A `WATCH EVENT MISSING` part means the run ended with an event the watcher should have handled, but no dispatch appeared.
+Each state change prints one line, and each issue prints a `STOPPED` line when it stops. A `WATCH EVENT MISSING` part means the run ended with an event the watcher should have handled, but no dispatch appeared. A `NO TRIAGE` part means the run completed with product outcome `failed` (for example CI never passed, or the push failed). The watcher only treats failed run statuses as `FAILURE`, so nobody diagnosed it: give its `reasons` from the run's `result_json` and offer `factory-triage`.
 
 Tell Paul in one line which issues you are watching, then stop work on it until the background command finishes. Do not poll its output in the meantime.
 
