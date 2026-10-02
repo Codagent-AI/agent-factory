@@ -71,7 +71,10 @@ Each place reads `audit.AUDIT_ENABLED` at call time, as a module attribute and n
    - In the `summary is None` branch, skip the run when the switch is off, before the `run-metrics.json` check:
      ```python
      if summary is None:
-         if not audit.AUDIT_ENABLED or not (evidence / audit.HOST_SESSION_DIR / audit.METRICS_FILE).is_file():
+         if (
+             not audit.AUDIT_ENABLED
+             or not (evidence / audit.HOST_SESSION_DIR / audit.METRICS_FILE).is_file()
+         ):
              continue
      ```
    - A recorded summary is still read and listed whether the switch is on or off. That covers attempts audited before the switch was turned off, within the 7-day window.

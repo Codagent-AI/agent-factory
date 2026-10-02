@@ -1,4 +1,4 @@
-- [ ] Temporarily disable factory post-run audits behind the single `audit.AUDIT_ENABLED` switch
+- [x] Temporarily disable factory post-run audits behind the single `audit.AUDIT_ENABLED` switch
 
 ## Task: Disable factory post-run audits behind one switch
 

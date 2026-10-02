@@ -1,4 +1,4 @@
-"""Post-run development audits: every factory run's step-value metrics must reach the Sheet.
+"""Post-run development audits run while the factory audit switch is on.
 
 Agent Runner auto-audits only ``openspec/`` and ``spec-driven/`` workflows, so the factory
 owns the audit of its own runs. A host fix or review attempt replays the audit inside its
@@ -26,7 +26,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-# Codagent-AI/agent-factory#60 will own the audit switch when it merges.
+# Single factory-wide switch for post-run audits, temporarily off per
+# Codagent-AI/agent-factory#60. True re-enables host replay, resident settlement
+# and post-run-audit events, status fallback lines, and the doctor probe.
+# Eval audits also need Agent Runner's automatic hook (Codagent-AI/agent-runner#191).
 AUDIT_ENABLED = False
 AUDIT_FILE = "audit.json"
 LIFECYCLE_FILE = "audit-lifecycle.json"
@@ -452,6 +455,8 @@ def readiness(
     run: Runner = _probe,
 ) -> tuple[bool, str, str]:
     """Whether this host can audit factory runs: ``(available, detail, action)``."""
+    if not AUDIT_ENABLED:
+        return True, "post-run audits are disabled (Codagent-AI/agent-factory#60)", ""
     if runner is None:
         return False, "agent-runner is not on PATH", "Install Agent Runner on this Mac."
     try:

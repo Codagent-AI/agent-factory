@@ -358,6 +358,16 @@ reaches Done.
 
 ## Post-run audits
 
+Post-run audits are temporarily disabled by `AUDIT_ENABLED = False` in
+`src/agent_factory/audit.py` (Codagent-AI/agent-factory#60). While disabled,
+host attempts run no audit replay, no `post-run-audit` events are posted,
+`status` lists only previously recorded outcomes, and `doctor` reports audits
+as disabled. To re-enable factory audits, set the constant to `True`, merge,
+and deploy. Eval audits also require Agent Runner's automatic hook
+(Codagent-AI/agent-runner#191).
+
+When enabled, the following behavior applies.
+
 Every factory run is audited, and its step-value observations go to the metrics Sheet
 configured by `agent-runner audit setup`. Agent Runner audits only `openspec/` and
 `spec-driven/` workflows by itself, so the factory starts the audit for its own runs:
