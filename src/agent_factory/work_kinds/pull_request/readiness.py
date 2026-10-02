@@ -50,14 +50,14 @@ def check_readiness(
     if not definition.enabled(shared):
         return []
     if not definition.targets(shared):
-        if definition.kind == "feature":
+        if definition.kind != "fix":
             return [
                 Diagnostic(
-                    "feature targets",
+                    f"{definition.kind} targets",
                     False,
-                    "feature work has no configured fix target repositories",
+                    f"{definition.kind} work has no configured fix target repositories",
                     "Configure at least one [[fix.targets]] entry.",
-                    group="feature-host",
+                    group=definition.doctor_groups["host"],
                 )
             ]
         return []

@@ -5,7 +5,7 @@ TBD - created by archiving change code-review. Update Purpose after archive.
 ## Requirements
 ### Requirement: Run the versioned review workflow
 
-The factory SHALL ship a packaged review workflow declaring contract `factory-review/1`, stage it beside the fix workflow and the shared implementation sub-workflow, and launch it through the execution path of the claim's kind, a fix claim's round as a fix attempt and a feature claim's round on the host as a feature attempt, on clones where the target is checked out on the PR branch at its recorded head. The factory SHALL write `review.json` into the attempt's artifact directory containing the repository, issue number, claim identifier, the claim's work kind, attempt number, the pull request number, URL, branch, base branch and head commit, the original issue title and body, and the eligible comments grouped by source (review summaries, unresolved inline threads with path, line, thread identifier and every comment in the thread, and conversation comments), each with author, identifier, body, and creation time. The workflow SHALL return exactly one structured outcome in `review-outcome.json` declaring its contract: `pull-request` with the PR reference and the identifiers it answered and changed, `needs-input` with reasons, `failed` with reasons, or a technical failure when the file is absent or invalid.
+The factory SHALL ship a packaged review workflow declaring contract `factory-review/1`, stage it beside the fix workflow and the shared implementation sub-workflow, and launch it through the execution path of the claim's kind, a fix claim's round as a fix attempt, a feature claim's round on the host as a feature attempt, and a task claim's round on the host as a task attempt, on clones where the target is checked out on the PR branch at its recorded head. The factory SHALL write `review.json` into the attempt's artifact directory containing the repository, issue number, claim identifier, the claim's work kind, attempt number, the pull request number, URL, branch, base branch and head commit, the original issue title and body, and the eligible comments grouped by source (review summaries, unresolved inline threads with path, line, thread identifier and every comment in the thread, and conversation comments), each with author, identifier, body, and creation time. The workflow SHALL return exactly one structured outcome in `review-outcome.json` declaring its contract: `pull-request` with the PR reference and the identifiers it answered and changed, `needs-input` with reasons, `failed` with reasons, or a technical failure when the file is absent or invalid.
 
 #### Scenario: Launch a review round
 
@@ -19,7 +19,7 @@ The factory SHALL ship a packaged review workflow declaring contract `factory-re
 
 ### Requirement: Triage each comment and decide autonomously
 
-The review workflow SHALL read `review.json` and produce one decision per eligible comment or thread: `change` with a concrete plan when the comment asks for a code change the agent should make, or `answer` with the reply text when a reply suffices. When a comment is ambiguous, the agent SHALL decide itself which applies and explain its reading in the reply. It SHALL return `needs-input` only when reviewer requests conflict with each other, when a requested change on a fix pull request requires a non-trivial specification change, when a requested change requires changes outside the target repository, or when a genuinely open product decision must be made by a human; it SHALL name what needs deciding. A requested change that widens the original issue's scope SHALL still be made. On a feature pull request, a requested change that alters specified behavior SHALL be made rather than declined.
+The review workflow SHALL read `review.json` and produce one decision per eligible comment or thread: `change` with a concrete plan when the comment asks for a code change the agent should make, or `answer` with the reply text when a reply suffices. When a comment is ambiguous, the agent SHALL decide itself which applies and explain its reading in the reply. It SHALL return `needs-input` only when reviewer requests conflict with each other, when a requested change on a fix pull request requires a non-trivial specification change, when a requested change requires changes outside the target repository, when a requested change on a task pull request falls outside task scope as defined by "Hold task scope through review rounds", or when a genuinely open product decision must be made by a human; it SHALL name what needs deciding. A requested change that widens the original issue's scope SHALL still be made, except on a task pull request, where it SHALL be made only while it stays within task scope. On a feature pull request, a requested change that alters specified behavior SHALL be made rather than declined.
 
 #### Scenario: Requested change
 
@@ -87,7 +87,7 @@ After implementation, the workflow SHALL reply once to each eligible thread or c
 
 ### Requirement: Merge the target branch into a feature pull request before triage
 
-For a review round on a feature pull request, the factory SHALL fetch the target repository and resolve the current head of the pull request's base branch when it prepares the round. The workflow SHALL merge that head into the PR branch before triage. The round's evidence SHALL record the merged head. A merge without conflicts SHALL be committed as a merge commit that is not a phase checkpoint, and a base head that the PR branch already contains SHALL add no commit. A conflicting merge SHALL be resolved by an agent before triage, preserving the intent of both sides, and committed. When the agent cannot resolve the conflicts confidently, the workflow SHALL skip triage and return `needs-input` naming the conflicting files and the decision needed. It SHALL push nothing and post no replies to the eligible comments, and it SHALL leave the PR branch unchanged. The claim is then blocked by that round's `needs-input`, and a writer's next eligible comment SHALL admit a new round that merges again with the answer in `review.json`. The round SHALL NOT re-run acceptance. Its completion comment SHALL name each merge commit it pushed, whether the merge was clean or resolved by the agent, as added after acceptance and not covered by the acceptance evidence, linking the commit and the acceptance evidence. When the merge was not pushed, the comment SHALL say so rather than name it. A conflict resolution SHALL satisfy the same history and conflicting-files checks as a feature attempt's resolution. Review rounds on fix pull requests SHALL NOT merge the base branch.
+For a review round on a feature pull request, the factory SHALL fetch the target repository and resolve the current head of the pull request's base branch when it prepares the round. The workflow SHALL merge that head into the PR branch before triage. The round's evidence SHALL record the merged head. A merge without conflicts SHALL be committed as a merge commit that is not a phase checkpoint, and a base head that the PR branch already contains SHALL add no commit. A conflicting merge SHALL be resolved by an agent before triage, preserving the intent of both sides, and committed. When the agent cannot resolve the conflicts confidently, the workflow SHALL skip triage and return `needs-input` naming the conflicting files and the decision needed. It SHALL push nothing and post no replies to the eligible comments, and it SHALL leave the PR branch unchanged. The claim is then blocked by that round's `needs-input`, and a writer's next eligible comment SHALL admit a new round that merges again with the answer in `review.json`. The round SHALL NOT re-run acceptance. Its completion comment SHALL name each merge commit it pushed, whether the merge was clean or resolved by the agent, as added after acceptance and not covered by the acceptance evidence, linking the commit and the acceptance evidence. When the merge was not pushed, the comment SHALL say so rather than name it. A conflict resolution SHALL satisfy the same history and conflicting-files checks as a feature attempt's resolution. Review rounds on fix and task pull requests SHALL NOT merge the base branch.
 
 #### Scenario: Merge before triage on a feature pull request
 
@@ -116,4 +116,44 @@ For a review round on a feature pull request, the factory SHALL fetch the target
 
 - **WHEN** a review round is admitted on a fix pull request whose base branch gained commits
 - **THEN** the round runs on the PR branch at its recorded head without merging the base branch
+
+#### Scenario: Task pull request round does not merge
+
+- **WHEN** a review round is admitted on a task pull request whose base branch gained commits
+- **THEN** the round runs on the PR branch at its recorded head without merging the base branch
+
+### Requirement: Hold task scope through review rounds
+
+On a task pull request, review triage SHALL judge every requested change against the task scope defined by `factory-task-execution`. Out of scope are changes to runtime behavior, a public API or CLI, an OpenSpec specification, or persisted data, and changes touching credentials, release or deploy configuration, or branch protection. Also out of scope are changes needing a product, design, compatibility, threshold, or other decision the issue leaves open, changes outside the target repository, and changes that would make the pull request too large to review as one. When any requested change falls outside task scope, the round SHALL implement nothing, push nothing, and post no replies to the eligible comments. It SHALL return `needs-input` naming each out-of-scope request and routing it to a Bug or a Feature. After implementing in-scope changes and before pushing, the workflow SHALL check the round's diff against the same boundary. A diff that crosses it SHALL return `needs-input` naming what crossed, and SHALL push nothing. When finalization's CI repair adds commits to a task pull request, the round SHALL repeat the boundary check on the round's complete diff after finalization. A crossing SHALL return `failed` with the reasons, leaving the pull request open. A writer's next eligible comment, for example withdrawing or narrowing the request, SHALL admit a new round that triages again. Review rounds on fix and feature pull requests SHALL be unchanged.
+
+#### Scenario: Reviewer asks a task pull request for a behavior change
+
+- **WHEN** a writer asks on a task pull request to also change a CLI flag's default
+- **THEN** the round returns `needs-input` naming the request and stating it belongs in a Feature
+- **AND** nothing is pushed and the pull request is unchanged
+
+#### Scenario: Reviewer asks for an in-scope adjustment
+
+- **WHEN** a writer asks on a task pull request to reorganize one more documentation page
+- **THEN** triage records a `change`, the round implements it, and the outcome is `pull-request` when the validator and CI pass
+
+#### Scenario: Diff crosses the boundary
+
+- **WHEN** a round's in-scope change ends up editing the repository's release workflow
+- **THEN** the round returns `needs-input` naming the release configuration change and pushes nothing
+
+#### Scenario: CI repair crosses the boundary in a task round
+
+- **WHEN** a task round's in-scope change passes the pre-push check, but finalization's CI repair pushes a commit that edits a release workflow
+- **THEN** the round returns `failed` naming the crossing and the pull request stays open
+
+#### Scenario: Narrow the request after a scope stop
+
+- **WHEN** a task round stopped for an out-of-scope request and the writer replies withdrawing it
+- **THEN** the next poll admits a new round that triages the remaining comments and implements the in-scope ones
+
+#### Scenario: Fix pull request round keeps widening rule
+
+- **WHEN** a writer asks on a fix pull request for a change that widens the original bug's scope
+- **THEN** triage records a `change` as before
 

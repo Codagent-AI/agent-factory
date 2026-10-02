@@ -57,6 +57,7 @@ class Factory:
         self.handlers = work_kinds.handlers(self.shared, self.local)
         self.targets = {target.repository for target in self.shared.fix.targets}
         self.feature_targets: set[str] = self.targets if self.shared.feature is not None else set()
+        self.task_targets: set[str] = self.targets if self.shared.task is not None else set()
 
     def cards(self) -> list[ProjectQueueItem]:
         project = self.shared.project
@@ -70,6 +71,8 @@ class Factory:
             return "fix"
         if source.repository in self.feature_targets and source.issue_type == routing.feature_type:
             return "feature"
+        if source.repository in self.task_targets and source.issue_type == routing.task_type:
+            return "task"
         return None
 
     def wanted_type(self, kind: str) -> str:
@@ -77,6 +80,7 @@ class Factory:
             "eval": self.shared.routing.eval_type,
             "fix": self.shared.routing.bug_type,
             "feature": self.shared.routing.feature_type,
+            "task": self.shared.routing.task_type,
         }[kind]
 
     def eval_problem(self, source: SourceItem) -> str | None:
@@ -108,19 +112,26 @@ def report(factory: Factory, repository: str, number: int, kind: str | None) -> 
     print(f"state: {source.state} [{mark(source.state.lower() == 'open')}]")
     is_target = repository in factory.targets
     is_feature_target = repository in factory.feature_targets
+    is_task_target = repository in factory.task_targets
     is_eval_source = repository == shared.routing.eval_source
     if kind is None:
         print(
             f"repository: fix target {is_target}, feature target {is_feature_target}, "
+            f"task target {is_task_target}, "
             f"eval source {is_eval_source}"
         )
     else:
-        in_scope = {"eval": is_eval_source, "fix": is_target, "feature": is_feature_target}[kind]
+        in_scope = {
+            "eval": is_eval_source,
+            "fix": is_target,
+            "feature": is_feature_target,
+            "task": is_task_target,
+        }[kind]
         print(f"repository takes {kind} work: [{mark(in_scope)}]")
     wanted = factory.wanted_type(kind) if kind else None
     print(f"type: {source.issue_type} [{mark(wanted is not None and source.issue_type == wanted)}]")
     print(f"labels: {', '.join(sorted(source.labels)) or '(none)'}")
-    if kind in {"fix", "feature"}:
+    if kind in {"fix", "feature", "task"}:
         print(f"needs-input label absent: [{mark('needs-input' not in source.labels)}]")
     if kind == "eval":
         label = shared.routing.eval_label
@@ -197,11 +208,12 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
         (kind == "eval" and repository != scope)
         or (kind == "fix" and repository not in factory.targets)
         or (kind == "feature" and repository not in factory.feature_targets)
+        or (kind == "task" and repository not in factory.task_targets)
     ):
         sys.exit(f"refused: {repository} does not take {kind} work")
     if source.state.lower() != "open":
         sys.exit("refused: the issue is closed")
-    if kind in {"fix", "feature"} and "needs-input" in source.labels:
+    if kind in {"fix", "feature", "task"} and "needs-input" in source.labels:
         sys.exit("refused: needs-input is set; answer the factory's question first")
     if factory.app.get_permission(repository, source.author) not in WRITER_PERMISSIONS:
         sys.exit(f"refused: author {source.author} lacks write permission")
@@ -221,6 +233,11 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
         )
     wanted = factory.wanted_type(kind)
     if source.issue_type != wanted:
+        if source.issue_type == shared.routing.task_type or (
+            kind == "task"
+            and source.issue_type in {shared.routing.bug_type, shared.routing.feature_type}
+        ):
+            sys.exit(f"refused: issue type {source.issue_type} does not match {kind} work")
         if source.issue_type is not None and not retype:
             sys.exit(f"refused: type is {source.issue_type}; rerun with --retype if confirmed")
         factory.paul.set_issue_type(repository, number, wanted)
@@ -250,7 +267,7 @@ def main() -> None:
     parser.add_argument("repository", help="OWNER/REPO")
     parser.add_argument("number", type=int)
     parser.add_argument(
-        "--apply", choices=("fix", "eval", "feature"), help="set the missing fields"
+        "--apply", choices=("fix", "eval", "feature", "task"), help="set the missing fields"
     )
     parser.add_argument("--retype", action="store_true", help="replace a different issue type")
     arguments = parser.parse_args()

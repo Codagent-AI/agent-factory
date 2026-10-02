@@ -5,7 +5,7 @@ TBD - created by archiving change iteration-1. Update Purpose after archive.
 ## Requirements
 ### Requirement: Configure deployment without Codagent-specific controller code
 
-The factory SHALL use TOML configuration for GitHub organization and repository identities, Project destinations, routing rules including native issue types and bypass markers per work kind, request labels, field and option mappings, repository locations, evaluation defaults, fix defaults, schedule, supervision limits, minimum free disk space, memory reservation, evidence retention, and local storage paths. Fix configuration SHALL include, per target repository, the mirror location and the operator's working clone path; and globally the branch names for the target, Runner, and Skills (default `main`), fix role profiles, fix limits, the fix admission window, the fix credential file location, the fix execution mode (`docker` by default, or `host`), and an optional fix-specific minimum free disk space that defaults to the shared minimum. Feature configuration SHALL include the feature role profiles, feature limits, the feature admission window, and the feature workflow contract; the feature kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new feature work SHALL be enabled only when the feature configuration is present; when it is removed, existing feature claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The feature kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. The eval kind SHALL accept `docker` (the default) or `fly` execution and SHALL NOT accept host execution. Fly configuration SHALL be local and SHALL include the Fly app, region (default `ewr`), Machine CPU kind, CPU count, and memory (default shared, 4 CPUs, 8 GiB), the sandbox image reference, the deploy-token file location alongside the other controller credentials, and the collection grace period. The execution mode, fix disk floor, Fly settings, and retention period SHALL be local configuration. It SHALL supply Codagent as an example deployment configuration whose eval role defaults are `lead = claude:opus:medium`, `implementor = codex:gpt-5.6-luna:medium`, and `tester = codex:gpt-5.6-luna:medium`, and which enables the feature kind with role defaults matching its fix role defaults. The controller SHALL use configured mappings for logical queue states rather than require literal column names such as Ready or Review. An admission window whose start hour equals its stop hour SHALL be always open.
+The factory SHALL use TOML configuration for GitHub organization and repository identities, Project destinations, routing rules including native issue types and bypass markers per work kind, request labels, field and option mappings, repository locations, evaluation defaults, fix defaults, schedule, supervision limits, minimum free disk space, memory reservation, evidence retention, and local storage paths. Fix configuration SHALL include, per target repository, the mirror location and the operator's working clone path; and globally the branch names for the target, Runner, and Skills (default `main`), fix role profiles, fix limits, the fix admission window, the fix credential file location, the fix execution mode (`docker` by default, or `host`), and an optional fix-specific minimum free disk space that defaults to the shared minimum. Feature configuration SHALL include the feature role profiles, feature limits, the feature admission window, and the feature workflow contract; the feature kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new feature work SHALL be enabled only when the feature configuration is present; when it is removed, existing feature claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The feature kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. Task configuration SHALL include the native task type in routing configuration (default `Task`), the task role profiles (lead, implementor, tester), the task workflow contract (default `factory-task/1`), task limits, the task admission window, and an optional task-specific minimum free disk space; the task kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new task work SHALL be enabled only when the shared task configuration is present; when it is removed, existing task claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The task kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. The eval kind SHALL accept `docker` (the default) or `fly` execution and SHALL NOT accept host execution. Fly configuration SHALL be local and SHALL include the Fly app, region (default `ewr`), Machine CPU kind, CPU count, and memory (default shared, 4 CPUs, 8 GiB), the sandbox image reference, the deploy-token file location alongside the other controller credentials, and the collection grace period. The execution mode, fix disk floor, Fly settings, and retention period SHALL be local configuration. It SHALL supply Codagent as an example deployment configuration whose eval role defaults are `lead = claude:opus:medium`, `implementor = codex:gpt-5.6-luna:medium`, and `tester = codex:gpt-5.6-luna:medium`, and which enables the feature kind with role defaults matching its fix role defaults and the task kind with a Sonnet-class lead. The controller SHALL use configured mappings for logical queue states rather than require literal column names such as Ready or Review. An admission window whose start hour equals its stop hour SHALL be always open.
 
 Another organization SHALL be able to deploy the supported factory behavior using its own configuration and credentials without modifying core controller code. Suite-specific and workflow-specific repository and executable locations SHALL be supplied to the relevant handler rather than embedded as Codagent or personal-machine assumptions in the controller. GitHub Projects, SQLite, one worker, and the Mac launchd service SHALL remain the supported initial deployment choices; this requirement does not introduce interchangeable providers.
 
@@ -17,7 +17,7 @@ Another organization SHALL be able to deploy the supported factory behavior usin
 #### Scenario: Supply the Codagent deployment
 
 - **WHEN** an operator uses the supplied Codagent example configuration
-- **THEN** it establishes the Eval, Bug, and Feature behavior and the field names, options, and defaults described by the active specifications
+- **THEN** it establishes the Eval, Bug, Feature, and Task behavior and the field names, options, and defaults described by the active specifications
 
 #### Scenario: Configure fix targets
 
@@ -58,6 +58,31 @@ Another organization SHALL be able to deploy the supported factory behavior usin
 
 - **WHEN** the feature section is removed while one feature attempt is running and another feature claim is settled with an open pull request
 - **THEN** the running attempt is still supervised and its result reported, the settled claim still receives review rounds, merge sync, and cleanup, and no new feature is handed off or admitted
+
+#### Scenario: Leave the task kind unconfigured
+
+- **WHEN** the configuration has no task section
+- **THEN** no Task-typed issue is handed off or admitted and the other kinds behave as before
+
+#### Scenario: Configure Docker execution for tasks
+
+- **WHEN** the configuration selects Docker or Fly execution for the task kind
+- **THEN** configuration loading fails and names the unsupported mode
+
+#### Scenario: Leave task settings at their defaults
+
+- **WHEN** the shared configuration has a task section with role profiles only and the local configuration sets nothing for tasks
+- **THEN** tasks use issue type `Task`, contract `factory-task/1`, host execution, an always-open window, and limits of 15 minutes without progress, two hours of execution, and three hours in total
+
+#### Scenario: Reject a malformed task section
+
+- **WHEN** the task section's defaults or limits have a value of the wrong type
+- **THEN** configuration loading fails and names the offending task setting
+
+#### Scenario: Remove the task section with task claims in flight
+
+- **WHEN** the task section is removed while one task attempt is running and another task claim is settled with an open pull request
+- **THEN** the running attempt is still supervised and its result reported, the settled claim still receives review rounds, merge sync, and cleanup, and no new task is handed off or admitted
 
 ### Requirement: Apply shared deployment changes through explicit updates
 
@@ -130,7 +155,7 @@ The service SHALL poll GitHub every five minutes while independently supervising
 
 ### Requirement: Diagnose readiness with doctor
 
-`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH, which dispatched sessions use to file issues, is authenticated as a login that is not the factory bot and has write access to the factory repository, so the factory admits the issues it files. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
+`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, task-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH, which dispatched sessions use to file issues, is authenticated as a login that is not the factory bot and has write access to the factory repository, so the factory admits the issues it files. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When the task kind is configured, it SHALL run the host checks of the fix-host group, including the Agent Validator build checks, against the task roles in the task-host group, and verify that every task role has a `cli:model:effort` profile and that the packaged task and review workflows declare a compatible contract version. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
 
 Shared diagnostics SHALL remain distinct from checks supplied by each work kind and suite.
 
@@ -229,14 +254,24 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 - **WHEN** watching is disabled or unconfigured
 - **THEN** doctor runs no watch check and prints no watch group
 
+#### Scenario: Diagnose task readiness
+
+- **WHEN** the task kind is configured and the packaged task workflow lacks a compatible contract, or a task role has no `cli:model:effort` profile
+- **THEN** doctor fails the task-host group naming the problem and shows the other kinds' readiness independently
+
+#### Scenario: Run doctor without the task kind
+
+- **WHEN** the task kind is not configured
+- **THEN** doctor runs no task-host check and prints no task-host group
+
 ### Requirement: Expose current operational status
 
 `agent-factory status` SHALL show, per work kind:
 
 - the slot holder and progress;
 - waiting work and why it waits;
-- blocked fix and feature claims;
-- settled fix and feature claims with eligible review comments waiting for their kind's slot;
+- blocked fix, feature, and task claims;
+- settled fix, feature, and task claims with eligible review comments waiting for their kind's slot;
 - pending merge syncs and their last failure reason;
 - pause state and blocking conditions;
 - the next permitted start time, when it can be determined.
@@ -305,6 +340,16 @@ is active and SHALL NOT start work or change execution controls.
 
 - **WHEN** a superseded eval claim's registry image deletion failed on the last poll
 - **THEN** plain `status` lists that claim with the image tag and the registry's reason until a later poll deletes the image
+
+#### Scenario: Inspect a declined task
+
+- **WHEN** a task claim was declined by triage
+- **THEN** status shows the task slot as free and the blocked task with its decline reason
+
+#### Scenario: Inspect the task slot
+
+- **WHEN** a task attempt is running
+- **THEN** status shows the task slot's holder and progress beside the eval, fix, and feature slots
 
 ### Requirement: Run an immediate normal cycle with tick
 
@@ -926,6 +971,36 @@ They SHALL state that no interactive watcher session is used. An on-demand `fact
 - **WHEN** the operator asks an agent to review a factory pull request
 - **THEN** the agent follows `factory-pr-review` interactively; no watch session reviews it
 
+### Requirement: Document the task kind
+
+The operator documentation (`AGENTS.md` and `docs/operations.md`) SHALL describe the task kind:
+
+- the native Task type, and that a Task reaches the factory only by moving it to Ready;
+- the `[task]` shared and local settings and their defaults, and the task-host doctor group;
+- what triage declines and the boundary between maintenance work and release configuration;
+- the `chore:` commit and pull request convention;
+- that review rounds on a task pull request stop on out-of-scope requests;
+- that rolling back to a release without the task kind leaves open task claims unhandled, so they should be settled or cancelled first.
+
+#### Scenario: Learn how to hand a chore to the factory
+
+- **WHEN** an operator reads the documentation to queue maintenance work
+- **THEN** it tells them to file a Task in a fix target, move it to Ready or use the assign skill, and what kinds of work triage will decline
+
+### Requirement: Assign and report tasks through the operator skills
+
+The repository's `factory-assign` skill SHALL accept `--apply task`. It SHALL then check, and where possible set, what task admission needs: an open issue in a fix target, native type Task, an author with write access, no `needs-input` label, `Owner=factory`, `Status=Ready`, and a default Priority. It SHALL then run one tick and confirm that the factory claimed the issue as a task. It SHALL refuse `--apply task` for an issue whose type is Bug or Feature, and SHALL refuse `--apply fix` and `--apply feature` for a Task. The `factory-status` skill SHALL report the task slot and task claims beside the other kinds, including blocked tasks and task pull requests waiting for review.
+
+#### Scenario: Assign a Task
+
+- **WHEN** an operator runs the assign skill with `--apply task` on a writer's open Task in a fix target
+- **THEN** the card gets `Owner=factory`, `Status=Ready`, and a default Priority, one tick runs, and the skill reports the task claim
+
+#### Scenario: Apply the wrong kind
+
+- **WHEN** an operator runs the assign skill with `--apply fix` on a Task
+- **THEN** the skill refuses and names the task kind
+
 ### Requirement: Govern post-run audits with one switch
 
 One factory audit switch SHALL govern every post-run development audit the factory starts or settles. This covers the host attempt audit, the resident's settlement of an attempt's audit outcome (including delivery of an eval's collected reports), the post-run audit lines in `status`, and the post-run audit check in `doctor`. The switch SHALL be off. That is a temporary disable pending a decision on whether audits are worth their cost (Codagent-AI/agent-factory#60). Turning the switch back on SHALL restore the factory-owned audit behavior that applied before it was turned off, unchanged.
@@ -937,7 +1012,7 @@ The switch governs only what the factory itself starts or settles. Audits that A
 
 While the switch is off:
 
-- A host fix, feature, or review attempt SHALL run no post-run audit replay, and its outcome SHALL NOT depend on audits.
+- A host fix, feature, task, or review attempt SHALL run no post-run audit replay, and its outcome SHALL NOT depend on audits.
 - When the resident consumes an attempt's result, it SHALL record no post-run audit outcome for that attempt, deliver no collected eval reports to the development-audit destination, and post no `post-run-audit` issue event.
 - `status` SHALL NOT list an attempt as missing its post-run audit only because it has no recorded audit outcome. It SHALL still list a recorded undelivered outcome from within the last seven days.
 - The `doctor` post-run audit check SHALL pass and state that post-run audits are disabled. It SHALL NOT probe the installed Agent Runner for audit support or require the development-audit reporting connection. So neither a missing connection nor a Runner built without development audits fails `doctor` or blocks admission.
@@ -946,7 +1021,7 @@ Agent Runner's own execution log in an attempt's session evidence is not a post-
 
 #### Scenario: A host attempt finishes with audits off
 
-- **WHEN** the switch is off and a host fix, feature, or review attempt's workflow ends, whether it succeeded or failed
+- **WHEN** the switch is off and a host fix, feature, task, or review attempt's workflow ends, whether it succeeded or failed
 - **THEN** no `agent-runner audit replay` runs for the attempt, the attempt's exit status is the workflow's own, and its evidence holds no post-run audit outcome
 
 #### Scenario: The resident consumes an attempt with audits off

@@ -52,6 +52,8 @@ class PullRequestKind:
     workflow_file: str
     staged_files: tuple[str, ...]
     contract: Callable[[SharedConfig], str]
+    # The contract when configuration names none; read when no shared config is at hand.
+    default_contract: str
     outcome_file: str
     branch_prefix: str
     sync_marker: str
@@ -70,6 +72,7 @@ class PullRequestKind:
 
 
 FEATURE_STAGED_FILES = (
+    "factory-task-guard-v1.0.yaml",
     "factory-feature-v1.0.yaml",
     "factory-define-v1.0.yaml",
     "factory-define-rules.md",
@@ -95,6 +98,15 @@ FEATURE_STAGED_FILES = (
     "record-outcome.sh",
 )
 
+TASK_STAGED_FILES = (
+    "factory-task-v1.0.yaml",
+    "check-contract.sh",
+    "record-triage.sh",
+    "decision_json.py",
+    "record-outcome.sh",
+    "annotate-chore-pr.sh",
+)
+
 
 FIX = PullRequestKind(
     kind="fix",
@@ -111,6 +123,7 @@ FIX = PullRequestKind(
         "check-contract.sh",
     ),
     contract=lambda shared: shared.fix.contract,
+    default_contract="factory-fix/1",
     outcome_file="fix-outcome.json",
     branch_prefix="factory/fix",
     sync_marker="fix-sync",
@@ -135,8 +148,9 @@ FEATURE = PullRequestKind(
     workflow_file="factory-feature-v1.0.yaml",
     staged_files=FEATURE_STAGED_FILES,
     contract=lambda shared: (
-        shared.feature.contract if shared.feature is not None else "factory-feature/1"
+        shared.feature.contract if shared.feature is not None else FEATURE.default_contract
     ),
+    default_contract="factory-feature/1",
     outcome_file="feature-outcome.json",
     branch_prefix="factory/feature",
     sync_marker="feature-sync",
@@ -151,5 +165,32 @@ FEATURE = PullRequestKind(
 )
 
 
+TASK = PullRequestKind(
+    kind="task",
+    unit_key="task",
+    noun="Task",
+    item_noun="task",
+    issue_type=lambda shared: shared.routing.task_type,
+    workflow_name="factory-task",
+    workflow_file="factory-task-v1.0.yaml",
+    staged_files=TASK_STAGED_FILES,
+    contract=lambda shared: (
+        shared.task.contract if shared.task is not None else TASK.default_contract
+    ),
+    default_contract="factory-task/1",
+    outcome_file="task-outcome.json",
+    branch_prefix="factory/task",
+    sync_marker="task-sync",
+    allowed_modes=("host",),
+    roles=("lead", "implementor", "tester"),
+    doctor_groups={"host": "task-host"},
+    reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
+    local=lambda local: local.task,
+    defaults=lambda shared: shared.task.defaults if shared.task is not None else {},
+    targets=lambda shared: shared.fix.targets,
+    enabled=lambda shared: shared is not None and shared.task is not None,
+)
+
+
 def registered() -> tuple[PullRequestKind, ...]:
-    return (FIX, FEATURE)
+    return (FIX, FEATURE, TASK)

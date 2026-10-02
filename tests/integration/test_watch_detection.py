@@ -58,10 +58,17 @@ def _failures(store: ClaimStore) -> list[str]:
 
 
 def _fix_run(
-    store: ClaimStore, finished: datetime, key: str, *, status: str, outcome: str, consumed: bool
+    store: ClaimStore,
+    finished: datetime,
+    key: str,
+    *,
+    status: str,
+    outcome: str,
+    consumed: bool,
+    kind: str = "fix",
 ) -> str:
     claim = store.create_claim(
-        ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", "fix", f"fp-{key}", {})
+        ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", kind, f"fp-{key}", {})
     )
     run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
     store.finish_run(run.id, execution_status=status, result={"outcome": outcome})
@@ -93,6 +100,26 @@ def test_completed_failed_outcome_waits_for_grace_then_queues_failure(tmp_path: 
         assert len(rows) == 1
         assert rows[0]["event_key"] == f"FAILURE:{run_id}"
         assert rows[0]["event_kind"] == "FAILURE"
+    finally:
+        store.close()
+
+
+def test_completed_failed_task_outcome_queues_failure(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        run_id = _fix_run(
+            store,
+            now - timedelta(minutes=8),
+            "task-failed-outcome",
+            status="completed",
+            outcome="failed",
+            consumed=True,
+            kind="task",
+        )
+        detect.detect(store, 7, lambda: now)
+        assert _failures(store) == [run_id]
     finally:
         store.close()
 
@@ -198,6 +225,39 @@ def test_pr_ready_after_cursor_passes_finished_at(tmp_path: Path) -> None:
         ready = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
         assert len(ready) == 1
         assert ready[0]["pr_number"] == 14
+    finally:
+        store.close()
+
+
+def test_task_pr_ready_and_failure_each_queue_once(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 0, lambda: now - timedelta(minutes=10))
+        ready = store.create_claim(ClaimDraft("o/r", 76, "I76", "P76", "task", "fp-76", {}))
+        ready_run = store.reserve_run(
+            ready.id, "task", reason="initial", evidence_path="/tmp/task-pr"
+        )
+        store.finish_run(
+            ready_run.id,
+            execution_status="completed",
+            result={"outcome": "pull-request", "pr": {"url": "https://github.com/o/r/pull/76"}},
+        )
+        failed = store.create_claim(ClaimDraft("o/r", 77, "I77", "P77", "task", "fp-77", {}))
+        failed_run = store.reserve_run(
+            failed.id, "task", reason="initial", evidence_path="/tmp/task-fail"
+        )
+        store.finish_run(failed_run.id, execution_status="failed", result={})
+        store.set_setting("consumed-results", failed_run.id, {"complete": True})
+        detect.detect(store, 0, lambda: now)
+        detect.detect(store, 0, lambda: now + timedelta(seconds=1))
+        events = [
+            row for row in watch_store.rows(store) if row["run_id"] in {ready_run.id, failed_run.id}
+        ]
+        assert {(row["event_kind"], row["run_id"]) for row in events} == {
+            ("PR-READY", ready_run.id),
+            ("FAILURE", failed_run.id),
+        }
     finally:
         store.close()
 

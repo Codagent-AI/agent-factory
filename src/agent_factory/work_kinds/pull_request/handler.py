@@ -173,20 +173,23 @@ class PullRequestHandler:
             )
             return
         if permission_cache[key] not in WRITER_PERMISSIONS:
-            if self.kind == "feature":
-                marker = "<!-- agent-factory-feature-handoff:v1 -->"
+            if self.kind != "fix":
+                marker = f"<!-- agent-factory-{self.kind}-handoff:v1 -->"
                 try:
                     comments = self._github.list_comment_records(source.repository, source.number)
                     if not any(marker in comment.body for comment in comments):
                         self._github.create_comment(
                             source.repository,
                             source.number,
-                            f"{marker}\nFeature handoff requires the issue author to have "
+                            f"{marker}\n{self.definition.noun} handoff requires the issue "
+                            "author to have "
                             "write, maintain, or admin access to this repository. "
                             "The card remains unassigned.",
                         )
                 except GitHubApiError as error:
-                    logger.warning("Cannot explain Feature handoff for %s: %s", card.id, error)
+                    logger.warning(
+                        "Cannot explain %s handoff for %s: %s", self.definition.noun, card.id, error
+                    )
             return
         try:
             cast(GitHubClient, self._github).set_single_select_field(
@@ -1024,6 +1027,8 @@ class PullRequestHandler:
                     if self.kind == "feature" and latest.reason != "review"
                     else f"Needs input.\n\n{reasons}"
                 )
+                if self.kind == "task" and latest.reason != "review":
+                    body += "\n\nNo branch was pushed."
                 self._store.record_event(
                     claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
                 )
