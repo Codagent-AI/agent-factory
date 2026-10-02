@@ -568,11 +568,13 @@ def test_preclaim_readiness_label_retries_without_manual_intervention(tmp_path: 
 
         h.tick()
         assert len([body for body in h.comments() if "Waiting for revision readiness" in body]) == 1
+        assert [event["event"] for event in h.state()["events"]] == ["labeled"]
 
         _git(tmp_path / "runner", "remote", "set-url", "origin", str(origin))
         h.tick()
         assert len(h.store.claims_for_item("P1")) == 1
         assert h.state()["labels"] == []
+        assert [event["event"] for event in h.state()["events"]] == ["labeled", "unlabeled"]
         assert h.store.get_setting("request-readiness", f"{REPOSITORY}:1") == {}
         artifact = h.wait_started(h.active_run())
         h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))

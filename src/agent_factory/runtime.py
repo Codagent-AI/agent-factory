@@ -269,13 +269,19 @@ def cycle(state: Path, config_path: Path) -> None:
                     break
             if snapshot is None or handler is None:
                 continue
+            factory_readiness_label = (
+                handler.kind in {"fix", "feature"}
+                and "needs-input" in card.source.labels
+                and "needs-input" not in candidate_card.source.labels
+            )
             parsed = handler.request_fingerprint(snapshot)
             if isinstance(parsed, Feedback):
                 # Existing controller supplies durable corrective comment feedback.
                 controller.accept(snapshot, resolve=lambda _: ("", ""))
                 client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 continue
-            client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            if not factory_readiness_label:
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
             # Admission is per kind: this kind's slot and window gate independently.
             # Quota holds are provider-scoped and enforced in Controller.reserve_next
             # against the specific claim's providers, not pre-filtered here.
@@ -298,12 +304,16 @@ def cycle(state: Path, config_path: Path) -> None:
                 )
             except ReadinessError as error:
                 controller.report_request_readiness(snapshot, str(error))
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                if not factory_readiness_label:
+                    client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 controller.report_request_readiness(snapshot, str(error), factory_label=True)
                 continue
-            store.set_setting(
-                "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
-            )
+            if factory_readiness_label and claim is not None:
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            if claim is not None or not factory_readiness_label:
+                store.set_setting(
+                    "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
+                )
             if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
                 continue
             try:
