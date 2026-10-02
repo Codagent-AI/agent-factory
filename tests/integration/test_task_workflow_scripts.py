@@ -85,7 +85,7 @@ def test_record_triage_task_decline_and_fix_default_are_distinct(tmp_path: Path)
 def test_record_triage_requires_task_fields_under_a_configured_contract(tmp_path: Path) -> None:
     # The Task contract is configurable, so the Task schema must not depend on its name.
     script = WORKFLOW / "record-triage.sh"
-    incomplete = {"doable": True, "reasons": [], "plan": "Tighten lint."}
+    incomplete: dict[str, object] = {"doable": True, "reasons": [], "plan": "Tighten lint."}
     result = run(
         ["sh", str(script)],
         data={
