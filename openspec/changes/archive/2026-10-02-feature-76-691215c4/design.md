@@ -158,7 +158,7 @@ check-contract ─ check-clean-tree ─ triage(lead) ─ record-triage ─ [repa
                                             only if HEAD moved during finalize; crossing or
                                             failed re-exercise → failed, PR left open
        record-pr-details
-       annotate-chore-pr                    Refs + claim marker, chore: title, evidence section
+       annotate-chore-pr                    Closes + claim marker, chore: title, evidence section
   record-outcome ─ verify-outcome
 ```
 
@@ -274,7 +274,7 @@ can therefore report `pull-request` for a head that skipped a guard.
 - **`annotate-chore-pr.sh`.** It replaces the fix workflow's inline annotate block for this
   workflow and does three things through the REST API, which `gh pr edit` cannot do with a
   fix token:
-  - prepends `Refs #N` and the claim marker, as the fix workflow does;
+  - ensures exactly one `Closes #N` before the claim marker, so the task issue closes on merge;
   - sets the title to `chore: <rest>`, stripping any other conventional prefix, when it
     does not start with `chore:`;
   - appends a section marked `<!-- agent-factory:task-evidence -->` listing

@@ -23,11 +23,14 @@ url = f"repos/{{owner}}/{{repo}}/pulls/{number}"
 pr = json.loads(subprocess.check_output(["gh", "api", url], text=True))
 body = pr.get("body") or ""
 title = pr.get("title") or ""
+issue_number = issue["number"]
+keyword = rf"(?:refs|close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]*:?[ \t]+#{issue_number}\b"
+body = re.sub(rf"(?im)^[ \t]*{keyword}[ \t]*(?:\n|$)", "", body)
+body = re.sub(rf"(?i)\b{keyword}", f"#{issue_number}", body)
 marker = f"<!-- agent-factory:claim:{issue.get('claim_id', '')} -->"
 if marker not in body:
     body = f"{marker}\n\n" + body
-if f"Refs #{issue['number']}" not in body:
-    body = f"Refs #{issue['number']}\n" + body
+body = f"Closes #{issue_number}\n" + body
 evidence_marker = "<!-- agent-factory:task-evidence -->"
 evidence_end = "<!-- agent-factory:task-evidence-end -->"
 

@@ -99,7 +99,12 @@ Release configuration SHALL be excluded from task scope. It is anything that pub
 
 ### Requirement: Implement and verify a task
 
-When triage accepts, the workflow SHALL implement the plan on the task branch following the repository's conventions, without requiring a test that fails first. It SHALL run the repository's tests, linters, and the existing validator workflow after the initial implementation, repair once and recheck when the validator fails, and have the lead review the diff and evidence. It SHALL return the findings to the implementor, run the validator again, and require a clean working tree. It SHALL then reuse the Runner's generic finalization workflow to push the branch, open or update the pull request, wait for CI, and address failures within its bounded loop. A validator or clean-tree gate that remains red after its bounded repair SHALL return `failed` with reasons before any push or pull request. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue without a closing keyword and SHALL carry the factory claim marker.
+When triage accepts, the workflow SHALL implement the plan on the task branch following the repository's conventions, without requiring a test that fails first. It SHALL run the repository's tests, linters, and the existing validator workflow after the initial implementation, repair once and recheck when the validator fails, and have the lead review the diff and evidence. It SHALL return the findings to the implementor, run the validator again, and require a clean working tree. It SHALL then reuse the Runner's generic finalization workflow to push the branch, open or update the pull request, wait for CI, and address failures within its bounded loop. A validator or clean-tree gate that remains red after its bounded repair SHALL return `failed` with reasons before any push or pull request. CI that remains red after the loop SHALL return `failed` with reasons while leaving the pull request open. The pull request SHALL reference the issue exactly once with `Closes #N`, so GitHub links the pull request and closes the issue on merge, and SHALL carry the factory claim marker.
+
+#### Scenario: Normalize the task pull request body
+
+- **WHEN** a finalized body has no closing keyword for the task issue or has `Refs #N`
+- **THEN** annotation leaves exactly one `Closes #N` for that issue and the factory claim marker
 
 #### Scenario: Deliver maintenance
 

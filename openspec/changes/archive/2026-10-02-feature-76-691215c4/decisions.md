@@ -2,6 +2,7 @@
 
 | Step | Decision | Alternatives considered | Decision-bearing |
 | --- | --- | --- | --- |
+| PR review | Task PRs close their issue on merge with exactly one `Closes #N` set by `annotate-chore-pr.sh`. | `Refs` with no closing keyword, as the fix spec states: rejected by Paul. Rely on the body from `finalize-pr`: rejected because it is not deterministic. | yes |
 | propose | Verdict: go with caveats (strict triage gate; Bug/Feature parity). | No-go (fold chores into Bug or Feature): rejected because Bug triage and TDD and Feature definition both misfit maintenance work. | yes |
 | propose | Tasks reach Owner=factory only through the existing Ready handoff (writer author) or `factory-assign`. No automatic routing rule. | Auto-route maintainer-authored Tasks like Bugs: rejected because the issue does not ask for it and it widens unattended intake. | yes |
 | propose | Execution mode is `host` only for the new kind. | Docker and host like fix: rejected for now because the live service runs fixes on the host and a task sandbox would add an image and doctor group with no user. | yes |

@@ -159,10 +159,12 @@ The acceptance pass exercises real execution.
     dates are unchanged, and the working tree is untouched. On a range with a merge commit,
     or a branch with an upstream, it changes nothing and exits with the reason.
   - **`annotate-chore-pr.sh`:**
-    - It sends one PATCH that prepends `Refs #N` and the claim marker, appends the
+    - It sends one PATCH that removes any existing reference or closing keyword
+      for the task issue, prepends exactly one `Closes #N` and the claim marker, appends the
       `agent-factory:task-evidence` section with choices and gate results, and sets the
       title to `chore: …`, replacing a `fix:` prefix.
-    - A second run sends no change.
+    - Bodies with no keyword, an existing `Closes #N`, or an older `Refs #N` all
+      end with exactly one `Closes #N`; a second run sends no change.
     - When the title PATCH fails, it writes `retitle-failed` and exits 0.
   - **`record-review-outcome.sh`:** a pre-push crossing yields `needs-input` and a
     post-finalize crossing yields `failed`, each with the reasons. Existing review fixtures
@@ -375,7 +377,7 @@ The acceptance pass exercises real execution.
 - Required decision or observation:
   - No Task other than #74, or one Paul approved, was claimed after deploy.
   - The claim is a `task` claim in the task slot.
-  - Either a PR opened titled `chore: …`, with the claim marker, `Refs #74`, a
+  - Either a PR opened titled `chore: …`, with the claim marker, `Closes #74`, a
     task-evidence section recording the measured duplication and chosen threshold, gate
     exercise results, and `chore:` commits, or a decline names a specific decision.
   - Paul judges whether the triage call was right, and whether Tasks stay enabled or are

@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 WORKFLOW = Path("src/agent_factory/work_kinds/pull_request/workflow")
 
@@ -308,7 +311,8 @@ else:
     saved = json.loads(state.read_text())
     assert len(saved["patches"]) == 1
     assert saved["title"] == "chore: lint"
-    assert "Refs #7" in saved["body"]
+    assert saved["body"].count("Closes #7") == 1
+    assert "Refs #7" not in saved["body"]
     assert "agent-factory:claim:claim-7" in saved["body"]
     assert "agent-factory:task-evidence" in saved["body"]
     assert annotate(env).returncode == 0
@@ -344,6 +348,82 @@ else:
     failure = annotate({**env, "FAIL_TITLE": "1"})
     assert failure.returncode == 0 and failure.stdout == "passed"
     assert "title rejected" in (evidence / "retitle-failed").read_text()
+
+
+@pytest.mark.parametrize(
+    "original",
+    [
+        "Human note",
+        "Closes #7\nHuman note",
+        "Refs #7\nHuman note",
+        "Human note (refs #7); fixes #7\nResolves #7\nCloses #70",
+        "This fixes #7 by extracting the helper\nCloses #7 and #8\nHuman note",
+    ],
+)
+def test_annotate_chore_pr_normalizes_issue_keyword(tmp_path: Path, original: str) -> None:
+    repo, _ = repository(tmp_path)
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    state = tmp_path / "pr.json"
+    state.write_text(json.dumps({"body": original, "title": "chore: lint", "patches": []}))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text("""#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+p = Path(os.environ['PR_STATE'])
+state = json.loads(p.read_text())
+args = sys.argv[1:]
+if args[:2] == ['pr', 'list']:
+    print(json.dumps([{'number': 3}]))
+elif args[:1] == ['api'] and '-X' not in args:
+    print(json.dumps(state))
+elif args[:1] == ['api'] and '-X' in args:
+    fields = dict(arg.split('=', 1) for i, arg in enumerate(args) if i and args[i-1] == '-f')
+    state['patches'].append(fields)
+    state.update(fields)
+    p.write_text(json.dumps(state))
+else:
+    sys.exit(2)
+""")
+    gh.chmod(0o755)
+    env = {
+        **os.environ,
+        "PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
+        "PR_STATE": str(state),
+    }
+    payload = {"artifact_dir": str(evidence), "issue_file": str(issue)}
+    script = WORKFLOW.resolve() / "annotate-chore-pr.sh"
+
+    def annotate() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["sh", str(script)],
+            cwd=repo,
+            env=env,
+            input=json.dumps(payload),
+            text=True,
+            capture_output=True,
+        )
+
+    first = annotate()
+    assert first.returncode == 0 and first.stdout == "passed", first.stderr
+    saved = json.loads(state.read_text())
+    body = saved["body"]
+    assert body.startswith("Closes #7\n<!-- agent-factory:claim:claim-7 -->")
+    keywords = re.findall(r"(?i)\b(?:refs|close[sd]?|fix(?:e[sd])?|resolve[sd]?) #7\b", body)
+    assert keywords == ["Closes #7"]
+    assert "Human note" in body
+    if "This fixes" in original:
+        assert "This #7 by extracting the helper" in body
+        assert "#7 and #8" in body
+    if "Closes #70" in original:
+        assert "Closes #70" in body
+    assert len(saved["patches"]) == 1
+    assert annotate().returncode == 0
+    assert len(json.loads(state.read_text())["patches"]) == 1
 
 
 def test_review_scope_crossings_map_to_needs_input_and_failed(tmp_path: Path) -> None:
