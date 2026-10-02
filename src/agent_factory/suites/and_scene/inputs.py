@@ -30,31 +30,21 @@ def _resolve_validator(checkout: Path | None, ref: str) -> str:
         raise ReadinessError(f"Agent Validator checkout: {error}") from error
 
 
+def _saved_mapping(frozen: Mapping[str, object], name: str) -> Mapping[str, object]:
+    value = frozen.get(name)
+    return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
+
+
 def _validator_text(frozen: Mapping[str, object]) -> str:
-    revisions = frozen.get("revisions")
-    sha = (
-        cast(Mapping[str, object], revisions).get("validator")
-        if isinstance(revisions, Mapping)
-        else None
-    )
+    sha = _saved_mapping(frozen, "revisions").get("validator")
     return "\nAgent Validator: " + str(sha or "published npm release (not pinned)")
 
 
 def _fixture_text(frozen: Mapping[str, object]) -> str | None:
-    revisions = frozen.get("revisions")
-    fixture = (
-        cast(Mapping[str, object], revisions).get("fixture")
-        if isinstance(revisions, Mapping)
-        else None
-    )
+    fixture = _saved_mapping(frozen, "revisions").get("fixture")
     if fixture is None:
         return None
-    settings = frozen.get("settings")
-    requested = (
-        cast(Mapping[str, object], settings).get("fixture_ref")
-        if isinstance(settings, Mapping)
-        else None
-    )
+    requested = _saved_mapping(frozen, "settings").get("fixture_ref")
     return (
         f"\nFixture: `{fixture}` (requested `{requested}`), selected by this request "
         "instead of the agent-evals pin."

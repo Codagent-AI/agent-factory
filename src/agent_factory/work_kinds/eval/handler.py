@@ -298,7 +298,7 @@ class EvalHandler:
                 and self._local.eval_execution not in entry.executions
             ):
                 raise ReadinessError(entry.execution_hold(str(revision)))
-        worktrees = self._manager.prepare(claim.id, mapping(claim.frozen_spec.get("revisions")))
+        worktrees = self._manager.prepare(claim.id, revisions)
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
         roles = mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
