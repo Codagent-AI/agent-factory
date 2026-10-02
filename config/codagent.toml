@@ -98,6 +98,9 @@ repository = "Codagent-AI/agent-evals"
 [[fix.targets]]
 repository = "Codagent-AI/agent-factory"
 
+[[fix.targets]]
+repository = "Codagent-AI/and-scene"
+
 [fix.defaults]
 lead = "claude:claude-opus-5-5:high"
 implementor = "codex:gpt-6-sol:medium"
