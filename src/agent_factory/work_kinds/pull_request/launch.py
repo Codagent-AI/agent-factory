@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from importlib.resources import as_file, files
 from pathlib import Path
 
+from agent_factory import audit
 from agent_factory.config import PROFILE, LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
@@ -769,6 +770,23 @@ def host_script(
             f" --param prior_branch={shlex.quote(prior_branch)}"
             f" --param base_head={shlex.quote(base_head)}"
         )
+    # When post-run audits are enabled, every attempt is audited whatever its result,
+    # before the exit trap restores a tracked config: replay resolves the auditor from
+    # the staged factory profile. The audit runs with the operator's own GitHub identity,
+    # never the attempt's token, and its outcome never changes the attempt's exit status.
+    audit_command = " ".join(
+        (
+            "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
+            "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
+            # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
+            f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
+            f"--runner {shlex.quote(runner)}",
+            f"--session-dir {shlex.quote(str(session_dir))}",
+            f"--project {shlex.quote(str(repo_clone))}",
+            f"--evidence {shlex.quote(str(evidence))}",
+            "|| true",
+        )
+    )
     lines = [
         "#!/bin/bash",
         "# Written by agent-factory for one host fix attempt.",
@@ -800,23 +818,7 @@ def host_script(
         "set +e",
         run_command,
         "run_status=$?",
-        # Every attempt is audited whatever its result, before the exit trap restores a
-        # tracked config: replay resolves the auditor from the staged factory profile. The
-        # audit runs with the operator's own GitHub identity, never the attempt's token,
-        # and its outcome never changes the attempt's exit status.
-        " ".join(
-            (
-                "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
-                "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
-                # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
-                f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
-                f"--runner {shlex.quote(runner)}",
-                f"--session-dir {shlex.quote(str(session_dir))}",
-                f"--project {shlex.quote(str(repo_clone))}",
-                f"--evidence {shlex.quote(str(evidence))}",
-                "|| true",
-            )
-        ),
+        *([audit_command] if audit.AUDIT_ENABLED else []),
         'exit "$run_status"',
     ]
     return "\n".join(lines) + "\n"

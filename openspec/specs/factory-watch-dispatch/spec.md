@@ -292,7 +292,7 @@ Each dispatch that started a session SHALL record:
 - its input and output tokens;
 - its estimated cost.
 
-Tokens and cost SHALL come from the session's Agent Runner metrics. When a value cannot be read, or the Runner reports it as incomplete, it SHALL be recorded as unavailable, with the Runner's coverage, rather than as zero. The factory SHALL record each session's usage metrics in its dispatch record and status. The watch-session post-run audit SHALL run only when the audit switch is enabled; it is disabled by default pending Codagent-AI/agent-factory#60. When disabled, no metrics are sent to the development-audit destination and the audit outcome is recorded as missing. When enabled, audit delivery and its outcome SHALL be recorded. A session terminated at its timeout skips that audit, and its delivery SHALL be recorded as missing.
+Tokens and cost SHALL come from the session's Agent Runner metrics. When a value cannot be read, or the Runner reports it as incomplete, it SHALL be recorded as unavailable, with the Runner's coverage, rather than as zero. The factory SHALL record each session's usage metrics in its dispatch record and status. The watch-session post-run audit SHALL run only when the factory audit switch that governs all post-run audits is on. That switch is off pending Codagent-AI/agent-factory#60. When disabled, no metrics are sent to the development-audit destination and the audit outcome is recorded as missing. When enabled, audit delivery and its outcome SHALL be recorded. A session terminated at its timeout skips that audit, and its delivery SHALL be recorded as missing.
 
 #### Scenario: A completed review records its usage
 

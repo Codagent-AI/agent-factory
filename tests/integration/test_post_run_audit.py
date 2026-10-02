@@ -1,4 +1,4 @@
-"""Every factory run is audited and an undelivered audit is reported, never hidden."""
+"""Factory audit behavior with the switch enabled and disabled."""
 
 from __future__ import annotations
 
@@ -15,6 +15,11 @@ from agent_factory import audit
 from agent_factory.store import ClaimDraft, ClaimStore, Run
 
 SESSION = "exec-1"
+
+
+@pytest.fixture(autouse=True)
+def enable_audits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", True)
 
 
 def _write(path: Path, value: object) -> None:
@@ -414,11 +419,15 @@ def test_host_summary_is_reported_even_without_session_metrics(tmp_path: Path) -
     assert summary is not None and summary["outcome"] == audit.FAILED
 
 
-def test_status_lists_recent_undelivered_audits_one_based(tmp_path: Path) -> None:
+@pytest.mark.parametrize("enabled", [False, True])
+def test_status_lists_recent_undelivered_audits_one_based(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
     from datetime import UTC, datetime, timedelta
 
     from agent_factory import operations
 
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", enabled)
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(
         ClaimDraft("example/work", 7, "I1", "P1", "fix", "fp", {"version": 1})
@@ -445,6 +454,140 @@ def test_status_lists_recent_undelivered_audits_one_based(tmp_path: Path) -> Non
         " — value-audit failed"
     ]
     store.close()
+
+
+def test_disabled_host_wrapper_keeps_run_status_and_execution_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.integration.test_host_launch import Built
+
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
+    built = Built(tmp_path, monkeypatch)
+    calls = tmp_path / "runner-calls.jsonl"
+    built.runner.write_text(
+        f"""#!{sys.executable}
+import json, pathlib, sys
+args = sys.argv[1:]
+with open({str(calls)!r}, "a") as log:
+    log.write(json.dumps(args) + "\\n")
+if args[0] == "run":
+    session = pathlib.Path(args[args.index("--session-dir") + 1])
+    session.mkdir(parents=True, exist_ok=True)
+    (session / "run-metrics.json").write_text('{{"sessions": []}}')
+    (session / "audit.log").write_text("execution log\\n")
+    sys.exit(3)
+sys.exit(9)
+"""
+    )
+    script = built.wrapper.read_text()
+    done = subprocess.run(
+        ["/bin/bash", str(built.wrapper)], capture_output=True, text=True, check=False
+    )
+
+    assert done.returncode == 3, done.stderr
+    assert all(call[0] != "audit" for call in map(json.loads, calls.read_text().splitlines()))
+    assert "agent_factory.audit host" not in script
+    assert not (built.evidence / audit.AUDIT_FILE).exists()
+    assert (built.evidence / audit.HOST_SESSION_DIR / "audit.log").read_text() == "execution log\n"
+    assert "trap restore_tracked_config EXIT" in script
+    assert script.rstrip().endswith('exit "$run_status"')
+
+
+@pytest.mark.parametrize("evidence_kind", ["host-unaudited", "host-recorded", "eval"])
+def test_disabled_settlement_ignores_host_and_eval_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence_kind: str
+) -> None:
+    from agent_factory import runtime
+
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
+    runner = tmp_path / "agent-runner"
+    executed = tmp_path / "runner-executed"
+    runner.write_text(f"#!/bin/sh\necho executed > '{executed}'\nexit 9\n")
+    runner.chmod(0o755)
+
+    def runner_on_path(name: str) -> str:
+        assert name == "agent-runner"
+        return str(runner)
+
+    monkeypatch.setattr(runtime.shutil, "which", runner_on_path)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp", {"version": 1})
+    )
+    evidence = tmp_path / "evidence"
+    run = store.reserve_run(claim.id, "unit", reason="initial", evidence_path=str(evidence))
+    if evidence_kind == "eval":
+        store.configure_run(run.id, plan={"ownership_hints": {"suite": "and-scene"}}, limits={})
+        collected = evidence / ".runtime/agent-runner-projects/p/runs/rep-1" / audit.METRICS_FILE
+        _write(collected, {"sessions": [{"execution_session_id": SESSION}]})
+    else:
+        _source(evidence, (SESSION, "closed"))
+    recorded = evidence / audit.AUDIT_FILE
+    if evidence_kind == "host-recorded":
+        audit.write_summary(evidence, {"outcome": audit.FAILED, "reason": "older failure"})
+    before = recorded.read_bytes() if recorded.exists() else None
+    store.finish_run(run.id, execution_status="completed", result={})
+    finished = store.get_run(run.id)
+    assert finished is not None
+
+    runtime._settle_audit(store, claim, finished)  # pyright: ignore[reportPrivateUsage]
+    runtime._settle_audit(store, claim, finished)  # pyright: ignore[reportPrivateUsage]
+
+    assert store.pending_events(claim.id) == []
+    assert (recorded.read_bytes() if recorded.exists() else None) == before
+    assert not executed.exists()
+    store.close()
+
+
+def test_disabled_status_omits_missing_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory import operations
+
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(
+        ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp", {"version": 1})
+    )
+    run = store.reserve_run(
+        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+    )
+    _source(Path(run.evidence_path), (SESSION, "closed"))
+    store.finish_run(run.id, execution_status="completed", result={})
+
+    assert operations._audit_lines(store, [claim]) == []  # pyright: ignore[reportPrivateUsage]
+    store.close()
+
+
+@pytest.mark.parametrize("runner", [None, "/bin/agent-runner"])
+def test_disabled_readiness_skips_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str | None
+) -> None:
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
+
+    def fail_probe(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        pytest.fail(f"unexpected audit probe: {argv}")
+
+    available, detail, action = audit.readiness(
+        runner, connection=tmp_path / "absent", run=fail_probe
+    )
+    assert (available, action) == (True, "")
+    assert "disabled" in detail and "Codagent-AI/agent-factory#60" in detail
+
+
+def test_disabled_doctor_reports_post_run_audit_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory import operations
+    from agent_factory.config import LocalConfig
+    from tests.integration.test_mac_operations import (
+        _local_config,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
+    config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "missing-shared.toml"))
+    diagnostic = next(d for d in operations.doctor(config) if d.name == "post-run audit")
+    assert diagnostic.available and "disabled" in diagnostic.detail
 
 
 def replace_finished(run: object, finished_at: str) -> Run:
