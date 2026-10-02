@@ -303,8 +303,13 @@ def cycle(state: Path, config_path: Path) -> None:
                     fresh=fresh,
                 )
             except ReadinessError as error:
-                controller.report_request_readiness(snapshot, str(error))
                 if not factory_readiness_label:
+                    key = f"{snapshot.repository}:{snapshot.issue_number}"
+                    store.set_setting(
+                        "request-readiness",
+                        key,
+                        {**(store.get_setting("request-readiness", key) or {}), "label": "factory"},
+                    )
                     client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 controller.report_request_readiness(snapshot, str(error), factory_label=True)
                 continue

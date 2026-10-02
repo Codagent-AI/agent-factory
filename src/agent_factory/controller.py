@@ -345,9 +345,13 @@ class Controller:
         """Persist pre-claim failures and deliver corrective feedback without accepting inputs."""
         key = f"{snapshot.repository}:{snapshot.issue_number}"
         receipt = self._store.get_setting("request-readiness", key)
-        label = {"label": "factory"} if factory_label else {}
+        label = (
+            {"label": "factory"}
+            if factory_label or (receipt and receipt.get("label") == "factory")
+            else {}
+        )
         if receipt and receipt.get("reason") == reason and receipt.get("comment_id"):
-            if factory_label and receipt.get("label") != "factory":
+            if label and receipt.get("label") != "factory":
                 self._store.set_setting("request-readiness", key, {**receipt, **label})
             return
         self._store.set_setting("request-readiness", key, {"reason": reason, **label})

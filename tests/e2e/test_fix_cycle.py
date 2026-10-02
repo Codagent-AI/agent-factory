@@ -168,6 +168,9 @@ elif endpoint == 'graphql':
         result = {{'data': {{'updateProjectV2ItemFieldValue': {{'projectV2Item': {{'id': v['item']}}}}}}}}
 elif '/comments' in endpoint:
     if 'POST' in args:
+        if s.pop('fail_comment_post_once', False):
+            p.write_text(json.dumps(s))
+            sys.stderr.write('gh: temporary comment failure\\n'); sys.exit(1)
         result = {{'id': len(s['comments']) + 1, 'body': body['body'], 'user': {{'login': {bot_login!r}}}, 'created_at': '2026-01-01T00:00:%02dZ' % (len(s['comments']) + 1)}}
         s['comments'].append(result)
     else:
@@ -576,6 +579,37 @@ def test_preclaim_readiness_label_retries_without_manual_intervention(tmp_path: 
         assert h.state()["labels"] == []
         assert [event["event"] for event in h.state()["events"]] == ["labeled", "unlabeled"]
         assert h.store.get_setting("request-readiness", f"{REPOSITORY}:1") == {}
+        artifact = h.wait_started(h.active_run())
+        h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))
+    finally:
+        h.store.close()
+
+
+def test_preclaim_readiness_label_survives_failed_comment_for_new_reason(tmp_path: Path) -> None:
+    h = Harness(tmp_path, execution="host")
+    runner = tmp_path / "runner"
+    origin = tmp_path / "runner-origin.git"
+    skills = tmp_path / "skills"
+    skills_origin = tmp_path / "skills-origin.git"
+    _git(runner, "remote", "set-url", "origin", str(tmp_path / "missing-a.git"))
+    try:
+        h.tick()
+        assert h.state()["labels"] == ["needs-input"]
+
+        _git(runner, "remote", "set-url", "origin", str(origin))
+        _git(skills, "remote", "set-url", "origin", str(tmp_path / "missing-b.git"))
+        h.update(fail_comment_post_once=True)
+        with pytest.raises(AssertionError, match="gh api request failed"):
+            h.tick()
+        receipt = h.store.get_setting("request-readiness", f"{REPOSITORY}:1")
+        assert receipt is not None
+        assert "skills" in str(receipt["reason"])
+        assert receipt["label"] == "factory"
+
+        _git(skills, "remote", "set-url", "origin", str(skills_origin))
+        h.tick()
+        assert len(h.store.claims_for_item("P1")) == 1
+        assert h.state()["labels"] == []
         artifact = h.wait_started(h.active_run())
         h.finish(artifact, json.dumps({"contract": "factory-fix/1", "outcome": "failed"}))
     finally:
