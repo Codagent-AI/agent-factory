@@ -97,25 +97,21 @@ TASK_TITLES = {
 
 def task_compliance_record(artifact_dir: Path) -> dict[str, Any]:
     try:
-        raw = json.loads((artifact_dir / "task-compliance.json").read_text())
-        if (
-            isinstance(raw, dict)
-            and raw.get("result")
-            in {
-                "passed",
-                "failed",
-                "not-run",
-                "not-declared",
-            }
-            and (
-                (raw.get("result") == "not-run" and isinstance(raw.get("reason"), str))
-                or all(
-                    isinstance(raw.get(key), str) and raw[key]
-                    for key in ("base", "reviewed_head", "tasks_sha256")
-                )
+        raw: object = json.loads((artifact_dir / "task-compliance.json").read_text())
+        record = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+        if record.get("result") in {
+            "passed",
+            "failed",
+            "not-run",
+            "not-declared",
+        } and (
+            (record.get("result") == "not-run" and isinstance(record.get("reason"), str))
+            or all(
+                isinstance(record.get(key), str) and record[key]
+                for key in ("base", "reviewed_head", "tasks_sha256")
             )
         ):
-            return cast(dict[str, Any], raw)
+            return record
     except (OSError, json.JSONDecodeError):
         pass
     return {"result": "not-run", "reason": "no task-compliance record"}

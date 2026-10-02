@@ -2082,7 +2082,7 @@ def test_feature_outcome_qualifies_validator_status(
 def test_task_compliance_record_rejects_non_object_json(tmp_path: Path) -> None:
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("annotate_pr", PACKAGE / "annotate-pr.py")
+    spec = importlib.util.spec_from_file_location("annotate_pr", str(PACKAGE / "annotate-pr.py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
