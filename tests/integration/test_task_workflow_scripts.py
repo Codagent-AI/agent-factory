@@ -199,46 +199,71 @@ def test_gate_exercise_requires_matching_command_and_confirmed_diagnostic(tmp_pa
     assert run(["python3", checker, str(evidence)], cwd=repo).returncode != 0
 
 
-def test_final_gate_inventory_retains_triage_gates_and_checks_new_gate(tmp_path: Path) -> None:
+def test_final_gate_inventory_merges_sources_instead_of_requiring_agreement(
+    tmp_path: Path,
+) -> None:
+    """Acceptance F6: independent sessions naming one check differently add an exercise."""
     evidence = tmp_path / "evidence"
     evidence.mkdir()
+    checker = str(WORKFLOW.resolve() / "check-gate-inventory.py")
     triage = evidence / "task-triage.json"
     inventory = evidence / "final-gates-prepush.json"
-    triage.write_text(
-        json.dumps({"gates": [{"name": "lint", "command": "make lint", "violation": "bad style"}]})
-    )
-    checker = str(WORKFLOW.resolve() / "check-gate-inventory.py")
     changes = evidence / "gate-changes.json"
-    changes.write_text(
-        json.dumps(
-            {"gates": [{"name": "types", "command": "make types", "violation": "type error"}]}
-        )
-    )
     derived = evidence / "diff-gates-prepush.json"
-    derived.write_text(json.dumps({"gates": [{"name": "types", "command": "make types"}]}))
-    inventory.write_text(json.dumps({"gates": []}))
-    check_command = ["python3", checker, str(triage), str(inventory), str(changes), str(derived)]
-    assert run(check_command).returncode != 0
-    inventory.write_text(
-        json.dumps({"gates": [{"name": "lint", "command": "make lint", "violation": "bad style"}]})
+    lint = {"name": "ruff-strict-lint", "command": "ruff check .", "violation": "B006 default"}
+    dup = {"name": "jscpd", "command": "npx --yes jscpd src", "violation": "50+ token copy"}
+    triage.write_text(json.dumps({"gates": [lint, dup]}))
+    command = ["python3", checker, str(triage), str(inventory), str(changes), str(derived)]
+
+    def final() -> list[dict[str, str]]:
+        return json.loads(inventory.read_text())["gates"]
+
+    # R1: the lead dropped jscpd and kept triage's lint command; the implementor pinned
+    # jscpd; the tester derived what CI actually runs under the same name.
+    inventory.write_text(json.dumps({"gates": [lint]}))
+    changes.write_text(json.dumps({"gates": [{**dup, "command": "npx --yes jscpd@4.3.0 src"}]}))
+    full_lint = "ruff check . && ruff format --check ."
+    derived.write_text(
+        json.dumps({"gates": [{**lint, "command": full_lint, "violation": "unformatted file"}]})
     )
-    assert run(check_command).returncode != 0
-    inventory.write_text(
+    result = run(command)
+    assert result.returncode == 0, result.stderr
+    assert [(gate["name"], gate["command"]) for gate in final()] == [
+        ("ruff-strict-lint", "ruff check ."),
+        ("jscpd", "npx --yes jscpd@4.3.0 src"),
+        ("ruff-strict-lint (diff)", full_lint),
+    ]
+    # R2: a review round whose two sessions named the same check differently.
+    c4 = {
+        "name": "ruff C4 (flake8-comprehensions) lint rule",
+        "command": "ruff check --select C4 .",
+    }
+    inventory.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
+    review = evidence / "review-gates.json"
+    review.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
+    derived.write_text(
         json.dumps(
-            {
-                "gates": [
-                    {"name": "lint", "command": "make lint", "violation": "bad style"},
-                    {"name": "types", "command": "make types", "violation": "type error"},
-                ]
-            }
+            {"gates": [{"name": "ruff-lint-C4", "command": "ruff check .", "violation": "C400"}]}
         )
     )
-    assert run(check_command).returncode == 0
+    result = run(["python3", checker, str(review), str(inventory), "", str(derived)])
+    assert result.returncode == 0, result.stderr
+    assert {gate["name"] for gate in final()} == {c4["name"], "ruff-lint-C4"}
+    # The same command under another name is already covered: no duplicate exercise.
+    derived.write_text(
+        json.dumps({"gates": [{"name": "c4", "command": c4["command"], "violation": "C400"}]})
+    )
+    inventory.write_text(json.dumps({"gates": [{**c4, "violation": "list(x for x in y)"}]}))
+    assert run(["python3", checker, str(review), str(inventory), "", str(derived)]).returncode == 0
+    assert len(final()) == 1
+    # A gate that cannot be exercised still stops the guard.
     derived.write_text(json.dumps({"gates": [{"name": "new", "command": "make new"}]}))
-    assert run(check_command).returncode != 0
-    derived.write_text(json.dumps({"gates": [{"name": "types", "command": "make types"}]}))
+    failed = run(["python3", checker, str(review), str(inventory), "", str(derived)])
+    assert failed.returncode != 0
+    assert "needs a name, command and violation" in failed.stderr
     (evidence / "gate-exercises.json").write_text("[]")
     (evidence / "gate-verdicts.json").write_text("[]")
+    inventory.write_text(json.dumps({"gates": [lint]}))
     exercise_checker = str(WORKFLOW.resolve() / "check-gate-exercises.py")
     assert run(["python3", exercise_checker, str(evidence), str(inventory)]).returncode != 0
 

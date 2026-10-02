@@ -1,14 +1,66 @@
 #!/usr/bin/env python3
-"""Check that a guard's final gate inventory retains the triage obligations."""
+"""Merge a guard's gate sources into the final inventory every gate is exercised from.
+
+The lead's inventory is the starting point. Triage gates it dropped are restored, the
+implementor's changed gates replace the command of the gate they name, and every gate the
+independent diff derivation found whose command is not already listed is added. Two
+sessions describing one check with different names or commands therefore cost an extra
+exercise, never a skipped gate and never a stopped attempt. The merged list is written
+back over the inventory file. A gate without a name, command and violation still fails.
+"""
 
 import json
 import sys
 from pathlib import Path
 from typing import Any
 
+FIELDS = ("name", "command", "violation")
+
 
 def load_gates(path: Path | None) -> list[dict[str, Any]]:
     return json.loads(path.read_text())["gates"] if path is not None else []
+
+
+def merge(
+    triage: list[dict[str, Any]],
+    inventory: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+    derived: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    final = [dict(gate) for gate in inventory]
+    names = [gate.get("name") for gate in final]
+    if len(names) != len(set(names)):
+        raise ValueError("gate names must be unique")
+
+    def named(name: object) -> dict[str, Any] | None:
+        return next((gate for gate in final if gate.get("name") == name), None)
+
+    def listed(command: object) -> bool:
+        return any(gate.get("command") == command for gate in final)
+
+    def add(gate: dict[str, Any], source: str) -> None:
+        name = gate.get("name")
+        while named(name) is not None:
+            name = f"{name} ({source})"
+        final.append({**gate, "name": name})
+
+    for gate in triage:
+        if named(gate.get("name")) is None and not listed(gate.get("command")):
+            add(gate, "triage")
+    for gate in changes:
+        current = named(gate.get("name"))
+        if current is not None:
+            # The implementor's recorded change is the latest command for that gate.
+            current.update({key: gate[key] for key in ("command", "violation") if gate.get(key)})
+        elif not listed(gate.get("command")):
+            add(gate, "changed")
+    for gate in derived:
+        if not listed(gate.get("command")):
+            add(gate, "diff")
+    for gate in final:
+        if not all(isinstance(gate.get(field), str) and gate[field] for field in FIELDS):
+            raise ValueError(f"gate {gate.get('name')!r} needs a name, command and violation")
+    return final
 
 
 def check(
@@ -16,30 +68,15 @@ def check(
     inventory_file: Path,
     changes_file: Path | None = None,
     diff_file: Path | None = None,
-) -> None:
-    triage = load_gates(triage_file)
-    inventory = load_gates(inventory_file)
-    names = [gate["name"] for gate in inventory]
-    if len(names) != len(set(names)):
-        raise ValueError("gate names must be unique")
-    by_name = {gate["name"]: gate for gate in inventory}
-    for gate in triage:
-        current = by_name.get(gate["name"])
-        if current is None or not current.get("command") or not current.get("violation"):
-            raise ValueError(f"triage gate {gate['name']} is missing")
-    # Gates the implementor changed and gates derived from the diff must both be in the
-    # inventory with their current command.
-    for source, path in (("changed", changes_file), ("diff", diff_file)):
-        for gate in load_gates(path):
-            current = by_name.get(gate["name"])
-            if current is None or current.get("command") != gate.get("command"):
-                raise ValueError(f"{source} gate {gate['name']} is missing or stale")
-    for gate in inventory:
-        if not all(
-            isinstance(gate.get(field), str) and gate[field]
-            for field in ("name", "command", "violation")
-        ):
-            raise ValueError("every gate needs a name, command and violation")
+) -> list[dict[str, Any]]:
+    final = merge(
+        load_gates(triage_file),
+        load_gates(inventory_file),
+        load_gates(changes_file),
+        load_gates(diff_file),
+    )
+    inventory_file.write_text(json.dumps({"gates": final}) + "\n")
+    return final
 
 
 if __name__ == "__main__":

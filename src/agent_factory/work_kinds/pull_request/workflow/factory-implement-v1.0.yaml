@@ -149,6 +149,9 @@ steps:
       artifact_dir: "{{artifact_dir}}"
       gates_file: "{{artifact_dir}}/review-gates.json"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+    # write-result reports an incomplete guard; scope_status then stays crossed, so
+    # nothing is pushed.
+    continue_on_failure: true
 
   # Rewrites only the round's unpushed subjects; a refusal leaves them for the check below.
   - id: normalize-review-commits
@@ -198,6 +201,7 @@ steps:
       gates_file: "{{artifact_dir}}/review-gates.json"
       prefinalize_head: "{{prefinalize_head}}"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed || test "{{scope_status}}" = crossed || test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
+    continue_on_failure: true
 
   - id: write-result
     command: |

@@ -39,8 +39,10 @@ steps:
     mode: autonomous
     capture: scope_decision
     prompt: |
-      Review the complete git diff {{base}}..HEAD against the Task boundary in
-      `.agent-runner/workflows/factory-task-boundary.md`.
+      Run `git diff {{base}}..HEAD` now and review that complete diff against
+      the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
+      Judge only the current diff: earlier conversation in this session may
+      describe an older tree that later commits already changed.
       The deterministic floor found these definite crossings: {{scope_floor}}.
       Return only JSON {"crossed": boolean, "reasons": [strings]}. Name each
       crossing and whether it belongs in a Bug or Feature. Do not edit files.
@@ -81,7 +83,9 @@ steps:
       Include every gate from the delivered diff, including gates introduced
       after triage. Do not edit code.
 
-  - id: verify-gate-inventory
+  # Merges triage, inventory, implementor changes and the independent derivation into
+  # final-gates-<mode>.json, so disagreement adds an exercise instead of stopping the guard.
+  - id: merge-gate-inventory
     command: python3 .agent-runner/workflows/check-gate-inventory.py "{{gates_file}}" "{{artifact_dir}}/final-gates-{{mode}}.json" "{{gate_changes_file}}" "{{artifact_dir}}/diff-gates-{{mode}}.json"
     skip_if: 'sh: test ! -f "{{gates_file}}"'
 
