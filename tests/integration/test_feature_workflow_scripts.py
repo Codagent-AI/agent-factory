@@ -2219,6 +2219,14 @@ def test_task_compliance_record_flows_through_pr_and_outcome(
         assert f"base {accepted}" in body
         assert "Not covered by task-compliance: " in body
     assert all(sha[:12] in body for sha in later)
+    # One "Commits after acceptance" item carries both the commits and the task-compliance note.
+    later_items = [item for item in flags["orange"] if item["title"] == "Commits after acceptance"]
+    assert len(later_items) == 1
+    assert all(sha[:12] in later_items[0]["detail"] for sha in later)
+    if compliance is not None:
+        assert "Not covered by task-compliance: " in later_items[0]["detail"]
+    assert body.count("[Commits after acceptance]") == 1
+    assert f"### 🟠 Orange ({len(flags['orange'])})" in body
     payload = {
         "contract": "factory-feature/1",
         "outcome_path": str(artifacts / "feature-outcome.json"),

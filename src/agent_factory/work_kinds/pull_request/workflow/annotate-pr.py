@@ -238,13 +238,14 @@ def main() -> None:
             f"{sha[:12]} ({command('git', 'log', '-1', '--format=%s', sha)})" for sha in uncovered
         )
         if later_item is None:
-            flags["orange"].append(
-                {
-                    "title": LATER_COMMITS_TITLE,
-                    "detail": detail,
-                    "link": "#acceptance-evidence",
-                }
-            )
+            # Keep the new item bound so the task-compliance note below joins it
+            # instead of adding a second item with the same title.
+            later_item = {
+                "title": LATER_COMMITS_TITLE,
+                "detail": detail,
+                "link": "#acceptance-evidence",
+            }
+            flags["orange"].append(later_item)
         else:
             later_item["detail"] = f"{later_item['detail']}, {detail}"
     reviewed_head = task_record.get("reviewed_head")
