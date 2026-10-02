@@ -58,10 +58,17 @@ def _failures(store: ClaimStore) -> list[str]:
 
 
 def _fix_run(
-    store: ClaimStore, finished: datetime, key: str, *, status: str, outcome: str, consumed: bool
+    store: ClaimStore,
+    finished: datetime,
+    key: str,
+    *,
+    status: str,
+    outcome: str,
+    consumed: bool,
+    kind: str = "fix",
 ) -> str:
     claim = store.create_claim(
-        ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", "fix", f"fp-{key}", {})
+        ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", kind, f"fp-{key}", {})
     )
     run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
     store.finish_run(run.id, execution_status=status, result={"outcome": outcome})
@@ -93,6 +100,26 @@ def test_completed_failed_outcome_waits_for_grace_then_queues_failure(tmp_path: 
         assert len(rows) == 1
         assert rows[0]["event_key"] == f"FAILURE:{run_id}"
         assert rows[0]["event_kind"] == "FAILURE"
+    finally:
+        store.close()
+
+
+def test_completed_failed_task_outcome_queues_failure(tmp_path: Path) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        now = datetime.now(UTC)
+        detect.detect(store, 7, lambda: now - timedelta(minutes=10))
+        run_id = _fix_run(
+            store,
+            now - timedelta(minutes=8),
+            "task-failed-outcome",
+            status="completed",
+            outcome="failed",
+            consumed=True,
+            kind="task",
+        )
+        detect.detect(store, 7, lambda: now)
+        assert _failures(store) == [run_id]
     finally:
         store.close()
 

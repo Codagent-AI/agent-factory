@@ -29,7 +29,7 @@ def _nested_url(value: dict[str, Any]) -> str | None:
 
 def _is_failure(run: dict[str, Any], result: dict[str, Any]) -> bool:
     return run["status"] in _FAILURES or (
-        run["kind"] in {"fix", "feature"}
+        run["kind"] in {definition.kind for definition in registered()}
         and run["status"] == "completed"
         and result.get("outcome") == "failed"
     )
