@@ -47,11 +47,16 @@ def test_feature_disabled_has_no_targets() -> None:
     factory = helper.Factory.__new__(helper.Factory)
     factory.shared = SimpleNamespace(
         routing=SimpleNamespace(
-            eval_source="none", eval_type="Eval", bug_type="Bug", feature_type="Feature"
+            eval_source="none",
+            eval_type="Eval",
+            bug_type="Bug",
+            feature_type="Feature",
+            task_type="Task",
         )
     )
     factory.targets = {"Codagent-AI/agent-skills"}
     factory.feature_targets = set()
+    factory.task_targets = set()
     assert (
         factory.kind_of(
             SimpleNamespace(repository="Codagent-AI/agent-skills", issue_type="Feature")

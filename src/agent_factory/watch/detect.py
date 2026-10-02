@@ -52,6 +52,7 @@ def detect(
             AND consumed.key=r.id WHERE r.finished_at >= ?""",
             (run_sql_lower,),
         ).fetchall()
+        pull_request_kinds = {definition.kind for definition in registered()}
         for run in map(dict, runs):
             event_at = datetime.fromisoformat(run["finished_at"])
             result = watch_store.json_field(run, "result_json")
@@ -64,7 +65,7 @@ def detect(
                 event_kind = "FAILURE"
             elif (
                 horizon < event_at <= now
-                and run["kind"] in {definition.kind for definition in registered()}
+                and run["kind"] in pull_request_kinds
                 and run["status"] == "completed"
                 and result.get("outcome") == "pull-request"
             ):

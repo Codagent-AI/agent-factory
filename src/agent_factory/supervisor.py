@@ -955,19 +955,24 @@ def _load_result(
     try:
         parsed = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        from agent_factory.work_kinds.pull_request.kinds import FEATURE, registered
+        from agent_factory.work_kinds.pull_request.launch import REVIEW_CONTRACT
         from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 
+        definitions = {definition.kind: definition for definition in registered()}
+        definition = definitions.get(kind) if kind is not None else None
         contracts: tuple[str, ...]
-        if kind == "fix":
-            contracts = ("factory-review/1",) if reason == "review" else ("factory-fix/1",)
-        elif kind == "feature":
-            contracts = ("factory-feature/1",)
-        elif kind == "task":
-            contracts = ("factory-review/1",) if reason == "review" else ("factory-task/1",)
-        elif kind is None:
-            contracts = ("factory-fix/1", "factory-review/1", "factory-feature/1", "factory-task/1")
-        else:
+        if kind is None:
+            contracts = (
+                *(item.default_contract for item in definitions.values()),
+                REVIEW_CONTRACT,
+            )
+        elif definition is None:
             contracts = ()
+        elif reason == "review" and definition is not FEATURE:
+            contracts = (REVIEW_CONTRACT,)
+        else:
+            contracts = (definition.default_contract,)
         for contract in contracts:
             read = read_interpreted_outcome(Path(evidence_path), contract)
             interpreted = read.outcome

@@ -534,12 +534,8 @@ class SharedConfig:
                 results_branch=_optional_string(eval_config, "results_branch", "eval", "main"),
             ),
             fix=_fix_shared_config(document.get("fix")),
-            feature=_optional_kind_shared_config(
-                document.get("feature"), "feature", "factory-feature/1", FeatureConfig
-            ),
-            task=_optional_kind_shared_config(
-                document.get("task"), "task", "factory-task/1", TaskConfig
-            ),
+            feature=_optional_kind_shared_config(document.get("feature"), "feature", FeatureConfig),
+            task=_optional_kind_shared_config(document.get("task"), "task", TaskConfig),
             watch=_watch_config(document.get("watch")),
         )
 
@@ -611,14 +607,14 @@ def _fix_shared_config(raw: object) -> FixConfig:
 
 
 def _optional_kind_shared_config[T: FeatureConfig | TaskConfig](
-    raw: object, section: str, default_contract: str, cls: type[T]
+    raw: object, section: str, cls: type[T]
 ) -> T | None:
     if raw is None:
         return None
-    value = _table(raw, section)
-    defaults_raw = _table(value.get("defaults", {}), f"{section}.defaults")
+    table = _table(raw, section)
+    defaults_raw = _table(table.get("defaults", {}), f"{section}.defaults")
     defaults = {key: str(value) for key, value in defaults_raw.items()}
-    contract = _optional_string(value, "contract", section, default_contract)
+    contract = _optional_string(table, "contract", section, cls().contract)
     return cls(defaults=defaults, contract=contract)
 
 
@@ -680,30 +676,29 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
 
 
 def _feature_local_config(raw: object) -> FeatureLocalConfig:
-    limits, schedule, floor = _host_kind_local_config(raw, "feature", (1800, 21600, 28800))
-    return FeatureLocalConfig(FeatureLimitsConfig(*limits), schedule, "host", floor)
+    limits, schedule, floor = _host_kind_local_config(raw, "feature", FeatureLimitsConfig)
+    return FeatureLocalConfig(limits, schedule, "host", floor)
 
 
 def _task_local_config(raw: object) -> TaskLocalConfig:
-    limits, schedule, floor = _host_kind_local_config(raw, "task", (900, 7200, 10800))
-    return TaskLocalConfig(FixLimitsConfig(*limits), schedule, "host", floor)
+    limits, schedule, floor = _host_kind_local_config(raw, "task", FixLimitsConfig)
+    return TaskLocalConfig(limits, schedule, "host", floor)
 
 
-def _host_kind_local_config(
-    raw: object, section: str, default_limits: tuple[int, int, int]
-) -> tuple[tuple[int, int, int], ScheduleConfig | None, float | None]:
-    value: Mapping[str, Any] = _table(raw, section) if raw is not None else {}
-    limits_raw = _table(value.get("limits", {}), f"{section}.limits")
-    limits = (
-        _optional_positive_int(
-            limits_raw, "inactivity_seconds", f"{section}.limits", default_limits[0]
-        ),
-        _optional_positive_int(
-            limits_raw, "execution_seconds", f"{section}.limits", default_limits[1]
-        ),
-        _optional_positive_int(limits_raw, "total_seconds", f"{section}.limits", default_limits[2]),
+def _host_kind_local_config[L: FixLimitsConfig | FeatureLimitsConfig](
+    raw: object, section: str, limits_cls: type[L]
+) -> tuple[L, ScheduleConfig | None, float | None]:
+    """Parse a host-only kind's local section; limit defaults come from `limits_cls`."""
+    section_table: Mapping[str, Any] = _table(raw, section) if raw is not None else {}
+    limits_raw = _table(section_table.get("limits", {}), f"{section}.limits")
+    defaults = limits_cls()
+    limits = limits_cls(
+        *(
+            _optional_positive_int(limits_raw, name, f"{section}.limits", getattr(defaults, name))
+            for name in ("inactivity_seconds", "execution_seconds", "total_seconds")
+        )
     )
-    schedule_raw = value.get("schedule")
+    schedule_raw = section_table.get("schedule")
     schedule: ScheduleConfig | None = None
     if schedule_raw is not None:
         table = _table(schedule_raw, f"{section}.schedule")
@@ -723,10 +718,10 @@ def _host_kind_local_config(
             )
         else:
             schedule = ScheduleConfig.always(timezone, poll_seconds)
-    execution = value.get("execution", "host")
+    execution = section_table.get("execution", "host")
     if execution != "host":
         raise ConfigurationError(f"{section}.execution does not support {execution!r}; use 'host'")
-    floor = value.get("minimum_free_gib")
+    floor = section_table.get("minimum_free_gib")
     minimum_free_gib: float | None = None
     if floor is not None:
         if (

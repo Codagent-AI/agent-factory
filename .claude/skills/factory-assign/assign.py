@@ -71,9 +71,7 @@ class Factory:
             return "fix"
         if source.repository in self.feature_targets and source.issue_type == routing.feature_type:
             return "feature"
-        if source.repository in getattr(
-            self, "task_targets", set()
-        ) and source.issue_type == getattr(routing, "task_type", "Task"):
+        if source.repository in self.task_targets and source.issue_type == routing.task_type:
             return "task"
         return None
 
@@ -82,7 +80,7 @@ class Factory:
             "eval": self.shared.routing.eval_type,
             "fix": self.shared.routing.bug_type,
             "feature": self.shared.routing.feature_type,
-            "task": getattr(self.shared.routing, "task_type", "Task"),
+            "task": self.shared.routing.task_type,
         }[kind]
 
     def eval_problem(self, source: SourceItem) -> str | None:
