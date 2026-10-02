@@ -119,6 +119,94 @@ def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
     assert adapter.readiness(worktrees) is None
 
 
+@pytest.mark.parametrize("execution", ["docker", "fly"])
+def test_pinned_fixture_argv_across_launch_and_recovery_plans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str
+) -> None:
+    from agent_factory.config import FlyLocalConfig
+    from agent_factory.suites.and_scene import (
+        FIXTURE_REPOSITORY,
+        AndSceneAdapter,
+        GitWorktreeManager,
+        PreparedWorktrees,
+    )
+
+    sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", f"https://example.invalid/{source.name}.git")
+    script = sources.evals / "evals/agent-runner/and-scene/run.sh"
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\nesac\n")
+    _git(sources.evals, "add", ".")
+    _git(sources.evals, "commit", "-m", "accept fixture")
+    revisions["evals"] = _git(sources.evals, "rev-parse", "HEAD")
+    worktrees = GitWorktreeManager(tmp_path / "factory", sources).prepare("claim", revisions)
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n", encoding="utf-8")
+    if execution == "fly":
+
+        def dry_run_ready(_self: AndSceneAdapter, _worktrees: PreparedWorktrees) -> str | None:
+            return None
+
+        monkeypatch.setattr("agent_factory.fly.launcher.executable", lambda: "/fake/launcher")
+        monkeypatch.setattr(AndSceneAdapter, "_fly_dry_run", dry_run_ready)
+    fly = FlyLocalConfig("factory", "registry.fly.io/factory:base", tmp_path / "fly-token")
+    adapter = AndSceneAdapter(
+        environment_file=environment, execution=execution, fly=fly if execution == "fly" else None
+    )
+    frozen = {
+        "suite": "and-scene",
+        "settings": {
+            "roles": {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+        },
+        "revisions": {**revisions, "fixture": "f" * 40},
+    }
+
+    for name, recovery, checkpoint in (
+        ("initial", False, False),
+        ("fresh-retry", True, False),
+        ("resume", True, True),
+    ):
+        artifact = tmp_path / name
+        if checkpoint:
+            artifact.mkdir()
+            (artifact / "run-state.json").write_text(
+                json.dumps({"schema_version": 1}), encoding="utf-8"
+            )
+        plan = adapter.plan(
+            frozen,
+            worktrees,
+            artifact,
+            recovery=recovery,
+            pre_checkpoint_proven=recovery and not checkpoint,
+        )
+        assert plan.argv.count("--fixture-ref") == 1
+        assert plan.argv[plan.argv.index("--fixture-ref") + 1] == "f" * 40
+        assert plan.argv.count("--repo") == 1
+        assert plan.argv[plan.argv.index("--repo") + 1] == FIXTURE_REPOSITORY
+        assert ("--resume" in plan.argv) is checkpoint
+        assert plan.resume is checkpoint
+
+        if execution == "fly":
+            default_artifact = tmp_path / f"{name}-default"
+            adapter.plan(
+                {**frozen, "revisions": revisions},
+                worktrees,
+                default_artifact,
+                recovery=False,
+            )
+            pinned_manifest = json.loads(
+                (artifact / ".factory" / "manifest.json").read_text(encoding="utf-8")
+            )
+            default_manifest = json.loads(
+                (default_artifact / ".factory" / "manifest.json").read_text(encoding="utf-8")
+            )
+            for manifest in (pinned_manifest, default_manifest):
+                manifest.pop("nonce")
+                manifest.pop("artifact_dir")
+            assert pinned_manifest == default_manifest
+            assert "fixture" not in pinned_manifest["commits"]
+
+
 def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_worktrees(
     tmp_path: Path,
 ) -> None:
