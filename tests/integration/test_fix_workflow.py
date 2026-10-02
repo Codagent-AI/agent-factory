@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -142,6 +143,29 @@ def test_non_fixable_run_has_implement_status_for_record_outcome_guard() -> None
     assert "command: printf 'failed'" in seed
     assert "capture: implement_status" in seed
     assert "skip_if:" not in seed
+
+
+@pytest.mark.parametrize(
+    ("fixable", "implement_status", "mentions_implementor"),
+    [("true", "failed", True), ("false", "failed", False), ("true", "passed", False)],
+)
+def test_missing_outcome_names_incomplete_implementor_only_when_it_failed(
+    tmp_path: Path, fixable: str, implement_status: str, mentions_implementor: bool
+) -> None:
+    block = _step_block(_workflow_text(), "verify-outcome")
+    command = textwrap.dedent(block.split("command: |\n", 1)[1])
+    command = command.replace("{{artifact_dir}}", str(tmp_path))
+    command = command.replace("{{fixable}}", fixable)
+    command = command.replace("{{implement_status}}", implement_status)
+
+    result = subprocess.run(["sh", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert (
+        "fix-outcome.json was not written; treating this run as a technical failure"
+        in result.stderr
+    )
+    assert ("implementor step did not complete" in result.stderr) is mentions_implementor
 
 
 def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:

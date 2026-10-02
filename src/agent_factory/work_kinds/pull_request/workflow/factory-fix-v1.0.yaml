@@ -359,6 +359,9 @@ steps:
   - id: verify-outcome
     command: |
       if [ ! -s "{{artifact_dir}}/fix-outcome.json" ]; then
+        if [ "{{fixable}}" = true ] && [ "{{implement_status}}" != passed ]; then
+          echo "implementor step did not complete" >&2
+        fi
         echo "fix-outcome.json was not written; treating this run as a technical failure" >&2
         exit 1
       fi
