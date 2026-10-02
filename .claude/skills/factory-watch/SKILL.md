@@ -25,8 +25,9 @@ An issue counts as progressing while any of these hold:
 
 - a run of its latest claim has not finished;
 - a watch dispatch for that run is pending or launched;
-- that run ended with a PR-READY or FAILURE event and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
+- that run ended with a PR-READY or FAILURE event (a failed status, or a completed run whose outcome is `failed`) and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
 - its card is queued: open, Owner=factory, Status=Ready, and no `needs-input` label.
+- someone (not a bot) reviewed or commented on its pull request after the last run finished, so a review round is due. It waits for a free slot like any other run.
 
 Each state change prints one line, and each issue prints a `STOPPED` line when it stops. A `WATCH EVENT MISSING` part means the run ended with an event the watcher should have handled, but no dispatch appeared.
 
