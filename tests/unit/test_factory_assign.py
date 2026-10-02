@@ -17,6 +17,7 @@ spec.loader.exec_module(helper)
     ("repository", "issue_type", "expected"),
     [
         ("Codagent-AI/agent-skills", "Feature", "feature"),
+        ("Codagent-AI/agent-skills", "Task", "task"),
         ("Codagent-AI/agent-skills", "Bug", "fix"),
         ("Codagent-AI/agent-evals", "Eval", "eval"),
         ("Codagent-AI/other", "Feature", None),
@@ -30,13 +31,16 @@ def test_kind_of(repository: str, issue_type: str, expected: str | None) -> None
             eval_type="Eval",
             bug_type="Bug",
             feature_type="Feature",
+            task_type="Task",
         )
     )
     factory.targets = {"Codagent-AI/agent-skills"}
     factory.feature_targets = {"Codagent-AI/agent-skills"}
+    factory.task_targets = {"Codagent-AI/agent-skills"}
     source = SimpleNamespace(repository=repository, issue_type=issue_type)
     assert factory.kind_of(source) == expected
     assert factory.wanted_type("feature") == "Feature"
+    assert factory.wanted_type("task") == "Task"
 
 
 def test_feature_disabled_has_no_targets() -> None:

@@ -104,6 +104,7 @@ class RoutingConfig:
     eval_type: str
     bug_type: str = "Bug"
     feature_type: str = "Feature"
+    task_type: str = "Task"
     hold_label: str = "factory-hold"
 
 
@@ -200,6 +201,14 @@ class FeatureLocalConfig:
 
 
 @dataclass(frozen=True)
+class TaskLocalConfig:
+    limits: FixLimitsConfig = field(default_factory=FixLimitsConfig)
+    schedule: ScheduleConfig | None = None
+    execution: Literal["host"] = "host"
+    minimum_free_gib: float | None = None
+
+
+@dataclass(frozen=True)
 class FlyLocalConfig:
     app: str
     image: str
@@ -224,6 +233,7 @@ class LocalConfig:
     credentials: CredentialsConfig
     fix: FixLocalConfig = field(default_factory=FixLocalConfig)
     feature: FeatureLocalConfig = field(default_factory=FeatureLocalConfig)
+    task: TaskLocalConfig = field(default_factory=TaskLocalConfig)
     eval_execution: Literal["docker", "fly"] = "docker"
     fly: FlyLocalConfig | None = None
 
@@ -335,6 +345,7 @@ class LocalConfig:
             ),
             fix=_fix_local_config(document.get("fix")),
             feature=_feature_local_config(document.get("feature")),
+            task=_task_local_config(document.get("task")),
             eval_execution=eval_execution,
             fly=fly,
         )
@@ -364,6 +375,12 @@ class FixConfig:
 class FeatureConfig:
     defaults: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
     contract: str = "factory-feature/1"
+
+
+@dataclass(frozen=True)
+class TaskConfig:
+    defaults: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
+    contract: str = "factory-task/1"
 
 
 # A role or dispatch model profile: `cli:model:effort`.
@@ -435,6 +452,7 @@ class SharedConfig:
     bot_login: str = ""
     fix: FixConfig = field(default_factory=FixConfig)
     feature: FeatureConfig | None = None
+    task: TaskConfig | None = None
     watch: WatchConfig = field(default_factory=WatchConfig)
 
     @classmethod
@@ -500,6 +518,7 @@ class SharedConfig:
                 eval_type=_string(routing, "eval_type", "routing"),
                 bug_type=_optional_string(routing, "bug_type", "routing", "Bug"),
                 feature_type=_optional_string(routing, "feature_type", "routing", "Feature"),
+                task_type=_optional_string(routing, "task_type", "routing", "Task"),
                 hold_label=_optional_string(routing, "hold_label", "routing", "factory-hold"),
             ),
             eval=EvalConfig(
@@ -515,7 +534,12 @@ class SharedConfig:
                 results_branch=_optional_string(eval_config, "results_branch", "eval", "main"),
             ),
             fix=_fix_shared_config(document.get("fix")),
-            feature=_feature_shared_config(document.get("feature")),
+            feature=_optional_kind_shared_config(
+                document.get("feature"), "feature", "factory-feature/1", FeatureConfig
+            ),
+            task=_optional_kind_shared_config(
+                document.get("task"), "task", "factory-task/1", TaskConfig
+            ),
             watch=_watch_config(document.get("watch")),
         )
 
@@ -586,14 +610,16 @@ def _fix_shared_config(raw: object) -> FixConfig:
     )
 
 
-def _feature_shared_config(raw: object) -> FeatureConfig | None:
+def _optional_kind_shared_config[T: FeatureConfig | TaskConfig](
+    raw: object, section: str, default_contract: str, cls: type[T]
+) -> T | None:
     if raw is None:
         return None
-    feature = _table(raw, "feature")
-    defaults_raw = _table(feature.get("defaults", {}), "feature.defaults")
+    value = _table(raw, section)
+    defaults_raw = _table(value.get("defaults", {}), f"{section}.defaults")
     defaults = {key: str(value) for key, value in defaults_raw.items()}
-    contract = _optional_string(feature, "contract", "feature", "factory-feature/1")
-    return FeatureConfig(defaults=defaults, contract=contract)
+    contract = _optional_string(value, "contract", section, default_contract)
+    return cls(defaults=defaults, contract=contract)
 
 
 def _fix_local_config(raw: object) -> FixLocalConfig:
@@ -654,31 +680,41 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
 
 
 def _feature_local_config(raw: object) -> FeatureLocalConfig:
-    if raw is None:
-        return FeatureLocalConfig()
-    feature = _table(raw, "feature")
-    limits_raw = _table(feature.get("limits", {}), "feature.limits")
-    limits = FeatureLimitsConfig(
-        inactivity_seconds=_optional_positive_int(
-            limits_raw, "inactivity_seconds", "feature.limits", 1800
+    limits, schedule, floor = _host_kind_local_config(raw, "feature", (1800, 21600, 28800))
+    return FeatureLocalConfig(FeatureLimitsConfig(*limits), schedule, "host", floor)
+
+
+def _task_local_config(raw: object) -> TaskLocalConfig:
+    limits, schedule, floor = _host_kind_local_config(raw, "task", (900, 7200, 10800))
+    return TaskLocalConfig(FixLimitsConfig(*limits), schedule, "host", floor)
+
+
+def _host_kind_local_config(
+    raw: object, section: str, default_limits: tuple[int, int, int]
+) -> tuple[tuple[int, int, int], ScheduleConfig | None, float | None]:
+    value: Mapping[str, Any] = _table(raw, section) if raw is not None else {}
+    limits_raw = _table(value.get("limits", {}), f"{section}.limits")
+    limits = (
+        _optional_positive_int(
+            limits_raw, "inactivity_seconds", f"{section}.limits", default_limits[0]
         ),
-        execution_seconds=_optional_positive_int(
-            limits_raw, "execution_seconds", "feature.limits", 21600
+        _optional_positive_int(
+            limits_raw, "execution_seconds", f"{section}.limits", default_limits[1]
         ),
-        total_seconds=_optional_positive_int(limits_raw, "total_seconds", "feature.limits", 28800),
+        _optional_positive_int(limits_raw, "total_seconds", f"{section}.limits", default_limits[2]),
     )
-    schedule_raw = feature.get("schedule")
+    schedule_raw = value.get("schedule")
     schedule: ScheduleConfig | None = None
     if schedule_raw is not None:
-        table = _table(schedule_raw, "feature.schedule")
-        timezone_name = _string(table, "timezone", "feature.schedule")
+        table = _table(schedule_raw, f"{section}.schedule")
+        timezone_name = _string(table, "timezone", f"{section}.schedule")
         try:
             timezone = ZoneInfo(timezone_name)
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ConfigurationError(
-                f"feature.schedule.timezone is invalid or unknown: {timezone_name}"
+                f"{section}.schedule.timezone is invalid or unknown: {timezone_name}"
             ) from error
-        poll_seconds = _optional_positive_int(table, "poll_seconds", "feature.schedule", 300)
+        poll_seconds = _optional_positive_int(table, "poll_seconds", f"{section}.schedule", 300)
         if "start_hour" in table or "stop_hour" in table:
             start_hour = _hour(table, "start_hour")
             stop_hour = _hour(table, "stop_hour")
@@ -687,10 +723,10 @@ def _feature_local_config(raw: object) -> FeatureLocalConfig:
             )
         else:
             schedule = ScheduleConfig.always(timezone, poll_seconds)
-    execution = feature.get("execution", "host")
+    execution = value.get("execution", "host")
     if execution != "host":
-        raise ConfigurationError(f"feature.execution does not support {execution!r}; use 'host'")
-    floor = feature.get("minimum_free_gib")
+        raise ConfigurationError(f"{section}.execution does not support {execution!r}; use 'host'")
+    floor = value.get("minimum_free_gib")
     minimum_free_gib: float | None = None
     if floor is not None:
         if (
@@ -699,9 +735,9 @@ def _feature_local_config(raw: object) -> FeatureLocalConfig:
             or not math.isfinite(floor)
             or floor < 0
         ):
-            raise ConfigurationError("feature.minimum_free_gib must be a non-negative number")
+            raise ConfigurationError(f"{section}.minimum_free_gib must be a non-negative number")
         minimum_free_gib = float(floor)
-    return FeatureLocalConfig(limits, schedule, "host", minimum_free_gib)
+    return limits, schedule, minimum_free_gib
 
 
 def _fly_local_config(raw: object) -> FlyLocalConfig:

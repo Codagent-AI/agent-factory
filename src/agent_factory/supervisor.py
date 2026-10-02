@@ -962,8 +962,10 @@ def _load_result(
             contracts = ("factory-review/1",) if reason == "review" else ("factory-fix/1",)
         elif kind == "feature":
             contracts = ("factory-feature/1",)
+        elif kind == "task":
+            contracts = ("factory-review/1",) if reason == "review" else ("factory-task/1",)
         elif kind is None:
-            contracts = ("factory-fix/1", "factory-review/1", "factory-feature/1")
+            contracts = ("factory-fix/1", "factory-review/1", "factory-feature/1", "factory-task/1")
         else:
             contracts = ()
         for contract in contracts:

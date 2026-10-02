@@ -96,6 +96,34 @@ validator's end-to-end tests. Commit any pin through a PR.
 - The eval judge model is not set here. Agent Evals uses the Codex CLI default
   (`codex-default`), so it changes with the CLI version.
 
+## Task pull requests
+
+File low-risk maintenance as a native Task in a configured `[fix]` target. A Task
+reaches the factory only when a writer moves its card to Ready (or uses the
+`factory-assign` skill); routing does not queue it automatically. Shared
+`[task]` enables new admissions, sets `contract = "factory-task/1"`, and provides
+lead, implementor, and tester profiles. Local `[task]` is optional: host-only
+execution, an always-open schedule by default, an optional disk floor, and
+inactivity/execution/total limits of 900/7200/10800 seconds. `doctor` reports
+`task-host`, while `status` reports the task slot and task claims.
+
+Task triage declines runtime behavior or public interface changes, persisted
+data and OpenSpec specification changes, credentials, release/deploy settings,
+branch protection, work outside the target, oversized work, or an unbounded
+product, compatibility, or threshold choice. Delegated choices are allowed
+when the issue or repository bounds them: meet a measured target, otherwise
+record the measured baseline without loosening it. Dev toolchain and check-only
+CI changes are in scope; release, publish, version, sign, tag, and deploy
+configuration is not. Each new or tightened gate needs a positive run and a
+planted negative exercise confirmed by another session. Task commits and PR
+titles use `chore:`. Task review rounds stop with `needs-input` when requested
+changes cross the same boundary.
+
+Before enabling `[task]` on a live release, audit all Ready Task cards across
+every fix target. Move each one other than agent-factory#74 to Backlog unless
+its admission is approved. Before rolling back to a release without the task
+kind, settle or cancel open task claims; that release cannot handle them.
+
 ## Fly eval images
 
 - Each eval claim builds its own image on Fly's remote builder from its pinned

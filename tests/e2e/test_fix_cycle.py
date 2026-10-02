@@ -109,7 +109,7 @@ while not (out / 'finish').exists():
 script = (out / 'finish').read_text()
 if script.strip() == 'crash':
     sys.exit(3)
-(out / ('review-outcome.json' if args[1] == 'factory-review' else 'fix-outcome.json')).write_text(script)
+(out / ('review-outcome.json' if args[1] == 'factory-review' else args[1].removeprefix('factory-') + '-outcome.json')).write_text(script)
 """
 
 CODEX = """#!/bin/sh
@@ -180,13 +180,19 @@ elif '/labels' in endpoint:
     else:
         result = [{{'name': l}} for l in s['labels']]
 elif re.fullmatch(r'repos/[^/]+/[^/]+/issues/\\d+', endpoint):
-    issue = s['issue']
+    issue_number = int(endpoint.rsplit('/', 1)[1])
+    matching = next(x for x in s['items'] if x['content']['number'] == issue_number)
+    issue = s['issue'] if issue_number == 1 else {{
+        'state': matching['content']['state'].lower(),
+        'body': matching['content']['body'],
+        'title': matching['content'].get('title', 'fixture issue'),
+    }}
     if 'PATCH' in args:
         issue['state'] = body.get('state', issue['state'])
         for item in s['items']:
             item['content']['state'] = issue['state'].upper()
-    result = {{'node_id': 'I1', 'number': 1, 'user': {{'login': 'writer'}}, 'labels': [{{'name': l}} for l in s['labels']],
-              'type': {{'name': 'Bug'}}, 'state': issue['state'], 'body': issue['body'], 'title': issue['title']}}
+    result = {{'node_id': matching['content']['id'], 'number': issue_number, 'user': {{'login': 'writer'}}, 'labels': [{{'name': l}} for l in s['labels']],
+              'type': {{'name': matching['content']['issueType']['name']}}, 'state': issue['state'], 'body': issue['body'], 'title': issue['title']}}
 elif '/branches/' in endpoint:
     branch = endpoint.split('/branches/')[1].replace('%2F', '/')
     if branch not in s['branches']:
@@ -203,11 +209,17 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 
 class Harness:
     def __init__(
-        self, tmp_path: Path, *, factory_owner: bool = True, execution: str = "docker"
+        self,
+        tmp_path: Path,
+        *,
+        factory_owner: bool = True,
+        execution: str = "docker",
+        kind: str = "fix",
     ) -> None:
         self.tmp = tmp_path
         self.root = tmp_path / "factory"
         self.execution = execution
+        self.kind = kind
         self.target_sha = _repo(
             tmp_path / "work",
             {"README.md": "fixture\n", "lib.py": "def add(a, b):\n    return a - b\n"},
@@ -262,6 +274,12 @@ class Harness:
             f'[[fix.targets]]\nrepository = "{REPOSITORY}"\n[fix.defaults]\n'
             'lead = "codex:test:high"\nimplementor = "codex:test:high"\ntester = "codex:test:high"\n'
         )
+        if kind == "task":
+            shared_text += (
+                '[task]\ncontract = "factory-task/1"\n[task.defaults]\n'
+                'lead = "codex:test:high"\nimplementor = "codex:test:high"\n'
+                'tester = "codex:test:high"\n'
+            )
         (tmp_path / "shared.toml").write_text(shared_text)
         self.shared = SharedConfig.from_toml(shared_text)
         self.config = tmp_path / "local.toml"
@@ -359,7 +377,7 @@ fix_environment = "{tmp_path / "fix.env"}"
                 "author": {"login": "writer"},
                 "repository": {"nameWithOwner": REPOSITORY},
                 "labels": {"nodes": []},
-                "issueType": {"name": "Bug"},
+                "issueType": {"name": "Task" if kind == "task" else "Bug"},
             },
             "fieldValues": {"nodes": field_values},
         }
@@ -482,8 +500,8 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
         return [c["body"] for c in self.state()["comments"]]
 
     def active_run(self) -> Run:
-        runs = self.store.nonterminal_runs(kind="fix")
-        assert len(runs) == 1, "expected exactly one fix attempt in flight"
+        runs = self.store.nonterminal_runs(kind=self.kind)
+        assert len(runs) == 1, f"expected exactly one {self.kind} attempt in flight"
         return runs[0]
 
     def wait_started(self, run: Run) -> Path:
@@ -502,7 +520,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
         assert not self.store.nonterminal_runs(), "attempt did not terminate"
 
     def branch_for(self, claim_id: str) -> str:
-        return f"factory/fix-1-{claim_id[:8]}"
+        return f"factory/{self.kind}-1-{claim_id[:8]}"
 
 
 def _pr_outcome(branch: str, number: int = 214) -> str:

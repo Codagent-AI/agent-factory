@@ -23,6 +23,15 @@ if not isinstance(parsed, dict):
     sys.exit(2)
 
 decision_raw = parsed.get("decision")
+contract = parsed.get("contract", "factory-fix/1")
+accept_field = parsed.get("accept_field", "fixable")
+decision_path = parsed.get("decision_path")
+if not isinstance(contract, str) or not contract or not isinstance(accept_field, str) or not accept_field:
+    print("record-triage: contract and accept_field must be non-empty strings", file=sys.stderr)
+    sys.exit(2)
+if decision_path is not None and (not isinstance(decision_path, str) or not decision_path):
+    print("record-triage: decision_path must be a non-empty string", file=sys.stderr)
+    sys.exit(2)
 if not isinstance(decision_raw, str):
     print("record-triage: decision must be a string", file=sys.stderr)
     sys.exit(2)
@@ -55,11 +64,24 @@ def decision_objects(text):
 
 
 def is_decision(value):
-    return (
+    basic = (
         isinstance(value, dict)
-        and isinstance(value.get("fixable"), bool)
+        and isinstance(value.get(accept_field), bool)
         and isinstance(value.get("reasons"), list)
         and isinstance(value.get("plan"), str)
+    )
+    if not basic or accept_field != "doable":
+        return basic
+    return (
+        isinstance(value.get("choices"), list)
+        and all(isinstance(choice, str) for choice in value["choices"])
+        and isinstance(value.get("gates"), list)
+        and all(
+            isinstance(gate, dict)
+            and all(isinstance(gate.get(key), str) and gate[key] for key in ("name", "command", "violation"))
+            for gate in value["gates"]
+        )
+        and isinstance(value.get("user_visible"), bool)
     )
 
 
@@ -90,9 +112,13 @@ if not isinstance(decision, dict):
     print("record-triage: triage decision must be a JSON object", file=sys.stderr)
     sys.exit(2)
 
-fixable = decision.get("fixable")
+if accept_field == "doable" and not is_decision(decision):
+    print("record-triage: task decision needs choices, gates, and user_visible", file=sys.stderr)
+    sys.exit(2)
+
+fixable = decision.get(accept_field)
 if not isinstance(fixable, bool):
-    print("record-triage: triage decision is missing a boolean 'fixable' field", file=sys.stderr)
+    print(f"record-triage: triage decision is missing a boolean '{accept_field}' field", file=sys.stderr)
     sys.exit(2)
 
 reasons = decision.get("reasons") or []
@@ -102,9 +128,9 @@ if not isinstance(reasons, list):
 reasons = [str(r) for r in reasons]
 
 if not fixable:
-    outcome_path = parsed.get("outcome_path") or "/artifacts/fix-outcome.json"
+    outcome_path = parsed.get("outcome_path") or f"/artifacts/{contract.split('/', 1)[0].removeprefix('factory-')}-outcome.json"
     outcome = {
-        "contract": "factory-fix/1",
+        "contract": contract,
         "outcome": "needs-input",
         "reasons": reasons,
         "validator": {"status": "skipped"},
@@ -114,6 +140,12 @@ if not fixable:
         os.makedirs(out_dir, exist_ok=True)
     with open(outcome_path, "w") as f:
         json.dump(outcome, f)
+        f.write("\n")
+
+if decision_path is not None:
+    os.makedirs(os.path.dirname(decision_path) or ".", exist_ok=True)
+    with open(decision_path, "w") as f:
+        json.dump(decision, f)
         f.write("\n")
 
 # Agent Runner keeps a text capture byte for byte, and skip_if compares it to "true".

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_factory.store import _dump
 from agent_factory.watch import store as watch_store
+from agent_factory.work_kinds.pull_request.kinds import registered
 
 if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
@@ -63,7 +64,7 @@ def detect(
                 event_kind = "FAILURE"
             elif (
                 horizon < event_at <= now
-                and run["kind"] in {"fix", "feature"}
+                and run["kind"] in {definition.kind for definition in registered()}
                 and run["status"] == "completed"
                 and result.get("outcome") == "pull-request"
             ):

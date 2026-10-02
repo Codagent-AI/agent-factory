@@ -1,4 +1,4 @@
-- [ ] Add the `task` pull-request work kind: Task issues become guarded, low-risk `chore:` pull requests
+- [x] Add the `task` pull-request work kind: Task issues become guarded, low-risk `chore:` pull requests
 
 ## Task: Support Task issues as low-risk chore work
 

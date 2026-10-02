@@ -1,0 +1,364 @@
+# factory-contract: factory-task/1
+name: factory-task
+description: "Triage and implement guarded low-risk maintenance as a chore pull request."
+hidden: true
+
+params:
+  - name: issue_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: contract_version
+    required: true
+  - name: artifact_dir
+    required: false
+    default: /artifacts
+
+sessions:
+  - name: lead-agent
+    agent: lead
+  - name: implementor-agent
+    agent: implementor
+  - name: tester-agent
+    agent: tester
+
+steps:
+  - id: check-contract
+    script: check-contract.sh
+    script_inputs:
+      expected_contract: factory-task/1
+      declared_contract: "{{contract_version}}"
+
+  - id: check-clean-tree
+    command: test -z "$(git status --porcelain)"
+
+  - id: record-base
+    command: git rev-parse HEAD
+    capture: scope_base
+
+  - id: triage
+    session: lead-agent
+    mode: autonomous
+    capture: triage_decision
+    prompt: |
+      Read {{issue_file}}, including eligible comments and prior factory PR on
+      re-attempts. Decide whether this Task is bounded, low-risk maintenance.
+      Decline with doable=false when it would change runtime behavior, public
+      API or CLI, OpenSpec specifications, persisted data, credentials, release
+      or deploy configuration, branch protection, runtime dependencies, or a
+      shipped runtime requirement without an explicitly requested value already
+      used by the repository. Decline work outside this repository, work too
+      large for one reviewable PR, or an open product, design, compatibility, or
+      threshold choice. Name "belongs in a Bug" for a defect, "belongs in a
+      Feature" for behavior or specification changes, and the exact decision.
+      Accept delegated bounded choices: use a stated target when measurements
+      meet it, otherwise use the measured baseline without loosening it; baseline
+      findings that cannot be fixed without behavior change. Development tools,
+      dev dependencies and check-only CI jobs are in scope; publishing,
+      versioning, signing, tagging and deployment are release work and out of
+      scope. A repository-pinned Node version can bound an explicit engines
+      request; an unpinned version cannot.
+
+      Worked examples: agent-factory#74 (Ruff, vulture, jscpd and check-only CI)
+      qualifies with measured/baselined thresholds; agent-validator#174 qualifies
+      but must retain exports reachable from public entry points; agent-evals#53
+      qualifies only if CI, .nvmrc or Docker already pins its Node version.
+
+      Return only JSON with exactly doable (boolean), reasons (string array),
+      plan (string), choices (string array), gates (array of objects with name,
+      command and violation), and user_visible (boolean). List every new or
+      tightened gate, including an issue-stated rejection criterion.
+
+  - id: record-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: "{{triage_decision}}"
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      contract: factory-task/1
+      accept_field: doable
+      decision_path: "{{artifact_dir}}/task-triage.json"
+    capture: doable
+    continue_on_failure: true
+
+  - id: repair-triage
+    session: lead-agent
+    mode: autonomous
+    skip_if: previous_success
+    capture: triage_decision
+    prompt: |
+      Re-read {{issue_file}} and return exactly one JSON object with doable,
+      reasons, plan, choices, gates, and user_visible. No prose or code fence.
+
+  - id: recheck-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: "{{triage_decision}}"
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      contract: factory-task/1
+      accept_field: doable
+      decision_path: "{{artifact_dir}}/task-triage.json"
+    capture: doable
+    skip_if: 'sh: test "{{doable}}" = true || test "{{doable}}" = false'
+
+  - id: seed-post-guard-required
+    command: printf false
+    capture: post_guard_required
+
+  - id: seed-prefinalize-head
+    command: printf ''
+    capture: prefinalize_head
+
+  - id: implement
+    skip_if: 'sh: test "{{doable}}" != true'
+    continue_on_failure: true
+    steps:
+      - id: seed-validator-status
+        command: printf failed
+        capture: validator_status
+      - id: seed-ci-status
+        command: printf ''
+        capture: ci_status
+      - id: seed-pr-details
+        command: printf '{}'
+        capture: pr_details
+      - id: seed-test-flow-report
+        command: printf ''
+        capture: test_flow_report
+      - id: seed-failure-reasons
+        command: printf '[]'
+        capture: failure_reasons
+      - id: seed-annotation-status
+        command: printf failed
+        capture: annotation_status
+      - id: create-branch
+        command: git checkout -b "{{branch_name}}"
+      - id: implement-task
+        session: implementor-agent
+        mode: autonomous
+        prompt: |
+          Implement the plan in {{artifact_dir}}/task-triage.json without a
+          red-test-first requirement. Follow bounded choices: use target when
+          measured within it, otherwise set and record the measured baseline;
+          never loosen further. Run repository tests, linters and validator.
+          Write {{artifact_dir}}/task-choices.json as an array of objects with
+          choice, evidence and result. Commit changes as [{{step_id}}] chore: ...
+      - id: initial-validator
+        workflow: builtin:core/run-validator-v1.0.yaml
+      - id: initial-validation-gate
+        command: |
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then printf passed; else printf failed; exit 1; fi
+        capture: validator_status
+        continue_on_failure: true
+      - id: repair-initial-validation
+        session: implementor-agent
+        mode: autonomous
+        skip_if: previous_success
+        prompt: |
+          Repair {{artifact_dir}}/logs/initial-validation-gate.log, run checks,
+          and commit changes as [{{step_id}}] chore: ...
+      - id: recheck-initial-validation
+        command: |
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then printf passed; else printf failed; exit 1; fi
+        capture: validator_status
+        skip_if: 'sh: test "{{validator_status}}" = passed'
+      - id: exercise-gates
+        session: tester-agent
+        mode: autonomous
+        skip_if: >-
+          sh: test "{{validator_status}}" != passed || python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("gates")'
+        prompt: |
+          For every gate in {{artifact_dir}}/task-triage.json, run its exact
+          command on the delivered tree. Plant its described violation, save
+          git diff to gates/<name>/planted.patch, rerun the same command and
+          revert the plant. Save positive.log and negative.log and write
+          gate-exercises.json with [{name, command, positive:{command,exit,log},
+          negative:{command,exit,log,patch}}]. Paths are relative to
+          {{artifact_dir}}. Leave the tree clean. Do not commit.
+      - id: verify-gate-exercises
+        session: lead-agent
+        mode: autonomous
+        skip_if: 'sh: test ! -s {{artifact_dir}}/gate-exercises.json'
+        prompt: |
+          Independently inspect every planted patch and negative log in
+          {{artifact_dir}}/gate-exercises.json. Write gate-verdicts.json with
+          [{name, confirmed, diagnostic, criterion_met, reason}]. Diagnostic
+          must be a verbatim negative-log line identifying the violation, absent
+          from the positive log. Do not edit code.
+      - id: check-gate-exercises
+        command: |
+          if python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("gates")'; then printf passed; elif python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
+        capture: gate_status
+        continue_on_failure: true
+      - id: repair-gates
+        session: implementor-agent
+        mode: autonomous
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+        prompt: |
+          Repair the gate that failed its planted violation, run checks, and
+          commit as [{{step_id}}] chore: ...
+      - id: re-exercise-gates
+        session: tester-agent
+        mode: autonomous
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+        prompt: |
+          Repeat the exact positive and planted negative gate exercises and
+          replace the evidence in {{artifact_dir}}/gate-exercises.json.
+      - id: re-verify-gates
+        session: lead-agent
+        mode: autonomous
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+        prompt: |
+          Independently inspect the repeated gate exercises and replace
+          {{artifact_dir}}/gate-verdicts.json with confirmed diagnostic verdicts.
+      - id: recheck-gates
+        command: |
+          if python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
+        capture: gate_status
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+        continue_on_failure: true
+      - id: mark-gates-failed
+        command: printf failed
+        capture: validator_status
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+      - id: record-gate-failure
+        command: python3 -c 'import json; from pathlib import Path; print(json.dumps(["gate " + g["name"] + " does not reject violations" for g in json.loads(Path("{{artifact_dir}}/task-triage.json").read_text())["gates"]]), end="")'
+        capture: failure_reasons
+        skip_if: 'sh: test "{{gate_status}}" = passed'
+      - id: test-flows
+        session: tester-agent
+        mode: autonomous
+        capture: test_flow_report
+        skip_if: >-
+          sh: test "{{gate_status}}" != passed || python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/task-triage.json").read_text()).get("user_visible")'
+        prompt: |
+          Exercise representative user-facing tooling flows changed by this Task.
+          Report concrete evidence, defects and limitations. Do not edit code.
+      - id: scope-floor-for-review
+        command: python3 .agent-runner/workflows/task-scope-floor.py "{{scope_base}}"
+        capture: scope_floor
+        skip_if: 'sh: test "{{gate_status}}" != passed'
+      - id: review-task
+        session: lead-agent
+        mode: autonomous
+        capture: review_report
+        skip_if: 'sh: test "{{gate_status}}" != passed'
+        prompt: |
+          Review the complete diff, validator, task choices, gate exercises,
+          tester report and scope floor {{scope_floor}}. Identify concrete
+          correctness or task-boundary findings. Do not edit code.
+      - id: record-pre-findings-head
+        command: git rev-parse HEAD
+        capture: pre_findings_head
+      - id: address-findings
+        session: implementor-agent
+        mode: autonomous
+        skip_if: 'sh: test "{{gate_status}}" != passed'
+        prompt: |
+          Address in-scope findings from {{review_report}} and tester evidence.
+          Compare all changes since {{pre_findings_head}}. Write
+          {{artifact_dir}}/gate-changes.json as {"gates":[{"name":string,
+          "command":string,"violation":string}]} listing every gate added or
+          tightened in this step, even when the list is empty. Commit changes
+          as [{{step_id}}] chore: ... Do not widen Task scope.
+      - id: final-validator
+        workflow: builtin:core/run-validator-v1.0.yaml
+        skip_if: 'sh: test "{{gate_status}}" != passed'
+      - id: final-validation-gate
+        command: |
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
+        capture: validator_status
+        skip_if: 'sh: test "{{gate_status}}" != passed'
+        continue_on_failure: true
+      - id: repair-final-validation
+        session: implementor-agent
+        mode: autonomous
+        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{validator_status}}" = passed'
+        prompt: |
+          Repair final validation, ensure a clean committed tree, and commit
+          changes as [{{step_id}}] chore: ...
+      - id: recheck-final-validation
+        command: |
+          mkdir -p "{{artifact_dir}}/logs"
+          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
+        capture: validator_status
+        skip_if: 'sh: test "{{gate_status}}" != passed || test "{{validator_status}}" = passed'
+      - id: prepush-guard
+        workflow: factory-task-guard-v1.0.yaml
+        params:
+          base: "{{scope_base}}"
+          mode: prepush
+          artifact_dir: "{{artifact_dir}}"
+          gates_file: "{{artifact_dir}}/task-triage.json"
+          gate_changes_file: "{{artifact_dir}}/gate-changes.json"
+        skip_if: 'sh: test "{{validator_status}}" != passed'
+      - id: normalize-chore-commits
+        command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
+        skip_if: >-
+          sh: test "{{validator_status}}" != passed || test ! -s "{{artifact_dir}}/scope-prepush.json" || python3 -c 'import json; from pathlib import Path; v=json.loads(Path("{{artifact_dir}}/scope-prepush.json").read_text()); assert v["crossed"] or not v.get("complete")'
+      - id: record-prefinalize-head
+        command: git rev-parse HEAD
+        capture: prefinalize_head
+      - id: seed-ci-status-attempted
+        command: printf passed
+        capture: ci_status
+      - id: finalize-pr
+        workflow: builtin:core/finalize-pr-v1.0.yaml
+        params:
+          ci_fix_cycles: "3"
+        skip_if: >-
+          sh: test "{{validator_status}}" != passed || test ! -s "{{artifact_dir}}/scope-prepush.json" || python3 -c 'import json; from pathlib import Path; v=json.loads(Path("{{artifact_dir}}/scope-prepush.json").read_text()); assert v["crossed"] or not v.get("complete")'
+        continue_on_failure: true
+      - id: mark-ci-failed
+        command: printf failed
+        capture: ci_status
+        skip_if: previous_success
+      - id: postfinalize-guard
+        workflow: factory-task-guard-v1.0.yaml
+        params:
+          base: "{{scope_base}}"
+          mode: postfinalize
+          artifact_dir: "{{artifact_dir}}"
+          gates_file: "{{artifact_dir}}/task-triage.json"
+          gate_changes_file: "{{artifact_dir}}/gate-changes.json"
+          prefinalize_head: "{{prefinalize_head}}"
+        skip_if: 'sh: test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
+      - id: postfinalize-required
+        command: 'if test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"; then printf false; else printf true; fi'
+        capture: post_guard_required
+      - id: record-pr-details
+        command: |
+          branch=$(git branch --show-current)
+          gh pr list --head "$branch" --state open --json url,number,headRefOid --limit 1 | jq -c '.[0] // {}'
+        capture: pr_details
+        continue_on_failure: true
+      - id: annotate-chore-pr
+        script: annotate-chore-pr.sh
+        script_inputs:
+          artifact_dir: "{{artifact_dir}}"
+          issue_file: "{{issue_file}}"
+        capture: annotation_status
+        continue_on_failure: true
+
+  - id: record-outcome
+    script: record-outcome.sh
+    skip_if: 'sh: test "{{doable}}" != true'
+    script_inputs:
+      contract: factory-task/1
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      validator_status: "{{validator_status}}"
+      ci_status: "{{ci_status}}"
+      branch_name: "{{branch_name}}"
+      pr_details: "{{pr_details}}"
+      annotation_status: "{{annotation_status}}"
+      reasons: "{{failure_reasons}}"
+      scope_path: "{{artifact_dir}}/scope-prepush.json"
+      post_scope_path: "{{artifact_dir}}/scope-postfinalize.json"
+      post_guard_required: "{{post_guard_required}}"
+      prefinalize_head: "{{prefinalize_head}}"
+
+  - id: verify-outcome
+    command: |
+      python3 -c 'import json; from pathlib import Path; assert json.loads(Path("{{artifact_dir}}/task-outcome.json").read_text())["outcome"] in ("pull-request", "needs-input", "failed")'

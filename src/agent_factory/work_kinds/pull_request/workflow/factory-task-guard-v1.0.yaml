@@ -1,0 +1,147 @@
+name: factory-task-guard
+description: "Check the complete Task diff against the Task boundary before and after pushing."
+hidden: true
+
+params:
+  - name: base
+    required: true
+  - name: mode
+    required: true
+  - name: artifact_dir
+    required: true
+  - name: gates_file
+    required: false
+    default: ""
+  - name: gate_changes_file
+    required: false
+    default: ""
+  - name: prefinalize_head
+    required: false
+    default: ""
+
+sessions:
+  - name: lead-agent
+    agent: lead
+  - name: tester-agent
+    agent: tester
+
+steps:
+  - id: seed-gate-recheck
+    command: printf passed
+    capture: gate_recheck
+
+  - id: seed-chore-status
+    command: printf clean
+    capture: chore_status
+
+  - id: scope-floor
+    command: python3 .agent-runner/workflows/task-scope-floor.py "{{base}}"
+    capture: scope_floor
+
+  - id: task-scope-review
+    session: lead-agent
+    mode: autonomous
+    capture: scope_decision
+    prompt: |
+      Review the complete git diff {{base}}..HEAD against the Task boundary.
+      Task work may change development tools, dev dependencies, checks, docs,
+      and behavior-preserving refactors. It must not change runtime behavior,
+      public APIs or CLI, persisted data, OpenSpec specifications, credentials,
+      release or deploy configuration, branch protection, runtime dependencies,
+      or shipped runtime requirements without an explicit bounded request.
+      The deterministic floor found these definite crossings: {{scope_floor}}.
+      Return only JSON {"crossed": boolean, "reasons": [strings]}. Name each
+      crossing and whether it belongs in a Bug or Feature. Do not edit files.
+
+  - id: record-scope
+    script: record-scope.sh
+    script_inputs:
+      floor: "{{scope_floor}}"
+      decision: "{{scope_decision}}"
+      scope_path: "{{artifact_dir}}/scope-{{mode}}.json"
+    capture: scope_status
+
+  - id: inventory-gates
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test ! -f "{{gates_file}}"'
+    prompt: |
+      Independently inspect the complete {{base}}..HEAD diff, including changes
+      made after review findings or CI repair. Compare every new or tightened
+      gate to {{gates_file}} and the implementor's {{gate_changes_file}}.
+      Write {{artifact_dir}}/final-gates-{{mode}}.json
+      as {"gates":[{"name":string,"command":string,"violation":string}]}.
+      Retain every triage gate, update commands that changed, and include every
+      additional gate. Do not edit code. An empty list is valid only when the
+      current diff and triage both have no new or tightened gates.
+
+  - id: derive-diff-gates
+    session: tester-agent
+    mode: autonomous
+    skip_if: 'sh: test ! -f "{{gates_file}}"'
+    prompt: |
+      Independently derive every new or tightened gate from the actual
+      {{base}}..HEAD diff. Inspect CI jobs, development-tool configurations,
+      check scripts, test commands, and issue-stated rejection criteria.
+      Do not use final-gates-{{mode}}.json or gate-changes.json as your source.
+      Write {{artifact_dir}}/diff-gates-{{mode}}.json as
+      {"gates":[{"name":string,"command":string,"violation":string}]}.
+      Include every gate from the delivered diff, including gates introduced
+      after triage. Do not edit code.
+
+  - id: verify-gate-inventory
+    command: python3 .agent-runner/workflows/check-gate-inventory.py "{{gates_file}}" "{{artifact_dir}}/final-gates-{{mode}}.json" "{{gate_changes_file}}" "{{artifact_dir}}/diff-gates-{{mode}}.json"
+    skip_if: 'sh: test ! -f "{{gates_file}}"'
+
+  - id: has-gates
+    command: |
+      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/final-gates-{{mode}}.json"); print("true" if p.is_file() and json.loads(p.read_text()).get("gates") else "false", end="")'
+    capture: has_gates
+
+  - id: re-exercise-gates
+    session: tester-agent
+    mode: autonomous
+    skip_if: 'sh: test "{{has_gates}}" != true'
+    prompt: |
+      Re-exercise every gate named in {{artifact_dir}}/final-gates-{{mode}}.json against the current head
+      in {{mode}} mode. In postfinalize mode, inspect commits added since
+      {{prefinalize_head}}. Run the same command on the delivered tree, plant its violation,
+      positive and negative logs and patch. Revert each plant and write
+      {{artifact_dir}}/gate-exercises.json. Do not commit or push.
+
+  - id: verify-re-exercise
+    session: lead-agent
+    mode: autonomous
+    skip_if: 'sh: test "{{has_gates}}" != true'
+    prompt: |
+      Independently inspect the re-exercised gates, patches and logs. Write
+      {{artifact_dir}}/gate-verdicts.json with name, confirmed, diagnostic,
+      criterion_met, and reason for each gate. Do not edit or commit.
+
+  - id: check-re-exercise
+    command: |
+      if python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" "{{artifact_dir}}/final-gates-{{mode}}.json" >/dev/null; then printf passed; else printf failed; exit 1; fi
+    capture: gate_recheck
+    skip_if: 'sh: test "{{has_gates}}" != true'
+    continue_on_failure: true
+
+  - id: record-gate-crossing
+    command: |
+      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-{{mode}}.json"); v=json.loads(p.read_text()); v["crossed"]=True; v["reasons"].append("gate exercise could not confirm final head"); p.write_text(json.dumps(v)+"\n")'
+    skip_if: 'sh: test "{{gate_recheck}}" = passed'
+
+  - id: check-chore-subjects
+    command: |
+      python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json"
+      if python3 -c 'import json; from pathlib import Path; assert not json.loads(Path("{{artifact_dir}}/nonchore-commits.json").read_text())'; then printf clean; else printf crossed; fi
+    capture: chore_status
+    skip_if: 'sh: test "{{mode}}" != postfinalize'
+
+  - id: mark-nonchore-crossing
+    command: |
+      python3 -c 'import json; from pathlib import Path; evidence=Path("{{artifact_dir}}"); bad=json.loads((evidence/"nonchore-commits.json").read_text()); p=evidence/"scope-postfinalize.json"; v=json.loads(p.read_text()); v["crossed"]=True; v["reasons"].append("non-chore CI commits: " + ", ".join(bad)); p.write_text(json.dumps(v)+"\n")'
+    skip_if: 'sh: test "{{mode}}" != postfinalize || test "{{chore_status}}" = clean'
+
+  - id: complete-guard
+    command: |
+      python3 -c 'import json; from pathlib import Path; p=Path("{{artifact_dir}}/scope-{{mode}}.json"); v=json.loads(p.read_text()); v["complete"]=True; p.write_text(json.dumps(v)+"\n")'

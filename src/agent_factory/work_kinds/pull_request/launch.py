@@ -35,6 +35,12 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "record-review-outcome.sh",
     "review-description.sh",
     "mark-later-commits.py",
+    "factory-task-guard-v1.0.yaml",
+    "task-scope-floor.py",
+    "record-scope.sh",
+    "check-gate-inventory.py",
+    "check-chore-subjects.py",
+    "normalize-chore-commits.py",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
@@ -775,7 +781,7 @@ def host_script(
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(str(evidence / 'logs'))}",
         f"exec > >(tee -a {shlex.quote(str(evidence / 'logs' / 'agent-runner.log'))}) 2>&1",
-        f"echo 'factory-fix: launching on the host' | tee -a "
+        f"echo '{definition.workflow_name}: launching on the host' | tee -a "
         f"{shlex.quote(str(evidence / 'factory-suite.log'))}",
         # The credential copy is read as data, never sourced: a token value is exported
         # literally even if it contains shell syntax.

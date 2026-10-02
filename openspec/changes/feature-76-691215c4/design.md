@@ -90,19 +90,28 @@ write-result. `builtin:core/finalize-pr` (Agent Runner) has no title parameter.
 
 ```python
 TASK = PullRequestKind(
-    kind="task", unit_key="task", noun="Task", item_noun="task",
+    kind="task",
+    unit_key="task",
+    noun="Task",
+    item_noun="task",
     issue_type=lambda shared: shared.routing.task_type,
-    workflow_name="factory-task", workflow_file="factory-task-v1.0.yaml",
+    workflow_name="factory-task",
+    workflow_file="factory-task-v1.0.yaml",
     staged_files=TASK_STAGED_FILES,
     contract=lambda shared: shared.task.contract if shared.task is not None else "factory-task/1",
-    outcome_file="task-outcome.json", branch_prefix="factory/task", sync_marker="task-sync",
-    allowed_modes=("host",), roles=("lead", "implementor", "tester"),
-    doctor_groups={"host": "task-host"}, reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
+    outcome_file="task-outcome.json",
+    branch_prefix="factory/task",
+    sync_marker="task-sync",
+    allowed_modes=("host",),
+    roles=("lead", "implementor", "tester"),
+    doctor_groups={"host": "task-host"},
+    reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
     local=lambda local: local.task,
     defaults=lambda shared: shared.task.defaults if shared.task is not None else {},
     targets=lambda shared: shared.fix.targets,
     enabled=lambda shared: shared is not None and shared.task is not None,
 )
+
 
 def registered() -> tuple[PullRequestKind, ...]:
     return (FIX, FEATURE, TASK)

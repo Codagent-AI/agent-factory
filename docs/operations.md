@@ -281,6 +281,39 @@ until retention removes it. A Running item dragged to Ready, Review, or
 Done while its execution is verified is corrected back to Running; its worktrees
 are retained.
 
+## The task work kind
+
+To queue a maintenance chore, file a native Task in a `[fix]` target and move
+its card to Ready, or run `factory-assign` with `--apply task`. It needs a writer
+author, Owner=factory, and no `needs-input` label. Moving a Task to Ready is the
+handoff; routing does not queue Tasks automatically. `[routing] task_type`
+defaults to `Task`. Shared `[task]` enables intake, selects the
+`factory-task/1` contract and three role profiles, and uses the fix targets,
+branches, and credential. Local `[task]` is optional; only `execution = "host"`
+is supported. Its default limits are 900 seconds inactivity, 7200 seconds
+execution, and 10800 seconds total. Its window is always open unless a local
+schedule is supplied, and `minimum_free_gib` can override the shared floor.
+`doctor` shows `task-host`; `status` shows the task slot, blocked claims, and
+claims waiting for review.
+
+Triage declines behavior, public API or CLI, persisted data, OpenSpec specs,
+credentials, release/deploy configuration, branch protection, cross-repository
+work, oversized changes, and unbounded product, compatibility, or threshold
+decisions. A choice explicitly bounded by the issue or existing repository
+settings is allowed. Use the requested gate target when measured results meet
+it; otherwise record and keep the measured baseline. Development tools, dev
+dependencies, and CI jobs that only check are in scope. Publishing, versioning,
+signing, tagging, and deploying are release configuration and out of scope.
+New or tightened gates are exercised on the delivered tree and on a planted
+violation, with the negative diagnostic confirmed by another session. Pre-push
+and post-finalize scope guards check the complete diff. Task commits and PR
+titles use `chore:`; review rounds stop for out-of-scope feedback.
+
+Before enabling `[task]`, audit Ready Task cards in every fix target and move
+each one other than agent-factory#74 to Backlog unless explicitly approved.
+Before rollback to a release lacking the task kind, settle or cancel open task
+claims: older releases cannot supervise, report, or sync them.
+
 ## The fix work kind
 
 A writer files a Bug-typed issue, or drags a tracked Bug to `Status=Ready` in a

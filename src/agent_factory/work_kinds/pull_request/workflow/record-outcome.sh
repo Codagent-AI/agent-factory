@@ -10,6 +10,7 @@ payload=$(cat)
 PAYLOAD="$payload" python3 - <<'PY'
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -58,6 +59,31 @@ if not isinstance(reasons, list):
 reasons = [str(r) for r in reasons]
 
 pr_url = pr_details.get("url") or ""
+scope_path = parsed.get("scope_path")
+scope = {}
+if scope_path and Path(scope_path).exists():
+    try:
+        scope = json.loads(Path(scope_path).read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"record-outcome: cannot read scope: {exc}", file=sys.stderr)
+        sys.exit(2)
+post_path = parsed.get("post_scope_path")
+post_scope = {}
+post_error = None
+if post_path and Path(post_path).exists():
+    try:
+        post_scope = json.loads(Path(post_path).read_text())
+        if not isinstance(post_scope, dict):
+            raise ValueError("post-finalize scope is not a JSON object")
+    except (OSError, ValueError) as exc:
+        post_error = str(exc)
+post_required = parsed.get("post_guard_required") == "true"
+prefinalize_head = parsed.get("prefinalize_head")
+if isinstance(prefinalize_head, str) and prefinalize_head:
+    current_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    post_required = post_required or (
+        current_head.returncode == 0 and current_head.stdout.strip() != prefinalize_head
+    )
 
 
 def pr_reference():
@@ -69,7 +95,48 @@ def pr_reference():
     }
 
 
-if validator_status != "passed":
+if contract == "factory-task/1" and validator_status == "passed" and scope_path and not scope.get("complete"):
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": ["pre-push Task scope guard did not complete"],
+        "validator": {"status": "passed"},
+    }
+elif post_error is not None:
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": [f"post-finalize Task scope evidence is unreadable: {post_error}"],
+        "pr": pr_reference(),
+        "validator": {"status": validator_status},
+        "ci": {"status": ci_status or "failed"},
+    }
+elif post_required and not post_scope.get("complete"):
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": ["post-finalize Task scope guard did not complete"],
+        "pr": pr_reference(),
+        "validator": {"status": "passed"},
+        "ci": {"status": ci_status or "failed"},
+    }
+elif scope.get("crossed"):
+    outcome = {
+        "contract": contract,
+        "outcome": "needs-input",
+        "reasons": scope.get("reasons") or ["Task scope crosses its boundary; belongs in a Feature"],
+        "validator": {"status": "passed"},
+    }
+elif post_scope.get("crossed"):
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": post_scope.get("reasons") or ["Task scope crossed after CI repair"],
+        "pr": pr_reference(),
+        "validator": {"status": "passed"},
+        "ci": {"status": ci_status or "failed"},
+    }
+elif validator_status != "passed":
     outcome = {
         "contract": contract,
         "outcome": "failed",

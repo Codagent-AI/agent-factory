@@ -271,9 +271,9 @@ The acceptance pass exercises real execution.
 
 ### E2E-003: Bugs, Features, and Tasks are admitted side by side, each as its own kind
 - Covers: issue acceptance criterion 3; `factory-task-intake` "Bugs and Features are admitted as before" and "Admit a task while a fix and a feature run".
-- Surface: one `agent-factory tick` through the harness in host mode with all three kinds configured.
+- Surface: three `agent-factory tick` cycles through the harness in host mode with all three kinds configured; each cycle admits at most one card.
 - Setup: one writer's Bug, one Feature, and one Task in Ready, all in fix targets.
-- Journey: one tick.
+- Journey: tick three times while the prior runs remain active.
 - Assertions:
   - There are three nonterminal runs, of kinds `fix`, `feature`, and `task`, each in its
     own slot.
