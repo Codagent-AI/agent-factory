@@ -69,6 +69,56 @@ def _sources(tmp_path: Path) -> tuple[SourceRepositories, dict[str, str]]:
     }
 
 
+def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import (
+        FIXTURE_REPOSITORY,
+        AndSceneAdapter,
+        GitWorktreeManager,
+        ReadinessError,
+    )
+
+    sources, revisions = _sources(tmp_path)
+    script = sources.evals / "evals/agent-runner/and-scene/run.sh"
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\nesac\n")
+    _git(sources.evals, "add", ".")
+    _git(sources.evals, "commit", "-m", "accept fixture")
+    revisions["evals"] = _git(sources.evals, "rev-parse", "HEAD")
+    worktrees = GitWorktreeManager(tmp_path / "factory", sources).prepare("claim", revisions)
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n")
+    adapter = AndSceneAdapter(environment_file=environment)
+    frozen = {
+        "suite": "and-scene",
+        "settings": {
+            "roles": {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+        },
+        "revisions": {**revisions, "fixture": "f" * 40},
+    }
+    assert adapter.readiness(worktrees, fixture_pinned=True) is None
+    plan = adapter.plan(frozen, worktrees, tmp_path / "artifact", recovery=False)
+    assert plan.argv.count("--fixture-ref") == 1
+    assert plan.argv[plan.argv.index("--fixture-ref") + 1] == "f" * 40
+    assert plan.argv.count("--repo") == 1
+    assert plan.argv[plan.argv.index("--repo") + 1] == FIXTURE_REPOSITORY
+    assert plan.argv.index("--fixture-ref") < plan.argv.index("--repo")
+    default = adapter.plan(
+        {**frozen, "revisions": revisions}, worktrees, tmp_path / "default", recovery=False
+    )
+    assert "--fixture-ref" not in default.argv and "--repo" not in default.argv
+    with pytest.raises(ReadinessError, match="full commit SHA"):
+        adapter.plan(
+            {**frozen, "revisions": {**revisions, "fixture": "bad"}},
+            worktrees,
+            tmp_path / "invalid",
+            recovery=False,
+        )
+    pinned_script = worktrees.evals / "evals/agent-runner/and-scene/run.sh"
+    pinned_script.write_text("#!/bin/sh\n")
+    reason = adapter.readiness(worktrees, fixture_pinned=True)
+    assert reason is not None and revisions["evals"][:12] in reason
+    assert adapter.readiness(worktrees) is None
+
+
 def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_worktrees(
     tmp_path: Path,
 ) -> None:

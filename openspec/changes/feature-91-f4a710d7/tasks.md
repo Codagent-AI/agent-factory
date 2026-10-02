@@ -1,4 +1,4 @@
-- [ ] Let eval requests pin the and-scene fixture with `fixture_ref`, end to end
+- [x] Let eval requests pin the and-scene fixture with `fixture_ref`, end to end
 
 ## Task: Request-selected and-scene fixture revisions (`fixture_ref`)
 

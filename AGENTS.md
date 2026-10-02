@@ -22,6 +22,23 @@
 
 ## Deploying
 
+`fixture_ref` in an eval request selects an and-scene branch, tag, or commit.
+Without it, the frozen agent-evals harness pin remains the fixture. Admission
+uses `[repositories] and_scene` (default: the `and-scene` sibling of
+`agent_runner`), requires the commit to be published on the and-scene origin,
+and freezes its SHA. Push a fixture branch before requesting it. Deleting its
+only branch before the claim finishes can fail later repetitions at fixture
+checkout. The frozen-inputs comment and `Refs` field show the selected fixture;
+results from a non-default fixture are not comparable with default-pin results.
+
+The deploy script refuses rollback past fixture support while any unfinished
+claim has a frozen fixture revision. Check them with `agent-factory --config
+<local.toml> pinned-claims --revision fixture`; pause, let each claim settle or
+cancel it, then deploy the older release. That release cannot accept
+`fixture_ref`. Stay on a fixture-capable release if the pinned evaluation is
+still needed; a new request without the key evaluates only the default fixture.
+A hand rollback or an older deploy script bypasses this guard.
+
 Use the `factory-deploy` skill, or run `scripts/deploy.sh` from any checkout of
 this repository (optionally `--no-runner`, or a factory ref; the default is
 `origin/main`). You can deploy, or restart the factory, at any time, including
