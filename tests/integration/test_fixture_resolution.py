@@ -70,3 +70,7 @@ def test_fixture_checkout_and_origin_fail_with_readiness(tmp_path: Path) -> None
     with pytest.raises(ReadinessError, match="is not the and-scene fixture repository") as error:
         resolve_fixture(checkout, "main")
     assert "secret" not in str(error.value)
+    git(checkout, "remote", "set-url", "origin", "file://user:secret@other/repo.git")
+    with pytest.raises(ReadinessError, match="is not a GitHub repository") as error:
+        resolve_fixture(checkout, "main")
+    assert "secret" not in str(error.value)

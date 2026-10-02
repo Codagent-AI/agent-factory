@@ -943,13 +943,9 @@ def github_https_origin(checkout: Path, label: str) -> str:
     if match is None:
         # Keep the actionable scheme/host without leaking embedded credentials.
         redacted = (
-            origin
-            if parsed.scheme == "file"
-            else (
-                f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
-                if parsed.scheme
-                else origin.split("@", 1)[-1]
-            )
+            f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
+            if parsed.scheme
+            else origin.split("@", 1)[-1]
         )
         raise ReadinessError(
             f"{label} origin {redacted!r} is not a GitHub repository the Fly builder can fetch"
