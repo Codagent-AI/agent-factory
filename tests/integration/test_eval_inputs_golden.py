@@ -23,6 +23,13 @@ FIXTURE = "c" * 40
 SOURCE = "https://github.com/Codagent-AI/agent-validator.git"
 
 
+def _assert_golden(path: Path, actual: object, *, capture: str = "CAPTURE_EVAL_GOLDENS") -> None:
+    if os.environ.get(capture) == "1":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
+    assert actual == json.loads(path.read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize(
     ("shape", "body", "execution", "validator", "fixture"),
     [
@@ -80,10 +87,7 @@ def test_frozen_and_reporting_golden(
         "frozen_inputs": handler.frozen_inputs_event(claim),
     }
     path = GOLDENS / f"{shape}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
     store.close()
 
 
@@ -121,9 +125,7 @@ def test_report_golden(tmp_path: Path, shape: str) -> None:
         "exhausted": handler.attempt_message(run, result, stage="exhausted"),
     }
     path = GOLDENS / f"{shape}_report.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
     store.close()
 
 
@@ -146,9 +148,7 @@ def test_invalid_revisions_golden(tmp_path: Path, case: str) -> None:
     events = store.pending_events(claim.id)
     actual = {"refs": refs, "events": [{"key": event.key, "body": event.body} for event in events]}
     path = GOLDENS / f"{case}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(actual, indent=2) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
     store.close()
 
 
@@ -248,9 +248,7 @@ def test_suite_plan_golden(
         json.dumps(actual).replace(str(tmp_path), "<tmp>").replace(claim.id, "<claim>")
     )
     path = GOLDENS / f"plan_{execution}_{fixture}{'_validator' if validator else ''}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(normalized, indent=2) + "\n", encoding="utf-8")
-    assert normalized == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, normalized)
     recovery_plans: dict[str, object] = {}
     for name, checkpoint in (("retry", False), ("resume", True)):
         recovery_artifact = tmp_path / name
@@ -285,9 +283,7 @@ def test_suite_plan_golden(
     recovery_path = GOLDENS / (
         f"recovery_{execution}_{fixture}{'_validator' if validator else ''}.json"
     )
-    if os.environ.get("CAPTURE_EVAL_RECOVERY_GOLDENS") == "1":
-        recovery_path.write_text(json.dumps(recovery_normalized, indent=2) + "\n", encoding="utf-8")
-    assert recovery_normalized == json.loads(recovery_path.read_text(encoding="utf-8"))
+    _assert_golden(recovery_path, recovery_normalized, capture="CAPTURE_EVAL_RECOVERY_GOLDENS")
     assert manager.remove(worktrees) == {}
     store.close()
 
@@ -433,9 +429,7 @@ def test_resolution_reason_golden(tmp_path: Path, case: str) -> None:
     assert store.claims_for_item("item") == []
     actual = str(error.value).replace(str(tmp_path), "<tmp>")
     path = GOLDENS / f"reason_{case}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
     store.close()
 
 
@@ -453,9 +447,7 @@ def test_rejection_golden(case: str, body: str) -> None:
         parse_request(f"```eval\n{body}\n```", defaults)
     actual = str(error.value)
     path = GOLDENS / f"rejection_{case}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
 
 
 @pytest.mark.parametrize("case", ["fixture_flags", "validator_docker_hold"])
@@ -512,9 +504,7 @@ def test_readiness_reason_golden(tmp_path: Path, case: str) -> None:
     assert reason is not None
     actual = reason.replace(str(tmp_path), "<tmp>")
     path = GOLDENS / f"readiness_{case}.json"
-    if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
-        path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
-    assert actual == json.loads(path.read_text(encoding="utf-8"))
+    _assert_golden(path, actual)
     store.close()
 
 
