@@ -1,5 +1,7 @@
 """INT-008: fix limits and the fix window reach the supervisor and the recovery policy."""
 
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import dataclasses
@@ -14,7 +16,7 @@ from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig,
 from agent_factory.controller import Controller, ExecutionPlan, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimStore, Run
-from agent_factory.supervisor import launch_supervisor
+from agent_factory.supervisor import SupervisionLimits, _timeout, launch_supervisor
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 from agent_factory.work_kinds.pull_request.kinds import FIX
 
@@ -147,6 +149,23 @@ def _program(tmp_path: Path, behaviour: str) -> Path:
     return program
 
 
+def _auditing_program(tmp_path: Path) -> Path:
+    program = tmp_path / "auditing.py"
+    program.write_text(
+        "import pathlib, sys, time\n"
+        "artifact = pathlib.Path(sys.argv[1]); artifact.mkdir(parents=True, exist_ok=True)\n"
+        "(artifact / 'fix-outcome.json').write_text("
+        '\'{"contract":"factory-fix/1","outcome":"pull-request"}\')\n'
+        "log = artifact / 'factory-suite.log'\n"
+        "for _ in range(30):\n"
+        "    with log.open('a') as stream: stream.write('waiting for audit\\n')\n"
+        "    time.sleep(.05)\n"
+        "(artifact / 'audit-finished').touch()\n",
+        encoding="utf-8",
+    )
+    return program
+
+
 def _plan(program: Path, artifact: Path) -> ExecutionPlan:
     return ExecutionPlan(
         (sys.executable, str(program), str(artifact)),
@@ -228,6 +247,50 @@ def test_each_fix_limit_stops_the_attempt_and_names_itself(
     if behaviour == "progressing":
         assert (artifact / "factory-suite.log").exists(), "evidence is preserved"
     store.close()
+
+
+@pytest.mark.parametrize(
+    ("limits", "expected_timeout"),
+    [((10, 0.8, 10), None), ((10, 0.8, 1.1), "total")],
+)
+def test_durable_outcome_survives_audit_wait_limits(
+    tmp_path: Path, limits: tuple[float, float, float], expected_timeout: str | None
+) -> None:
+    local = LocalConfig.from_toml(_LOCAL)
+    handler = PullRequestHandler(FIX, _shared(), local, resolver=_resolver)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
+    claim = controller.accept(_snapshot(), resolve=_resolver)
+    assert claim is not None
+    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    assert run is not None
+    artifact = Path(run.evidence_path) / "attempt-1"
+    fix_limits = replace(
+        handler.limits(local),
+        inactivity_seconds=limits[0],
+        execution_seconds=limits[1],
+        total_seconds=limits[2],
+    )
+    watcher = launch_supervisor(
+        tmp_path / "state.sqlite3", run.id, _plan(_auditing_program(tmp_path), artifact), fix_limits
+    )
+    watcher.wait(timeout=15)
+    finished = store.get_run(run.id)
+    assert finished is not None and finished.status == "completed"
+    assert finished.result["outcome"] == "pull-request"
+    assert finished.result.get("timeout") == expected_timeout
+    assert (artifact / "audit-finished").exists() is (expected_timeout is None)
+    interpreted = handler.read_result(finished)
+    assert interpreted.execution_status == "completed"
+    assert interpreted.product_verdict == "pull-request"
+    store.close()
+
+
+def test_recorded_outcome_only_exempts_execution_timeout() -> None:
+    limits = SupervisionLimits(inactivity_seconds=5, execution_seconds=10, total_seconds=20)
+    assert _timeout(11, 0, 11, limits, outcome_recorded=True) is None
+    assert _timeout(21, 0, 21, limits, outcome_recorded=True) == "total"
+    assert _timeout(11, 0, 0, limits, outcome_recorded=True) == "inactivity"
 
 
 def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path) -> None:

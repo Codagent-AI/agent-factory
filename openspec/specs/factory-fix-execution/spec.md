@@ -82,7 +82,7 @@ The fix workflow SHALL read the issue and its supplied comments and decide wheth
 
 ### Requirement: Apply fix-specific limits and window
 
-Each fix attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Fix admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the fix roles. Fix admission SHALL NOT be bound to the eval window.
+Each fix attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Fix admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the fix roles. Fix admission SHALL NOT be bound to the eval window. Time spent on the post-run audit after a durable outcome is written SHALL NOT count toward the execution limit, and an attempt stopped by a limit after writing its outcome SHALL finish with that outcome.
 
 #### Scenario: Admit a fix outside the eval window
 
@@ -91,7 +91,7 @@ Each fix attempt SHALL have configurable limits with defaults of 15 minutes with
 
 #### Scenario: Exceed a fix limit
 
-- **WHEN** a fix attempt exceeds its inactivity, execution, or total limit
+- **WHEN** a fix attempt exceeds its inactivity, execution, or total limit without writing a durable outcome
 - **THEN** the factory stops verified owned execution, records which limit was exceeded, preserves evidence, and applies the recovery policy
 
 ### Requirement: Recover a fix attempt from a fresh clone
@@ -226,4 +226,3 @@ The Validator commit SHALL be derived from the version the executable reports, e
 
 - **WHEN** `agent-validator --version` on the host reports no commit, for example because it is an npm release
 - **THEN** the attempt records the reported version and states that the full Validator commit is unavailable, and the attempt still runs
-
