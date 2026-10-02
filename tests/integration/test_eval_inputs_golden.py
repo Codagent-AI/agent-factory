@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -514,4 +515,115 @@ def test_readiness_reason_golden(tmp_path: Path, case: str) -> None:
     if os.environ.get("CAPTURE_EVAL_GOLDENS") == "1":
         path.write_text(json.dumps(actual) + "\n", encoding="utf-8")
     assert actual == json.loads(path.read_text(encoding="utf-8"))
+    store.close()
+
+
+def test_admission_freezes_the_golden_combined_shape_and_continues(tmp_path: Path) -> None:
+    """INT-001 through real Git resolution, `accept`, and an unchanged re-read."""
+    from dataclasses import replace
+
+    from agent_factory.controller import Controller, RequestSnapshot
+    from agent_factory.suites.and_scene import FIXTURE_REPOSITORY
+    from tests.integration.test_and_scene_adapter import (
+        _git,  # pyright: ignore[reportPrivateUsage]
+        _sources,  # pyright: ignore[reportPrivateUsage]
+    )
+    from tests.integration.test_controller_reporting import Comments
+
+    sources, _revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "branch", "-M", "main")
+        _git(source, "remote", "add", "origin", str(source))
+    validator = tmp_path / "validator"
+    validator.mkdir()
+    _git(validator, "init", "-b", "main")
+    _git(validator, "config", "user.email", "tests@example.invalid")
+    _git(validator, "config", "user.name", "Tests")
+    _git(validator, "commit", "--allow-empty", "-m", "validator")
+    _git(validator, "remote", "add", "origin", SOURCE)
+    _git(validator, "config", f"url.{validator}.insteadOf", SOURCE)
+    bare = tmp_path / "fixture-origin.git"
+    subprocess.run(["git", "init", "--bare", "--quiet", str(bare)], check=True)
+    _git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
+    fixture_source = tmp_path / "fixture-source"
+    fixture_source.mkdir()
+    _git(fixture_source, "init", "-b", "main")
+    _git(fixture_source, "config", "user.email", "tests@example.invalid")
+    _git(fixture_source, "config", "user.name", "Tests")
+    _git(fixture_source, "commit", "--allow-empty", "-m", "fixture")
+    _git(fixture_source, "remote", "add", "origin", str(bare))
+    _git(fixture_source, "push", "--quiet", "-u", "origin", "main")
+    fixture_checkout = tmp_path / "fixture-checkout"
+    subprocess.run(["git", "clone", "--quiet", str(bare), str(fixture_checkout)], check=True)
+    _git(fixture_checkout, "remote", "set-url", "origin", FIXTURE_REPOSITORY)
+    _git(fixture_checkout, "config", f"url.{bare}.insteadOf", FIXTURE_REPOSITORY)
+    defaults = EvalDefaults(
+        "main",
+        "main",
+        {
+            "lead": "claude:default:medium",
+            "implementor": "codex:default:medium",
+            "tester": "codex:default:medium",
+        },
+        False,
+        1,
+        execution="fly",
+    )
+    handler = EvalHandler(
+        defaults,
+        harness_ref="main",
+        sources=replace(sources, validator=validator, fixture=fixture_checkout),
+    )
+    store = ClaimStore(tmp_path / "admission.sqlite3")
+    controller = Controller(store, Comments(), {"eval": handler})
+    snapshot = RequestSnapshot(
+        "repo",
+        1,
+        "issue",
+        "item",
+        "writer",
+        "write",
+        "Eval",
+        frozenset(),
+        "Ready",
+        "factory",
+        None,
+        '```eval\nfixture_ref = "main"\n```',
+        False,
+    )
+
+    claim = controller.accept(snapshot, resolve=handler.resolve_request)
+
+    assert claim is not None
+    saved = store.get_claim(claim.id)
+    assert saved is not None
+    raw_revisions = saved.frozen_spec["revisions"]
+    assert isinstance(raw_revisions, dict)
+    revisions = cast(dict[str, str], raw_revisions)
+    assert revisions["runner"] == _git(sources.runner, "rev-parse", "HEAD")
+    assert revisions["skills"] == _git(sources.skills, "rev-parse", "HEAD")
+    assert revisions["evals"] == _git(sources.evals, "rev-parse", "HEAD")
+    assert revisions["validator"] == _git(validator, "rev-parse", "HEAD")
+    assert revisions["fixture"] == _git(fixture_source, "rev-parse", "HEAD")
+    placeholders = {
+        "runner": SHA,
+        "skills": SHA,
+        "evals": SHA,
+        "validator": VALIDATOR,
+        "fixture": FIXTURE,
+    }
+    normalized = {
+        **saved.frozen_spec,
+        "revisions": {name: placeholders[name] for name in revisions},
+    }
+    golden = json.loads((GOLDENS / "combined_fly.json").read_text(encoding="utf-8"))
+    assert json.dumps(normalized) == golden["frozen_spec"]
+    assert saved.request_fingerprint == golden["fingerprint"]
+
+    _git(sources.runner, "commit", "--allow-empty", "-m", "advance")
+    again = controller.accept(snapshot, resolve=handler.resolve_request)
+
+    assert again is not None and again.id == claim.id
+    assert store.claims_for_item("item") == [store.get_claim(claim.id)]
+    assert store.get_claim(claim.id) == saved
     store.close()

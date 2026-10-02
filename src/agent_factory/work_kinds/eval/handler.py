@@ -114,7 +114,7 @@ class EvalHandler:
             local.repositories.agent_runner,
             local.repositories.agent_skills,
             local.repositories.agent_evals,
-            local.repositories.agent_validator if local.eval_execution == "fly" else None,
+            local.repositories.agent_validator,
             local.repositories.and_scene,
         )
         sources = replace(

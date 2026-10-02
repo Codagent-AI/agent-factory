@@ -18,7 +18,8 @@ FIXTURE_REPOSITORY = "https://github.com/Codagent-AI/and-scene.git"
 def _resolve(checkout: Path | None, ref: str) -> str:
     from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
 
-    assert checkout is not None
+    if checkout is None:
+        raise ReadinessError("source checkout is not configured")
     return _resolve_revision(checkout, ref)
 
 

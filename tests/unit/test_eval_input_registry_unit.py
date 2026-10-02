@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.suites.and_scene import SourceRepositories, inputs
+from agent_factory.suites.and_scene import ReadinessError, SourceRepositories, inputs
 from agent_factory.work_kinds.eval import EvalDefaults, parse_request
 
 
@@ -50,3 +50,10 @@ def test_source_repository_lookup() -> None:
     assert sources.checkout("fixture") is None
     assert sources.checkout("sample") == Path("sample")
     assert sources.checkout("missing") is None
+
+
+def test_registry_resolver_refuses_a_missing_checkout() -> None:
+    runner = inputs.by_name("runner")
+    assert runner is not None
+    with pytest.raises(ReadinessError, match="source checkout is not configured"):
+        runner.resolve(None, "main")

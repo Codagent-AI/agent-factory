@@ -528,6 +528,7 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
         )
         docker_local = LocalConfig.from_file(site.config_path)
         docker_handler = EvalHandler.from_config(site.shared, docker_local)
+        assert docker_handler.sources is not None and docker_handler.sources.validator is None
         with pytest.raises(ReadinessError, match="runs only under Fly execution"):
             docker_handler.prepare(claim)
         with site.store() as store:
@@ -536,6 +537,7 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
             site.config_path.read_text().replace('execution = "docker"', 'execution = "fly"')
         )
         fly_handler = EvalHandler.from_config(site.shared, LocalConfig.from_file(site.config_path))
+        assert fly_handler.sources is not None and fly_handler.sources.validator is not None
         assert fly_handler.next_unit(claim, []) == ("rep-1", "initial")
         legacy = request.freeze(
             {

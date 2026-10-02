@@ -15,7 +15,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -62,7 +62,7 @@ class SourceRepositories:
     extra: Mapping[str, Path] = field(default_factory=lambda: cast(Mapping[str, Path], {}))
 
     def checkout(self, name: str) -> Path | None:
-        if name in {"runner", "skills", "evals", "validator", "fixture"}:
+        if name != "extra" and name in {item.name for item in fields(self)}:
             return getattr(self, name)
         return self.extra.get(name)
 
