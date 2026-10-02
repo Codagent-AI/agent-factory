@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
-from urllib.parse import urlsplit
 
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, ScheduleConfig, SharedConfig
@@ -24,13 +22,25 @@ from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment,
 from agent_factory.operations import Diagnostic, model_authentication
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import (
-    FIXTURE_REPOSITORY,
     AndSceneAdapter,
     GitWorktreeManager,
     PreparedWorktrees,
     ReadinessError,
     SourceRepositories,
     WorktreeCleanup,
+    inputs,
+)
+from agent_factory.suites.and_scene.inputs import (
+    _public_diagnostic as _public_diagnostic,  # pyright: ignore[reportPrivateUsage]
+)
+from agent_factory.suites.and_scene.inputs import (
+    github_https_origin as github_https_origin,
+)
+from agent_factory.suites.and_scene.inputs import (
+    resolve_fixture as resolve_fixture,
+)
+from agent_factory.suites.and_scene.inputs import (
+    validator_source_url as validator_source_url,
 )
 from agent_factory.supervisor import SupervisionLimits
 from agent_factory.work_kinds.base import (
@@ -46,6 +56,12 @@ from agent_factory.work_kinds.base import (
     providers_from_roles,
 )
 from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
+
+
+@dataclass(frozen=True)
+class Resolution:
+    revisions: dict[str, str]
+    sources: dict[str, str]
 
 
 class EvalHandler:
@@ -101,6 +117,14 @@ class EvalHandler:
             local.repositories.agent_validator if local.eval_execution == "fly" else None,
             local.repositories.and_scene,
         )
+        sources = replace(
+            sources,
+            **{
+                entry.name: None
+                for entry in inputs.EVAL_INPUTS
+                if hasattr(sources, entry.name) and local.eval_execution not in entry.executions
+            },
+        )
         return cls(
             defaults,
             harness_ref=shared.eval.harness_ref,
@@ -127,10 +151,12 @@ class EvalHandler:
     def attach_github(self, client: GitHubClient, token_provider: object = None) -> None:
         pass
 
-    def resolve_request(self, request: object) -> tuple[str, ...]:
+    def resolve_request(self, request: object) -> Resolution:
         if self.sources is None or not isinstance(request, ParsedRequest):
             raise ReadinessError("eval handler cannot resolve pinned revisions")
-        return resolve_revisions(self.sources, request)
+        return resolve_revisions(
+            self.sources, request, configured_refs={"evals": self._harness_ref}
+        )
 
     def execution_mode(self, local: LocalConfig) -> str:
         return local.eval_execution
@@ -233,26 +259,12 @@ class EvalHandler:
             request = parse_request(snapshot.body, self._defaults)
         except ValueError as error:
             return Feedback(str(error))
-        resolver = cast(Callable[[ParsedRequest], tuple[str, ...]], resolve)
-        resolved = resolver(request)
-        runner_sha, skills_sha = resolved[:2]
-        validator_sha = resolved[2] if len(resolved) > 2 else None
-        validator_source = (
-            validator_source_url(self.sources.validator)
-            if validator_sha and self.sources and self.sources.validator
-            else None
-        )
-        fixture_ref = request.settings.get("fixture_ref")
-        fixture_sha = self._resolve_fixture(str(fixture_ref)) if fixture_ref is not None else None
-        harness_sha = self._resolve_harness_ref()
+        resolver = cast(Callable[[ParsedRequest], Resolution], resolve)
+        resolution = resolver(request)
         frozen = request.freeze(
-            runner_sha=runner_sha,
-            skills_sha=skills_sha,
-            harness_sha=harness_sha,
+            resolution.revisions,
             suite=self._suite,
-            validator_sha=validator_sha,
-            validator_source=validator_source,
-            fixture_sha=fixture_sha,
+            sources=resolution.sources,
         )
         return ClaimDraft(
             snapshot.repository,
@@ -263,21 +275,6 @@ class EvalHandler:
             request.fingerprint,
             frozen.payload,
         )
-
-    def _resolve_harness_ref(self) -> str:
-        """Resolve the configured harness branch to a commit; direct pass-through if unwired."""
-        if self.sources is None:
-            return self._harness_ref
-        from agent_factory import runtime
-
-        return runtime._resolve_revision(  # pyright: ignore[reportPrivateUsage]
-            self.sources.evals, self._harness_ref
-        )
-
-    def _resolve_fixture(self, ref: str) -> str:
-        if self.sources is None:
-            return ref
-        return resolve_fixture(self.sources.fixture, ref)
 
     def readiness(
         self,
@@ -291,14 +288,16 @@ class EvalHandler:
     def prepare(self, claim: Claim) -> Preparation:
         if self._manager is None or self.adapter is None:
             raise ReadinessError("eval handler is missing worktree sources")
-        revision = mapping(claim.frozen_spec.get("revisions")).get("validator")
-        if revision and self._local is not None and self._local.eval_execution == "docker":
-            raise ReadinessError(
-                f"this claim pinned Agent Validator {str(revision)[:7]} at admission under Fly "
-                "execution; Docker execution installs the published npm release, so the claim "
-                "runs only under Fly execution. Switch eval execution back to fly, or close "
-                "the issue and submit a fresh request."
-            )
+        revisions = mapping(claim.frozen_spec.get("revisions"))
+        for entry in inputs.EVAL_INPUTS:
+            revision = revisions.get(entry.name)
+            if (
+                revision
+                and entry.execution_hold
+                and self._local is not None
+                and self._local.eval_execution not in entry.executions
+            ):
+                raise ReadinessError(entry.execution_hold(str(revision)))
         worktrees = self._manager.prepare(claim.id, mapping(claim.frozen_spec.get("revisions")))
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
@@ -314,9 +313,7 @@ class EvalHandler:
         failures = [check.detail for check in auth if not check.available]
         if failures:
             raise ReadinessError("; ".join(failures))
-        reason = self.adapter.readiness(
-            worktrees, fixture_pinned="fixture" in mapping(claim.frozen_spec.get("revisions"))
-        )
+        reason = self.adapter.readiness(worktrees, pinned=revisions.keys())
         if reason:
             raise ReadinessError(reason)
         return Preparation(worktrees=worktrees)
@@ -558,10 +555,15 @@ class EvalHandler:
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
         claim = self._store.get_claim(run.claim_id) if self._store is not None else None
-        fixture = mapping(claim.frozen_spec.get("revisions")).get("fixture") if claim else None
-        body = _completion_message(
-            run.unit_key, stored_result, fixture=str(fixture) if fixture is not None else None
+        revisions: Mapping[str, object] = (
+            mapping(claim.frozen_spec.get("revisions")) if claim else {}
         )
+        pinned_lines = tuple(
+            entry.report_line(str(revisions[entry.name]))
+            for entry in inputs.EVAL_INPUTS
+            if entry.name in revisions and entry.report_line is not None
+        )
+        body = _completion_message(run.unit_key, stored_result, pinned_lines=pinned_lines)
         if stage == "exhausted":
             return (
                 f"{run.unit_key} exhausted its technical recovery attempt; "
@@ -576,17 +578,19 @@ class EvalHandler:
 
     def refs_text(self, claim: Claim) -> str | None:
         revisions = mapping(claim.frozen_spec.get("revisions", {}))
-        invalid = [
-            key
-            for key in ("runner", "skills", "evals")
-            if not isinstance(revisions.get(key), str) or not revisions.get(key)
-        ]
-        for key in ("validator", "fixture"):
-            revision = revisions.get(key)
-            if key in revisions and not (
-                isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision)
+        invalid: list[str] = []
+        for entry in inputs.EVAL_INPUTS:
+            revision = revisions.get(entry.name)
+            if (
+                entry.required
+                and (not isinstance(revision, str) or not revision)
+                or (
+                    not entry.required
+                    and entry.name in revisions
+                    and not (isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision))
+                )
             ):
-                invalid.append(key)
+                invalid.append(entry.name)
         if invalid:
             if self._store is not None:
                 self._store.record_event(
@@ -597,28 +601,18 @@ class EvalHandler:
                     + ". Repair the saved claim inputs.",
                 )
             return None
-        keys = ("runner", "skills", "evals") + tuple(
-            key for key in ("validator", "fixture") if key in revisions
-        )
+        keys = tuple(entry.name for entry in inputs.EVAL_INPUTS if entry.name in revisions)
         return " ".join(f"{key}@{str(revisions[key])[:7]}" for key in keys)
 
     def frozen_inputs_event(self, claim: Claim) -> str:
         body = (
             "Frozen evaluation inputs:\n```json\n"
             + json.dumps(claim.frozen_spec, indent=2)
-            + "\n```\nAgent Validator: "
-            + str(
-                mapping(claim.frozen_spec.get("revisions")).get("validator")
-                or "published npm release (not pinned)"
-            )
+            + "\n```"
         )
-        fixture = mapping(claim.frozen_spec.get("revisions")).get("fixture")
-        if fixture is not None:
-            requested = mapping(claim.frozen_spec.get("settings")).get("fixture_ref")
-            body += (
-                f"\nFixture: `{fixture}` (requested `{requested}`), selected by this request "
-                "instead of the agent-evals pin."
-            )
+        for entry in inputs.EVAL_INPUTS:
+            if entry.frozen_inputs_text is not None:
+                body += entry.frozen_inputs_text(claim.frozen_spec) or ""
         return body
 
 
@@ -825,25 +819,8 @@ def _machine_lost(result: Mapping[str, object]) -> bool:
     )
 
 
-def _public_diagnostic(value: str) -> str:
-    value = re.sub(r"https?://[^\s/@]+:[^\s/@]+@", "https://[redacted]@", value)
-    value = re.sub(r"\b(?:gh[pousr]_|github_pat_|sk-)[A-Za-z0-9_-]+", "[redacted]", value)
-    value = re.sub(
-        r"(?i)\b(?:Proxy-)?Authorization\s*:\s*[^\r\n]*",
-        "Authorization: [redacted]",
-        value,
-    )
-    value = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [redacted]", value)
-    return re.sub(
-        r"(?i)(\b[\w-]*(?:token|secret|password|api[_-]?key)[\w-]*[\"']?\s*[:=]\s*)"
-        r"(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
-        r"\1[redacted]",
-        value,
-    )
-
-
 def _completion_message(
-    unit_key: str, result: Mapping[str, object], *, fixture: str | None = None
+    unit_key: str, result: Mapping[str, object], *, pinned_lines: Sequence[str] = ()
 ) -> str:
     def text(value: object) -> str:
         if not isinstance(value, (str, int, float)) or isinstance(value, bool):
@@ -855,8 +832,7 @@ def _completion_message(
         f"Execution: {text(result.get('execution_status'))}",
         f"Product verdict: {text(result.get('product_verdict'))}",
     ]
-    if fixture is not None:
-        lines.append(f"Fixture: {fixture}")
+    lines.extend(pinned_lines)
     raw = result.get("report_summary")
     summary = (
         cast(Mapping[str, object], raw)
@@ -885,178 +861,22 @@ def _completion_message(
     return lines[0] + "\n\n" + "\n".join(f"- {line}" for line in lines[1:])
 
 
-def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tuple[str, ...]:
-    """Resolve the evaluation's Runner and Skills refs at admission."""
-    from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
-
-    resolved = (
-        _resolve_revision(sources.runner, str(request.settings["agent_runner_ref"])),
-        _resolve_revision(sources.skills, str(request.settings["agent_skills_ref"])),
-    )
-    if sources.validator is None:
-        return resolved
-    try:
-        validator_sha = _resolve_revision(
-            sources.validator, str(request.settings["agent_validator_ref"])
-        )
-    except ReadinessError as error:
-        raise ReadinessError(f"Agent Validator checkout: {error}") from error
-    return resolved + (validator_sha,)
-
-
-def validator_source_url(checkout: Path) -> str:
-    """Return the public GitHub origin usable by Fly's remote builder."""
-    return github_https_origin(checkout, "Agent Validator checkout")
-
-
-def github_https_origin(checkout: Path, label: str) -> str:
-    """Normalize a checkout's GitHub origin without exposing its credentials."""
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(checkout), "config", "--get", "remote.origin.url"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            check=True,
-        )
-        origin = result.stdout.strip()
-    except (OSError, subprocess.SubprocessError) as error:
-        raise ReadinessError(f"Cannot read {label} origin at {checkout}") from error
-    shorthand = re.fullmatch(
-        r"git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", origin
-    )
-    try:
-        parsed = urlsplit(origin)
-    except ValueError:
-        raise ReadinessError(
-            f"{label} origin is not a GitHub repository the Fly builder can fetch"
-        ) from None
-    path = (
-        re.fullmatch(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", parsed.path)
-        if parsed.scheme in {"https", "ssh"}
-        and parsed.hostname == "github.com"
-        and not parsed.query
-        and not parsed.fragment
-        else None
-    )
-    match = shorthand or path
-    if match is None:
-        # Keep the actionable scheme/host without leaking embedded credentials.
-        redacted = (
-            f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
-            if parsed.scheme
-            else origin.split("@", 1)[-1]
-        )
-        raise ReadinessError(
-            f"{label} origin {redacted!r} is not a GitHub repository the Fly builder can fetch"
-        )
-    return f"https://github.com/{match.group(1)}/{match.group(2)}.git"
-
-
-def resolve_fixture(checkout: Path | None, ref: str) -> str:
-    """Resolve only commits reachable from the published and-scene origin."""
-    prefix = f"and-scene checkout {checkout}: "
-    if checkout is None or not checkout.is_dir() or not (checkout / ".git").exists():
-        raise ReadinessError(
-            prefix
-            + "is missing; clone "
-            + FIXTURE_REPOSITORY
-            + " there or set [repositories] and_scene"
-        )
-    try:
-        origin = github_https_origin(checkout, "and-scene checkout")
-    except ReadinessError as error:
-        raise ReadinessError(prefix + str(error)) from error
-    if origin.lower() != FIXTURE_REPOSITORY.lower():
-        raise ReadinessError(
-            prefix
-            + f"origin {origin} is not the and-scene fixture repository "
-            + FIXTURE_REPOSITORY
-        )
-    from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
-
-    try:
-        sha = _resolve_revision(checkout, ref)
-    except ReadinessError as error:
-        raise ReadinessError(prefix + str(error)) from error
-    try:
-        branches = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(checkout),
-                "for-each-ref",
-                "--contains",
-                sha,
-                "--format=%(refname)",
-                "refs/remotes/origin/",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ReadinessError(
-            prefix + "cannot inspect origin branches; check the checkout"
-        ) from error
-    if branches.returncode != 0:
-        raise ReadinessError(
-            prefix + f"cannot inspect origin branches (git exit {branches.returncode})"
-        )
-    if branches.stdout.strip():
-        return sha
-    try:
-        tags = subprocess.run(
-            ["git", "-C", str(checkout), "ls-remote", "--tags", "origin"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ReadinessError(
-            prefix + "cannot list tags on origin (git exit timeout); check remote access"
-        ) from error
-    if tags.returncode != 0:
-        raise ReadinessError(
-            prefix + f"cannot list tags on origin (git exit {tags.returncode}); check remote access"
-        )
-    listed: dict[str, str] = {}
-    for line in tags.stdout.splitlines():
-        object_id, _, name = line.partition("\t")
-        if name.startswith("refs/tags/") and not name.endswith("^{}"):
-            listed[name] = object_id
-    try:
-        containing = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(checkout),
-                "for-each-ref",
-                "--contains",
-                sha,
-                "--format=%(refname)%09%(objectname)",
-                "refs/tags/",
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise ReadinessError(prefix + "cannot inspect origin tags; check the checkout") from error
-    if containing.returncode != 0:
-        stderr = containing.stderr.strip()
-        detail = _public_diagnostic(stderr.splitlines()[-1]) if stderr else "no detail"
-        raise ReadinessError(
-            prefix + f"cannot inspect origin tags (git exit {containing.returncode}): {detail}"
-        )
-    for line in containing.stdout.splitlines():
-        name, _, object_id = line.partition("\t")
-        if listed.get(name) == object_id:
-            return sha
-    raise ReadinessError(
-        prefix + f"fixture commit {sha[:12]} is not published on {FIXTURE_REPOSITORY}; "
-        "push it to a branch or tag there"
-    )
+def resolve_revisions(
+    sources: SourceRepositories, request: ParsedRequest, *, configured_refs: Mapping[str, str]
+) -> Resolution:
+    """Resolve applicable inputs in admission order."""
+    revisions: dict[str, str] = {}
+    source_urls: dict[str, str] = {}
+    for entry in inputs.admission_order():
+        checkout = sources.checkout(entry.name)
+        if not entry.required:
+            if entry.requestable and entry.setting not in request.settings:
+                continue
+            if not entry.requestable and checkout is None:
+                continue
+        ref = request.settings[entry.setting] if entry.setting else configured_refs[entry.name]
+        revisions[entry.name] = entry.resolve(checkout, str(ref))
+        if entry.source_url is not None:
+            assert checkout is not None
+            source_urls[entry.name] = entry.source_url(checkout)
+    return Resolution(revisions, source_urls)

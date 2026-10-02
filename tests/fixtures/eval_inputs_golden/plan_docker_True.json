@@ -1,0 +1,71 @@
+{
+  "argv": [
+    "<tmp>/factory/worktrees/<claim>/evals/evals/agent-runner/and-scene/run.sh",
+    "--run-agent",
+    "--agent-runner-dir",
+    "<tmp>/factory/worktrees/<claim>/runner",
+    "--agent-skills-dir",
+    "<tmp>/factory/worktrees/<claim>/skills",
+    "--artifact-dir",
+    "<tmp>/artifact",
+    "--env-file",
+    "<tmp>/candidate.env",
+    "--lead-cli",
+    "codex",
+    "--lead-model",
+    "model",
+    "--lead-effort",
+    "medium",
+    "--implementor-cli",
+    "codex",
+    "--implementor-model",
+    "model",
+    "--implementor-effort",
+    "medium",
+    "--tester-cli",
+    "codex",
+    "--tester-model",
+    "model",
+    "--tester-effort",
+    "medium",
+    "--fixture-ref",
+    "ffffffffffffffffffffffffffffffffffffffff",
+    "--repo",
+    "https://github.com/Codagent-AI/and-scene.git"
+  ],
+  "manifest": null,
+  "preparation": {
+    "worktrees": {
+      "evals": {
+        "path": "<tmp>/factory/worktrees/<claim>/evals",
+        "source": "<tmp>/evals"
+      },
+      "runner": {
+        "path": "<tmp>/factory/worktrees/<claim>/runner",
+        "source": "<tmp>/runner"
+      },
+      "skills": {
+        "path": "<tmp>/factory/worktrees/<claim>/skills",
+        "source": "<tmp>/skills"
+      }
+    }
+  },
+  "cleanup": {
+    "complete": false,
+    "paths": {
+      "evals": {
+        "path": "<tmp>/factory/worktrees/<claim>/evals",
+        "source": "<tmp>/evals"
+      },
+      "runner": {
+        "path": "<tmp>/factory/worktrees/<claim>/runner",
+        "source": "<tmp>/runner"
+      },
+      "skills": {
+        "path": "<tmp>/factory/worktrees/<claim>/skills",
+        "source": "<tmp>/skills"
+      }
+    },
+    "review_observed": false
+  }
+}

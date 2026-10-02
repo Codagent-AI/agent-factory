@@ -1,4 +1,4 @@
-- [ ] Refactor eval revision inputs into a declarative registry, with no change to any observable output
+- [x] Refactor eval revision inputs into a declarative registry, with no change to any observable output
 
 ## Task: Declarative eval revision-input registry (behavior-preserving refactor)
 

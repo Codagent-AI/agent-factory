@@ -14,6 +14,7 @@ from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
+from agent_factory.work_kinds.eval.handler import Resolution
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -94,7 +95,7 @@ def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
         },
         "revisions": {**revisions, "fixture": "f" * 40},
     }
-    assert adapter.readiness(worktrees, fixture_pinned=True) is None
+    assert adapter.readiness(worktrees, pinned={"fixture"}) is None
     plan = adapter.plan(frozen, worktrees, tmp_path / "artifact", recovery=False)
     assert plan.argv.count("--fixture-ref") == 1
     assert plan.argv[plan.argv.index("--fixture-ref") + 1] == "f" * 40
@@ -114,7 +115,7 @@ def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
         )
     pinned_script = worktrees.evals / "evals/agent-runner/and-scene/run.sh"
     pinned_script.write_text("#!/bin/sh\n")
-    reason = adapter.readiness(worktrees, fixture_pinned=True)
+    reason = adapter.readiness(worktrees, pinned={"fixture"})
     assert reason is not None and revisions["evals"][:12] in reason
     assert adapter.readiness(worktrees) is None
 
@@ -402,7 +403,12 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         "```eval\nrepetitions = 1\n```",
         False,
     )
-    claim = controller.accept(snapshot, resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot,
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "e" * 40}, {}
+        ),
+    )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
     assert run is not None
@@ -547,7 +553,9 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
             "```eval\nrepetitions = 1\n```",
             False,
         ),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "e" * 40}, {}
+        ),
     )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)

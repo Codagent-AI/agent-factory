@@ -1,0 +1,117 @@
+{
+  "argv": [
+    "<tmp>/factory/worktrees/<claim>/evals/evals/agent-runner/and-scene/run.sh",
+    "--run-agent",
+    "--agent-runner-dir",
+    "<tmp>/factory/worktrees/<claim>/runner",
+    "--agent-skills-dir",
+    "<tmp>/factory/worktrees/<claim>/skills",
+    "--artifact-dir",
+    "<tmp>/artifact",
+    "--env-file",
+    "<tmp>/candidate.env",
+    "--lead-cli",
+    "codex",
+    "--lead-model",
+    "model",
+    "--lead-effort",
+    "medium",
+    "--implementor-cli",
+    "codex",
+    "--implementor-model",
+    "model",
+    "--implementor-effort",
+    "medium",
+    "--tester-cli",
+    "codex",
+    "--tester-model",
+    "model",
+    "--tester-effort",
+    "medium",
+    "--fixture-ref",
+    "ffffffffffffffffffffffffffffffffffffffff",
+    "--repo",
+    "https://github.com/Codagent-AI/and-scene.git"
+  ],
+  "manifest": {
+    "artifact_dir": "<tmp>/artifact",
+    "claim_id": "<claim>",
+    "commits": {
+      "evals": "407dbfea4a48ea9f8d2526fa1cc2831ad5e25dbf",
+      "runner": "36bab526e2b24c1a96041ab3abe3de1ac0cfe8fa",
+      "skills": "0aca854151e64b84e7fc36903fa99b9675f29f49"
+    },
+    "deadline": {
+      "collection_grace_seconds": 900,
+      "total_seconds": 18000
+    },
+    "expect_checkpoint": false,
+    "fly": {
+      "app": "factory",
+      "cpu_kind": "shared",
+      "cpus": 4,
+      "heartbeat_seconds": 20,
+      "memory_mb": 8192,
+      "region": "ewr",
+      "token_file": "<tmp>/fly-token"
+    },
+    "git_common_dirs": [
+      "<tmp>/runner/.git",
+      "<tmp>/skills/.git"
+    ],
+    "guest_paths": {
+      "artifacts": "/artifacts",
+      "input": "/eval-input",
+      "runner": "/agent-runner-source",
+      "skills": "/agent-skills-source"
+    },
+    "image_repository": "registry.fly.io/factory",
+    "nonce": "<nonce>",
+    "repositories": {
+      "evals": "<tmp>/evals",
+      "runner": "<tmp>/runner",
+      "skills": "<tmp>/skills"
+    },
+    "run_id": "run",
+    "unit_key": "rep-1",
+    "worktrees": {
+      "evals": "<tmp>/factory/worktrees/<claim>/evals",
+      "runner": "<tmp>/factory/worktrees/<claim>/runner",
+      "skills": "<tmp>/factory/worktrees/<claim>/skills"
+    }
+  },
+  "preparation": {
+    "worktrees": {
+      "evals": {
+        "path": "<tmp>/factory/worktrees/<claim>/evals",
+        "source": "<tmp>/evals"
+      },
+      "runner": {
+        "path": "<tmp>/factory/worktrees/<claim>/runner",
+        "source": "<tmp>/runner"
+      },
+      "skills": {
+        "path": "<tmp>/factory/worktrees/<claim>/skills",
+        "source": "<tmp>/skills"
+      }
+    }
+  },
+  "cleanup": {
+    "complete": false,
+    "paths": {
+      "evals": {
+        "path": "<tmp>/factory/worktrees/<claim>/evals",
+        "source": "<tmp>/evals"
+      },
+      "runner": {
+        "path": "<tmp>/factory/worktrees/<claim>/runner",
+        "source": "<tmp>/runner"
+      },
+      "skills": {
+        "path": "<tmp>/factory/worktrees/<claim>/skills",
+        "source": "<tmp>/skills"
+      }
+    },
+    "review_observed": false
+  }
+}

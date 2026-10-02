@@ -71,22 +71,27 @@ At import time the module may import only the standard library and `agent_factor
 ```python
 @dataclass(frozen=True)
 class RevisionInput:
-    name: str                       # key under frozen revisions; Refs label; honored-revisions
-    noun: str                       # name used in freeze validation messages ("harness" for evals)
-    required: bool                  # always frozen (runner, skills, evals) vs optional
-    setting: str | None             # settings key carrying the ref (agent_runner_ref, ..., fixture_ref)
-    requestable: bool               # the eval block may set `setting`
-    has_default: bool               # effective settings carry EvalDefaults.<setting>
-    admission_rank: int             # resolution order at admission
-    resolve: Callable[[Path | None, str], str]   # checkout (may be None), ref -> full SHA; raises ReadinessError
+    name: str  # key under frozen revisions; Refs label; honored-revisions
+    noun: str  # name used in freeze validation messages ("harness" for evals)
+    required: bool  # always frozen (runner, skills, evals) vs optional
+    setting: str | None  # settings key carrying the ref (agent_runner_ref, ..., fixture_ref)
+    requestable: bool  # the eval block may set `setting`
+    has_default: bool  # effective settings carry EvalDefaults.<setting>
+    admission_rank: int  # resolution order at admission
+    resolve: Callable[
+        [Path | None, str], str
+    ]  # checkout (may be None), ref -> full SHA; raises ReadinessError
     executions: frozenset[str] = frozenset({"docker", "fly"})
-    worktree: bool = False          # claim-owned worktree (runner, skills, evals)
-    fly_commit: bool = False        # listed in the Fly manifest `commits` (and _revisions validation)
-    source_url: Callable[[Path], str] | None = None   # recorded under frozen `sources`
+    worktree: bool = False  # claim-owned worktree (runner, skills, evals)
+    fly_commit: bool = False  # listed in the Fly manifest `commits` (and _revisions validation)
+    source_url: Callable[[Path], str] | None = None  # recorded under frozen `sources`
     suite_arguments: Callable[[str], tuple[str, ...]] | None = None
-    frozen_inputs_text: Callable[[Mapping[str, object]], str | None] | None = None  # frozen spec -> text
-    report_line: Callable[[str], str] | None = None   # revision -> repetition-report line
+    frozen_inputs_text: Callable[[Mapping[str, object]], str | None] | None = (
+        None  # frozen spec -> text
+    )
+    report_line: Callable[[str], str] | None = None  # revision -> repetition-report line
     execution_hold: Callable[[str], str] | None = None  # revision -> readiness hold text
+
 
 EVAL_INPUTS: tuple[RevisionInput, ...] = (runner, skills, evals, validator, fixture)
 ```
