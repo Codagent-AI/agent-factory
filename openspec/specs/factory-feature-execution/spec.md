@@ -257,12 +257,17 @@ After classification, the feature workflow SHALL reuse the Runner's generic fina
 
 ### Requirement: Apply feature-specific limits and window
 
-Each feature attempt SHALL have configurable limits with defaults of 30 minutes without progress, six hours of execution, and eight hours of total elapsed time. Feature admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the feature roles. Feature admission SHALL NOT be bound to the eval or fix window. Exceeding a limit SHALL stop owned execution and be treated as a technical failure.
+Each feature attempt SHALL have configurable limits with defaults of 30 minutes without progress, six hours of execution, and eight hours of total elapsed time. Feature admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the feature roles. Feature admission SHALL NOT be bound to the eval or fix window. Exceeding a limit SHALL stop owned execution and be treated as a technical failure if no durable outcome exists. Time spent on the post-run audit after a durable outcome is written SHALL NOT count toward the execution limit, and an attempt stopped by a limit after writing its outcome SHALL finish with that outcome.
 
 #### Scenario: Exceed the execution limit
 
-- **WHEN** a feature attempt runs for six hours
+- **WHEN** a feature attempt runs for six hours without writing a durable outcome
 - **THEN** the factory stops its owned execution and applies the recovery policy
+
+#### Scenario: Audit waits after a durable outcome
+
+- **WHEN** a feature attempt writes its outcome and waits for its post-run audit past the execution limit
+- **THEN** the factory allows the audit to continue under the total and inactivity limits, and finishes with the recorded outcome if either limit stops the attempt
 
 #### Scenario: Admit a feature outside the eval window
 
@@ -341,4 +346,3 @@ When the merge added commits to the claim's branch, the attempt SHALL NOT rely o
 - **WHEN** a claim resumes after the target branch, Agent Runner, and Agent Skills all gained commits since admission
 - **THEN** the attempt merges the target branch's current head into the claim's branch
 - **AND** it uses the Agent Runner and Agent Skills commits recorded at admission, and the claim's recorded target commit is unchanged
-
