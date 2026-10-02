@@ -103,7 +103,7 @@ def test_task_scope_floor_and_commit_normalization(tmp_path: Path) -> None:
     assert json.loads(result.stdout) == ["CODEOWNERS"]
 
 
-def test_normalize_chore_commits_refuses_upstream_and_merge(tmp_path: Path) -> None:
+def test_normalize_chore_commits_refuses_pushed_commits_and_merge(tmp_path: Path) -> None:
     repo, base = repository(tmp_path)
     script = str(WORKFLOW.resolve() / "normalize-chore-commits.py")
     (repo / "README.md").write_text("changed\n")
@@ -115,9 +115,21 @@ def test_normalize_chore_commits_refuses_upstream_and_merge(tmp_path: Path) -> N
     git(repo, "push", "-q", "-u", "origin", "HEAD")
     head = git(repo, "rev-parse", "HEAD")
     refused = run(["python3", script, base], cwd=repo)
-    assert refused.returncode != 0 and "upstream" in refused.stderr
+    assert refused.returncode != 0 and "already pushed" in refused.stderr
     assert git(repo, "rev-parse", "HEAD") == head
+    # A review round: the branch has an upstream, and only the round's commits are rewritten.
+    (repo / "round.txt").write_text("round\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-qm", "[implement-task-plan] fix: address review")
+    round_tree = git(repo, "rev-parse", "HEAD^{tree}")
+    normalized = run(["python3", script, head], cwd=repo)
+    assert normalized.returncode == 0, normalized.stderr
+    assert git(repo, "log", "-1", "--format=%s") == "[implement-task-plan] chore: address review"
+    assert git(repo, "rev-parse", "HEAD^{tree}") == round_tree
+    assert git(repo, "rev-parse", "HEAD~1") == head
+    git(repo, "reset", "-q", "--hard", head)
     git(repo, "branch", "--unset-upstream")
+    git(repo, "remote", "remove", "origin")
     main_branch = git(repo, "branch", "--show-current")
     git(repo, "checkout", "-q", "-b", "side", base)
     (repo / "side.txt").write_text("side\n")

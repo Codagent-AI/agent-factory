@@ -21,17 +21,13 @@ def normalize(subject: str) -> str:
 
 def run(base: str) -> None:
     branch = git("symbolic-ref", "--quiet", "HEAD")
-    if (
-        subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-            capture_output=True,
-        ).returncode
-        == 0
-    ):
-        raise ValueError("branch already has an upstream")
     if git("status", "--porcelain"):
         raise ValueError("working tree is not clean")
     commits = git("rev-list", "--reverse", f"{base}..HEAD").splitlines()
+    # A review round's branch has an upstream, but its own new commits are not on it yet.
+    # Only commits that some remote-tracking ref already contains are published history.
+    if commits and git("for-each-ref", "--contains", commits[0], "refs/remotes"):
+        raise ValueError("commit already pushed in range")
     if any(len(git("rev-list", "--parents", "-n", "1", commit).split()) != 2 for commit in commits):
         raise ValueError("merge commit in unpushed range")
     parent = base

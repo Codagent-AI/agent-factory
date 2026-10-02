@@ -151,6 +151,12 @@ steps:
       gates_file: "{{artifact_dir}}/review-gates.json"
     skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
 
+  # Rewrites only the round's unpushed subjects; a refusal leaves them for the check below.
+  - id: normalize-review-commits
+    command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
+    continue_on_failure: true
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+
   - id: check-review-chore-commits
     command: |
       python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json"

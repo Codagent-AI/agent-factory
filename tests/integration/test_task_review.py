@@ -42,5 +42,12 @@ def test_task_review_passes_scope_to_shared_implementation() -> None:
     assert "discover-review-gates" in implementation
     assert implementation.count('gates_file: "{{artifact_dir}}/review-gates.json"') == 2
     assert "check-review-chore-commits" in implementation
+    # The round's unpushed subjects are normalized before the chore check can stop it.
+    assert (
+        implementation.index("- id: prepush-task-guard")
+        < implementation.index("- id: normalize-review-commits")
+        < implementation.index("- id: check-review-chore-commits")
+        < implementation.index("- id: finalize-pr")
+    )
     assert "record-nonchore-crossing" in implementation
     assert "normalize-task-commits" not in implementation

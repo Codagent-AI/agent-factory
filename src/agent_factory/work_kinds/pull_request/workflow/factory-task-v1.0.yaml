@@ -296,6 +296,7 @@ steps:
         skip_if: 'sh: test "{{validator_status}}" != passed'
       - id: normalize-chore-commits
         command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
+        continue_on_failure: true
         skip_if: >-
           sh: test "{{validator_status}}" != passed || test ! -s "{{artifact_dir}}/scope-prepush.json" || python3 -c 'import json; from pathlib import Path; v=json.loads(Path("{{artifact_dir}}/scope-prepush.json").read_text()); assert v["crossed"] or not v.get("complete")'
       - id: record-prefinalize-head
