@@ -113,6 +113,37 @@ def test_validation_runs_after_initial_implementation_and_after_findings_repairs
     assert implement_at < initial_at < test_at < review_at < address_at < final_at < finalize_at
 
 
+def test_implement_group_marks_completion_only_after_implementor_succeeds() -> None:
+    text = _workflow_text()
+    seed_at = text.index("- id: seed-implement-status\n")
+    implement_at = text.index("- id: implement-fix\n")
+    mark_at = text.index("- id: mark-implemented\n")
+    initial_at = text.index("- id: initial-validator\n")
+    assert seed_at < implement_at < mark_at < initial_at
+    assert not re.search(r"^      - id: ", text[implement_at + 1 : mark_at], re.MULTILINE)
+    assert "command: printf 'failed'" in _step_block(text, "seed-implement-status")
+    assert "capture: implement_status" in _step_block(text, "seed-implement-status")
+    assert "command: printf 'passed'" in _step_block(text, "mark-implemented")
+    assert "capture: implement_status" in _step_block(text, "mark-implemented")
+
+
+def test_record_outcome_skips_when_implementor_did_not_complete() -> None:
+    assert (
+        "skip_if: 'sh: test {{fixable}} != true || test \"{{implement_status}}\" != passed'"
+        in _step_block(_workflow_text(), "record-outcome")
+    )
+
+
+def test_non_fixable_run_has_implement_status_for_record_outcome_guard() -> None:
+    text = _workflow_text()
+    assert re.search(r"^  - id: seed-skipped-implement-status\n", text, re.MULTILINE)
+    assert text.index("- id: seed-skipped-implement-status\n") < text.index("- id: implement\n")
+    seed = _step_block(text, "seed-skipped-implement-status")
+    assert "command: printf 'failed'" in seed
+    assert "capture: implement_status" in seed
+    assert "skip_if:" not in seed
+
+
 def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
     text = _workflow_text()
     for phase in ("initial", "final"):
