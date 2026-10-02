@@ -120,7 +120,8 @@ The script takes JSON input from `script_inputs`: `phase` (`implemented` or `ver
    `max_previous_logs: 0`, deletes them. The script therefore gathers evidence from three places:
    - **Records:** `review_*task-compliance*.json` in `<tmp>/review/validator_logs/` and in every
      `<tmp>/review/validator_logs/previous*/` directory.
-   - **Job lines:** the captured stdout lines of the form `[PASS]|[FAIL]|[ERROR]
+   - **Job lines:** the captured output lines (the validator prints them on stderr with
+     `console.error`; both streams are read) of the form `[PASS]|[FAIL]|[ERROR]
      review:<entry>:task-compliance (<adapter>@<n>) (<secs>) - <message>`. These survive any
      cleaning. A line whose message says the state was preserved or a prior pass was skipped is not
      a dispatch.

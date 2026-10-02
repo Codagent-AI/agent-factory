@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import signal
 import subprocess
+import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -336,9 +340,43 @@ def test_gate_not_declared(tmp_path: Path) -> None:
     assert review_calls(env) == []
 
 
-def test_gate_reports_git_error_detail(tmp_path: Path) -> None:
-    repo, tasks, artifacts, _base, env = setup(tmp_path)
+def test_gate_records_a_binding_failure_as_not_run(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    env["MODES"] = "fail"
+    assert gate(repo, tasks, artifacts, base, env).returncode == 1
     result = gate(repo, tasks, artifacts, "invalid-target-ref", env)
-    assert result.returncode == 2
-    assert "invalid-target-ref" in result.stderr
-    assert "fatal:" in result.stderr
+    # Exit 0 settles the gate loop: repair must not act on a stale or missing record.
+    assert result.returncode == 0
+    saved = record(artifacts)
+    assert saved["result"] == "not-run"
+    assert saved["violations"] == []
+    assert saved["reason"].startswith("binding failed:")
+    assert "invalid-target-ref" in saved["reason"]
+    assert "fatal:" in saved["reason"]
+    assert len(review_calls(env)) == 1
+
+
+def test_review_timeout_stops_the_whole_process_group(tmp_path: Path) -> None:
+    spec = importlib.util.spec_from_file_location("task_compliance_gate", str(GATE))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    marker = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(60)\n"
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        module.run_review([sys.executable, "-c", script], tmp_path, 2)
+    pid = int(marker.read_text())
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the reviewer process outlived the review timeout")

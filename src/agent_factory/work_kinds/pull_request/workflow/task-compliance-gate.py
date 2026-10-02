@@ -3,8 +3,10 @@
 
 import hashlib
 import json
+import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -180,6 +182,38 @@ def verdict(logs: Path, stdout: str) -> tuple[str, str, list[dict[str, Any]], se
     )
 
 
+def run_review(args: list[str], cwd: Path, timeout: int) -> tuple[str, str]:
+    """Run the review in its own process group so a timeout also stops the reviewer CLI it spawned.
+
+    Colour is disabled so the job lines stay parseable whatever the caller's environment sets.
+    """
+    env = {key: value for key, value in os.environ.items() if key != "FORCE_COLOR"}
+    env["NO_COLOR"] = "1"
+    process = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        for sig in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, sig)
+            except ProcessLookupError:
+                break
+            try:
+                process.communicate(timeout=10)
+                break
+            except subprocess.TimeoutExpired:
+                continue
+        raise
+
+
 def save(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -202,27 +236,58 @@ def main() -> int:
     artifacts = Path(str(payload["artifact_dir"]))
     tasks = Path(str(payload["tasks_file"]))
     target_head = str(payload["target_head"])
-    merge = artifacts / "base-merge.json"
-    target_ref = (
-        str(cast(dict[str, Any], json.loads(merge.read_text()))["base_head"])
-        if merge.exists()
-        else target_head
-    )
-    head = command("git", "rev-parse", "HEAD")
-    tree = command("git", "rev-parse", "HEAD^{tree}")
-    base = command("git", "merge-base", target_ref, head)
-    digest = tasks_hash(tasks)
     path = artifacts / "task-compliance.json"
     try:
         raw_old: object = json.loads(path.read_text())
         old = cast(dict[str, Any], raw_old) if isinstance(raw_old, dict) else {}
     except (OSError, json.JSONDecodeError):
         old = {}
-    if reusable(old, head, base, target_ref, digest):
-        return int(old["result"] == "failed")
     runs = (
         cast(list[dict[str, Any]], old.get("runs", [])) if isinstance(old.get("runs"), list) else []
     )
+    merge = artifacts / "base-merge.json"
+    target_ref = head = tree = base = digest = ""
+    try:
+        target_ref = (
+            str(cast(dict[str, Any], json.loads(merge.read_text()))["base_head"])
+            if merge.exists()
+            else target_head
+        )
+        head = command("git", "rev-parse", "HEAD")
+        tree = command("git", "rev-parse", "HEAD^{tree}")
+        base = command("git", "merge-base", target_ref, head)
+        digest = tasks_hash(tasks)
+    except (KeyError, TypeError, ValueError, OSError) as exc:
+        # A binding failure is an error that prevents a verdict: record it as not-run with its
+        # cause, replacing any earlier verdict, so repair never acts on a stale record and the
+        # pull request names the cause.
+        reason = f"binding failed: {exc}"
+        runs.append(
+            {"phase": phase, "head": head, "result": "not-run", "reason": reason, "evidence": ""}
+        )
+        save(
+            path,
+            {
+                "result": "not-run",
+                "reason": reason,
+                "phase": phase,
+                "target_head": target_head,
+                "target_ref": target_ref,
+                "base": base,
+                "declaring_entry_points": [],
+                "uncovered_paths": [],
+                "reviewed_head": head,
+                "reviewed_tree": tree,
+                "tasks_file": str(tasks),
+                "tasks_sha256": digest,
+                "violations": [],
+                "runs": runs,
+            },
+        )
+        print(json.dumps({"result": "not-run", "reason": reason}))
+        return 0
+    if reusable(old, head, base, target_ref, digest):
+        return int(old["result"] == "failed")
     record: dict[str, Any] = {
         "result": "not-run",
         "reason": "",
@@ -273,7 +338,7 @@ def main() -> int:
                     command("git", "checkout", "--detach", head, cwd=clone)
                     context = Path(temporary) / "tasks.md"
                     shutil.copyfile(tasks, context)
-                    review = subprocess.run(
+                    stdout, stderr = run_review(
                         [
                             "agent-validator",
                             "review",
@@ -286,12 +351,11 @@ def main() -> int:
                             "--base-branch",
                             target_ref,
                         ],
-                        cwd=clone,
-                        capture_output=True,
-                        text=True,
-                        timeout=900,
+                        clone,
+                        900,
                     )
-                    output = review.stdout + "\n" + review.stderr
+                    # The validator prints its job lines on stderr; both streams are evidence.
+                    output = stdout + "\n" + stderr
                     (evidence / "console.txt").write_text(output)
                     logs = clone / "validator_logs"
                     if logs.exists():
