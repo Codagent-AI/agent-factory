@@ -82,6 +82,23 @@ def test_record_triage_task_decline_and_fix_default_are_distinct(tmp_path: Path)
     assert json.loads(fix.read_text())["contract"] == "factory-fix/1"
 
 
+def test_record_triage_requires_task_fields_under_a_configured_contract(tmp_path: Path) -> None:
+    # The Task contract is configurable, so the Task schema must not depend on its name.
+    script = WORKFLOW / "record-triage.sh"
+    incomplete = {"doable": True, "reasons": [], "plan": "Tighten lint."}
+    result = run(
+        ["sh", str(script)],
+        data={
+            "decision": json.dumps(incomplete),
+            "outcome_path": str(tmp_path / "task-outcome.json"),
+            "contract": "factory-task/2",
+            "accept_field": "doable",
+        },
+    )
+    assert result.returncode != 0
+    assert "choices, gates, and user_visible" in result.stderr
+
+
 def test_task_scope_floor_and_commit_normalization(tmp_path: Path) -> None:
     repo, base = repository(tmp_path)
     (repo / "README.md").write_text("changed\n")

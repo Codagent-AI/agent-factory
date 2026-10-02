@@ -26,8 +26,9 @@ decision_raw = parsed.get("decision")
 contract = parsed.get("contract", "factory-fix/1")
 accept_field = parsed.get("accept_field", "fixable")
 decision_path = parsed.get("decision_path")
-# Task triage also returns the delegated choices, the gates to exercise, and visibility.
-task_schema = contract == "factory-task/1"
+# Only Task triage answers with "doable"; it also returns the delegated choices, the gates
+# to exercise, and visibility. The contract is configurable, so it cannot identify a Task.
+task_schema = accept_field == "doable"
 if not isinstance(contract, str) or not contract or not isinstance(accept_field, str) or not accept_field:
     print("record-triage: contract and accept_field must be non-empty strings", file=sys.stderr)
     sys.exit(2)
