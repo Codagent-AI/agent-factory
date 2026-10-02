@@ -74,9 +74,14 @@ An eligible review round SHALL be admitted through the execution slot, window, a
 
 For a settled pull-request claim, fix, feature, or task, with a recorded factory PR that has been merged and whose sync has not completed, regardless of the card's current column, the factory SHALL update the operator's configured working clone of that repository on the next successful poll: verify the working tree and index have no changes to tracked files, fetch `main` from the remote into the local `main` branch (refusing when local `main` has diverged or is checked out in any worktree of that clone), verify by dry run that merging `main` into the currently checked-out branch produces no conflicts, and then perform that merge. On success it SHALL close the issue when it is still open so closure automation moves the card to Done. On tracked changes, a diverged local `main`, `main` checked out elsewhere, a predicted conflict, a detached HEAD, or an unreachable clone, it SHALL leave the card where it is, apply the `needs-input` label when the card is not yet Done, comment with the reason, and retry on later polls, clearing the label when the sync succeeds. Apart from fetched refs and objects, it SHALL NOT change the clone's working tree, index, or checked-out branch except by the merge itself. A merged PR whose issue a human already closed SHALL still receive its one sync attempt sequence.
 
-#### Scenario: Merge a fix, feature, or task while the clone is on dev
+#### Scenario: Merge a fix or feature while the clone is on dev
 
-- **WHEN** a factory PR for a fix, feature, or task claim merges while the working clone has branch `dev` checked out and a clean tree
+- **WHEN** a factory PR for a fix or feature claim merges while the working clone has branch `dev` checked out and a clean tree
+- **THEN** the factory updates local `main`, merges it into `dev`, closes the issue, and the card moves to Done
+
+#### Scenario: Merge a task while the clone is on dev
+
+- **WHEN** a factory PR for a task claim merges while the working clone has branch `dev` checked out and a clean tree
 - **THEN** the factory updates local `main`, merges it into `dev`, closes the issue, and the card moves to Done
 
 #### Scenario: Merge a fix while the clone is dirty
