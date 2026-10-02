@@ -117,18 +117,18 @@ inactivity/execution/total limits of 900/7200/10800 seconds. `doctor` reports
 
 Task triage declines runtime behavior or public interface changes, persisted
 data and OpenSpec specification changes, credentials, release/deploy settings,
-branch protection, work outside the target, oversized work, or an unbounded
-product, compatibility, or threshold choice. Development tools, development
+branch protection, work outside the target, oversized work, or any product,
+design, compatibility, or other decision the issue leaves open. Development tools, development
 dependencies, CI, docs, behavior-preserving refactors and cleanups are in scope;
-release, publish, version, sign, tag, and deploy configuration is not. An open
-threshold or other decision left by the issue declines with `needs-input`.
+release, publish, version, sign, tag, and deploy configuration is not. Decline
+any decision the issue leaves open with `needs-input`, naming that decision.
 Task commits and PR
 titles use `chore:`. Task review rounds stop with `needs-input` when requested
 changes cross the same boundary.
 
 Before enabling `[task]` on a live release, audit all Ready Task cards across
-every fix target. Move each one other than agent-factory#74 to Backlog unless
-its admission is approved. Before rolling back to a release without the task
+every fix target. Move any that are not approved for factory admission to
+Backlog. Before rolling back to a release without the task
 kind, settle or cancel open task claims; that release cannot handle them.
 
 ## Fly eval images

@@ -298,8 +298,9 @@ claims waiting for review.
 
 Triage declines behavior, public API or CLI, persisted data, OpenSpec specs,
 credentials, release/deploy configuration, branch protection, cross-repository
-work, oversized changes, and product, compatibility, threshold, or other
-decisions the issue leaves open. Development tools and dependencies, CI, docs,
+work, oversized changes, and any product, design, compatibility, or other
+decision the issue leaves open. Decline any decision the issue leaves open with
+`needs-input`, naming that decision. Development tools and dependencies, CI, docs,
 behavior-preserving refactors and cleanups are in scope. Publishing, versioning,
 signing, tagging, and deploying are release configuration and out of scope.
 The pre-push and post-finalize scope guards check the complete diff.
@@ -307,7 +308,7 @@ Task commits and PR
 titles use `chore:`; review rounds stop for out-of-scope feedback.
 
 Before enabling `[task]`, audit Ready Task cards in every fix target and move
-each one other than agent-factory#74 to Backlog unless explicitly approved.
+any that are not approved for factory admission to Backlog.
 Before rollback to a release lacking the task kind, settle or cancel open task
 claims: older releases cannot supervise, report, or sync them.
 

@@ -51,3 +51,28 @@ def test_task_pre_push_guard_checks_scope_after_findings() -> None:
         "nonchore-commits.json"
         not in guard.split("- id: record-chore-subjects", 1)[1].split("- id: complete-guard", 1)[1]
     )
+
+
+def test_task_boundary_and_triage_leave_open_decisions_to_writer() -> None:
+    boundary = (WORKFLOW / "factory-task-boundary.md").read_text()
+    triage = (WORKFLOW / "factory-task-v1.0.yaml").read_text()
+    spec = Path("openspec/specs/factory-task-execution/spec.md").read_text()
+
+    assert "a product, design, compatibility, or other decision the issue leaves open" in boundary
+    assert (
+        "Decline any decision the issue leaves open with `needs-input`, naming that decision."
+        in boundary
+    )
+    assert "Decline any decision the issue leaves open." in triage
+    assert "unless the issue explicitly requests it" in boundary
+    assert "unless the issue explicitly requests it" in spec
+    assert "threshold, or other decision" not in boundary + triage + spec
+
+
+def test_task_enablement_docs_require_approval_for_every_ready_card() -> None:
+    for path in (Path("AGENTS.md"), Path("docs/operations.md")):
+        document = path.read_text()
+        enablement = document.split("Before enabling `[task]`", 1)[1].split("Before roll", 1)[0]
+        assert "every fix target" in enablement
+        assert "approved for factory admission" in enablement
+        assert "agent-factory#74" not in enablement

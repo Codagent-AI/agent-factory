@@ -45,8 +45,7 @@ steps:
       re-attempts. Decide whether this Task is bounded, low-risk maintenance
       under the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
       Decline with doable=false when it crosses that boundary, naming where it
-      belongs and the exact decision needed. Decline an open threshold or
-      other decision the issue leaves open.
+      belongs and the exact decision needed. Decline any decision the issue leaves open.
 
       Return only JSON with exactly doable (boolean), reasons (string array),
       plan (string), and user_visible (boolean). When declining, the reasons

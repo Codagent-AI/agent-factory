@@ -42,7 +42,7 @@ The outcome SHALL be written to `task-outcome.json` in the attempt's artifact di
 Before creating a branch, the task workflow SHALL read the issue and its supplied comments and decide whether the work is low-risk maintenance an autonomous agent can deliver without a human decision. It SHALL return `needs-input`, naming the specific decision or the boundary crossed, instead of proceeding when any of the following holds:
 
 - the work would change runtime behavior, a public API or CLI, an OpenSpec specification, or persisted data or its format;
-- it needs a product, design, compatibility, threshold, or other decision the issue leaves open;
+- it needs a product, design, compatibility, or other decision the issue leaves open;
 - it is too large to review comfortably as one pull request;
 - it touches credentials or secrets, release or deploy configuration, or branch protection;
 - it requires changes outside the target repository.
@@ -80,7 +80,7 @@ When the work belongs in another kind, the reasons SHALL say so: "belongs in a B
 The task scope SHALL include tooling and development dependencies, CI, docs,
 behavior-preserving refactors, and cleanups.
 
-Release configuration SHALL be excluded from task scope. It is anything that publishes, versions, signs, or deploys an artifact: release and publish workflows, version fields, tags and changelog releases, registry and deploy settings, and the secrets they use. Runtime-dependency bumps SHALL also be excluded, as SHALL changes to a shipped runtime requirement such as a package's `engines` field, unless the issue explicitly requests the change and the value is one the repository already uses. Removing exports reachable from a published package's entry points or CLI SHALL be treated as a public interface change.
+Release configuration SHALL be excluded from task scope. It is anything that publishes, versions, signs, or deploys an artifact: release and publish workflows, version fields, tags and changelog releases, registry and deploy settings, and the secrets they use. Runtime-dependency bumps SHALL also be excluded, as SHALL changes to a shipped runtime requirement such as a package's `engines` field, unless the issue explicitly requests it. Removing exports reachable from a published package's entry points or CLI SHALL be treated as a public interface change.
 
 #### Scenario: Add a checking CI job
 
@@ -210,4 +210,3 @@ Feature-only behavior SHALL NOT apply to task claims: definition, phase checkpoi
 
 - **WHEN** a human closes the issue of a task claim whose pull request merged before the factory synced
 - **THEN** the claim is not cancelled and still receives its merge sync
-
