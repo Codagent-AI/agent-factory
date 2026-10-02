@@ -9,6 +9,8 @@ from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
 from tests.integration.test_fix_workflow import shell_templates, single_quoted_placeholders
@@ -561,6 +563,16 @@ def test_annotate_pr_flags_red_acceptance_validator_once(tmp_path: Path) -> None
         "later_commits": [],
     }
     (evidence / "review-attention.json").write_text(json.dumps(attention))
+    (evidence / "task-compliance.json").write_text(
+        json.dumps(
+            {
+                "result": "passed",
+                "reviewed_head": accepted,
+                "base": accepted,
+                "tasks_sha256": "a" * 64,
+            }
+        )
+    )
     (evidence / "acceptance-validator-result.txt").write_text("FAIL\ntest: 2 failing\n")
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
@@ -587,6 +599,16 @@ def test_annotate_pr_flags_red_acceptance_validator_once(tmp_path: Path) -> None
     assert "test: 2 failing" in flags["red"][0]["detail"]
     (evidence / "acceptance-validator-result.txt").write_text("PASS\n")
     (evidence / "review-attention.json").write_text(json.dumps(attention))
+    (evidence / "task-compliance.json").write_text(
+        json.dumps(
+            {
+                "result": "passed",
+                "reviewed_head": accepted,
+                "base": accepted,
+                "tasks_sha256": "a" * 64,
+            }
+        )
+    )
     result = subprocess.run(command, cwd=repo, env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     assert json.loads((evidence / "review-attention.json").read_text())["red"] == []
@@ -692,6 +714,11 @@ def render_annotated_body(tmp_path: Path, build: Callable[[str, str], dict[str, 
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     (evidence / "review-attention.json").write_text(json.dumps(build(accepted, later)))
+    (evidence / "task-compliance.json").write_text(
+        json.dumps(
+            {"result": "passed", "reviewed_head": later, "base": accepted, "tasks_sha256": "a" * 64}
+        )
+    )
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "title": "Add a flag"}))
     stub = tmp_path / "gh"
@@ -1945,3 +1972,243 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     assert "No change." not in follow_up
     assert "Kept &lt;/details&gt;" in follow_up and "</details>" not in follow_up
     assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+
+
+def test_task_compliance_workflow_structure() -> None:
+    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    assert (
+        workflow.index("  - id: implement\n")
+        < workflow.index("  - id: task-compliance-implemented\n")
+        < workflow.index("  - id: complete-task\n")
+    )
+    assert (
+        workflow.index("  - id: restore-skipped-verify-status\n")
+        < workflow.index("  - id: task-compliance-verified\n")
+        < workflow.index("  - id: classify\n")
+    )
+    assert "  - name: implementor-agent\n    agent: implementor" in workflow
+    for phase, tasks in (
+        ("implemented", '"openspec/changes/{{change_name}}/tasks.md"'),
+        ("verified", '"{{archived_dir}}/tasks.md"'),
+    ):
+        block = workflow.split(f"  - id: task-compliance-{phase}\n", 1)[1].split(
+            f"  - id: task-compliance-{phase}-final\n", 1
+        )[0]
+        assert "loop:\n      max: 3" in block
+        assert "break_if: success" in block
+        assert "session: implementor-agent" in block
+        assert "skip_if: previous_success" in block
+        assert "continue_on_failure: true" in block
+        assert f"tasks_file: {tasks}" in block
+        assert "capture: validator_status" not in block
+        final = workflow.split(f"  - id: task-compliance-{phase}-final\n", 1)[1].split(
+            "  - id:", 1
+        )[0]
+        assert "skip_if: previous_success" in final
+    assert 'task_compliance: "{{artifact_dir}}/task-compliance.json"' in workflow
+    assert "task-compliance-gate.py" in FEATURE_STAGED_FILES
+
+
+@pytest.mark.parametrize(
+    "compliance,expected",
+    [
+        ({"result": "passed"}, "passed"),
+        ({"result": "not-declared"}, "passed"),
+        ({"result": "not-run", "reason": "Trusted"}, "incomplete"),
+        ({"result": "failed"}, "review-failed"),
+        (None, "incomplete"),
+    ],
+)
+def test_feature_outcome_qualifies_validator_status(
+    tmp_path: Path, compliance: dict[str, str] | None, expected: str
+) -> None:
+    record_path = tmp_path / "task-compliance.json"
+    if compliance is not None:
+        record_path.write_text(
+            json.dumps(
+                {
+                    **compliance,
+                    "base": "a" * 40,
+                    "reviewed_head": "b" * 40,
+                    "tasks_sha256": "c" * 64,
+                }
+            )
+        )
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(tmp_path / "feature-outcome.json"),
+        "validator_status": "passed",
+        "ci_status": "passed",
+        "annotation_status": "passed",
+        "branch_name": "feature",
+        "review_attention_counts": json.dumps({"red": [], "orange": [], "yellow": [], "white": []}),
+        "pr_details": json.dumps({"url": "https://example.test/pr", "number": 1}),
+        "task_compliance": str(record_path),
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((tmp_path / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "pull-request"
+    assert outcome["validator"] == {"status": expected, "checks": "passed"}
+    assert outcome["task_compliance"]["result"] == (compliance or {}).get("result", "not-run")
+    parsed = read_interpreted_outcome(tmp_path, "factory-feature/1")
+    assert parsed.outcome is not None and parsed.outcome.product_verdict == "pull-request"
+    if compliance is None:
+        record_path.write_text('{"result": "passed"}')  # Missing binding is unreadable evidence.
+        rerun = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+        assert rerun.returncode == 0, rerun.stderr
+        assert (
+            json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
+            == "incomplete"
+        )
+    payload["validator_status"] = "failed"
+    run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+    assert (
+        json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
+        == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    "compliance,tier,title,status",
+    [
+        (
+            {"result": "not-run", "reason": "Trusted"},
+            "red",
+            "Task-compliance did not run",
+            "incomplete",
+        ),
+        (
+            {
+                "result": "failed",
+                "violations": [{"file": "code.py", "line": 4, "issue": "missing"}],
+            },
+            "red",
+            "Task-compliance violations remain",
+            "review-failed",
+        ),
+        ({"result": "not-declared"}, "yellow", "Task-compliance not declared", "passed"),
+        ({"result": "passed"}, "white", "Task-compliance passed", "passed"),
+        (None, "red", "Task-compliance did not run", "incomplete"),
+    ],
+)
+def test_task_compliance_record_flows_through_pr_and_outcome(
+    tmp_path: Path, compliance: dict[str, Any] | None, tier: str, title: str, status: str
+) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    archive = repo / "openspec" / "changes" / "archive" / "2026-09-25-change"
+    archive.mkdir(parents=True)
+    accepted = git(repo, "rev-parse", "HEAD")
+    for name in ("first", "second"):
+        (repo / name).write_text(name)
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", name)
+    later = git(repo, "log", "--format=%H", f"{accepted}..HEAD").splitlines()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "review-attention.json").write_text(
+        json.dumps(
+            {
+                "red": [
+                    {
+                        "title": "Task-compliance did not run",
+                        "detail": "classifier guess",
+                        "link": "#acceptance-evidence",
+                    }
+                ],
+                "orange": [
+                    {
+                        "title": "Task-compliance violations remain",
+                        "detail": "guess",
+                        "link": "#acceptance-evidence",
+                    }
+                ],
+                "yellow": [
+                    {
+                        "title": "Task-compliance not declared",
+                        "detail": "guess",
+                        "link": "#acceptance-evidence",
+                    }
+                ],
+                "white": [
+                    {
+                        "title": "Task-compliance passed",
+                        "detail": "guess",
+                        "link": "#acceptance-evidence",
+                    }
+                ],
+                "accepted_head": accepted,
+                "later_commits": [],
+            }
+        )
+    )
+    if compliance is not None:
+        (artifacts / "task-compliance.json").write_text(
+            json.dumps(
+                {
+                    **compliance,
+                    "base": accepted,
+                    "reviewed_head": accepted,
+                    "tasks_sha256": "a" * 64,
+                    "runs": [{"evidence": "review/logs"}],
+                }
+            )
+        )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
+    stub = tmp_path / "gh"
+    stub.write_text(GH_STUB)
+    stub.chmod(0o755)
+    body_path = tmp_path / "body.md"
+    result = subprocess.run(
+        [str(PACKAGE / "annotate-pr.sh"), str(artifacts), str(issue), "change", str(archive)],
+        cwd=repo,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body_path)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    flags = json.loads((artifacts / "review-attention.json").read_text())
+    items = [
+        item
+        for value in ("red", "orange", "yellow", "white")
+        for item in flags[value]
+        if item["title"].startswith("Task-compliance")
+    ]
+    assert len(items) == 1
+    assert items[0]["title"] == title
+    assert items[0] in flags[tier]
+    if tier in ("white", "yellow"):
+        assert items[0]["link"] == ""
+    body = body_path.read_text()
+    assert title in body
+    if tier in ("white", "yellow"):
+        assert f"- {title}:" in body
+    if compliance is not None:
+        assert f"base {accepted}" in body
+        assert "Not covered by task-compliance: " in body
+    assert all(sha[:12] in body for sha in later)
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(artifacts / "feature-outcome.json"),
+        "validator_status": "passed",
+        "ci_status": "passed",
+        "branch_name": "feature",
+        "pr_details": json.dumps({"url": "https://example.test/pr", "number": 9}),
+        "review_attention_counts": str(artifacts / "review-attention.json"),
+        "task_compliance": str(artifacts / "task-compliance.json"),
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=repo, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((artifacts / "feature-outcome.json").read_text())
+    assert outcome["validator"] == {"checks": "passed", "status": status}
+    assert outcome["review_attention_counts"]["red"] == len(flags["red"])
+    assert f"### 🔴 Red ({len(flags['red'])})" in body
+    assert read_interpreted_outcome(artifacts, "factory-feature/1").outcome is not None
+    if compliance is None:
+        assert outcome["task_compliance"] == {
+            "result": "not-run",
+            "reason": "no task-compliance record",
+        }

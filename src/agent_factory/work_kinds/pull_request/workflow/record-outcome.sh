@@ -198,6 +198,32 @@ for key in ("stopped_step", "review_attention_counts", "resume"):
         value = {tier: len(value[tier]) for tier in ("red", "orange", "yellow", "white")}
     outcome[key] = value
 
+if contract == "factory-feature/1":
+    outcome["validator"]["checks"] = "passed" if validator_status == "passed" else "failed"
+    compliance = None
+    compliance_path = parsed.get("task_compliance")
+    if isinstance(compliance_path, str) and compliance_path:
+        try:
+            loaded = json.loads(Path(compliance_path).read_text())
+            if (isinstance(loaded, dict)
+                and loaded.get("result") in ("passed", "failed", "not-run", "not-declared")
+                and all(isinstance(loaded.get(key), str) and loaded[key] for key in ("base", "reviewed_head", "tasks_sha256"))):
+                compliance = {
+                    key: loaded[key] for key in ("result", "reason", "base", "reviewed_head", "tasks_sha256")
+                    if key in loaded
+                }
+        except (OSError, json.JSONDecodeError):
+            pass
+    if validator_status == "passed" and compliance is None:
+        compliance = {"result": "not-run", "reason": "no task-compliance record"}
+    if compliance is not None:
+        outcome["task_compliance"] = compliance
+    if validator_status == "passed":
+        outcome["validator"]["status"] = {
+            "passed": "passed", "not-declared": "passed", "not-run": "incomplete",
+            "failed": "review-failed",
+        }[compliance["result"]]
+
 if contract == "factory-feature/1" and outcome["outcome"] == "failed" and branch_name:
     outcome["branch"] = branch_name
 

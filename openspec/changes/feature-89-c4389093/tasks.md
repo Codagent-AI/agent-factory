@@ -1,4 +1,4 @@
-- [ ] Make task-compliance reliably run, or visibly not run, in factory feature runs
+- [x] Make task-compliance reliably run, or visibly not run, in factory feature runs
 
 ## Task: Gate feature runs on a bound task-compliance verdict
 
