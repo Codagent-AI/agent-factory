@@ -26,6 +26,14 @@ def _nested_url(value: dict[str, Any]) -> str | None:
     return url if isinstance(url, str) else None
 
 
+def _is_failure(run: dict[str, Any], result: dict[str, Any]) -> bool:
+    return run["status"] in _FAILURES or (
+        run["kind"] in {"fix", "feature"}
+        and run["status"] == "completed"
+        and result.get("outcome") == "failed"
+    )
+
+
 def detect(
     store: ClaimStore,
     grace_minutes: int,
@@ -56,7 +64,7 @@ def detect(
             result = watch_store.json_field(run, "result_json")
             event_kind = None
             if (
-                run["status"] in _FAILURES
+                _is_failure(run, result)
                 and run["result_consumed"]
                 and horizon < event_at <= grace_end
             ):
