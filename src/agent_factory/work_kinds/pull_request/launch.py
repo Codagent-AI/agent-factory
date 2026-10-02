@@ -774,24 +774,18 @@ def host_script(
     # before the exit trap restores a tracked config: replay resolves the auditor from
     # the staged factory profile. The audit runs with the operator's own GitHub identity,
     # never the attempt's token, and its outcome never changes the attempt's exit status.
-    audit_lines = (
-        [
-            " ".join(
-                (
-                    "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
-                    "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
-                    # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
-                    f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
-                    f"--runner {shlex.quote(runner)}",
-                    f"--session-dir {shlex.quote(str(session_dir))}",
-                    f"--project {shlex.quote(str(repo_clone))}",
-                    f"--evidence {shlex.quote(str(evidence))}",
-                    "|| true",
-                )
-            )
-        ]
-        if audit.AUDIT_ENABLED
-        else []
+    audit_command = " ".join(
+        (
+            "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
+            "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
+            # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
+            f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
+            f"--runner {shlex.quote(runner)}",
+            f"--session-dir {shlex.quote(str(session_dir))}",
+            f"--project {shlex.quote(str(repo_clone))}",
+            f"--evidence {shlex.quote(str(evidence))}",
+            "|| true",
+        )
     )
     lines = [
         "#!/bin/bash",
@@ -824,7 +818,7 @@ def host_script(
         "set +e",
         run_command,
         "run_status=$?",
-        *audit_lines,
+        *([audit_command] if audit.AUDIT_ENABLED else []),
         'exit "$run_status"',
     ]
     return "\n".join(lines) + "\n"

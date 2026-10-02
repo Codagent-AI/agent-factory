@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 
 from agent_factory import audit
-from agent_factory.store import Claim, ClaimDraft, ClaimStore, Run
+from agent_factory.store import ClaimDraft, ClaimStore, Run
 
 SESSION = "exec-1"
 
@@ -493,16 +493,16 @@ sys.exit(9)
     assert script.rstrip().endswith('exit "$run_status"')
 
 
+@pytest.mark.parametrize("evidence_kind", ["host-unaudited", "host-recorded", "eval"])
 def test_disabled_settlement_ignores_host_and_eval_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, evidence_kind: str
 ) -> None:
     from agent_factory import runtime
 
     monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
     runner = tmp_path / "agent-runner"
-    runner.write_text(
-        "#!/bin/sh\necho executed > '" + str(tmp_path / "runner-executed") + "'\nexit 9\n"
-    )
+    executed = tmp_path / "runner-executed"
+    runner.write_text(f"#!/bin/sh\necho executed > '{executed}'\nexit 9\n")
     runner.chmod(0o755)
 
     def runner_on_path(name: str) -> str:
@@ -511,49 +511,31 @@ def test_disabled_settlement_ignores_host_and_eval_evidence(
 
     monkeypatch.setattr(runtime.shutil, "which", runner_on_path)
     store = ClaimStore(tmp_path / "state.sqlite3")
-    evidence_paths = [tmp_path / name for name in ("host-new", "host-old", "eval")]
-    claims: list[Claim] = []
-    runs: list[Run | None] = []
-    for index, evidence in enumerate(evidence_paths):
-        claim = store.create_claim(
-            ClaimDraft(
-                "example/work", index + 7, f"I{index}", f"P{index}", "fix", "fp", {"version": 1}
-            )
-        )
-        claims.append(claim)
-        run = store.reserve_run(
-            claim.id, f"unit-{index}", reason="initial", evidence_path=str(evidence)
-        )
-        if index == 2:
-            store.configure_run(run.id, plan={"ownership_hints": {"suite": "and-scene"}}, limits={})
-            _write(
-                evidence
-                / ".runtime"
-                / "agent-runner-projects"
-                / "p"
-                / "runs"
-                / "rep-1"
-                / audit.METRICS_FILE,
-                {"sessions": [{"execution_session_id": SESSION}]},
-            )
-        else:
-            _source(evidence, (SESSION, "closed"))
-        store.finish_run(run.id, execution_status="completed", result={})
-        runs.append(store.get_run(run.id))
-    existing = evidence_paths[1] / audit.AUDIT_FILE
-    audit.write_summary(evidence_paths[1], {"outcome": audit.FAILED, "reason": "older failure"})
-    original = existing.read_bytes()
+    claim = store.create_claim(
+        ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp", {"version": 1})
+    )
+    evidence = tmp_path / "evidence"
+    run = store.reserve_run(claim.id, "unit", reason="initial", evidence_path=str(evidence))
+    if evidence_kind == "eval":
+        store.configure_run(run.id, plan={"ownership_hints": {"suite": "and-scene"}}, limits={})
+        collected = evidence / ".runtime/agent-runner-projects/p/runs/rep-1" / audit.METRICS_FILE
+        _write(collected, {"sessions": [{"execution_session_id": SESSION}]})
+    else:
+        _source(evidence, (SESSION, "closed"))
+    recorded = evidence / audit.AUDIT_FILE
+    if evidence_kind == "host-recorded":
+        audit.write_summary(evidence, {"outcome": audit.FAILED, "reason": "older failure"})
+    before = recorded.read_bytes() if recorded.exists() else None
+    store.finish_run(run.id, execution_status="completed", result={})
+    finished = store.get_run(run.id)
+    assert finished is not None
 
-    for claim, run in zip(claims, runs, strict=True):
-        assert run is not None
-        runtime._settle_audit(store, claim, run)  # pyright: ignore[reportPrivateUsage]
-        runtime._settle_audit(store, claim, run)  # pyright: ignore[reportPrivateUsage]
+    runtime._settle_audit(store, claim, finished)  # pyright: ignore[reportPrivateUsage]
+    runtime._settle_audit(store, claim, finished)  # pyright: ignore[reportPrivateUsage]
 
-    assert all(store.pending_events(claim.id) == [] for claim in claims)
-    assert not (evidence_paths[0] / audit.AUDIT_FILE).exists()
-    assert existing.read_bytes() == original
-    assert not (evidence_paths[2] / audit.AUDIT_FILE).exists()
-    assert not (tmp_path / "runner-executed").exists()
+    assert store.pending_events(claim.id) == []
+    assert (recorded.read_bytes() if recorded.exists() else None) == before
+    assert not executed.exists()
     store.close()
 
 
@@ -578,15 +560,9 @@ def test_disabled_status_omits_missing_audit(
 
 
 @pytest.mark.parametrize("runner", [None, "/bin/agent-runner"])
-def test_disabled_readiness_skips_probe_and_doctor_reports_disabled(
+def test_disabled_readiness_skips_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: str | None
 ) -> None:
-    from agent_factory import operations
-    from agent_factory.config import LocalConfig
-    from tests.integration.test_mac_operations import (
-        _local_config,  # pyright: ignore[reportPrivateUsage]
-    )
-
     monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
 
     def fail_probe(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -597,6 +573,18 @@ def test_disabled_readiness_skips_probe_and_doctor_reports_disabled(
     )
     assert (available, action) == (True, "")
     assert "disabled" in detail and "Codagent-AI/agent-factory#60" in detail
+
+
+def test_disabled_doctor_reports_post_run_audit_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory import operations
+    from agent_factory.config import LocalConfig
+    from tests.integration.test_mac_operations import (
+        _local_config,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    monkeypatch.setattr(audit, "AUDIT_ENABLED", False)
     config = LocalConfig.from_file(_local_config(tmp_path, tmp_path / "missing-shared.toml"))
     diagnostic = next(d for d in operations.doctor(config) if d.name == "post-run audit")
     assert diagnostic.available and "disabled" in diagnostic.detail
