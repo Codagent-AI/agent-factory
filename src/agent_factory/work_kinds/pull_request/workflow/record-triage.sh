@@ -129,6 +129,11 @@ if not isinstance(reasons, list):
     print("record-triage: triage decision 'reasons' must be a list", file=sys.stderr)
     sys.exit(2)
 reasons = [str(r) for r in reasons]
+# A Task decline must tell the writer where the work belongs and what to decide. Triage is
+# asked to put that in its reasons; when it lands in the plan instead, carry it along.
+plan = decision.get("plan")
+if task_schema and not fixable and isinstance(plan, str) and plan.strip():
+    reasons.append(plan.strip())
 
 if not fixable:
     outcome_path = parsed.get("outcome_path") or f"/artifacts/{contract.split('/', 1)[0].removeprefix('factory-')}-outcome.json"

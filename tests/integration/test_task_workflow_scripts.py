@@ -459,13 +459,11 @@ def test_scope_state_chore_check_and_json_flag_helpers(tmp_path: Path) -> None:
     scope.write_text(json.dumps({"crossed": False, "reasons": []}) + "\n")
     assert run(["python3", scope_state, "complete", str(scope)]).returncode == 0
     assert run(["python3", scope_state, "status", str(scope)]).stdout == "clean"
-    bad = tmp_path / "nonchore.json"
-    bad.write_text(json.dumps(["fix: a", "feat: b"]))
-    marked = run(["python3", scope_state, "cross", str(scope), "non-chore CI commits", str(bad)])
+    marked = run(["python3", scope_state, "cross", str(scope), "gate exercise failed"])
     assert marked.returncode == 0, marked.stderr
     assert json.loads(scope.read_text()) == {
         "crossed": True,
-        "reasons": ["non-chore CI commits: fix: a, feat: b"],
+        "reasons": ["gate exercise failed"],
         "complete": True,
     }
     assert run(["python3", scope_state, "status", str(scope)]).stdout == "crossed"
@@ -487,3 +485,93 @@ def test_scope_state_chore_check_and_json_flag_helpers(tmp_path: Path) -> None:
     git(repo, "commit", "-q", "--allow-empty", "-m", "[fix-pr] fix: ci")
     assert run(["python3", checker, base, str(listing)], cwd=repo).returncode == 1
     assert json.loads(listing.read_text()) == ["[fix-pr] fix: ci"]
+
+
+def test_nonchore_ci_repair_commit_is_recorded_without_changing_the_outcome(
+    tmp_path: Path,
+) -> None:
+    """Acceptance F3: a `fix:` CI-repair commit after finalize keeps a good PR good."""
+    (tmp_path / "clone").mkdir()
+    repo, base = repository(tmp_path / "clone")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "[implement-task] chore: tidy")
+    prefinalize = git(repo, "rev-parse", "HEAD")
+    git(repo, "commit", "-q", "--allow-empty", "-m", "[fix-pr] fix: repair CI lint")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "scope-prepush.json").write_text(
+        json.dumps({"crossed": False, "reasons": [], "complete": True})
+    )
+    post = evidence / "scope-postfinalize.json"
+    # The post-finalize guard's script steps, in workflow order.
+    recorded = run(
+        ["sh", str((WORKFLOW / "record-scope.sh").resolve())],
+        cwd=repo,
+        data={
+            "floor": "[]",
+            "decision": json.dumps({"crossed": False, "reasons": []}),
+            "scope_path": str(post),
+        },
+    )
+    assert recorded.stdout == "clean", recorded.stderr
+    checker = str((WORKFLOW / "check-chore-subjects.py").resolve())
+    run(["python3", checker, base, str(evidence / "nonchore-commits.json")], cwd=repo)
+    scope_state = str((WORKFLOW / "scope-state.py").resolve())
+    run(["python3", scope_state, "complete", str(post)])
+    assert json.loads((evidence / "nonchore-commits.json").read_text()) == [
+        "[fix-pr] fix: repair CI lint"
+    ]
+    output = evidence / "task-outcome.json"
+    result = run(
+        ["sh", str((WORKFLOW / "record-outcome.sh").resolve())],
+        cwd=repo,
+        data={
+            "contract": "factory-task/1",
+            "outcome_path": str(output),
+            "validator_status": "passed",
+            "ci_status": "passed",
+            "branch_name": "factory/task-1-x",
+            "pr_details": json.dumps({"url": "https://github.com/example/tidy/pull/7"}),
+            "scope_path": str(evidence / "scope-prepush.json"),
+            "post_scope_path": str(post),
+            "prefinalize_head": prefinalize,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text())["outcome"] == "pull-request"
+
+
+def test_task_decline_reasons_carry_the_route_from_the_plan(tmp_path: Path) -> None:
+    """Acceptance F4: the route and decision reach the outcome reasons the comment shows."""
+    script = WORKFLOW / "record-triage.sh"
+    decision = {
+        "doable": False,
+        "reasons": ["changes normalize_whitespace's return values"],
+        "plan": "This belongs in a Feature, not a Task: decide the new casing rule.",
+        "choices": [],
+        "gates": [],
+        "user_visible": False,
+    }
+    output = tmp_path / "task-outcome.json"
+    result = run(
+        ["sh", str(script)],
+        data={
+            "decision": json.dumps(decision),
+            "outcome_path": str(output),
+            "contract": "factory-task/1",
+            "accept_field": "doable",
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(output.read_text())["reasons"] == [
+        "changes normalize_whitespace's return values",
+        "This belongs in a Feature, not a Task: decide the new casing rule.",
+    ]
+    fix = tmp_path / "fix-outcome.json"
+    run(
+        ["sh", str(script)],
+        data={
+            "decision": json.dumps({"fixable": False, "reasons": ["r"], "plan": "p"}),
+            "outcome_path": str(fix),
+        },
+    )
+    assert json.loads(fix.read_text())["reasons"] == ["r"]

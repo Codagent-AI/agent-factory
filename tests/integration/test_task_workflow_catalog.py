@@ -47,5 +47,10 @@ def test_task_pre_push_guard_rechecks_gates_after_findings() -> None:
     assert "derive-diff-gates" in guard
     assert "check-gate-inventory.py" in guard
     assert "scope-{{mode}}.json" in guard
-    assert "mark-nonchore-crossing" in guard
-    assert "non-chore CI commits" in guard
+    # Non-chore CI repair subjects are evidence only; they never mark a scope crossing.
+    assert "record-chore-subjects" in guard
+    assert "mark-nonchore-crossing" not in guard
+    assert (
+        "nonchore-commits.json"
+        not in guard.split("- id: record-chore-subjects", 1)[1].split("- id: complete-guard", 1)[1]
+    )

@@ -55,8 +55,15 @@ steps:
 
       Return only JSON with exactly doable (boolean), reasons (string array),
       plan (string), choices (string array), gates (array of objects with name,
-      command and violation), and user_visible (boolean). List every new or
-      tightened gate, including an issue-stated rejection criterion.
+      command and violation), and user_visible (boolean). When declining, the
+      reasons themselves must state where the work belongs and the decision
+      needed; leave plan empty.
+
+      List every new or tightened gate. Each command must be the exact,
+      placeholder-free shell command the delivered gate runs; a threshold that
+      is only known after measuring belongs in the tool's configuration file
+      that command reads, not in the command. An issue-stated rejection
+      criterion is the violation of the gate it tests, not a separate gate.
 
   - id: record-triage
     script: record-triage.sh
@@ -180,7 +187,9 @@ steps:
           {{artifact_dir}}/gate-exercises.json. Write gate-verdicts.json with
           [{name, confirmed, diagnostic, criterion_met, reason}]. Diagnostic
           must be a verbatim negative-log line identifying the violation, absent
-          from the positive log. Do not edit code.
+          from the positive log. criterion_met is true when the plant satisfies the
+          issue-stated rejection criterion for that gate, and also true when
+          the issue states no criterion for that gate. Do not edit code.
       - id: check-gate-exercises
         command: |
           if test "{{has_gates}}" != true || python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
@@ -191,15 +200,19 @@ steps:
         mode: autonomous
         skip_if: 'sh: test "{{gate_status}}" = passed'
         prompt: |
-          Repair the gate that failed its planted violation, run checks, and
-          commit as [{{step_id}}] chore: ...
+          Repair the gate that failed its planted violation so that its
+          triage-named command in {{artifact_dir}}/task-triage.json rejects the
+          described violation. Keep that command; change the tool configuration
+          or code it checks. Run checks and commit as [{{step_id}}] chore: ...
       - id: re-exercise-gates
         session: tester-agent
         mode: autonomous
         skip_if: 'sh: test "{{gate_status}}" = passed'
         prompt: |
-          Repeat the exact positive and planted negative gate exercises and
-          replace the evidence in {{artifact_dir}}/gate-exercises.json.
+          The gates may have been repaired. Repeat every positive exercise with
+          its triage-named command, plant the triage-described violation afresh
+          against the repaired gate, rerun the same command, revert the plant,
+          and replace the evidence in {{artifact_dir}}/gate-exercises.json.
       - id: re-verify-gates
         session: lead-agent
         mode: autonomous
@@ -207,6 +220,9 @@ steps:
         prompt: |
           Independently inspect the repeated gate exercises and replace
           {{artifact_dir}}/gate-verdicts.json with confirmed diagnostic verdicts.
+          criterion_met is true when the plant satisfies the
+          issue-stated rejection criterion for that gate, and also true when
+          the issue states no criterion for that gate.
       - id: recheck-gates
         command: |
           if python3 .agent-runner/workflows/check-gate-exercises.py "{{artifact_dir}}" >/dev/null; then printf passed; else printf failed; exit 1; fi
@@ -218,7 +234,13 @@ steps:
         capture: validator_status
         skip_if: 'sh: test "{{gate_status}}" = passed'
       - id: record-gate-failure
-        command: python3 -c 'import json; from pathlib import Path; print(json.dumps(["gate " + g["name"] + " does not reject violations" for g in json.loads(Path("{{artifact_dir}}/task-triage.json").read_text())["gates"]]), end="")'
+        command: |
+          python3 - "{{artifact_dir}}/task-triage.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          gates = json.loads(Path(sys.argv[1]).read_text())["gates"]
+          print(json.dumps([f"gate {gate['name']} does not reject violations" for gate in gates]), end="")
+          PY
         capture: failure_reasons
         skip_if: 'sh: test "{{gate_status}}" = passed'
       - id: test-flows
@@ -354,4 +376,10 @@ steps:
 
   - id: verify-outcome
     command: |
-      python3 -c 'import json; from pathlib import Path; assert json.loads(Path("{{artifact_dir}}/task-outcome.json").read_text())["outcome"] in ("pull-request", "needs-input", "failed")'
+      python3 - "{{artifact_dir}}/task-outcome.json" <<'PY'
+      import json, sys
+      from pathlib import Path
+      outcome = json.loads(Path(sys.argv[1]).read_text()).get("outcome")
+      if outcome not in ("pull-request", "needs-input", "failed"):
+          sys.exit(f"task-outcome.json has an invalid or missing outcome: {outcome}")
+      PY

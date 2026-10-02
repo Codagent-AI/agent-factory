@@ -19,11 +19,8 @@ def main(argv: list[str]) -> None:
         print("clean" if state.get("complete") and not state.get("crossed") else "crossed", end="")
         return
     if command == "cross":
-        reason = argv[2]
-        if len(argv) > 3:
-            reason += ": " + ", ".join(json.loads(Path(argv[3]).read_text()))
         state["crossed"] = True
-        state["reasons"] = [*state.get("reasons", []), reason]  # type: ignore[misc]
+        state["reasons"] = [*state.get("reasons", []), argv[2]]  # type: ignore[misc]
     elif command == "complete":
         state["complete"] = True
     else:
@@ -33,5 +30,5 @@ def main(argv: list[str]) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
-        sys.exit("usage: scope-state.py status|complete PATH | cross PATH REASON [LIST_FILE]")
+        sys.exit("usage: scope-state.py status|complete PATH | cross PATH REASON")
     main(sys.argv[1:])

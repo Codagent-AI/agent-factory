@@ -30,10 +30,6 @@ steps:
     command: printf passed
     capture: gate_recheck
 
-  - id: seed-chore-status
-    command: printf clean
-    capture: chore_status
-
   - id: scope-floor
     command: python3 .agent-runner/workflows/task-scope-floor.py "{{base}}"
     capture: scope_floor
@@ -111,7 +107,10 @@ steps:
     prompt: |
       Independently inspect the re-exercised gates, patches and logs. Write
       {{artifact_dir}}/gate-verdicts.json with name, confirmed, diagnostic,
-      criterion_met, and reason for each gate. Do not edit or commit.
+      criterion_met, and reason for each gate. criterion_met is true when the
+      plant satisfies the issue-stated rejection criterion for that gate, and
+      also true when the issue states no criterion for that gate. Do not edit
+      or commit.
 
   - id: check-re-exercise
     command: |
@@ -124,15 +123,11 @@ steps:
     command: python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-{{mode}}.json" "gate exercise could not confirm final head"
     skip_if: 'sh: test "{{gate_recheck}}" = passed'
 
-  - id: check-chore-subjects
-    command: |
-      if python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json"; then printf clean; else printf crossed; fi
-    capture: chore_status
+  # CI repair commits are already pushed: their non-chore subjects are recorded for the
+  # PR description (annotate-chore-pr.sh) and never change the outcome.
+  - id: record-chore-subjects
+    command: python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json" || true
     skip_if: 'sh: test "{{mode}}" != postfinalize'
-
-  - id: mark-nonchore-crossing
-    command: python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-postfinalize.json" "non-chore CI commits" "{{artifact_dir}}/nonchore-commits.json"
-    skip_if: 'sh: test "{{mode}}" != postfinalize || test "{{chore_status}}" = clean'
 
   - id: complete-guard
     command: python3 .agent-runner/workflows/scope-state.py complete "{{artifact_dir}}/scope-{{mode}}.json"

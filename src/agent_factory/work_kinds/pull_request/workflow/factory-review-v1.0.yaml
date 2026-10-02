@@ -80,12 +80,20 @@ steps:
     command: printf ''
     capture: changes_needed
 
+  # Runs on every round; a fix or feature round only reads these and skips the task steps.
   - id: is-task
-    command: python3 -c 'import json; print(str(json.load(open("{{review_file}}"))["kind"] == "task").lower(), end="")'
+    script: review-field.sh
+    script_inputs:
+      review_file: "{{review_file}}"
+      field: kind
+      equals: task
     capture: is_task
 
   - id: read-scope-base
-    command: python3 -c 'import json; print(json.load(open("{{review_file}}"))["head_sha"], end="")'
+    script: review-field.sh
+    script_inputs:
+      review_file: "{{review_file}}"
+      field: head_sha
     capture: scope_base
 
   - id: triage

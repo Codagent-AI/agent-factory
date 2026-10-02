@@ -55,3 +55,16 @@ def test_task_doctor_diagnostic_uses_task_host_group() -> None:
     assert len(diagnostics) == 1
     assert diagnostics[0].group == "task-host"
     assert diagnostics[0].name == "task targets"
+
+
+@pytest.mark.parametrize("value", ["5", '["claude", "x"]', "true"])
+def test_malformed_task_default_fails_configuration_loading(value: str) -> None:
+    """Acceptance F5: a wrong-typed [task.defaults] value names the task setting at load."""
+    with pytest.raises(ConfigurationError, match=r"task\.defaults\.lead"):
+        SharedConfig.from_toml(_SHARED_BASE + f"\n[task]\n[task.defaults]\nlead = {value}\n")
+    # [feature.defaults] keeps its existing, lenient parsing.
+    feature = SharedConfig.from_toml(
+        _SHARED_BASE + f"\n[feature]\n[feature.defaults]\nlead = {value}\n"
+    )
+    assert feature.feature is not None
+    assert isinstance(feature.feature.defaults["lead"], str)

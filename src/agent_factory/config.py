@@ -535,7 +535,9 @@ class SharedConfig:
             ),
             fix=_fix_shared_config(document.get("fix")),
             feature=_optional_kind_shared_config(document.get("feature"), "feature", FeatureConfig),
-            task=_optional_kind_shared_config(document.get("task"), "task", TaskConfig),
+            task=_optional_kind_shared_config(
+                document.get("task"), "task", TaskConfig, strict_defaults=True
+            ),
             watch=_watch_config(document.get("watch")),
         )
 
@@ -607,12 +609,18 @@ def _fix_shared_config(raw: object) -> FixConfig:
 
 
 def _optional_kind_shared_config[T: FeatureConfig | TaskConfig](
-    raw: object, section: str, cls: type[T]
+    raw: object, section: str, cls: type[T], *, strict_defaults: bool = False
 ) -> T | None:
+    """Parse an optional kind section. `strict_defaults` rejects non-string role profiles;
+    `[feature.defaults]` keeps stringifying them, as it always has."""
     if raw is None:
         return None
     table = _table(raw, section)
     defaults_raw = _table(table.get("defaults", {}), f"{section}.defaults")
+    if strict_defaults:
+        for key, value in defaults_raw.items():
+            if not isinstance(value, str):
+                raise ConfigurationError(f"{section}.defaults.{key} must be a string")
     defaults = {key: str(value) for key, value in defaults_raw.items()}
     contract = _optional_string(table, "contract", section, cls().contract)
     return cls(defaults=defaults, contract=contract)

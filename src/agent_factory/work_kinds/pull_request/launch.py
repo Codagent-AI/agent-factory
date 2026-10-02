@@ -44,6 +44,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "scope-state.py",
     "json-flag.py",
     "factory-task-boundary.md",
+    "review-field.sh",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
