@@ -5,6 +5,8 @@ description: Give Paul an on-demand update on the live Agent Factory — what is
 
 # Factory status
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Take one snapshot of the factory and report it. Do not start a watcher, a `/loop`, or background polling (to follow specific issues until they stop, use `factory-watch`): the resident detects events and dispatches its own factory-defect checks of ready PRs and failure triage (`AGENTS.md`, "Service-driven watcher"). Read `AGENTS.md` first.
 
 Never print tokens, credential files, or anything under `~/.agent-factory/private/`. Filter output before showing it.

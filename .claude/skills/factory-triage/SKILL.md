@@ -5,6 +5,8 @@ description: Diagnose a failed, interrupted, or timed-out Agent Factory run on P
 
 # Factory triage
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix or feature run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
 
 ## Standing rules
