@@ -119,11 +119,15 @@ def _has_pending_watch_delivery(value: str) -> bool:
 class ClaimStore:
     """SQLite claim history with explicit controller/supervisor write boundaries."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, read_only: bool = False) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(path, timeout=5, isolation_level=None)
+        if not read_only:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        database = f"{path.resolve().as_uri()}?mode=ro" if read_only else path
+        self._connection = sqlite3.connect(database, timeout=5, isolation_level=None, uri=read_only)
         self._connection.row_factory = sqlite3.Row
+        if read_only:
+            return
         self._connection.execute("PRAGMA foreign_keys = ON")
         self._connection.execute("PRAGMA journal_mode = WAL")
         self._connection.execute("PRAGMA busy_timeout = 5000")

@@ -29,7 +29,7 @@ from agent_factory.github import (
     SubprocessGhRunner,
 )
 from agent_factory.store import Claim, ClaimStore, Event
-from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
+from agent_factory.suites.and_scene import FIXTURE_REPOSITORY, AndSceneAdapter, ReadinessError
 from agent_factory.work_kinds.pull_request.kinds import FIX, registered
 
 if TYPE_CHECKING:
@@ -128,6 +128,8 @@ def doctor(
     )
     diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
     diagnostics.extend(_repository_checks(config, include_sandbox=needs_docker))
+    if include_informational:
+        diagnostics.append(_fixture_checkout_diagnostic(config))
     diagnostics.append(_suite_environment(config.credentials.suite_environment))
     docker: Diagnostic | None = None
     if needs_docker:
@@ -377,6 +379,30 @@ def render_launch_agent(
     for token, value in values.items():
         rendered = rendered.replace(token, html.escape(value, quote=True))
     return rendered
+
+
+def _fixture_checkout_diagnostic(config: LocalConfig) -> Diagnostic:
+    checkout = config.repositories.and_scene
+    name = "and-scene checkout"
+    wait = "fixture_ref requests will wait for revision readiness until this is fixed"
+    if checkout is None or not checkout.is_dir():
+        detail = f"{checkout} is missing; {wait}"
+    elif not (checkout / ".git").exists():
+        detail = f"{checkout} is not a Git repository; {wait}"
+    else:
+        from agent_factory.work_kinds.eval.handler import github_https_origin
+
+        try:
+            origin = github_https_origin(checkout, name)
+        except ReadinessError as error:
+            detail = f"{checkout}: {error}; {wait}"
+        else:
+            detail = (
+                f"{checkout} origin matches {FIXTURE_REPOSITORY}"
+                if origin.lower() == FIXTURE_REPOSITORY.lower()
+                else f"{checkout} origin {origin} differs from {FIXTURE_REPOSITORY}; {wait}"
+            )
+    return Diagnostic(name, True, detail + " (informational)", "", group="eval")
 
 
 def _harness_branch_diagnostic(shared: SharedConfig, config: LocalConfig) -> Diagnostic:
