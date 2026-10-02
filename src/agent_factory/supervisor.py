@@ -824,7 +824,11 @@ def _observe(
             else:
                 store.report_uncertainty(run_id, "cancellation ownership could not be verified")
             return
-        outcome_recorded = result_read.result is not None and result_read.error is None
+        outcome_recorded = (
+            run.kind in {"fix", "feature"}
+            and result_read.result is not None
+            and result_read.error is None
+        )
         timeout = _timeout(
             now,
             started,

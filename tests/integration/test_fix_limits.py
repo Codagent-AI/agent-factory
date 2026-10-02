@@ -15,7 +15,7 @@ import pytest
 from agent_factory.config import FixBranches, FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import Controller, ExecutionPlan, RequestSnapshot
 from agent_factory.github import IssueComment
-from agent_factory.store import ClaimStore, Run
+from agent_factory.store import ClaimDraft, ClaimStore, Run
 from agent_factory.supervisor import SupervisionLimits, _timeout, launch_supervisor
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 from agent_factory.work_kinds.pull_request.kinds import FIX
@@ -291,6 +291,37 @@ def test_recorded_outcome_only_exempts_execution_timeout() -> None:
     assert _timeout(11, 0, 11, limits, outcome_recorded=True) is None
     assert _timeout(21, 0, 21, limits, outcome_recorded=True) == "total"
     assert _timeout(11, 0, 0, limits, outcome_recorded=True) == "inactivity"
+
+
+def test_eval_result_does_not_exempt_execution_timeout(tmp_path: Path) -> None:
+    program = tmp_path / "eval_with_lingering_result.py"
+    program.write_text(
+        "import pathlib, sys, time\n"
+        "artifact = pathlib.Path(sys.argv[1]); artifact.mkdir(parents=True, exist_ok=True)\n"
+        "(artifact / 'result.json').write_text('{\"evaluation_status\":\"completed\"}')\n"
+        "log = artifact / 'factory-suite.log'\n"
+        "for _ in range(30):\n"
+        "    with log.open('a') as stream: stream.write('tick\\n')\n"
+        "    time.sleep(.05)\n"
+        "(artifact / 'suite-finished').touch()\n",
+        encoding="utf-8",
+    )
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "eval", "x", {}))
+    artifact = tmp_path / "attempt-1"
+    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+    watcher = launch_supervisor(
+        tmp_path / "state.sqlite3",
+        run.id,
+        _plan(program, artifact),
+        SupervisionLimits(inactivity_seconds=10, execution_seconds=0.8, total_seconds=10),
+    )
+    watcher.wait(timeout=15)
+    finished = store.get_run(run.id)
+    assert finished is not None and finished.status == "timed_out"
+    assert finished.result == {"timeout": "execution"}
+    assert not (artifact / "suite-finished").exists()
+    store.close()
 
 
 def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path) -> None:
