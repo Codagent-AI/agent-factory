@@ -17,7 +17,14 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.github import GitHubApiError, IssueComment
-from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
+from agent_factory.store import (
+    NONTERMINAL_RUN_STATUSES,
+    Claim,
+    ClaimDraft,
+    ClaimStore,
+    JobCapReached,
+    Run,
+)
 from agent_factory.work_kinds.base import Classification, Feedback, WorkKindHandler
 
 
@@ -133,10 +140,6 @@ class Controller:
         handler = self._handler_for_snapshot(snapshot)
         if handler is None:
             return None
-        fingerprint = handler.request_fingerprint(snapshot)
-        if isinstance(fingerprint, Feedback):
-            self._invalid_feedback(snapshot, fingerprint.explanation)
-            return None
         old_claims = self._store.claims_for_item(snapshot.project_item_id)
         current = next(
             (
@@ -146,13 +149,11 @@ class Controller:
             ),
             None,
         )
-        if current is not None and self._is_active(current):
-            return current
-        if current is not None and current.request_fingerprint == fingerprint and not fresh:
-            return current
-        accepted = handler.accept(snapshot, self._store, resolve)
-        if isinstance(accepted, Feedback):
-            self._invalid_feedback(snapshot, accepted.explanation)
+        selected = self.select_existing(snapshot, fresh=fresh)
+        if selected is not None:
+            return selected
+        accepted = self.preflight(snapshot, resolve=resolve)
+        if accepted is None:
             return None
         claim = (
             self._store.create_claim(accepted)
@@ -162,6 +163,43 @@ class Controller:
         self._store.set_claim_lifecycle(claim.id, "active", {})
         self._store.record_event(claim.id, "accepted", handler.accepted_message())
         return cast(Claim, self._store.get_claim(claim.id))
+
+    def select_existing(self, snapshot: RequestSnapshot, *, fresh: bool = False) -> Claim | None:
+        handler = self._handler_for_snapshot(snapshot)
+        if handler is None:
+            return None
+        fingerprint = handler.request_fingerprint(snapshot)
+        if isinstance(fingerprint, Feedback):
+            return None
+        current = next(
+            (
+                claim
+                for claim in reversed(self._store.claims_for_item(snapshot.project_item_id))
+                if claim.lifecycle not in {"superseded", "cancelled"}
+            ),
+            None,
+        )
+        if current is not None and (
+            self._is_active(current) or (current.request_fingerprint == fingerprint and not fresh)
+        ):
+            return current
+        return None
+
+    def preflight(
+        self, snapshot: RequestSnapshot, *, resolve: Callable[[object], object]
+    ) -> ClaimDraft | None:
+        handler = self._handler_for_snapshot(snapshot)
+        if handler is None:
+            return None
+        fingerprint = handler.request_fingerprint(snapshot)
+        if isinstance(fingerprint, Feedback):
+            self._invalid_feedback(snapshot, fingerprint.explanation)
+            return None
+        accepted = handler.accept(snapshot, self._store, resolve)
+        if isinstance(accepted, Feedback):
+            self._invalid_feedback(snapshot, accepted.explanation)
+            return None
+        return accepted
 
     def reserve_next(self, claim_id: str, *, readiness: Callable[[], str | None]) -> Run | None:
         """Reserve exactly one ready work unit after all launch-time controls pass."""
@@ -187,12 +225,18 @@ class Controller:
             if next_unit is None:
                 self._settle_if_complete(claim)
                 return None
-            run = self._store.reserve_run(
-                claim.id,
-                next_unit,
-                reason=reason,
-                evidence_path=str(self._artifact_root / f"{claim.id}-{next_unit}"),
-            )
+            try:
+                run = self._store.reserve_run(
+                    claim.id,
+                    next_unit,
+                    reason=reason,
+                    evidence_path=str(self._artifact_root / f"{claim.id}-{next_unit}"),
+                )
+            except JobCapReached as error:
+                from agent_factory.job_cap import hold_claim
+
+                hold_claim(self._store, claim.id, error.state, self._now())
+                return None
             self._store.set_claim_lifecycle(claim.id, "active", {})
             self._store.record_event(
                 claim.id,

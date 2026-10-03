@@ -1148,7 +1148,10 @@ class PullRequestHandler:
         return ScheduleConfig.always(local.schedule.timezone, local.schedule.poll_seconds)
 
     def providers(self, claim: Claim) -> set[str]:
-        return providers_from_roles(mapping(claim.frozen_spec.get("roles")))
+        return self.providers_for_spec(claim.frozen_spec)
+
+    def providers_for_spec(self, frozen_spec: Mapping[str, object]) -> set[str]:
+        return providers_from_roles(mapping(frozen_spec.get("roles")))
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
         attempt = run.attempt_number + 1
