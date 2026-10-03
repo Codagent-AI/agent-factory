@@ -143,7 +143,9 @@ def verdict(logs: Path, stdout: str) -> tuple[str, str, list[dict[str, Any]], se
         else:
             return "not-run", f"unknown review status: {status}", [], set()
     for status, entry, _adapter, _seconds, message in JOB.findall(stdout):
-        if entry in preserved or re.search(r"preserv|prior pass|skip", message, re.I):
+        if entry in preserved or (
+            status == "PASS" and re.search(r"preserv|prior pass|skip", message, re.I)
+        ):
             continue
         dispatched.add(entry)
         statuses.append({"PASS": "pass", "FAIL": "fail", "ERROR": "error"}[status])

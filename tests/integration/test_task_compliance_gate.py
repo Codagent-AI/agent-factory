@@ -142,8 +142,7 @@ def test_gate_maps_dispatch_evidence(tmp_path: Path, mode: str, expected: str) -
         assert saved["violations"][0]["issue"] == "missing feature"
     if mode == "deleted":
         assert (
-            "[PASS]"
-            in (artifacts / "task-compliance" / "verified-1" / "console.txt").read_text()
+            "[PASS]" in (artifacts / "task-compliance" / "verified-1" / "console.txt").read_text()
         )
 
 
@@ -328,6 +327,20 @@ def test_gate_rejects_removed_implemented_phase(tmp_path: Path) -> None:
     result = gate(repo, tasks, artifacts, base, env, "implemented")
     assert result.returncode != 0
     assert "invalid phase" in result.stderr
+
+
+@pytest.mark.parametrize("status,expected", [("FAIL", "failed"), ("ERROR", "error")])
+def test_dispatch_failure_is_not_hidden_by_skip_in_message(
+    tmp_path: Path, status: str, expected: str
+) -> None:
+    spec = importlib.util.spec_from_file_location("task_compliance_gate", str(GATE))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    output = f"[{status}] review:.:task-compliance (stub@1) (1s) - could not skip setup"
+    result, _, _, dispatched = module.verdict(tmp_path / "missing-logs", output)
+    assert result == expected
+    assert dispatched == {"."}
 
 
 def test_reused_failed_verdict_stays_failed(tmp_path: Path) -> None:
