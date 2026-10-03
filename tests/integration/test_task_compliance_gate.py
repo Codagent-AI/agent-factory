@@ -16,6 +16,8 @@ from typing import Any
 
 import pytest
 
+from agent_factory.work_kinds.pull_request import launch
+from agent_factory.work_kinds.pull_request.kinds import FEATURE
 from tests.integration.test_feature_workflow_scripts import PACKAGE, git, repository
 
 GATE = PACKAGE / "task-compliance-gate.py"
@@ -87,6 +89,7 @@ def gate(
     base: str,
     env: dict[str, str],
     phase: str = "verified",
+    script: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     payload = {
         "phase": phase,
@@ -95,7 +98,7 @@ def gate(
         "target_head": base,
     }
     return subprocess.run(
-        [str(GATE), "--json", json.dumps(payload)],
+        [str(script or GATE), "--json", json.dumps(payload)],
         cwd=repo,
         env=env,
         text=True,
@@ -113,6 +116,14 @@ def review_calls(env: dict[str, str]) -> list[dict[str, Any]]:
         for call in map(json.loads, Path(env["CALL_LOG"]).read_text().splitlines())
         if "review" in call["args"]
     ]
+
+
+def test_staged_gate_runs_directly(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    catalog = launch.stage_workflow_into(tmp_path / "workflows", "factory-feature/1", FEATURE)
+    result = gate(repo, tasks, artifacts, base, env, script=catalog / "task-compliance-gate.py")
+    assert result.returncode == 0, result.stderr
+    assert record(artifacts)["result"] == "passed"
 
 
 @pytest.mark.parametrize(

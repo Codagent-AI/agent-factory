@@ -199,6 +199,17 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
     assert "{{base_head}}" in text
 
 
+def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+    catalog = launch.stage_workflow_into(tmp_path / "workflows", "factory-feature/1", FEATURE)
+    scripts = [name for name in launch.STAGED_FILES if name.endswith((".sh", ".py"))]
+    assert "task-compliance-gate.py" in scripts
+    for name in scripts:
+        assert os.access(catalog / name, os.X_OK), name
+
+
 @pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
 def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     text = (PACKAGE / workflow).read_text()
