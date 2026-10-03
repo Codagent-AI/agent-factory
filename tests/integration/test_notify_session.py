@@ -177,11 +177,18 @@ def test_launched_session_counts_when_recording_its_identity_fails(
             raise RuntimeError("database is locked")
         return original_update(*args, **fields)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(
-        deliver_module.registry, "resolve", lambda _: LiveSession(session, "target", 1)
-    )
-    monkeypatch.setattr(deliver_module.readiness, "diagnostics", lambda *_: [])
-    monkeypatch.setattr(deliver_module, "start", lambda *_: {"pid": 1, "start": "x"})
+    def resolve(session_id: str) -> LiveSession:
+        return LiveSession(session_id, "target", 1)
+
+    def diagnostics(*args: object) -> list[object]:
+        return []
+
+    def fake_start(*args: object) -> dict[str, object]:
+        return {"pid": 1, "start": "x"}
+
+    monkeypatch.setattr(deliver_module.registry, "resolve", resolve)
+    monkeypatch.setattr(deliver_module.readiness, "diagnostics", diagnostics)
+    monkeypatch.setattr(deliver_module, "start", fake_start)
     monkeypatch.setattr(records, "update", failing_update)
     try:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
