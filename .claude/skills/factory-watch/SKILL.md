@@ -5,6 +5,8 @@ description: Watch one or more specific issues in the live Agent Factory until t
 
 # Factory watch
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Follow specific issues through the factory, and report once the factory stops moving them. Read `AGENTS.md` first.
 
 This is not the general watcher. The resident already detects PR-READY and FAILURE events and dispatches its own headless sessions (`AGENTS.md`, "Service-driven watcher"). This skill only waits on the issues Paul names. It costs no model session while it waits, because `watch.py` polls with sqlite and `gh` reads.

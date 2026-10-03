@@ -5,6 +5,8 @@ description: Hand one GitHub issue to the live Agent Factory on Paul's Mac. Sets
 
 # Factory assign
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Give one issue to the live factory, then confirm the factory claimed it. Read `AGENTS.md` first. It describes the release the service runs and its configuration.
 
 ## Rules
