@@ -125,6 +125,9 @@ def human_feedback_times(pr_url: str) -> list[datetime]:
             capture_output=True,
             check=False,
         )
+        if completed.returncode != 0:
+            # An error body is not a list of times; report it and let the caller wait.
+            raise RuntimeError(f"cannot read {endpoint}: {completed.stderr.strip()[:200]}")
         times.extend(parse_time(line) for line in completed.stdout.split() if line)
     return [moment for moment in times if moment is not None]
 
@@ -250,7 +253,13 @@ def main() -> int:
                 continue
             try:
                 progressing, signature = item.observe()
-            except (sqlite3.Error, json.JSONDecodeError, KeyError) as error:
+            except (
+                sqlite3.Error,
+                json.JSONDecodeError,
+                KeyError,
+                ValueError,
+                RuntimeError,
+            ) as error:
                 progressing, signature = True, f"read error: {error}"
             stamp = now().strftime("%H:%M:%SZ")
             if signature != item.signature:
