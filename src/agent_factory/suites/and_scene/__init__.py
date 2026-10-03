@@ -101,12 +101,12 @@ class GitWorktreeManager:
         )
         created: list[tuple[Path, Path]] = []
         try:
-            for source, target, revision in (
-                (self._sources.checkout(name), getattr(targets, name), values[name])
-                for name in inputs.worktree_names()
-            ):
-                assert source is not None
-                self._ensure_worktree(source, target, revision)
+            for name in inputs.worktree_names():
+                source = self._sources.checkout(name)
+                if source is None:
+                    raise WorktreeError(f"no source checkout configured for {name}")
+                target = getattr(targets, name)
+                self._ensure_worktree(source, target, values[name])
                 created.append((source, target))
         except WorktreeError:
             for source, target in reversed(created):
@@ -120,9 +120,10 @@ class GitWorktreeManager:
         for name in inputs.worktree_names():
             source = worktrees.source_repositories.checkout(name)
             target = getattr(worktrees, name)
-            assert source is not None
             try:
                 self._require_owned_target(worktrees.claim_id, name, target)
+                if source is None:
+                    raise WorktreeError(f"no source checkout recorded for {name}")
                 self._remove_one(source, target, suppress_errors=False)
             except WorktreeError as error:
                 errors[name] = str(error)

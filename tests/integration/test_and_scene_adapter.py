@@ -279,6 +279,46 @@ def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_wo
     )
 
 
+def test_prepare_reports_missing_source_checkout_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import GitWorktreeManager, WorktreeError
+
+    sources, revisions = _sources(tmp_path)
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    original_checkout = SourceRepositories.checkout
+
+    def checkout(self: SourceRepositories, name: str) -> Path | None:
+        return None if name == "skills" else original_checkout(self, name)
+
+    monkeypatch.setattr(SourceRepositories, "checkout", checkout)
+    with pytest.raises(WorktreeError, match="no source checkout configured for skills"):
+        manager.prepare("claim", revisions)
+    assert not (tmp_path / "factory/worktrees/claim/runner").exists()
+
+
+def test_remove_records_missing_source_and_releases_later_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import GitWorktreeManager
+
+    sources, revisions = _sources(tmp_path)
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    worktrees = manager.prepare("claim", revisions)
+    original_checkout = SourceRepositories.checkout
+
+    def checkout(self: SourceRepositories, name: str) -> Path | None:
+        return None if name == "skills" else original_checkout(self, name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SourceRepositories, "checkout", checkout)
+        assert manager.remove(worktrees) == {"skills": "no source checkout recorded for skills"}
+    assert not worktrees.runner.exists()
+    assert worktrees.skills.exists()
+    assert not worktrees.evals.exists()
+    assert manager.remove(worktrees) == {}
+
+
 def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
     tmp_path: Path,
 ) -> None:
