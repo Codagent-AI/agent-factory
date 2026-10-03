@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_factory.notify import marker, readiness, registry
 from agent_factory.notify import store as records
-from agent_factory.operations import Diagnostic
 from agent_factory.supervisor import ProcessProbeError, process_start_identity
 from agent_factory.watch.session import inherited_environment
 
@@ -171,7 +170,7 @@ def deliver(
     now: datetime | None = None,
 ) -> None:
     now = (now or datetime.now(UTC)).astimezone(UTC)
-    checked: list[Diagnostic] | None = None
+    failures: list[str] | None = None
     for row in records.rows(store, "settling"):
         body = bodies.get((row["repository"], row["issue_number"]))
         if body is None:
@@ -201,14 +200,15 @@ def deliver(
                 session_name=session.name,
             )
             continue
-        if checked is None:
-            checked = readiness.diagnostics(local, shared)
-            failures = [f"{d.name}: {d.detail}" for d in checked if not d.available]
+        if failures is None:
+            failures = [
+                f"{d.name}: {d.detail}"
+                for d in readiness.diagnostics(local, shared)
+                if not d.available
+            ]
             store.set_setting(
                 "runtime", "readiness:notify", {"reason": "; ".join(failures)} if failures else {}
             )
-        assert checked is not None
-        failures = [f"{d.name}: {d.detail}" for d in checked if not d.available]
         if failures:
             records.end(
                 store,
