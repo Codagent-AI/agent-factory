@@ -190,3 +190,7 @@ issues until the factory stops progressing on them, use the `factory-watch`
 skill, which polls with a script and reports once. For an update on demand, use
 the `factory-status` skill. To investigate or fix a failure by hand, use
 `factory-triage`. To review a factory PR when Paul asks, use `factory-pr-review`.
+
+## Session notifications
+
+`codagent-github-project` records the creating Claude session on an issue; `factory-assign` replaces that marker at handoff. One session is tracked per issue. When a claim stops with a pull request, needs-input, failure, settled eval, cancellation, or a card that is no longer queued, the resident waits for the settle period and any service watcher dispatch, then sends a short, link-only notice to the recorded live local session. It never changes the claim or issue. Delivery is best effort: ended or unresolvable sessions receive nothing, a renamed-and-reused session name has a small race, and another permission mode may hold a message. See `docs/operations.md` for `[notify]` settings, `doctor`, and `status`.

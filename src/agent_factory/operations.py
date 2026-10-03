@@ -45,6 +45,7 @@ _GROUP_ORDER: tuple[DiagnosticGroup, ...] = (
     "eval-fly",
     *(group for definition in registered() for group in definition.doctor_groups.values()),
     "watch",
+    "notify",
 )
 
 # host mode -> executable each configured role CLI adapter needs on PATH.
@@ -187,6 +188,10 @@ def doctor(
                 diagnostics.extend(HostProcessBackend().readiness(config, shared))
             else:
                 diagnostics.extend(_fix_diagnostics(config, shared, docker_diagnostic=docker))
+    if shared is not None and include_informational:
+        from agent_factory.notify.readiness import diagnostics as notify_diagnostics
+
+        diagnostics.extend(notify_diagnostics(config, shared))
     if shared is not None and config.eval_execution == "fly":
         from agent_factory.fly.backend import FlyMachineBackend
 
@@ -273,6 +278,13 @@ def status(
         from agent_factory.watch.status import lines as watch_lines
 
         lines.extend(watch_lines(store, config))
+        try:
+            from agent_factory.notify.status import lines as notify_lines
+
+            shared = SharedConfig.from_file(config.shared_config)
+            lines.extend(notify_lines(store, config, shared))
+        except (ConfigurationError, OSError):
+            lines.append("notifications: configuration unavailable")
     all_claims = store.all_claims()
     active_by_claim = {run.claim_id: run for run in store.nonterminal_runs()}
     if include_all:

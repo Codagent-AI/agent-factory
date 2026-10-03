@@ -133,6 +133,31 @@ class ClaimStore:
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
         self._ensure_watch_schema()
+        self._ensure_notify_schema()
+
+    def _ensure_notify_schema(self) -> None:
+        """Add notification state without changing the rollback-compatible user_version."""
+        self._connection.executescript("""
+            CREATE TABLE IF NOT EXISTS notify_stop (
+              id TEXT PRIMARY KEY,
+              claim_id TEXT NOT NULL REFERENCES claim(id), run_id TEXT NOT NULL,
+              repository TEXT NOT NULL, issue_number INTEGER NOT NULL, claim_kind TEXT NOT NULL,
+              stop_kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT,
+              detail TEXT NOT NULL DEFAULT '', watch_note TEXT NOT NULL DEFAULT '',
+              session_id TEXT, session_name TEXT, pr_url TEXT, message TEXT,
+              stopped_since TEXT NOT NULL, restart_settle INTEGER NOT NULL DEFAULT 0,
+              launched_at TEXT, deadline_at TEXT, finished_at TEXT,
+              profile TEXT, evidence_path TEXT, process_json TEXT NOT NULL DEFAULT '{}',
+              cost_usd REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              UNIQUE(claim_id, run_id, stop_kind)
+            );
+            CREATE INDEX IF NOT EXISTS notify_stop_state ON notify_stop(state);
+        """)
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(notify_stop)")}
+        if "restart_settle" not in columns:
+            self._connection.execute(
+                "ALTER TABLE notify_stop ADD COLUMN restart_settle INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _ensure_watch_schema(self) -> None:
         """Create the watch tables and indexes idempotently, outside the versioned schema.

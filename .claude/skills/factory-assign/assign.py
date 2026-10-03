@@ -12,10 +12,12 @@ Paul's gh login. Tokens stay in process memory and are never printed.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from agent_factory import work_kinds
@@ -29,6 +31,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
+from agent_factory.notify import marker, registry
 from agent_factory.routing import SourceItem
 from agent_factory.work_kinds.base import Feedback, card_status
 from agent_factory.work_kinds.eval import parse_request
@@ -108,6 +111,12 @@ def report(factory: Factory, repository: str, number: int, kind: str | None) -> 
     source = card.source if card else detail
     kind = kind or factory.kind_of(source)
     print(f"issue: https://github.com/{repository}/issues/{number} {detail.title!r}")
+    recorded = marker.parse(detail.body)
+    print(
+        f"session: {recorded.get('name', 'unknown')} ({recorded['session_id']})"
+        if recorded
+        else "session: none"
+    )
     print(f"kind: {kind or 'unknown (type is ' + str(source.issue_type) + ')'}")
     print(f"state: {source.state} [{mark(source.state.lower() == 'open')}]")
     is_target = repository in factory.targets
@@ -256,6 +265,32 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
     if item is None:
         item = factory.app.add_project_item(project.id, source.id)
         print(f"added to board: {item.id}")
+    session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if session_id:
+        current = factory.app.get_source_item(repository, number)
+        live = registry.resolve(session_id)
+        marked = marker.stamp(current.body, session_id, live.name if live else None)
+        if marked != current.body:
+            # Refresh through the same login that will PATCH. Preserve edits made
+            # between the initial read and this handoff write.
+            latest = factory.paul.get_source_item(repository, number)
+            if latest.body != current.body:
+                marked = marker.stamp(latest.body, session_id, live.name if live else None)
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False) as body_file:
+                json.dump({"body": marked}, body_file)
+                body_path = Path(body_file.name)
+            try:
+                paul_gh(
+                    "api",
+                    f"repos/{repository}/issues/{number}",
+                    "--method",
+                    "PATCH",
+                    "--input",
+                    str(body_path),
+                )
+            finally:
+                body_path.unlink(missing_ok=True)
+            print("recorded session")
     for field, name in ((project.owner, "factory"), (project.status, "ready")):
         if item.fields.get(field.id) != field.option(name):
             factory.app.set_single_select_field(project.id, item.id, field.id, field.option(name))

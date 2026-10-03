@@ -1,4 +1,4 @@
-- [ ] Notify the originating Claude session when the factory stops progressing on an issue, end to end
+- [x] Notify the originating Claude session when the factory stops progressing on an issue, end to end
 
 ## Task: Session notifications for factory stops (#103)
 

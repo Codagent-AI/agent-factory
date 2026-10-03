@@ -1,10 +1,18 @@
 """The assignment helper must recognize every supported Factory work kind."""
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from agent_factory.config import SharedConfig
+from agent_factory.github import ProjectQueueItem
+from agent_factory.notify.marker import parse, render
+from agent_factory.notify.registry import LiveSession
+from agent_factory.routing import ProjectItem, SourceItem
+from agent_factory.store import ClaimDraft, ClaimStore
 
 HELPER = Path(__file__).resolve().parents[2] / ".claude/skills/factory-assign/assign.py"
 spec = importlib.util.spec_from_file_location("factory_assign_helper", HELPER)
@@ -63,3 +71,99 @@ def test_feature_disabled_has_no_targets() -> None:
         )
         is None
     )
+
+
+def test_apply_replaces_marker_before_board_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    first = "c2ae018f-230c-437f-bd07-ff9f49ab6a82"
+    second = "c2ae018f-230c-437f-bd07-ff9f49ab6a83"
+    body = "Issue prose\n\n" + render(first, "prior") + "\n"
+    writes: list[str] = []
+    source = SourceItem("I", "o/r", 12, "author", frozenset(), "Feature", "open", body)
+    item = ProjectItem("P", "I", {})
+
+    class App:
+        def list_project_items(
+            self, project_id: str, *, priority_id: str = ""
+        ) -> list[ProjectQueueItem]:
+            return []
+
+        def get_source_item(self, repository: str, number: int) -> SourceItem:
+            return source
+
+        def get_permission(self, repository: str, author: str) -> str:
+            return "write"
+
+        def find_project_item(self, project_id: str, issue_id: str) -> ProjectItem:
+            return item
+
+        def set_single_select_field(
+            self, project_id: str, item_id: str, field_id: str, option_id: str
+        ) -> None:
+            writes.append("board")
+
+    class Paul:
+        def get_source_item(self, repository: str, number: int) -> SourceItem:
+            return SourceItem(
+                "I",
+                "o/r",
+                12,
+                "author",
+                frozenset(),
+                "Feature",
+                "open",
+                source.body + "\nConcurrent edit",
+            )
+
+        def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None:
+            pass
+
+    def fake_gh(*args: str) -> str:
+        nonlocal source
+        writes.append("body")
+        payload = json.loads(Path(args[-1]).read_text())
+        source = SourceItem(
+            "I", "o/r", 12, "author", frozenset(), "Feature", "open", payload["body"]
+        )
+        return ""
+
+    monkeypatch.setattr(helper, "paul_gh", fake_gh)
+
+    def live_session(sid: str) -> LiveSession:
+        return LiveSession(sid, "current", 1)
+
+    monkeypatch.setattr(helper.registry, "resolve", live_session)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", second)
+    path = tmp_path / "state.sqlite3"
+    ClaimStore(path).close()
+    factory = helper.Factory.__new__(helper.Factory)
+    factory.shared = shared
+    factory.local = SimpleNamespace(state_path=path)
+    factory.app = App()
+    factory.paul = Paul()
+    factory.targets = {"o/r"}
+    factory.feature_targets = {"o/r"}
+    factory.task_targets = {"o/r"}
+    factory.handlers = {}
+    helper.apply(factory, "o/r", 12, "feature", False)
+    assert writes[0] == "body"
+    assert parse(source.body)["session_id"] == second  # type: ignore[index]
+    assert source.body.count("codagent-session:") == 1
+    assert "Issue prose" in source.body
+    assert "Concurrent edit" in source.body
+    helper.report(factory, "o/r", 12, "feature")
+    assert f"session: current ({second})" in capsys.readouterr().out
+    writes.clear()
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
+    helper.apply(factory, "o/r", 12, "feature", False)
+    assert "body" not in writes
+    store = ClaimStore(path)
+    store.create_claim(ClaimDraft("o/r", 12, "I", "P", "feature", "fp", {}))
+    store.close()
+    writes.clear()
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", first)
+    with pytest.raises(SystemExit, match="refused: claim"):
+        helper.apply(factory, "o/r", 12, "feature", False)
+    assert not writes
