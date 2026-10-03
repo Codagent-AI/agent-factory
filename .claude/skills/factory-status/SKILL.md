@@ -55,7 +55,7 @@ Lead with what needs Paul, then the rest. Keep each item to one line with a link
 3. **Since last time**: finished claims, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
 4. **Health**, only when something is off:
    - paused, a readiness failure, or a closed admission window;
-   - a watch session budget near its limit, undelivered comments, or missing audits for recent sessions;
+   - a reached factory job cap (report the earliest clear time and reset command), undelivered comments, or missing audits for recent sessions;
    - commits on `origin/main` not in the live release (offer to deploy with `factory-deploy`);
    - a Fly Machine left over, or disk near `minimum_free_gib`;
    - a Review card whose issue is closed and PR merged, which the board has not moved to Done.

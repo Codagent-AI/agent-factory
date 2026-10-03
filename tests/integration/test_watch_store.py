@@ -13,7 +13,8 @@ from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.watch import store as watch_store
 
 
-def test_redispatch_requires_ended_review_or_triage(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ended_state", ["timed-out", "budget-exhausted"])
+def test_redispatch_requires_ended_review_or_triage(tmp_path: Path, ended_state: str) -> None:
     path = tmp_path / "state.sqlite3"
     store = ClaimStore(path)
     try:
@@ -35,7 +36,7 @@ def test_redispatch_requires_ended_review_or_triage(tmp_path: Path) -> None:
         original = watch_store.rows(store)[0]
         with pytest.raises(ValueError, match="pending"):
             watch_store.redispatch(store, original["id"])
-        watch_store.update(store, original["id"], state="timed-out", finished_at=now)
+        watch_store.update(store, original["id"], state=ended_state, finished_at=now)
         new_id = watch_store.redispatch(store, original["id"])
         replacement = watch_store.get(store, new_id)
         assert replacement is not None
@@ -81,7 +82,7 @@ def test_daily_count_uses_the_local_day_bounds_and_the_new_index(tmp_path: Path)
             row = next(r for r in watch_store.rows(store) if r["run_id"] == key)
             assert watch_store.claim_launch(store, row["id"], launched, 90, "claude:m:e", "/e")
         noon = datetime(2026, 9, 29, 16, 0, tzinfo=UTC)
-        assert watch_store.daily_count(store, new_york, noon) == 2
+        assert len(watch_store.launched_today(store, new_york, noon)) == 2
         today = watch_store.launched_today(store, new_york, noon)
         assert sorted(r["run_id"] for r in today) == ["late", "start"]
         indexes = {

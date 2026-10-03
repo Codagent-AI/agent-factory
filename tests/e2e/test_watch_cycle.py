@@ -50,15 +50,28 @@ def _local(tmp_path: Path) -> LocalConfig:
     )
 
 
-def test_quiet_cycle_and_budget_zero_deliver_once(tmp_path: Path) -> None:
+def test_quiet_cycle_and_queued_budget_notice_deliver_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.watch import deliver, readiness, session
+    from agent_factory.watch.status import lines as watch_status_lines
+
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         local = _local(tmp_path)
         shared = SharedConfig.from_file(Path("config/codagent.toml"))
-        shared = replace(
-            shared, watch=WatchConfig(True, "o/r", "claude:model:medium", daily_sessions=0)
-        )
+        shared = replace(shared, watch=WatchConfig(True, "o/r", "claude:model:medium"))
+        local.shared_config.write_text(Path("config/codagent.toml").read_text())
         client = Comments()
+
+        def watch_ready(*_args: object) -> list[Diagnostic]:
+            return []
+
+        def fake_start(*_args: object) -> dict[str, object]:
+            return {"pid": 999999, "start": "missing"}
+
+        monkeypatch.setattr(readiness, "diagnostics", watch_ready)
+        monkeypatch.setattr(session, "start", fake_start)
 
         def token() -> str:
             return "unused"
@@ -77,15 +90,34 @@ def test_quiet_cycle_and_budget_zero_deliver_once(tmp_path: Path) -> None:
         store._connection.execute(
             "UPDATE run SET finished_at=? WHERE id=?", (old.isoformat(), run.id)
         )
+        watch_store.insert(
+            store,
+            event_key="old-budget",
+            event_kind="FAILURE",
+            claim_id=claim.id,
+            run_id=run.id,
+            repository="o/r",
+            issue_number=1,
+            pr_number=None,
+            pr_url=None,
+            event_at=cursor_time,
+            now=cursor_time,
+        )
+        old_row = next(row for row in watch_store.rows(store) if row["event_key"] == "old-budget")
+        watch_store.update(store, old_row["id"], state="budget-exhausted")
+        deliver.queue(store, old_row, "budget", "Old budget notice; watch redispatch")
         step(store, client, shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
         step(store, client, shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
         rows = [row for row in watch_store.rows(store) if row["event_kind"] == "FAILURE"]
-        assert len(rows) == 1
-        assert rows[0]["state"] == "budget-exhausted"
+        assert len(rows) == 2
+        assert "budget-exhausted" in {row["state"] for row in rows}
+        assert rows[-1]["state"] != "budget-exhausted"
         assert {row["event_kind"] for row in watch_store.rows(store)} == {"FAILURE"}
-        assert len(client.records) == 1
-        assert "No agent ran" in client.records[0].body
+        assert sum("Old budget notice" in record.body for record in client.records) == 1
         assert "watch redispatch" in client.records[0].body
+        watch_status = watch_status_lines(store, local)
+        assert any("watch sessions today: 1, known cost $" in line for line in watch_status)
+        assert any("budget-exhausted" in line for line in watch_status)
     finally:
         store.close()
 
@@ -271,7 +303,7 @@ def test_a_legacy_pending_claim_event_starts_no_session(
         local = _local(tmp_path)
         shared = replace(
             SharedConfig.from_file(Path("config/codagent.toml")),
-            watch=WatchConfig(True, "o/r", "claude:model:medium", daily_sessions=0),
+            watch=WatchConfig(True, "o/r", "claude:model:medium"),
         )
         claim = store.create_claim(ClaimDraft("o/r", 7, "I", "P", "fix", "fp", {}))
         now = datetime.now(UTC).isoformat()
@@ -313,7 +345,7 @@ def test_ready_pr_without_parseable_url_is_logged_without_launch(
         local = _local(tmp_path)
         shared = replace(
             SharedConfig.from_file(Path("config/codagent.toml")),
-            watch=WatchConfig(True, "o/r", "claude:model:medium", daily_sessions=0),
+            watch=WatchConfig(True, "o/r", "claude:model:medium"),
         )
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "fix", "fp", {}))
         run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
@@ -344,7 +376,7 @@ def test_ready_pr_without_parseable_url_is_logged_without_launch(
         ready = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
         assert len(ready) == 1 and ready[0]["state"] == "logged"
         assert client.records == []
-        assert watch_store.daily_count(store, local.schedule.timezone, datetime.now(UTC)) == 0
+        assert watch_store.launched_today(store, local.schedule.timezone, datetime.now(UTC)) == []
     finally:
         store.close()
 

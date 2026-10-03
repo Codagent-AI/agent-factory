@@ -1,4 +1,4 @@
-- [ ] Replace the watcher's daily session budget with a factory job cap
+- [x] Replace the watcher's daily session budget with a factory job cap
 
 ## Task: Cap factory attempts instead of watcher sessions
 

@@ -6,9 +6,10 @@ import argparse
 import signal
 import time
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
+from agent_factory.config import ConfigurationError, JobCapConfig, LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic, doctor, format_doctor, status
 from agent_factory.store import TERMINAL_LIFECYCLES, ClaimStore
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
@@ -60,6 +61,8 @@ def main() -> None:
     subcommands.add_parser("doctor")
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
+    job_cap_parser = subcommands.add_parser("job-cap")
+    job_cap_parser.add_subparsers(dest="job_cap_command", required=True).add_parser("reset")
     watch_parser = subcommands.add_parser("watch")
     watch_commands = watch_parser.add_subparsers(dest="watch_command", required=True)
     watch_commands.add_parser("redispatch").add_argument("dispatch_id")
@@ -109,6 +112,19 @@ def main() -> None:
             print("waits until watching is enabled")
     elif args.command == "status":
         print(_status(state, local, include_all=args.all))
+    elif args.command == "job-cap":
+        cap = SharedConfig.from_file(local.shared_config).job_cap if local else JobCapConfig()
+        with closing(ClaimStore(state, job_cap=cap)) as store:
+            now = datetime.now(UTC)
+            before = store.job_cap_state(now)
+            store.set_setting("job-cap", "reset", {"at": now.isoformat()})
+            after = store.job_cap_state(now)
+            print(
+                f"job cap reset at {now.isoformat()}; {after.count}/{after.attempts} "
+                f"attempts in the last {after.window_hours} h"
+            )
+            if before.reached:
+                print("held work can start in the next cycle")
     elif args.command in {"pause", "resume"}:
         store = ClaimStore(state)
         try:

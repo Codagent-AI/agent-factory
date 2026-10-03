@@ -15,13 +15,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, retention, terminal, watch, work_kinds
+from agent_factory import audit, job_cap, retention, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
     Controller,
     advisory_lock,
+    hold_active,
     quota_deadline,
 )
 from agent_factory.github import (
@@ -76,7 +77,7 @@ def cycle(state: Path, config_path: Path) -> None:
         handler.attach_github(client, token_provider)
     with (
         advisory_lock(state, "cycle"),
-        closing(ClaimStore(state)) as store,
+        closing(ClaimStore(state, job_cap=shared.job_cap)) as store,
         _watch_finally(store, client, shared, local, config_path, token_provider),
     ):
         controller = Controller(
@@ -98,6 +99,11 @@ def cycle(state: Path, config_path: Path) -> None:
             for handler in registered.values():
                 handler.ready_handoff(card, shared, permission_cache)
         _consume_results(store, controller, local)
+        job_cap.observe(
+            store,
+            store.job_cap_state(datetime.now(local.schedule.timezone)),
+            datetime.now(local.schedule.timezone),
+        )
         # Results are captured whether or not anyone reviews them; a failure is
         # reported on the item and retried next tick, never blocking the cycle.
         publish_eval_results(store, client, shared)
@@ -297,6 +303,48 @@ def cycle(state: Path, config_path: Path) -> None:
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
+                cap_state = store.job_cap_state(now)
+                if cap_state.reached:
+                    selected = controller.select_existing(snapshot, fresh=fresh)
+                    if selected is not None:
+                        unit, _ = handler.next_unit(selected, store.runs_for_claim(selected.id))
+                        if unit is not None:
+                            job_cap.hold_claim(store, selected.id, cap_state, now)
+                            _report(store, controller, client, shared, card, selected.id, handler)
+                    else:
+                        episode = job_cap.open_episode(store, cap_state, now)
+                        key = f"{snapshot.repository}:{snapshot.issue_number}"
+                        receipt = store.get_setting("job-cap-card", key)
+                        if receipt is not None and receipt.get("episode") == episode:
+                            if not receipt.get("comment_id"):
+                                job_cap.notify_card(
+                                    store,
+                                    client,
+                                    shared.bot_login,
+                                    snapshot.repository,
+                                    snapshot.issue_number,
+                                    episode,
+                                    cap_state,
+                                )
+                        else:
+                            draft = controller.preflight(snapshot, resolve=handler.resolve_request)
+                            if draft is not None:
+                                holds = store.get_settings_by_prefix("admission", "quota:")
+                                if not any(
+                                    (hold := holds.get(f"quota:{provider}")) is not None
+                                    and hold_active(hold, now)
+                                    for provider in handler.providers_for_spec(draft.frozen_spec)
+                                ):
+                                    job_cap.notify_card(
+                                        store,
+                                        client,
+                                        shared.bot_login,
+                                        snapshot.repository,
+                                        snapshot.issue_number,
+                                        episode,
+                                        cap_state,
+                                    )
+                    continue
                 claim = controller.accept(
                     snapshot,
                     resolve=handler.resolve_request,
@@ -417,6 +465,7 @@ def _launch(
         return
     # The attempt launched, so an earlier readiness failure no longer blocks the claim.
     store.clear_setting("claim-hold", f"{claim.id}:readiness")
+    store.clear_setting("claim-hold", f"{claim.id}:job-cap")
 
 
 def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:
