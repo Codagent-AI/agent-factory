@@ -240,3 +240,23 @@ def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     ):
         assert required in prompt
     assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")
+
+
+@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_human(
+    workflow: str,
+) -> None:
+    text = (PACKAGE / workflow).read_text()
+    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "git diff against the merge base",
+        "the failing check's definition and configuration",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, (workflow, phrase)
