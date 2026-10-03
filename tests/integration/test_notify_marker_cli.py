@@ -66,3 +66,25 @@ def test_stamp_carry_and_eval_template(tmp_path: Path) -> None:
     env.pop("CLAUDE_CODE_SESSION_ID")
     _command("stamp", str(unmarked), environment=env)
     assert unmarked.read_text() == "plain\n"
+
+
+def test_marker_command_prints_no_interpreter_warning(tmp_path: Path) -> None:
+    """Acceptance F-1: `-m agent_factory.notify.marker` must not re-execute a loaded module."""
+    body = tmp_path / "body.md"
+    body.write_text("Plain prose.\n")
+    environment = {
+        key: value for key, value in os.environ.items() if key != "CLAUDE_CODE_SESSION_ID"
+    }
+    environment["HOME"] = str(tmp_path)
+    environment["PYTHONWARNINGS"] = "default"
+    for arguments in (("stamp", str(body)), ("carry", str(body), str(body))):
+        result = subprocess.run(
+            [sys.executable, "-m", "agent_factory.notify.marker", *arguments],
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert result.stderr == ""
+        assert len(result.stdout.splitlines()) == 1
+    assert body.read_text() == "Plain prose.\n"
