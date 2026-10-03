@@ -15,7 +15,7 @@ def test_revision_commands_read_only(tmp_path: Path) -> None:
         check=False,
     )
     assert honored.returncode == 0
-    assert honored.stdout.splitlines() == ["runner", "skills", "evals", "validator", "fixture"]
+    assert honored.stdout == "runner\nskills\nevals\nvalidator\nfixture\n"
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     pinned = store.create_claim(

@@ -11,8 +11,8 @@ from pathlib import Path
 from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic, doctor, format_doctor, status
 from agent_factory.store import TERMINAL_LIFECYCLES, ClaimStore
+from agent_factory.suites.and_scene import inputs
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
-from agent_factory.work_kinds.eval import HONORED_REVISIONS
 
 
 def _tick(state: Path, config_path: Path | None = None) -> None:
@@ -67,7 +67,7 @@ def main() -> None:
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
     if args.command == "honored-revisions":
-        print("\n".join(HONORED_REVISIONS))
+        print("\n".join(inputs.honored_revisions()))
         return
     if args.command == "doctor":
         if args.config is None:

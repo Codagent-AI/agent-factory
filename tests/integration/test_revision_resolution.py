@@ -14,7 +14,7 @@ from agent_factory.github import IssueComment
 from agent_factory.store import Claim, ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import ReadinessError, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_request
-from agent_factory.work_kinds.eval.handler import validator_source_url
+from agent_factory.work_kinds.eval.handler import Resolution, validator_source_url
 
 
 def test_fixture_request_freezes_only_when_selected() -> None:
@@ -29,20 +29,20 @@ def test_fixture_request_freezes_only_when_selected() -> None:
             parse_request(f"```eval\nfixture_ref = {value}\n```", defaults)
     sha = "a" * 40
     standard_frozen = standard.freeze(
-        runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene"
+        {"runner": sha, "skills": sha, "evals": sha}, suite="and-scene"
     )
     selected_frozen = selected.freeze(
-        runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha="b" * 40
+        {"runner": sha, "skills": sha, "evals": sha, "fixture": "b" * 40}, suite="and-scene"
     )
     assert "fixture" not in cast(dict[str, object], standard_frozen.payload["revisions"])
     assert cast(dict[str, object], selected_frozen.payload["revisions"])["fixture"] == "b" * 40
     with pytest.raises(ValueError, match="fixture revision requires fixture_ref"):
         standard.freeze(
-            runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha=sha
+            {"runner": sha, "skills": sha, "evals": sha, "fixture": sha}, suite="and-scene"
         )
     with pytest.raises(ValueError, match="full commit SHA"):
         selected.freeze(
-            runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha="bad"
+            {"runner": sha, "skills": sha, "evals": sha, "fixture": "bad"}, suite="and-scene"
         )
 
 
@@ -92,7 +92,12 @@ def resolve(clone: Path, ref: str) -> tuple[str, ...]:
 
     defaults = EvalDefaults("main", "main", {}, False, 1)
     request = parse_request(f'```eval\nagent_runner_ref = "{ref}"\n```', defaults)
-    return eval_handler.resolve_revisions(SourceRepositories(clone, clone, clone), request)
+    return tuple(
+        eval_handler.resolve_revisions(
+            SourceRepositories(clone, clone, clone), request, configured_refs={"evals": "main"}
+        ).revisions[name]
+        for name in ("runner", "skills")
+    )
 
 
 @pytest.mark.parametrize(
@@ -134,12 +139,9 @@ def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
     request = parse_request("```eval\nrepetitions = 1\n```", defaults)
     sha = "a" * 40
     frozen = request.freeze(
-        runner_sha=sha,
-        skills_sha=sha,
-        harness_sha=sha,
+        {"runner": sha, "skills": sha, "evals": sha, "validator": "b" * 40},
         suite="and-scene",
-        validator_sha="b" * 40,
-        validator_source="https://github.com/Codagent-AI/agent-validator.git",
+        sources={"validator": "https://github.com/Codagent-AI/agent-validator.git"},
     )
     assert frozen.payload["revisions"] == {
         "runner": sha,
@@ -150,7 +152,7 @@ def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
     assert frozen.payload["sources"] == {
         "validator": "https://github.com/Codagent-AI/agent-validator.git"
     }
-    legacy = request.freeze(runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene")
+    legacy = request.freeze({"runner": sha, "skills": sha, "evals": sha}, suite="and-scene")
     assert "sources" not in legacy.payload
 
 
@@ -297,7 +299,17 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
     handler.attach_store(store)
     controller = Controller(store, NoComments(), {"eval": handler})
 
-    first = controller.accept(eval_snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    first = controller.accept(
+        eval_snapshot(),
+        resolve=lambda request: Resolution(
+            {
+                "runner": "a" * 40,
+                "skills": "b" * 40,
+                "evals": handler.resolve_request(request).revisions["evals"],
+            },
+            {},
+        ),
+    )
     assert first is not None
     assert _revisions(first)["evals"] == old
     run = controller.reserve_next(first.id, readiness=lambda: None)
@@ -327,7 +339,14 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
 
     second = controller.accept(
         eval_snapshot(issue_number=2, issue_id="I2", item="P2"),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda request: Resolution(
+            {
+                "runner": "a" * 40,
+                "skills": "b" * 40,
+                "evals": handler.resolve_request(request).revisions["evals"],
+            },
+            {},
+        ),
     )
     assert second is not None
     assert _revisions(second)["evals"] == advanced

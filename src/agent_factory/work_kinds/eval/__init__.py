@@ -10,24 +10,20 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from agent_factory.suites.and_scene import inputs
+
 if TYPE_CHECKING:
     from agent_factory.work_kinds.eval.handler import EvalHandler as EvalHandler
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
 _ROLES = frozenset({"lead", "implementor", "tester"})
-_KEYS = frozenset(
-    {
-        "agent_runner_ref",
-        "agent_skills_ref",
-        "fixture_ref",
-        "lead",
-        "implementor",
-        "tester",
-        "skip_validator",
-        "repetitions",
-    }
-)
-HONORED_REVISIONS = ("runner", "skills", "evals", "validator", "fixture")
+_KEYS = frozenset({"lead", "implementor", "tester", "skip_validator", "repetitions"})
+
+
+def _accepted_keys() -> frozenset[str]:
+    return _KEYS | frozenset(
+        entry.setting for entry in inputs.EVAL_INPUTS if entry.requestable and entry.setting
+    )
 
 
 @dataclass(frozen=True)
@@ -56,36 +52,34 @@ class ParsedRequest:
 
     def freeze(
         self,
+        revisions: Mapping[str, str],
         *,
-        runner_sha: str,
-        skills_sha: str,
-        harness_sha: str,
         suite: str,
-        validator_sha: str | None = None,
-        validator_source: str | None = None,
-        fixture_sha: str | None = None,
+        sources: Mapping[str, str] | None = None,
     ) -> FrozenSpec:
-        _sha(runner_sha, "runner")
-        _sha(skills_sha, "skills")
-        _sha(harness_sha, "harness")
-        revisions = {"runner": runner_sha, "skills": skills_sha, "evals": harness_sha}
+        ordered: dict[str, str] = {}
+        recorded_sources: dict[str, str] = {}
+        for entry in inputs.EVAL_INPUTS:
+            if not entry.required and entry.name not in revisions:
+                continue
+            revision = revisions.get(entry.name)
+            _sha(revision, entry.noun)
+            if entry.source_url:
+                source = sources.get(entry.name) if sources else None
+                if not source:
+                    raise ValueError(f"{entry.name} source is required with its revision")
+                recorded_sources[entry.name] = source
+            if not entry.required and entry.requestable and entry.setting not in self.settings:
+                raise ValueError(f"{entry.name} revision requires {entry.setting}")
+            ordered[entry.name] = cast(str, revision)
         payload: dict[str, object] = {
             "version": 1,
             "suite": suite,
             "settings": self.settings,
-            "revisions": revisions,
+            "revisions": ordered,
         }
-        if validator_sha is not None:
-            _sha(validator_sha, "validator")
-            if not validator_source:
-                raise ValueError("validator source is required with its revision")
-            revisions["validator"] = validator_sha
-            payload["sources"] = {"validator": validator_source}
-        if fixture_sha is not None:
-            _sha(fixture_sha, "fixture")
-            if "fixture_ref" not in self.settings:
-                raise ValueError("fixture revision requires fixture_ref")
-            revisions["fixture"] = fixture_sha
+        if recorded_sources:
+            payload["sources"] = recorded_sources
         return FrozenSpec(
             1,
             payload,
@@ -103,14 +97,16 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
     document_values = cast(Mapping[str, object], document)
     parsed: dict[str, object] = {}
     for key, value in document_values.items():
-        if key not in _KEYS:
+        if key not in _accepted_keys():
             raise ValueError(f"unsupported eval setting: {key}")
         parsed[key] = value
     _validate_overrides(parsed, defaults)
     effective: dict[str, object] = {
-        "agent_runner_ref": defaults.agent_runner_ref,
-        "agent_skills_ref": defaults.agent_skills_ref,
-        "agent_validator_ref": defaults.agent_validator_ref,
+        **{
+            entry.setting: getattr(defaults, entry.setting)
+            for entry in inputs.EVAL_INPUTS
+            if entry.has_default and entry.setting
+        },
         "roles": dict(defaults.roles),
         "skip_validator": defaults.skip_validator,
         "repetitions": defaults.repetitions,
@@ -130,7 +126,10 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
 
 
 def _validate_overrides(overrides: Mapping[str, object], defaults: EvalDefaults) -> None:
-    for key in ("agent_runner_ref", "agent_skills_ref", "fixture_ref"):
+    for entry in inputs.EVAL_INPUTS:
+        if not entry.requestable or not entry.setting:
+            continue
+        key = entry.setting
         if key in overrides and (not isinstance(overrides[key], str) or not overrides[key]):
             raise ValueError(f"{key} must be a non-empty string")
     for role in _ROLES:
@@ -154,8 +153,8 @@ def _profile(value: object, name: str) -> None:
         raise ValueError(f"{name} must contain a complete cli:model:effort triple")
 
 
-def _sha(value: str, name: str) -> None:
-    if not re.fullmatch(r"[0-9a-f]{40}", value):
+def _sha(value: object, name: str) -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
         raise ValueError(f"{name} revision must be a full commit SHA")
 
 
