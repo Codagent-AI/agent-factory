@@ -85,6 +85,31 @@ def test_count_reset_window_and_lowered_cap(tmp_path: Path) -> None:
         assert not store.job_cap_state(now, JobCapConfig(3, 24)).reached
 
 
+def test_future_dated_attempts_still_count(tmp_path: Path) -> None:
+    now = datetime.now(UTC)
+    with closing(ClaimStore(tmp_path / "state.sqlite3", job_cap=JobCapConfig(1, 24))) as store:
+        claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/e")
+        store.finish_run(run.id, execution_status="failed", result={})
+        # The host clock moved back an hour after this attempt was stamped.
+        store._connection.execute(
+            "UPDATE run SET created_at=? WHERE id=?",
+            ((now + timedelta(hours=1)).isoformat(), run.id),
+        )
+        state = store.job_cap_state(now)
+        assert state.count == 1
+        assert state.reached
+        assert state.clears_at == now + timedelta(hours=25)
+
+
+def test_status_survives_an_unreadable_reset_time(tmp_path: Path) -> None:
+    with closing(ClaimStore(tmp_path / "state.sqlite3")) as store:
+        store.set_setting("job-cap", "reset", {"at": "not a time"})
+        lines = status_lines(store, JobCapConfig(), datetime.now(UTC))
+        assert len(lines) == 1
+        assert lines[0].startswith("job cap: saved state unreadable")
+
+
 def test_last_slot_is_atomic_across_connections(tmp_path: Path) -> None:
     path = tmp_path / "state.sqlite3"
     cap = JobCapConfig(1, 24)

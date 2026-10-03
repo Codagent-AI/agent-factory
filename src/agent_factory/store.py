@@ -169,11 +169,12 @@ class ClaimStore:
             "SELECT created_at FROM run WHERE created_at >= ?",
             ((lower - timedelta(days=1)).isoformat(),),
         )
+        # Attempts stamped after `now` (the clock moved backward) still count, so skew
+        # can never let more attempts start than the cap allows.
         started = sorted(
             at
             for row in rows
             if (at := datetime.fromisoformat(cast(str, row[0]).replace("Z", "+00:00"))) >= lower
-            and at <= now
         )
         count = len(started)
         reached = count >= cap.attempts

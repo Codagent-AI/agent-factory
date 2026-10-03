@@ -112,7 +112,11 @@ def notify_card(
 
 
 def status_lines(store: ClaimStore, cap: JobCapConfig, now: datetime) -> list[str]:
-    state = store.job_cap_state(now, cap)
+    try:
+        state = store.job_cap_state(now, cap)
+    except ValueError as error:
+        # Status must stay usable; a hand-edited reset or attempt time is shown, not raised.
+        return [f"job cap: saved state unreadable ({error}); repair it before work can start"]
     lines = [f"job cap: {state.count}/{state.attempts} attempts in the last {state.window_hours} h"]
     if not state.reached:
         return lines
