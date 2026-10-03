@@ -109,10 +109,18 @@ steps:
     capture: fixable
     skip_if: 'sh: test "{{fixable}}" = true || test "{{fixable}}" = false'
 
+  - id: seed-skipped-implement-status
+    command: printf 'failed'
+    capture: implement_status
+
   - id: implement
     skip_if: 'sh: test {{fixable}} != true'
     continue_on_failure: true
     steps:
+      - id: seed-implement-status
+        command: printf 'failed'
+        capture: implement_status
+
       - id: seed-validator-status
         command: printf 'failed'
         capture: validator_status
@@ -147,6 +155,10 @@ steps:
           the repository's existing conventions. When you are done, commit your
           changes following the project's commit message conventions and
           prepend [{{step_id}}]. Then summarize what you changed.
+
+      - id: mark-implemented
+        command: printf 'passed'
+        capture: implement_status
 
       - id: initial-validator
         workflow: builtin:core/run-validator-v1.0.yaml
@@ -335,7 +347,7 @@ steps:
 
   - id: record-outcome
     script: record-outcome.sh
-    skip_if: 'sh: test {{fixable}} != true'
+    skip_if: 'sh: test {{fixable}} != true || test "{{implement_status}}" != passed'
     script_inputs:
       contract: factory-fix/1
       outcome_path: "{{artifact_dir}}/fix-outcome.json"
@@ -347,6 +359,9 @@ steps:
   - id: verify-outcome
     command: |
       if [ ! -s "{{artifact_dir}}/fix-outcome.json" ]; then
+        if [ "{{fixable}}" = true ] && [ "{{implement_status}}" != passed ]; then
+          echo "implementor step did not complete" >&2
+        fi
         echo "fix-outcome.json was not written; treating this run as a technical failure" >&2
         exit 1
       fi
