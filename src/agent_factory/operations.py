@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from xml.parsers.expat import ExpatError
 
-from agent_factory import audit
-from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
+from agent_factory import audit, job_cap
+from agent_factory.config import ConfigurationError, JobCapConfig, LocalConfig, SharedConfig
 from agent_factory.github import (
     AppCredentials,
     GitHubApiError,
@@ -273,6 +273,13 @@ def status(
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
+    cap = JobCapConfig()
+    if config is not None:
+        try:
+            cap = SharedConfig.from_file(config.shared_config).job_cap
+        except (ConfigurationError, OSError) as error:
+            lines.append(f"job cap: configuration unreadable ({error}); showing defaults")
+    lines.extend(job_cap.status_lines(store, cap, datetime.now(UTC)))
     lines.append(f"host attempts: {_host_attempts(store)}")
     if config is not None:
         from agent_factory.watch.status import lines as watch_lines
@@ -1270,6 +1277,14 @@ def _progress_lines(run: Run) -> list[str]:
 
 def _hold_lines(store: ClaimStore, claim: Claim, config: LocalConfig | None) -> list[str]:
     lines: list[str] = []
+    cap_hold = store.get_hold(claim.id, "job-cap")
+    episode = store.get_setting("job-cap", "episode")
+    if (
+        cap_hold is not None
+        and episode is not None
+        and cap_hold.get("episode") == episode.get("id")
+    ):
+        lines.append("blocking condition: factory job cap reached; see job cap line")
     readiness = store.get_hold(claim.id, "readiness")
     if readiness is not None:
         reason = readiness.get("reason", "unknown prerequisite")

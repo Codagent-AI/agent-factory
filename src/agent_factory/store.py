@@ -14,9 +14,13 @@ import uuid
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+
+from agent_factory.config import JobCapConfig
+
+_DEFAULT_JOB_CAP = JobCapConfig()
 
 SCHEMA_VERSION = 4
 NONTERMINAL_RUN_STATUSES = frozenset({"reserved", "running", "observing"})
@@ -25,6 +29,21 @@ TERMINAL_LIFECYCLES = frozenset({"settled", "cancelled", "superseded"})
 
 class NonterminalRunError(RuntimeError):
     """A run is already reserving the factory's one execution slot."""
+
+
+@dataclass(frozen=True)
+class JobCapState:
+    count: int
+    attempts: int
+    window_hours: int
+    reached: bool
+    clears_at: datetime | None
+
+
+class JobCapReached(RuntimeError):
+    def __init__(self, state: JobCapState) -> None:
+        self.state = state
+        super().__init__("factory job cap reached")
 
 
 class RunTransitionError(RuntimeError):
@@ -119,8 +138,11 @@ def _has_pending_watch_delivery(value: str) -> bool:
 class ClaimStore:
     """SQLite claim history with explicit controller/supervisor write boundaries."""
 
-    def __init__(self, path: Path, *, read_only: bool = False) -> None:
+    def __init__(
+        self, path: Path, *, read_only: bool = False, job_cap: JobCapConfig = _DEFAULT_JOB_CAP
+    ) -> None:
         self.path = path
+        self.job_cap = job_cap
         if not read_only:
             self.path.parent.mkdir(parents=True, exist_ok=True)
         database = f"{path.resolve().as_uri()}?mode=ro" if read_only else path
@@ -134,6 +156,36 @@ class ClaimStore:
         self._migrate()
         self._ensure_watch_schema()
         self._ensure_notify_schema()
+        self._connection.execute("CREATE INDEX IF NOT EXISTS run_created_at ON run(created_at)")
+
+    def job_cap_state(self, now: datetime, cap: JobCapConfig | None = None) -> JobCapState:
+        cap = cap or self.job_cap
+        now = now.astimezone(UTC)
+        lower = now - timedelta(hours=cap.window_hours)
+        reset = self.get_setting("job-cap", "reset")
+        if reset is not None and isinstance(reset.get("at"), str):
+            reset_at = datetime.fromisoformat(cast(str, reset["at"]).replace("Z", "+00:00"))
+            lower = max(lower, reset_at.astimezone(UTC))
+        rows = self._connection.execute(
+            "SELECT created_at FROM run WHERE created_at >= ?",
+            ((lower - timedelta(days=1)).isoformat(),),
+        )
+        # Attempts stamped after `now` (the clock moved backward) still count, so skew
+        # can never let more attempts start than the cap allows.
+        started = sorted(
+            at
+            for row in rows
+            if (at := datetime.fromisoformat(cast(str, row[0]).replace("Z", "+00:00"))) >= lower
+        )
+        count = len(started)
+        reached = count >= cap.attempts
+        return JobCapState(
+            count,
+            cap.attempts,
+            cap.window_hours,
+            reached,
+            started[count - cap.attempts] + timedelta(hours=cap.window_hours) if reached else None,
+        )
 
     def _ensure_notify_schema(self) -> None:
         """Add notification state without changing the rollback-compatible user_version."""
@@ -465,6 +517,9 @@ class ClaimStore:
             ).fetchone()
             if claim_row is None:
                 raise KeyError(claim_id)
+            cap_state = self.job_cap_state(datetime.now(UTC))
+            if cap_state.reached:
+                raise JobCapReached(cap_state)
             kind = cast(str, claim_row["kind"])
             try:
                 row = self._connection.execute(

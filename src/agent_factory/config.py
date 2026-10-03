@@ -394,7 +394,7 @@ class TaskConfig:
 PROFILE = re.compile(r"^([a-z]+):([^:]*):([^:]*)$")
 
 # Each integer watch setting and its smallest valid value; defaults come from WatchConfig.
-_WATCH_MINIMUMS = {"max_sessions": 1, "daily_sessions": 0, "grace_minutes": 0, "timeout_minutes": 1}
+_WATCH_MINIMUMS = {"max_sessions": 1, "grace_minutes": 0, "timeout_minutes": 1}
 
 
 @dataclass(frozen=True)
@@ -404,7 +404,6 @@ class WatchConfig:
     agent: str = ""
     agents: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
     max_sessions: int = 2
-    daily_sessions: int = 20
     grace_minutes: int = 7
     timeout_minutes: int = 90
 
@@ -443,6 +442,24 @@ def _notify_config(raw: object) -> NotifyConfig:
             raise ConfigurationError(f"notify.{key} must be an integer >= {minimum}")
         limits[key] = value
     return NotifyConfig(enabled=enabled, agent=agent if isinstance(agent, str) else "", **limits)
+
+
+@dataclass(frozen=True)
+class JobCapConfig:
+    attempts: int = 100
+    window_hours: int = 24
+
+
+def _job_cap_config(raw: object) -> JobCapConfig:
+    table = _table(raw if raw is not None else {}, "job_cap")
+    values: dict[str, int] = {}
+    defaults = JobCapConfig()
+    for key in ("attempts", "window_hours"):
+        value = table.get(key, getattr(defaults, key))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigurationError(f"job_cap.{key} must be an integer >= 1")
+        values[key] = value
+    return JobCapConfig(**values)
 
 
 def _watch_config(raw: object) -> WatchConfig:
@@ -498,6 +515,7 @@ class SharedConfig:
     task: TaskConfig | None = None
     watch: WatchConfig = field(default_factory=WatchConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    job_cap: JobCapConfig = field(default_factory=JobCapConfig)
 
     @classmethod
     def from_file(cls, path: Path) -> SharedConfig:
@@ -584,6 +602,7 @@ class SharedConfig:
             ),
             watch=_watch_config(document.get("watch")),
             notify=_notify_config(document.get("notify")),
+            job_cap=_job_cap_config(document.get("job_cap")),
         )
 
 
