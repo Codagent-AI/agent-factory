@@ -31,3 +31,13 @@ def test_failed_feature_comment_links_branch() -> None:
     )
     assert "https://github.com/example/work/tree/factory/feature-12-abcd" in body
     assert "validator stayed red" in body
+
+
+def test_pull_request_comment_names_unsettled_task_compliance() -> None:
+    for result, expected in (
+        ({"result": "not-run", "reason": "Trusted"}, "Task-compliance did not run: Trusted."),
+        ({"result": "failed"}, "Task-compliance violations remain."),
+        ({"result": "passed"}, ""),
+    ):
+        body = _pr_message({"pr": {"url": "https://example.test/pr"}, "task_compliance": result})
+        assert expected in body if expected else "Task-compliance" not in body

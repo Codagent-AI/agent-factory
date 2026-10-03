@@ -1298,6 +1298,11 @@ def _pr_message(result: Mapping[str, object]) -> str:
             f"\n\n{counts['red']} red flags, {counts['orange']} orange flags, "
             f"{counts['yellow']} yellow items."
         )
+    compliance = mapping(result.get("task_compliance"))
+    if compliance.get("result") == "not-run":
+        body += f"\n\nTask-compliance did not run: {compliance.get('reason') or 'unknown reason'}."
+    elif compliance.get("result") == "failed":
+        body += "\n\nTask-compliance violations remain."
     return _with_host_note(body, result)
 
 

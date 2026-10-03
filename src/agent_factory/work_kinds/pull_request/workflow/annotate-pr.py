@@ -87,6 +87,77 @@ def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result
     )
 
 
+TASK_TITLES = {
+    "Task-compliance did not run",
+    "Task-compliance violations remain",
+    "Task-compliance not declared",
+    "Task-compliance passed",
+}
+
+
+def task_compliance_record(artifact_dir: Path) -> dict[str, Any]:
+    try:
+        raw: object = json.loads((artifact_dir / "task-compliance.json").read_text())
+        record = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+        if record.get("result") in {
+            "passed",
+            "failed",
+            "not-run",
+            "not-declared",
+        } and (
+            (record.get("result") == "not-run" and isinstance(record.get("reason"), str))
+            or all(
+                isinstance(record.get(key), str) and record[key]
+                for key in ("base", "reviewed_head", "tasks_sha256")
+            )
+        ):
+            return record
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"result": "not-run", "reason": "no task-compliance record"}
+
+
+def flag_task_compliance(
+    flags: dict[str, list[dict[str, str]]], artifact_dir: Path
+) -> dict[str, Any]:
+    record = task_compliance_record(artifact_dir)
+    for tier in ("red", "orange", "yellow", "white"):
+        flags[tier] = [item for item in flags[tier] if item.get("title") not in TASK_TITLES]
+    result = record["result"]
+    if result == "passed":
+        tier, title, detail, link = (
+            "white",
+            "Task-compliance passed",
+            f"reviewed {str(record.get('reviewed_head', ''))[:12]}",
+            "",
+        )
+    elif result == "failed":
+        violations = cast(list[dict[str, Any]], record.get("violations") or [])
+        detail = (
+            "; ".join(
+                f"{v.get('file', '')}:{v.get('line', '')} {v.get('issue', '')}" for v in violations
+            )
+            or "unresolved task-compliance violations"
+        )
+        tier, title, link = "red", "Task-compliance violations remain", EVIDENCE_LINK
+    elif result == "not-declared":
+        tier, title, detail, link = (
+            "yellow",
+            "Task-compliance not declared",
+            "the target declares no task-compliance review",
+            "",
+        )
+    else:
+        tier, title, detail, link = (
+            "red",
+            "Task-compliance did not run",
+            str(record.get("reason") or "no task-compliance record"),
+            EVIDENCE_LINK,
+        )
+    flags[tier].append({"title": title, "detail": detail, "link": link})
+    return record
+
+
 EVIDENCE_LINK = "#acceptance-evidence"
 LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
 
@@ -94,7 +165,7 @@ LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
 def review_line(item: dict[str, Any]) -> str:
     """One list line per item: a multi-line title or detail would break the list."""
     title, detail = (" ".join(str(item.get(key, "")).split()) for key in ("title", "detail"))
-    return f"- [{title}]({item['link']}): {detail}"
+    return f"- [{title}]({item['link']}): {detail}" if item["link"] else f"- {title}: {detail}"
 
 
 def plural(number: int, noun: str) -> str:
@@ -149,6 +220,7 @@ def main() -> None:
     path = artifact_dir / "review-attention.json"
     flags = json.loads(path.read_text())
     flag_red_acceptance_validator(flags, evidence_dir / "acceptance-validator-result.txt")
+    task_record = flag_task_compliance(flags, artifact_dir)
     accepted = flags["accepted_head"]
     later = command("git", "log", "--format=%H", f"{accepted}..HEAD").splitlines()
     # Acceptance evidence covers only the accepted head, so a later commit is covered
@@ -166,15 +238,29 @@ def main() -> None:
             f"{sha[:12]} ({command('git', 'log', '-1', '--format=%s', sha)})" for sha in uncovered
         )
         if later_item is None:
-            flags["orange"].append(
-                {
-                    "title": LATER_COMMITS_TITLE,
-                    "detail": detail,
-                    "link": "#acceptance-evidence",
-                }
-            )
+            # Keep the new item bound so the task-compliance note below joins it
+            # instead of adding a second item with the same title.
+            later_item = {
+                "title": LATER_COMMITS_TITLE,
+                "detail": detail,
+                "link": "#acceptance-evidence",
+            }
+            flags["orange"].append(later_item)
         else:
             later_item["detail"] = f"{later_item['detail']}, {detail}"
+    reviewed_head = task_record.get("reviewed_head")
+    if isinstance(reviewed_head, str) and reviewed_head:
+        try:
+            unreviewed = command("git", "log", "--format=%H", f"{reviewed_head}..HEAD").splitlines()
+        except subprocess.CalledProcessError:
+            unreviewed = []
+        if unreviewed:
+            note = "Not covered by task-compliance: " + ", ".join(sha[:12] for sha in unreviewed)
+            if later_item is None:
+                later_item = {"title": LATER_COMMITS_TITLE, "detail": note, "link": EVIDENCE_LINK}
+                flags["orange"].append(later_item)
+            elif note not in later_item["detail"]:
+                later_item["detail"] += ". " + note
     path.write_text(json.dumps(flags, indent=2) + "\n")
     branch = command("git", "branch", "--show-current")
     pr = json.loads(
@@ -213,7 +299,10 @@ def main() -> None:
     root = Path(command("git", "rev-parse", "--show-toplevel")).resolve()
     for tier in ("red", "orange", "yellow", "white"):
         for item in flags[tier]:
-            item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
+            if item.get("title") in ("Task-compliance not declared", "Task-compliance passed"):
+                item["link"] = ""
+            else:
+                item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
     title = issue.get("title")
     lines = [
         f"**Feature for #{issue['number']}:** {title}"
@@ -301,6 +390,24 @@ def main() -> None:
     )
     if later:
         lines.append("Later commits: " + ", ".join(f"`{sha}`" for sha in later))
+    evidence = ", ".join(
+        str(run.get("evidence", ""))
+        for run in cast(list[dict[str, Any]], task_record.get("runs", []))
+    )
+    lines.extend(
+        [
+            "",
+            "Task-compliance: "
+            + "; ".join(
+                (
+                    f"result {task_record['result']}",
+                    f"base {task_record.get('base', 'unavailable')}",
+                    f"reviewed head {task_record.get('reviewed_head', 'unavailable')}",
+                    f"evidence {evidence or 'unavailable'}",
+                )
+            ),
+        ]
+    )
     for name in ("acceptance-flow-evidence.md", "acceptance-findings.md"):
         evidence = evidence_dir / name
         if evidence.exists():
