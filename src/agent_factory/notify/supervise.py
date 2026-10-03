@@ -76,6 +76,7 @@ def _supervise_row(store: ClaimStore, row: dict[str, Any], now: datetime) -> Non
         identity = json.loads(row["process_json"])
     except ValueError:
         identity = {}
+    probe_failed = False
     if not identity and (evidence / "pid").is_file():
         try:
             pid = int((evidence / "pid").read_text())
@@ -83,12 +84,17 @@ def _supervise_row(store: ClaimStore, row: dict[str, Any], now: datetime) -> Non
             if started:
                 identity = {"pid": pid, "start": started}
                 records.update(store, row["id"], "launched", process_json=json.dumps(identity))
-        except (OSError, ValueError, ProcessProbeError):
+        except ProcessProbeError:
+            probe_failed = True
+        except (OSError, ValueError):
             pass
     if not identity:
         if (evidence / "exit.json").is_file() and (evidence / "stdout.json").is_file():
             outcome, detail, cost = parse_result(evidence / "stdout.json")
             records.end(store, row["id"], "launched", outcome, detail, cost_usd=cost)
+            return
+        # A pid we could not probe may still be running: retry until the deadline.
+        if probe_failed and now < datetime.fromisoformat(row["deadline_at"]):
             return
         if now - datetime.fromisoformat(row["launched_at"]) >= timedelta(minutes=2):
             records.end(store, row["id"], "launched", "failed", "launch lost")

@@ -6,17 +6,22 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from agent_factory.config import LocalConfig
+from agent_factory.config import LocalConfig, NotifyConfig, SharedConfig
+from agent_factory.notify import deliver as deliver_module
+from agent_factory.notify import marker
 from agent_factory.notify import store as records
+from agent_factory.notify import supervise as supervise_module
 from agent_factory.notify.deliver import start
+from agent_factory.notify.registry import LiveSession
 from agent_factory.notify.supervise import parse_result, supervise
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.supervisor import process_identity_status
+from agent_factory.supervisor import ProcessProbeError, process_identity_status
 from tests.integration.test_fix_config import _LOCAL_BASE
 
 
@@ -111,5 +116,84 @@ def test_supervision_isolates_bad_rows_and_invalid_stderr(tmp_path: Path) -> Non
         outcomes = [row["outcome"] for row in records.rows(store)]
         assert outcomes == ["failed", "failed", "sent"]
         assert all(row["state"] == "ended" for row in records.rows(store))
+    finally:
+        store.close()
+
+
+def test_unprobeable_pid_is_retried_until_its_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unprobeable(pid: int) -> str:
+        raise ProcessProbeError("ps unavailable")
+
+    monkeypatch.setattr(supervise_module, "process_start_identity", unprobeable)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    try:
+        claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
+        now = datetime.now(UTC)
+        records.insert(store, claim.id, "run", "o/r", 1, "fix", "failed", now)
+        row = records.rows(store)[0]
+        evidence = tmp_path / "evidence"
+        evidence.mkdir()
+        (evidence / "pid").write_text(str(os.getpid()))
+        records.update(
+            store,
+            row["id"],
+            "settling",
+            state="launched",
+            evidence_path=str(evidence),
+            launched_at=(now - timedelta(minutes=3)).isoformat(),
+            deadline_at=(now + timedelta(minutes=2)).isoformat(),
+        )
+        supervise(store, local)
+        assert records.rows(store)[0]["state"] == "launched"
+        records.update(
+            store, row["id"], "launched", deadline_at=(now - timedelta(seconds=1)).isoformat()
+        )
+        supervise(store, local)
+        ended = records.rows(store)[0]
+        assert (ended["state"], ended["outcome"], ended["detail"]) == (
+            "ended",
+            "failed",
+            "launch lost",
+        )
+    finally:
+        store.close()
+
+
+def test_launched_session_counts_when_recording_its_identity_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    shared = replace(shared, notify=NotifyConfig(enabled=True, agent="claude:fake:low"))
+    local = LocalConfig.from_toml(_LOCAL_BASE)
+    session = "c2ae018f-230c-437f-bd07-ff9f49ab6a82"
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    original_update = records.update
+
+    def failing_update(*args: object, **fields: object) -> bool:
+        if "process_json" in fields:
+            raise RuntimeError("database is locked")
+        return original_update(*args, **fields)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        deliver_module.registry, "resolve", lambda _: LiveSession(session, "target", 1)
+    )
+    monkeypatch.setattr(deliver_module.readiness, "diagnostics", lambda *_: [])
+    monkeypatch.setattr(deliver_module, "start", lambda *_: {"pid": 1, "start": "x"})
+    monkeypatch.setattr(records, "update", failing_update)
+    try:
+        claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
+        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        now = datetime.now(UTC)
+        records.insert(store, claim.id, run.id, "o/r", 1, "fix", "failed", now)
+        with pytest.raises(RuntimeError, match="database is locked"):
+            deliver_module.deliver(
+                store, shared, local, {("o/r", 1): marker.render(session, "target")}, now
+            )
+        row = records.rows(store)[0]
+        assert row["state"] == "launched"
+        assert records.daily_count(store, local, now) == 1
     finally:
         store.close()

@@ -157,7 +157,8 @@ def start(evidence: Path, profile: str, target: str, message: str) -> dict[str, 
     )
     try:
         started = process_start_identity(process.pid)
-    except ProcessProbeError:
+    except (ProcessProbeError, OSError):
+        # Supervision recovers the identity from the wrapper's pid file.
         started = None
     return {"pid": process.pid, "start": started} if started else {}
 
@@ -254,6 +255,8 @@ def deliver(
             continue
         try:
             identity = start(evidence, shared.notify.agent, session.name, message)
-            records.update(store, row["id"], "launched", process_json=json.dumps(identity))
         except Exception as error:
             records.end(store, row["id"], "launched", "failed", str(error), launched_at=None)
+            continue
+        # The session is running now, so it keeps launched_at and counts against the cap.
+        records.update(store, row["id"], "launched", process_json=json.dumps(identity))
