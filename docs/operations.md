@@ -214,6 +214,33 @@ and lists feature claims even if `[feature]` is later removed. Removing that
 section stops new handoffs and admissions while existing claims continue to
 be reported, synced, cleaned up, and pruned.
 
+### Selecting an and-scene fixture for an eval
+
+Add `fixture_ref = "<and-scene branch, tag, or commit>"` to the request's
+fenced `eval` TOML block to test a fixture change. Push the commit to a branch
+or tag on `https://github.com/Codagent-AI/and-scene.git` first. The factory
+uses `[repositories] and_scene` to fetch and resolve it at admission, requiring
+the commit to be published on that origin. The checkout defaults to the
+`and-scene` sibling of `[repositories] agent_runner`; `doctor` reports its
+condition informationally. If the key is omitted, the frozen agent-evals
+harness pin supplies the fixture and the checkout is not used.
+
+The frozen-inputs comment identifies the requested ref and full fixture SHA;
+each repetition comment includes the SHA, and the Project `Refs` field ends in
+`fixture@<first seven characters>` for pinned claims. Results from a
+non-default fixture are not comparable with results using the agent-evals pin.
+If the commit's only published branch is deleted before the claim finishes,
+later repetitions can fail at fixture checkout.
+
+Before rolling back to a release without fixture support, run
+`agent-factory --config <local.toml> pinned-claims --revision fixture` to find
+unfinished pinned claims. `scripts/deploy.sh` refuses that rollback while any
+are present. Pause the factory, let each claim settle or cancel it, then deploy
+the older release. The older release cannot accept `fixture_ref`; if a pinned
+evaluation is still needed, stay on a fixture-capable release. A new request
+without the key evaluates only the default fixture. A hand rollback or a
+deploy with an older script bypasses the refusal.
+
 ### Feature pull requests
 
 Move a writer-authored Feature issue in a configured fix target to Ready to

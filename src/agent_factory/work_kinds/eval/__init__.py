@@ -19,6 +19,7 @@ _KEYS = frozenset(
     {
         "agent_runner_ref",
         "agent_skills_ref",
+        "fixture_ref",
         "lead",
         "implementor",
         "tester",
@@ -26,6 +27,7 @@ _KEYS = frozenset(
         "repetitions",
     }
 )
+HONORED_REVISIONS = ("runner", "skills", "evals", "validator", "fixture")
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class ParsedRequest:
         suite: str,
         validator_sha: str | None = None,
         validator_source: str | None = None,
+        fixture_sha: str | None = None,
     ) -> FrozenSpec:
         _sha(runner_sha, "runner")
         _sha(skills_sha, "skills")
@@ -78,6 +81,11 @@ class ParsedRequest:
                 raise ValueError("validator source is required with its revision")
             revisions["validator"] = validator_sha
             payload["sources"] = {"validator": validator_source}
+        if fixture_sha is not None:
+            _sha(fixture_sha, "fixture")
+            if "fixture_ref" not in self.settings:
+                raise ValueError("fixture revision requires fixture_ref")
+            revisions["fixture"] = fixture_sha
         return FrozenSpec(
             1,
             payload,
@@ -122,7 +130,7 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
 
 
 def _validate_overrides(overrides: Mapping[str, object], defaults: EvalDefaults) -> None:
-    for key in ("agent_runner_ref", "agent_skills_ref"):
+    for key in ("agent_runner_ref", "agent_skills_ref", "fixture_ref"):
         if key in overrides and (not isinstance(overrides[key], str) or not overrides[key]):
             raise ValueError(f"{key} must be a non-empty string")
     for role in _ROLES:

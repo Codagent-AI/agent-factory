@@ -57,6 +57,43 @@ def test_local_config_uses_portable_root_and_default_operational_limits(tmp_path
     assert config.limits.inactivity_seconds == 1800
 
 
+def test_fixture_checkout_config_and_informational_diagnostic(tmp_path: Path) -> None:
+    config_path = _local_config(tmp_path, tmp_path / "missing-shared.toml")
+    config = LocalConfig.from_file(config_path)
+    assert config.repositories.and_scene == tmp_path / "and-scene"
+    missing = operations._fixture_checkout_diagnostic(config)  # pyright: ignore[reportPrivateUsage]
+    assert missing.available and missing.group == "eval"
+    assert "missing" in missing.detail and "fixture_ref requests will wait" in missing.detail
+    assert not any(
+        item.name == "and-scene checkout"
+        for item in operations.doctor(config, include_informational=False)
+    )
+    explicit = tmp_path / "custom-fixture"
+    config_path.write_text(
+        config_path.read_text().replace(
+            "[repositories]\n", f'[repositories]\nand_scene = "{explicit}"\n'
+        )
+    )
+    config = LocalConfig.from_file(config_path)
+    assert config.repositories.and_scene == explicit
+    subprocess.run(["git", "init", "--quiet", str(explicit)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(explicit),
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@github.com/other/repo.git",
+        ],
+        check=True,
+    )
+    diagnostic = operations._fixture_checkout_diagnostic(config)  # pyright: ignore[reportPrivateUsage]
+    assert diagnostic.available and "other/repo.git" in diagnostic.detail
+    assert "secret" not in diagnostic.detail
+
+
 def test_cli_doctor_is_read_only_and_status_explains_persisted_pause_and_holds(
     tmp_path: Path,
 ) -> None:

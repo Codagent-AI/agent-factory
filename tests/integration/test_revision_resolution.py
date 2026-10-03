@@ -17,6 +17,35 @@ from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler, parse_reque
 from agent_factory.work_kinds.eval.handler import validator_source_url
 
 
+def test_fixture_request_freezes_only_when_selected() -> None:
+    defaults = EvalDefaults("main", "main", {}, False, 1)
+    standard = parse_request("```eval\nrepetitions = 1\n```", defaults)
+    selected = parse_request('```eval\nfixture_ref = "eval/fixture-x"\n```', defaults)
+    assert "fixture_ref" not in standard.settings
+    assert selected.settings["fixture_ref"] == "eval/fixture-x"
+    assert standard.fingerprint != selected.fingerprint
+    for value in ('""', "1", "false"):
+        with pytest.raises(ValueError, match="fixture_ref must be a non-empty string"):
+            parse_request(f"```eval\nfixture_ref = {value}\n```", defaults)
+    sha = "a" * 40
+    standard_frozen = standard.freeze(
+        runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene"
+    )
+    selected_frozen = selected.freeze(
+        runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha="b" * 40
+    )
+    assert "fixture" not in cast(dict[str, object], standard_frozen.payload["revisions"])
+    assert cast(dict[str, object], selected_frozen.payload["revisions"])["fixture"] == "b" * 40
+    with pytest.raises(ValueError, match="fixture revision requires fixture_ref"):
+        standard.freeze(
+            runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha=sha
+        )
+    with pytest.raises(ValueError, match="full commit SHA"):
+        selected.freeze(
+            runner_sha=sha, skills_sha=sha, harness_sha=sha, suite="and-scene", fixture_sha="bad"
+        )
+
+
 def _revisions(claim: Claim) -> dict[str, object]:
     return cast(dict[str, object], claim.frozen_spec["revisions"])
 
@@ -314,6 +343,15 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
         f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]} validator@{'c' * 7}"
     )
     assert f"Agent Validator: {'c' * 40}" in handler.frozen_inputs_event(first)
+    revisions["fixture"] = "d" * 40
+    assert handler.refs_text(first) == (
+        f"runner@{'a' * 7} skills@{'b' * 7} evals@{old[:7]} validator@{'c' * 7} fixture@{'d' * 7}"
+    )
+    cast(dict[str, object], first.frozen_spec["settings"])["fixture_ref"] = "eval/fixture-x"
+    assert "requested `eval/fixture-x`" in handler.frozen_inputs_event(first)
+    revisions["fixture"] = "invalid"
+    assert handler.refs_text(first) is None
+    revisions["fixture"] = "d" * 40
     revisions["validator"] = "invalid"
     assert handler.refs_text(first) is None
     store.close()
