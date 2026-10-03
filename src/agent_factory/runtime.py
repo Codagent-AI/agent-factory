@@ -315,35 +315,31 @@ def cycle(state: Path, config_path: Path) -> None:
                         episode = job_cap.open_episode(store, cap_state, now)
                         key = f"{snapshot.repository}:{snapshot.issue_number}"
                         receipt = store.get_setting("job-cap-card", key)
-                        if receipt is not None and receipt.get("episode") == episode:
-                            if not receipt.get("comment_id"):
-                                job_cap.notify_card(
-                                    store,
-                                    client,
-                                    shared.bot_login,
-                                    snapshot.repository,
-                                    snapshot.issue_number,
-                                    episode,
-                                    cap_state,
-                                )
-                        else:
+                        if receipt is None or receipt.get("episode") != episode:
                             draft = controller.preflight(snapshot, resolve=handler.resolve_request)
-                            if draft is not None:
-                                holds = store.get_settings_by_prefix("admission", "quota:")
-                                if not any(
-                                    (hold := holds.get(f"quota:{provider}")) is not None
-                                    and hold_active(hold, now)
-                                    for provider in handler.providers_for_spec(draft.frozen_spec)
-                                ):
-                                    job_cap.notify_card(
-                                        store,
-                                        client,
-                                        shared.bot_login,
-                                        snapshot.repository,
-                                        snapshot.issue_number,
-                                        episode,
-                                        cap_state,
-                                    )
+                            if draft is None:
+                                continue
+                            holds = store.get_settings_by_prefix("admission", "quota:")
+                            if any(
+                                (hold := holds.get(f"quota:{provider}")) is not None
+                                and hold_active(hold, now)
+                                for provider in handler.providers_for_spec(draft.frozen_spec)
+                            ):
+                                continue
+                        if (
+                            receipt is None
+                            or receipt.get("episode") != episode
+                            or not receipt.get("comment_id")
+                        ):
+                            job_cap.notify_card(
+                                store,
+                                client,
+                                shared.bot_login,
+                                snapshot.repository,
+                                snapshot.issue_number,
+                                episode,
+                                cap_state,
+                            )
                     continue
                 claim = controller.accept(
                     snapshot,
