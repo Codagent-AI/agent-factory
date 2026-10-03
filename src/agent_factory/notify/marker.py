@@ -50,19 +50,19 @@ def _remove(body: str) -> str:
     return PATTERN.sub("", body).rstrip("\n")
 
 
-def stamp(body: str, session_id: str, name: str | None = None, now: datetime | None = None) -> str:
+def _append(body: str, marker: str) -> str:
     clean = _remove(body) if PATTERN.search(body) else body
     separator = "" if clean.endswith("\n\n") else "\n" if clean.endswith("\n") else "\n\n"
-    return clean + separator + render(session_id, name, now) + "\n"
+    return clean + separator + marker + "\n"
+
+
+def stamp(body: str, session_id: str, name: str | None = None, now: datetime | None = None) -> str:
+    return _append(body, render(session_id, name, now))
 
 
 def carry(old_body: str, new_body: str) -> str:
     matches = [match.group() for match in PATTERN.finditer(old_body) if parse(match.group())]
-    if not matches:
-        return new_body
-    clean = _remove(new_body) if PATTERN.search(new_body) else new_body
-    separator = "" if clean.endswith("\n\n") else "\n" if clean.endswith("\n") else "\n\n"
-    return clean + separator + matches[-1] + "\n"
+    return _append(new_body, matches[-1]) if matches else new_body
 
 
 def main() -> None:
