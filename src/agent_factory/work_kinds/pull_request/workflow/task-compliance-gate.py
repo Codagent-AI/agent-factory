@@ -231,7 +231,7 @@ def main() -> int:
     if sys.argv[1] != "--json" or len(sys.argv) != 3:
         raise ValueError("expected review --json <payload>")
     phase = str(payload["phase"])
-    if phase not in ("implemented", "verified"):
+    if phase != "verified":
         raise ValueError("invalid phase")
     artifacts = Path(str(payload["artifact_dir"]))
     tasks = Path(str(payload["tasks_file"]))

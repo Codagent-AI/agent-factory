@@ -381,7 +381,7 @@ When the target's Agent Validator configuration declares a review named `task-co
 
 The target branch head in the base SHALL be the one the claim's branch actually contains: on a resume or continuation, the target head that the resume merged, or found already contained; on a fresh start, the target head the branch was created from. A validator result of `Trusted`, `no_applicable_gates`, `no_changes`, a skipped prior pass, an error, or a run whose base, scope, or task context cannot be shown SHALL NOT be a verdict. Evidence that a review was dispatched and passed SHALL be accepted even when the validator has cleaned or rotated its logs after the pass. A review that passed for some changed paths but did not see others SHALL be `not-run`, naming the paths it did not see.
 
-The workflow SHALL apply this gate at two points. After implementation, and before archive, it SHALL reuse the implementation step's task-compliance review only when that review is shown to meet every binding above; otherwise it SHALL run a task-compliance-only review of the base-to-head diff itself, with the change's `tasks.md` as context, regardless of whether the tree is already trusted. Violations SHALL be repaired and the review run again within the same bounded repair the implementation step uses. After verification, which includes simplify, acceptance, and any acceptance repair, and before classification, it SHALL run the gate again whenever the head differs from the head of the last verdict in any file outside the repository's `openspec/` directory, or when no verdict exists, reading `tasks.md` from the archived change directory and refusing a verdict whose task content differs from the archived tasks. Repairs at this point SHALL stay within the same bound and are commits added after acceptance. Commits added after the last verdict, including those finalization adds, SHALL NOT be reviewed again in the attempt.
+The workflow SHALL apply this gate once after verification, which includes simplify, acceptance, and any acceptance repair, and before classification. No earlier verdict exists in the attempt, so it SHALL run regardless of the implementation step's validator status or trust history. It SHALL review the base-to-head diff with `tasks.md` from the archived change directory as context and refuse a verdict whose task content differs from the archived tasks. The implementation step's own task-compliance run remains an early repair opportunity but SHALL NOT count as the attempt's verdict. Violations SHALL be repaired and reviewed again within the bounded repair. These repairs are commits added after acceptance. Commits added after the last verdict, including those finalization adds, SHALL NOT be reviewed again in the attempt.
 
 The workflow SHALL record one task-compliance result for the attempt in its evidence: `passed`, `failed` when violations remain after the bounded repair, `not-run` with the validator status or error that prevented a verdict, or `not-declared` when the target declares no task-compliance review. The record SHALL name the base, the reviewed head, the tasks hash, and the validator output it relied on. When the target does not declare task-compliance, the workflow SHALL run no task-compliance review and SHALL record `not-declared`. A `failed` or `not-run` result SHALL NOT stop the workflow, push a different outcome, or withhold the pull request.
 
@@ -390,18 +390,18 @@ Each task-compliance review the workflow runs SHALL be unaffected by the claim c
 #### Scenario: The implementation step's validator returns Trusted
 
 - **WHEN** the implementation step's validator run reports `Status: Trusted` and evaluates no gates for a target that declares task-compliance
-- **THEN** the workflow runs a task-compliance review of the diff from the base to the implemented head with the change's tasks as context
+- **THEN** the workflow runs a task-compliance review of the diff from the base to the current head with the archived tasks as context before classification
 - **AND** the attempt's task-compliance result is that review's result, not the implementation step's pass
 
 #### Scenario: The implementer already committed its work
 
 - **WHEN** the implementation step's validator run reports `no_applicable_gates` because the implementer committed before validation
-- **THEN** the workflow still reviews the full diff from the base to the implemented head for task compliance
+- **THEN** the workflow still reviews the full diff from the base to the current head for task compliance before classification
 
 #### Scenario: The implementation step's review ran and passed
 
 - **WHEN** the implementation step's validator ran task-compliance and passed, but its review record does not name the base, the head, or the tasks it reviewed
-- **THEN** the workflow still runs its own task-compliance review of the diff from the base to the implemented head, and the attempt's result is that review's result
+- **THEN** the workflow still runs its own task-compliance review of the diff from the base to the current head before classification, and the attempt's result is that review's result
 
 #### Scenario: A review ends in an error
 
@@ -410,14 +410,14 @@ Each task-compliance review the workflow runs SHALL be unaffected by the claim c
 
 #### Scenario: Task-compliance finds a gap
 
-- **WHEN** the workflow's task-compliance review reports a violation after implementation
-- **THEN** the violation is repaired and the review runs again within the implementation step's repair bound before the change is archived
+- **WHEN** the workflow's task-compliance review reports a violation before classification
+- **THEN** the violation is repaired and the review runs again within the gate's bounded repair before classification
 
 #### Scenario: Task-compliance stays red
 
 - **WHEN** task-compliance violations remain after the bounded repair
 - **THEN** the attempt's task-compliance result is `failed` with the unresolved violations
-- **AND** the workflow continues to archive, verification, and finalization
+- **AND** the workflow continues to classification and finalization
 
 #### Scenario: No verdict can be produced
 
@@ -427,19 +427,14 @@ Each task-compliance review the workflow runs SHALL be unaffected by the claim c
 
 #### Scenario: Verification adds commits
 
-- **WHEN** simplify or an acceptance repair commits changes outside `openspec/` after the last task-compliance verdict
-- **THEN** before classification the workflow reviews the diff from the base to the current head again, using the archived tasks
-- **AND** the attempt's task-compliance result names the new reviewed head
-
-#### Scenario: Verification changes only OpenSpec files
-
-- **WHEN** the only commits after the last task-compliance verdict, such as the archive commit and the implemented checkpoint, change files under `openspec/`
-- **THEN** the workflow runs no further task-compliance review and keeps that verdict
+- **WHEN** simplify or an acceptance repair commits changes after implementation
+- **THEN** before classification the workflow reviews the diff from the base to the current head, using the archived tasks
+- **AND** the attempt's task-compliance result names the reviewed head
 
 #### Scenario: A resume merges the target branch
 
 - **WHEN** a resumed attempt merges the target branch's head into the claim's branch and continues at verification or finalization
-- **THEN** no verdict from an earlier attempt covers the merged head, and the workflow reviews the diff from the new merge base to the head before classification
+- **THEN** the current attempt has no earlier verdict, and the workflow reviews the diff from the new merge base to the head before classification
 - **AND** changes the merge brought in from the target branch are not part of the reviewed diff
 
 #### Scenario: Resume after implementation

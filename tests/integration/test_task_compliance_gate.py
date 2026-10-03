@@ -86,7 +86,7 @@ def gate(
     artifacts: Path,
     base: str,
     env: dict[str, str],
-    phase: str = "implemented",
+    phase: str = "verified",
 ) -> subprocess.CompletedProcess[str]:
     payload = {
         "phase": phase,
@@ -143,7 +143,7 @@ def test_gate_maps_dispatch_evidence(tmp_path: Path, mode: str, expected: str) -
     if mode == "deleted":
         assert (
             "[PASS]"
-            in (artifacts / "task-compliance" / "implemented-1" / "console.txt").read_text()
+            in (artifacts / "task-compliance" / "verified-1" / "console.txt").read_text()
         )
 
 
@@ -289,7 +289,7 @@ print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 't
     ledger = repo / ".git" / "agent-validator" / "trusted-snapshots.jsonl"
     ledger_before = ledger.read_bytes() if ledger.exists() else None
     payload = {
-        "phase": "implemented",
+        "phase": "verified",
         "artifact_dir": str(artifacts),
         "tasks_file": str(tasks),
         "target_head": base,
@@ -312,7 +312,7 @@ print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 't
     assert (repo / "validator_logs").exists() == before
     assert (ledger.read_bytes() if ledger.exists() else None) == ledger_before
     assert not list(tmp_path.glob("task-compliance-*/review"))
-    evidence = artifacts / "task-compliance" / "implemented-1"
+    evidence = artifacts / "task-compliance" / "verified-1"
     if mode == "review-fail":
         assert list(evidence.rglob("review_*task-compliance*.json"))
     elif retention == 3:
@@ -321,6 +321,13 @@ print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 't
         )
     else:
         assert "review:.:task-compliance" in (evidence / "console.txt").read_text()
+
+
+def test_gate_rejects_removed_implemented_phase(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    result = gate(repo, tasks, artifacts, base, env, "implemented")
+    assert result.returncode != 0
+    assert "invalid phase" in result.stderr
 
 
 def test_reused_failed_verdict_stays_failed(tmp_path: Path) -> None:

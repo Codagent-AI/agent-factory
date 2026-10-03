@@ -55,12 +55,10 @@ Rules:
    - Any unrecognized validator output gives `not-run`, never `passed`.
 2. **Feature workflow** (`factory-feature-v1.0.yaml`, design "Workflow steps"):
    - Add an `implementor-agent` session (`agent: implementor`).
-   - Insert the `implemented` gate between `implement` and `complete-task`, with `implement`'s
-     skip condition and `tasks_file: openspec/changes/{{change_name}}/tasks.md`.
    - Insert the `verified` gate after `restore-skipped-verify-status` and before `classify`, with
      `tasks_file: {{archived_dir}}/tasks.md`. Skip it only when an outcome exists or
      `validator_status` is not `passed`.
-   - Give each gate a loop of `max: 3`: a review step with `break_if: success`, and a repair step on
+   - Give the gate a loop of `max: 3`: a review step with `break_if: success`, and a repair step on
      `implementor-agent` with `skip_if: previous_success`. Follow the loop with one
      verification-only run, `continue_on_failure: true`.
    - Pass `artifact_dir` and `target_head` to the script.
@@ -113,7 +111,7 @@ Rules:
 - No-verdict cases record `not-run` with their reason and never `passed`. Resume merges review from
   the merged target head. OpenSpec-only commits keep the verdict, and code changes re-review.
   Subdirectory-only declarations name uncovered paths (INT-002).
-- The Runner validates the feature workflow, and both gates sit where the design places them
+- The Runner validates the feature workflow, and the single gate sits before classification
   (INT-003).
 - The PR description shows exactly one task-compliance item in the right tier, with consistent
   counts. The outcome qualifies `validator.status`, including when the record is missing, and

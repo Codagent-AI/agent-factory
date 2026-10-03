@@ -9,7 +9,7 @@ The feature pull request's description and the issue comment linking it SHALL sh
 - a `not-declared` result as a yellow item stating that the target repository declares no task-compliance review;
 - a `passed` result as a white item naming the head it reviewed, with its evidence.
 
-The annotation SHALL add these items from the attempt's recorded result, whatever the agent's classification contains, and SHALL show each one exactly once. When commits on the pull request follow the head the last task-compliance verdict reviewed, the item naming commits after acceptance SHALL list them as not covered by task-compliance. The comment linking a produced pull request SHALL state the task-compliance result whenever it is not `passed`, and its red count SHALL include a `not-run` or `failed` task-compliance item. A review round SHALL keep the task-compliance items of the description it started with.
+The annotation SHALL add these items from the attempt's recorded result, whatever the agent's classification contains, and SHALL show each one exactly once. When commits on the pull request follow the head the last task-compliance verdict reviewed, the item naming commits after acceptance SHALL list them as not covered by task-compliance. The comment linking a produced pull request SHALL state the task-compliance result when it is `not-run` or `failed`, and its red count SHALL include a `not-run` or `failed` task-compliance item. A review round SHALL keep the task-compliance items of the description it started with.
 
 #### Scenario: Review a pull request whose task-compliance did not run
 

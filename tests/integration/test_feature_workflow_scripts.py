@@ -1976,21 +1976,16 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
 
 def test_task_compliance_workflow_structure() -> None:
     workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
-    assert (
-        workflow.index("  - id: implement\n")
-        < workflow.index("  - id: task-compliance-implemented\n")
-        < workflow.index("  - id: complete-task\n")
-    )
+    assert "  - id: task-compliance-implemented\n" not in workflow
+    assert "  - id: task-compliance-implemented-final\n" not in workflow
+    assert workflow.index("  - id: implement\n") < workflow.index("  - id: complete-task\n")
     assert (
         workflow.index("  - id: restore-skipped-verify-status\n")
         < workflow.index("  - id: task-compliance-verified\n")
         < workflow.index("  - id: classify\n")
     )
     assert "  - name: implementor-agent\n    agent: implementor" in workflow
-    for phase, tasks in (
-        ("implemented", '"openspec/changes/{{change_name}}/tasks.md"'),
-        ("verified", '"{{archived_dir}}/tasks.md"'),
-    ):
+    for phase, tasks in (("verified", '"{{archived_dir}}/tasks.md"'),):
         block = workflow.split(f"  - id: task-compliance-{phase}\n", 1)[1].split(
             f"  - id: task-compliance-{phase}-final\n", 1
         )[0]

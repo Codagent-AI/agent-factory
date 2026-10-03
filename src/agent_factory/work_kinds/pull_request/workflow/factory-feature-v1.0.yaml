@@ -120,42 +120,6 @@ steps:
       task_file: "openspec/changes/{{change_name}}/tasks.md"
       run_session_report: "true"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
-  - id: task-compliance-implemented
-    continue_on_failure: true
-    loop:
-      max: 3
-    steps:
-      - id: task-compliance-review
-        script: task-compliance-gate.py
-        script_inputs:
-          phase: implemented
-          artifact_dir: "{{artifact_dir}}"
-          tasks_file: "openspec/changes/{{change_name}}/tasks.md"
-          target_head: "{{target_head}}"
-        continue_on_failure: true
-        break_if: success
-      - id: task-compliance-repair
-        session: implementor-agent
-        mode: autonomous
-        skip_if: previous_success
-        continue_on_failure: true
-        prompt: |
-          Read {{artifact_dir}}/task-compliance.json and its violations. Fix what
-          the tasks require, run agent-validator check, and commit fixes following
-          the project's conventions with [{{step_id}}] prepended. Leave any
-          violation you disagree with unfixed and explain why in your summary.
-          Do not run agent-validator review or update-review. The factory's next
-          review supplies the verdict.
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
-  - id: task-compliance-implemented-final
-    script: task-compliance-gate.py
-    script_inputs:
-      phase: implemented
-      artifact_dir: "{{artifact_dir}}"
-      tasks_file: "openspec/changes/{{change_name}}/tasks.md"
-      target_head: "{{target_head}}"
-    skip_if: previous_success
-    continue_on_failure: true
   - id: complete-task
     script: checkpoint.sh
     script_inputs:

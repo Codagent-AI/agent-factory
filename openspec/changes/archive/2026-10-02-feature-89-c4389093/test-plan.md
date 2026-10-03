@@ -54,7 +54,7 @@ No obligation calls a real model.
     deletes its logs after the pass.
   - The test skips when `agent-validator` is not installed or its review adapter cannot be stubbed,
     naming the reason.
-- Action: run the gate script with `phase=implemented`, `target_head=<target commit>`, and the
+- Action: run the gate script with `phase=verified`, `target_head=<target commit>`, and the
   tasks file.
 - Assertions:
   - `task-compliance.json` has `result` `failed` with the stub's violation in the first variant, and
@@ -123,10 +123,10 @@ No obligation calls a real model.
   - Every `review` call's working directory is a separate clone, not the claim clone.
 - Execution: `tests/integration/test_task_compliance_gate.py`.
 
-### INT-003: The feature workflow wires both gates and the Runner accepts it
+### INT-003: The feature workflow wires the pre-classify gate and the Runner accepts it
 
 - Covers:
-  - "Gate the feature on a bound task-compliance verdict": the gates' placement, the repair bound,
+  - "Gate the feature on a bound task-compliance verdict": the gate's placement, the repair bound,
     and gates that never stop the workflow;
   - "Classify review attention without blocking": the classifier is told not to add
     task-compliance items.
@@ -138,13 +138,12 @@ No obligation calls a real model.
 - Action: validate the catalog, then load the workflow's steps.
 - Assertions:
   - The Runner validates the workflow.
-  - The `implemented` gate loop sits after `implement` and before `complete-task`, and has
-    `implement`'s skip condition.
+  - No `implemented` gate step remains.
   - The `verified` gate sits after the verify status steps and before `classify`, and is skipped
     only when an outcome exists or `validator_status` is not `passed`.
-  - Each loop has `max: 3`, a `break_if: success` review step, and a repair step on an
+  - The loop has `max: 3`, a `break_if: success` review step, and a repair step on an
     `implementor-agent` session, followed by one verification-only run.
-  - No gate step captures `validator_status`, and `continue_on_failure` lets a `failed` result
+  - The gate does not capture `validator_status`, and `continue_on_failure` lets a `failed` result
     proceed.
   - The `classify` prompt says that task-compliance items are added by the workflow.
   - `record-outcome` receives the task-compliance record path.
@@ -245,8 +244,8 @@ No obligation calls a real model.
     three-dot `--base-branch` semantics. Any drift must produce `not-run`,
     never `passed`.
   - Checkbox-normalized tasks hashing across the implemented checkpoint and archive.
-  - The resume paths: resume at archive, verify, or finalize skips the first gate, and a merged
-    target head on resume.
+  - The resume paths: resume at archive, verify, or finalize still runs the pre-classify gate,
+    including against a merged target head.
   - `record-outcome.sh` is shared with the fix and task contracts. Their outcomes must not change.
   - Removing the temporary clone on errors and interrupts.
   - Repeated items in prior annotation work (deduplication by title, and later commits a

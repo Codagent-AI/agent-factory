@@ -58,7 +58,7 @@ On the factory side:
 
 ```
 factory-feature-v1.0.yaml
-  target-head ─ prepare-branch ─ … ─ implement ─▶ [task-compliance gate: implemented] ─ complete-task
+  target-head ─ prepare-branch ─ … ─ implement ─ complete-task
      ─ archive ─ push-archive ─ verify ─▶ [task-compliance gate: verified] ─ classify ─ verify-classification
      ─ finalize ─ annotate-pr (adds task-compliance items) ─ pr-details ─ record-outcome (qualifies validator)
 
@@ -71,7 +71,7 @@ handler._pr_message                (changed) one sentence when the result is not
 
 ### `task-compliance-gate.py review`
 
-The script takes JSON input from `script_inputs`: `phase` (`implemented` or `verified`),
+The script takes JSON input from `script_inputs`: `phase` (`verified`),
 `artifact_dir`, `tasks_file`, and `target_head`. Each invocation does the following:
 
 0. **Effective target ref.** The target ref used for the base is the target head the claim's branch
@@ -104,7 +104,7 @@ The script takes JSON input from `script_inputs`: `phase` (`implemented` or `ver
    - `head = git rev-parse HEAD` and `tree = git rev-parse HEAD^{tree}`;
    - `base = git merge-base <target_ref> HEAD`;
    - `tasks_sha256`, the SHA-256 of the tasks file with every task checkbox normalized to `- [ ]`,
-     so the `implemented` checkpoint ticking the box does not change the hash.
+     so checkpoint task ticks do not change the hash.
 4. **Isolated run.**
    - It runs `git clone --quiet --shared --no-checkout <clone> <tmp>/review` and then
      `git -C <tmp>/review checkout --detach <head>`. The clone has its own git dir, and so an empty
@@ -161,7 +161,7 @@ The script takes JSON input from `script_inputs`: `phase` (`implemented` or `ver
 {
   "result": "passed | failed | not-run | not-declared",
   "reason": "string, for not-run and not-declared",
-  "phase": "implemented | verified",
+  "phase": "verified",
   "target_head": "<sha>", "target_ref": "<sha>", "base": "<sha>",
   "declaring_entry_points": ["."], "uncovered_paths": [],
   "reviewed_head": "<sha>", "reviewed_tree": "<sha>",
@@ -173,17 +173,16 @@ The script takes JSON input from `script_inputs`: `phase` (`implemented` or `ver
 
 ### Workflow steps
 
-Both gates use the same structure as Runner's `run-validator`: a loop of at most three, then one
-verification-only run.
+The single gate before classification uses the same structure as Runner's `run-validator`: a
+loop of at most three, then one verification-only run.
 
 ```yaml
-- id: task-compliance-implemented
+- id: task-compliance-verified
   loop: {max: 3}
   continue_on_failure: true
-  skip_if: <implement's skip_if>
   steps:
     - id: task-compliance-review
-      script: task-compliance-gate.py   # phase: implemented, tasks_file: openspec/changes/<change>/tasks.md
+      script: task-compliance-gate.py   # phase: verified, tasks_file: {{archived_dir}}/tasks.md
       continue_on_failure: true
       break_if: success
     - id: task-compliance-repair
@@ -191,18 +190,17 @@ verification-only run.
       mode: autonomous
       skip_if: previous_success
       prompt: <repair prompt>
-- id: task-compliance-implemented-final
+- id: task-compliance-verified-final
   script: task-compliance-gate.py
-  skip_if: previous_success          # only after the repair budget ran out
+  skip_if: previous_success
   continue_on_failure: true
 ```
 
-The `verified` gate is the same block, inserted after `restore-skipped-verify-status`. It has
-`tasks_file: {{archived_dir}}/tasks.md` and `skip_if: 'sh: test -s …/feature-outcome.json || test
-"{{validator_status}}" != passed'`. A failed verify produces no PR, so it needs no gate. Neither
-gate changes `validator_status`, so a `failed` or `not-run` result never skips classification or
-finalization. The workflow gains an `implementor-agent` session (`agent: implementor`), as the fix
-and task workflows already have.
+The gate sits after `restore-skipped-verify-status` and before `classify`. It skips when an outcome
+exists or `validator_status` is not `passed`. A failed verify produces no PR, so it needs no gate.
+The gate does not change `validator_status`, so a `failed` or `not-run` result does not skip
+classification or finalization. The workflow uses an `implementor-agent` session (`agent:
+implementor`), as the fix and task workflows already have.
 
 The repair prompt points the implementor at the `violations` in `task-compliance.json` and tells it
 to:
@@ -281,9 +279,9 @@ Fix and task outcomes have no `task_compliance`, so their comments are unchanged
   state, so each run is a fresh full review. When agent-validator#176 lands, the clone remains
   correct and only costs a little extra. Removing it then is optional.
 - **The implement step's review is never reused.** Its record names no base, head, tree, or context,
-  so the binding requirement can never be proven from it. The factory always runs its own review
-  after implementation. The implement step's review remains useful as early repair. The spec's
-  reuse clause stays as a condition that today is never met, and its scenario is updated.
+  so the binding requirement can never be proven from it. The factory runs its own review before
+  classification. The implement step's review remains useful as early repair. The spec scenario
+  states that its review does not count as the attempt verdict.
 - **The base uses the effective merged target head.** On resume the base comes from
   `base-merge.json`'s `base_head`, the ref `prepare-branch` actually merged, rather than the frozen
   `target_head`. Otherwise target-side commits merged on resume would land in the reviewed diff.
@@ -294,13 +292,9 @@ Fix and task outcomes have no `task_compliance`, so their comments are unchanged
   `openspec/` lies under an entry point whose task-compliance job was dispatched. Mixed scope
   becomes `not-run` naming the uncovered paths. Entry-point `exclude` lists are honored as the
   target's choice and are not flagged.
-- **Gate 1 sits between `implement` and `complete-task`.** Repairs are then part of the implemented
-  phase, so a crash during repair redoes the phase instead of resuming past an unreviewed head.
-  Checkbox-normalized hashing keeps the verdict valid across the checkpoint's tick.
-- **The re-review trigger is any path outside `openspec/`, not "files the validator gates".**
-  Resolving the validator's real entry-point scope would need `detect` in the isolated clone and
-  depends on its output format. Archive and the checkpoint only touch `openspec/`, so this
-  deterministic rule never re-reviews after archive alone. The spec wording is updated to match.
+- **The gate sits before classification.** This covers the implementation step's skipped reviews
+  and changes made by verification and acceptance, with one factory review per attempt. The
+  archived tasks are the context, and checkbox-normalized hashing remains stable across checkpoints.
 - **No skip channel for repairs.** It keeps the verdict the factory's own. A violation that is
   wrong or out of scope shows red with the implementor's reasoning in the session evidence, rather
   than being silently waived.
@@ -309,10 +303,9 @@ Fix and task outcomes have no `task_compliance`, so their comments are unchanged
 
 ## Risks / Trade-offs
 
-- **Cost.** Each declaring run adds one task-compliance review after implement, typically one more
-  after verification (simplify and acceptance usually touch code), and up to three repair rounds per
-  gate. Each review is one model dispatch of a few minutes. This fits inside the feature execution
-  limits. Most runs pass on the first or second iteration.
+- **Cost.** Each declaring run adds one task-compliance review before classification and up to three
+  repair rounds. Each review is one model dispatch of a few minutes. This fits inside the feature
+  execution limits. Most runs pass on the first or second iteration.
 - **Coupling to the validator.** The design depends on:
   - the `agent-validator list` text format (`Review Gates:` and `Entry Points:`);
   - the review record file names and `status` values;
@@ -329,15 +322,15 @@ Fix and task outcomes have no `task_compliance`, so their comments are unchanged
   Global validator config (`cli` inheritance) is read from the host, as in the main clone.
 - **Temp space.** A shared clone checks out one tree. It is removed after each run, and on failure
   by a `finally` block.
-- **Stale verdict in the PR.** CI repairs after gate 2 are not re-reviewed. They are named in the
+- **Stale verdict in the PR.** CI repairs after the gate are not re-reviewed. They are named in the
   orange item as not covered. This is a deliberate trade-off (see proposal-review PR-1).
 
 ## Migration Plan
 
 - The change is factory-only and takes effect with an Agent Factory deploy. Running claims keep
   their release.
-- A claim admitted under the old release and resumed under the new one runs gate 2 before
-  classification as usual. Gate 1 is skipped when the resume point is past implement.
+- A claim admitted under the old release and resumed under the new one runs the gate before
+  classification as usual.
 - Rollback to a release without the gate is safe. The extra outcome keys are ignored, and no
   persisted claim state changes.
 

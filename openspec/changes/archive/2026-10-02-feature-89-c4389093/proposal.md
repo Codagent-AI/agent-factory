@@ -35,17 +35,11 @@ code it ships, or says plainly, in the PR and in the outcome, that it does not.
 
   Skips, `skipped_prior_pass`-style records, and runs whose base or scope cannot be shown are not
   verdicts.
-- **The factory runs the review it relies on.** At two points it runs a task-compliance-only
-  validator pass over the full base-to-head diff, with the change's `tasks.md` as context:
-  - after `implement`, so gaps are repaired before archive and acceptance;
-  - before classification, once verification, acceptance repairs, and any resume merge are done,
-    whenever the head has changed in validated code since the last verdict.
-
-  The first run uses the implement step's bounded repair. The second records its result and repairs
-  within the same bound. Its commits are post-acceptance commits, so the existing orange rule
-  covers them. A verdict from the implement step is reused only when evidence proves all the
-  binding facts above. Otherwise the factory runs its own. The tasks file is read from the archived
-  change directory after archive, and its hash is checked against the one reviewed.
+- **The factory runs the review it relies on.** Before classification, after verification,
+  acceptance repairs, and any resume merge, it runs a task-compliance-only validator pass over
+  the full base-to-head diff, with the archived change's `tasks.md` as context. It repairs findings
+  within the bounded repair loop. Its commits are post-acceptance commits, so the existing orange
+  rule covers them. The implement step still requests task-compliance as an early repair opportunity.
 - **The factory records one result per attempt** in the attempt's evidence:
   - `passed`, with the reviewed head;
   - `failed`: violations remain after repair;
@@ -83,7 +77,7 @@ None.
 
 - `factory-feature-execution`: implementing the change, classifying review attention, and merging on
   resume gain the factory-owned task-compliance gate. That means the binding rules, the
-  post-implement and pre-classification runs, and red classification for `not-run` and `failed`.
+  pre-classification review, and red classification for `not-run` and `failed`.
 - `factory-feature-reporting`: the PR annotation shows the task-compliance result and the commits it
   does not cover. The PR comment names a result other than `passed`. The outcome carries the
   qualified validator status and the `task_compliance` object.
@@ -95,10 +89,9 @@ The work fits the existing feature workflow, `factory-feature-v1.0.yaml`, in
 clone's untracked `.agent-runner/workflows/`. The change adds:
 
 - a step that records the base;
-- a gate step after `implement`/`complete-task` and before `seed-archive-status`;
-- a second gate step after `verify` and before `classify`.
+- one gate step after `verify` and before `classify`.
 
-One script in the workflow directory runs both gates. `annotate-pr.py` and `record-outcome.sh` gain
+One script in the workflow directory runs the gate. `annotate-pr.py` and `record-outcome.sh` gain
 the deterministic items and the qualified status. Agent Runner's `core/implement-task`,
 `core/run-validator`, and `core/verify-change` builtins are unchanged, because they live outside
 this repository.
