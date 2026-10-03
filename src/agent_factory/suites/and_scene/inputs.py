@@ -60,7 +60,7 @@ def _validator_hold(sha: str) -> str:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class RevisionInput:
     name: str
     noun: str
@@ -75,6 +75,8 @@ class RevisionInput:
     fly_commit: bool = False
     source_url: Callable[[Path], str] | None = None
     suite_arguments: Callable[[str], tuple[str, ...]] | None = None
+    # Harness flags that readiness requires the selected run.sh to accept.
+    suite_flags: tuple[str, ...] = ()
     frozen_inputs_text: Callable[[Mapping[str, object]], str | None] | None = None
     report_line: Callable[[str], str] | None = None
     execution_hold: Callable[[str], str] | None = None
@@ -82,41 +84,50 @@ class RevisionInput:
 
 EVAL_INPUTS: tuple[RevisionInput, ...] = (
     RevisionInput(
-        "runner",
-        "runner",
-        True,
-        "agent_runner_ref",
-        True,
-        True,
-        0,
-        _resolve,
+        name="runner",
+        noun="runner",
+        required=True,
+        setting="agent_runner_ref",
+        requestable=True,
+        has_default=True,
+        admission_rank=0,
+        resolve=_resolve,
         worktree=True,
         fly_commit=True,
     ),
     RevisionInput(
-        "skills",
-        "skills",
-        True,
-        "agent_skills_ref",
-        True,
-        True,
-        1,
-        _resolve,
+        name="skills",
+        noun="skills",
+        required=True,
+        setting="agent_skills_ref",
+        requestable=True,
+        has_default=True,
+        admission_rank=1,
+        resolve=_resolve,
         worktree=True,
         fly_commit=True,
     ),
     RevisionInput(
-        "evals", "harness", True, None, False, False, 4, _resolve, worktree=True, fly_commit=True
+        name="evals",
+        noun="harness",
+        required=True,
+        setting=None,
+        requestable=False,
+        has_default=False,
+        admission_rank=4,
+        resolve=_resolve,
+        worktree=True,
+        fly_commit=True,
     ),
     RevisionInput(
-        "validator",
-        "validator",
-        False,
-        "agent_validator_ref",
-        False,
-        True,
-        2,
-        _resolve_validator,
+        name="validator",
+        noun="validator",
+        required=False,
+        setting="agent_validator_ref",
+        requestable=False,
+        has_default=True,
+        admission_rank=2,
+        resolve=_resolve_validator,
         executions=frozenset({"fly"}),
         fly_commit=True,
         source_url=lambda checkout: validator_source_url(checkout),
@@ -124,15 +135,16 @@ EVAL_INPUTS: tuple[RevisionInput, ...] = (
         execution_hold=_validator_hold,
     ),
     RevisionInput(
-        "fixture",
-        "fixture",
-        False,
-        "fixture_ref",
-        True,
-        False,
-        3,
-        lambda checkout, ref: resolve_fixture(checkout, ref),
+        name="fixture",
+        noun="fixture",
+        required=False,
+        setting="fixture_ref",
+        requestable=True,
+        has_default=False,
+        admission_rank=3,
+        resolve=lambda checkout, ref: resolve_fixture(checkout, ref),
         suite_arguments=lambda sha: ("--fixture-ref", sha, "--repo", FIXTURE_REPOSITORY),
+        suite_flags=("--fixture-ref", "--repo"),
         frozen_inputs_text=_fixture_text,
         report_line=lambda sha: f"Fixture: {sha}",
     ),

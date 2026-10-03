@@ -254,3 +254,19 @@
 - **Alternatives considered:** separate tasks for golden capture and the refactor. Rejected: the
   workflow asks for one task. The ordering inside the task keeps the goldens trustworthy.
 - **Decision-bearing:** no.
+
+## pr-review: one release-neutral spec requirement, trimmed goldens, keyword-only registry entries
+
+- **Decision:** applied the operator's review of PR #98. The two cross-release requirements are
+  replaced by one `factory-eval-intake` requirement, "Keep frozen evaluation inputs stable across
+  deploys", which names no release and enumerates no inputs; the `factory-eval-reporting` delta is
+  removed. The golden characterization tests are trimmed to the combined Validator-plus-fixture
+  Fly case, the default Docker case, and the legacy pre-Validator claim; the other golden files
+  and the tests that read them (resolution, rejection, readiness, invalid-revision, and the other
+  claim shapes) are deleted, and the kept goldens are byte-identical. `RevisionInput` is
+  keyword-only, readiness reads an explicit `suite_flags` field, and `SourceRepositories.extra` is
+  documented as test-only. The INT-001 to INT-005 descriptions in `test-plan.md` record the
+  original, wider golden scope.
+- **Alternatives considered:** keep the wider golden set. Rejected by the operator as more fixture
+  than the refactor's risk needs.
+- **Decision-bearing:** no. The operator decided it in review.

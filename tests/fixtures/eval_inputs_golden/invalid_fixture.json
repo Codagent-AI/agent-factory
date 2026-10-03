@@ -1,9 +1,0 @@
-{
-  "refs": null,
-  "events": [
-    {
-      "key": "invalid-revisions",
-      "body": "Cannot report frozen revisions: missing or invalid fixture. Repair the saved claim inputs."
-    }
-  ]
-}

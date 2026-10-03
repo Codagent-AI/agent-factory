@@ -49,15 +49,16 @@ def test_ordinary_registry_input(
     _git(sources.evals, "commit", "-m", "sample flag")
     revisions["evals"] = _git(sources.evals, "rev-parse", "HEAD")
     sample_input = inputs.RevisionInput(
-        "sample",
-        "sample",
-        False,
-        "sample_ref",
-        True,
-        False,
-        5,
-        lambda checkout, ref: runtime._resolve_revision(cast(Path, checkout), ref),  # pyright: ignore[reportPrivateUsage]
+        name="sample",
+        noun="sample",
+        required=False,
+        setting="sample_ref",
+        requestable=True,
+        has_default=False,
+        admission_rank=5,
+        resolve=lambda checkout, ref: runtime._resolve_revision(cast(Path, checkout), ref),  # pyright: ignore[reportPrivateUsage]
         suite_arguments=lambda sha: ("--sample-ref", sha),
+        suite_flags=("--sample-ref",),
         report_line=lambda sha: f"Sample: {sha}",
     )
     monkeypatch.setattr(inputs, "EVAL_INPUTS", inputs.EVAL_INPUTS + (sample_input,))

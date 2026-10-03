@@ -59,6 +59,7 @@ class SourceRepositories:
     evals: Path
     validator: Path | None = None
     fixture: Path | None = None
+    # Only tests fill `extra`; a production input still needs a named field above.
     extra: Mapping[str, Path] = field(default_factory=lambda: cast(Mapping[str, Path], {}))
 
     def checkout(self, name: str) -> Path | None:
@@ -219,10 +220,10 @@ class AndSceneAdapter:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
         for entry in inputs.EVAL_INPUTS:
-            if entry.name not in pinned or entry.suite_arguments is None:
+            if entry.name not in pinned or not entry.suite_flags:
                 continue
             script = (worktrees.evals / _REQUIRED_EVAL_FILES[0]).read_text(encoding="utf-8")
-            flags = tuple(arg for arg in entry.suite_arguments("0" * 40) if arg.startswith("--"))
+            flags = entry.suite_flags
             if any(
                 not re.search(r"^[ \t]*" + re.escape(flag) + r"\)", script, re.MULTILINE)
                 for flag in flags

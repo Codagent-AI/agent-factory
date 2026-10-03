@@ -113,15 +113,10 @@ None.
 
 This is a behavior-preserving refactor. The existing requirements and scenarios in
 `factory-eval-intake`, `factory-eval-execution`, `factory-eval-reporting`, and `factory-operations`
-(the deploy fixture guard) are its acceptance contract and stay unchanged. The only deltas add
-requirements that make release-to-release compatibility an explicit, testable contract:
-
-- `factory-eval-intake`: frozen evaluation inputs stay compatible across releases. Accepted keys,
-  rejection messages, request fingerprints, recorded revisions and their order, readiness reasons,
-  suite arguments, Fly manifest revision entries, and `honored-revisions` output stay the same
-  after a deploy of this release or a rollback from it.
-- `factory-eval-reporting`: the frozen-inputs comment, repetition reports, `Refs` field, and
-  invalid-revisions event are byte-identical to the previous release's for every claim shape.
+(the deploy fixture guard) are its acceptance contract and stay unchanged. The only delta adds one
+requirement to `factory-eval-intake`: a deploy or rollback does not change a claim's frozen inputs
+or the reports rendered from them. It names no release and lists no inputs, so adding an eval
+input does not require editing it.
 
 ## Technical Approach
 
