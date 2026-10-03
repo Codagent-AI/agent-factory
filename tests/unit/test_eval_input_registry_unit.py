@@ -57,3 +57,20 @@ def test_registry_resolver_refuses_a_missing_checkout() -> None:
     assert runner is not None
     with pytest.raises(ReadinessError, match="source checkout is not configured"):
         runner.resolve(None, "main")
+
+
+def test_revision_input_rejects_positional_fields() -> None:
+    def resolve(_checkout: Path | None, ref: str) -> str:
+        return ref
+
+    with pytest.raises(TypeError, match="positional"):
+        inputs.RevisionInput(
+            "sample",  # type: ignore[call-arg]  # pyright: ignore[reportCallIssue]
+            noun="sample",
+            required=False,
+            setting=None,
+            requestable=False,
+            has_default=False,
+            admission_rank=0,
+            resolve=resolve,
+        )

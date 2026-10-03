@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -68,6 +69,45 @@ def _sources(tmp_path: Path) -> tuple[SourceRepositories, dict[str, str]]:
         "skills": skills_sha,
         "evals": evals_sha,
     }
+
+
+def test_readiness_checks_declared_flags_without_inspecting_argument_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, inputs
+
+    sources, _ = _sources(tmp_path)
+    script = sources.evals / "evals/agent-runner/and-scene/run.sh"
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\nesac\n")
+    fixture = inputs.by_name("fixture")
+    assert fixture is not None
+
+    def suite_arguments(_sha: str) -> tuple[str, ...]:
+        return ("--fixture-ref", "--value-is-not-a-flag", "--repo", "origin")
+
+    monkeypatch.setattr(
+        inputs,
+        "EVAL_INPUTS",
+        tuple(
+            replace(
+                entry,
+                suite_arguments=suite_arguments,
+            )
+            if entry is fixture
+            else entry
+            for entry in inputs.EVAL_INPUTS
+        ),
+    )
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n")
+    adapter = AndSceneAdapter(environment_file=environment)
+    worktrees = PreparedWorktrees("claim", sources.runner, sources.skills, sources.evals, sources)
+    assert adapter.readiness(worktrees, pinned={"fixture"}) is None
+
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\nesac\n")
+    assert "does not accept --fixture-ref and --repo" in str(
+        adapter.readiness(worktrees, pinned={"fixture"})
+    )
 
 
 def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
