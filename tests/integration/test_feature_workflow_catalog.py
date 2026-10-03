@@ -18,6 +18,25 @@ PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
 
 
+def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-implement-v1.0.yaml").read_text()
+    repair = text.split("  - id: repair-validation\n", 1)[1].split(
+        "  - id: recheck-validation\n", 1
+    )[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "git diff against the merge base",
+        "the failing check's definition and configuration",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in repair, phrase
+
+
 def suitable_runner() -> bool:
     if not RUNNER.is_file():
         return False

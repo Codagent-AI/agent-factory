@@ -215,3 +215,12 @@ Feature-only behavior SHALL NOT apply to task claims: definition, phase checkpoi
 
 - **WHEN** a human closes the issue of a task claim whose pull request merged before the factory synced
 - **THEN** the claim is not cancelled and still receives its merge sync
+
+### Requirement: Validator repair reports out-of-scope CHECK failures
+
+Validator repair SHALL be instructed not to remediate a CHECK failure that the branch did not cause (neither the affected code or dependency nor the check's definition and configuration changed against the merge base), or whose only remedy replaces or redirects a dependency source. Each condition SHALL apply independently. It SHALL leave that check failing and report the failure, why it is out of scope, and the proposed remedy for a human decision.
+
+#### Scenario: Unrelated advisory requires an unvetted dependency source
+
+- **WHEN** a dependency audit fails on a newly published advisory affecting an unchanged dependency and the available remedy redirects it to an unvetted fork
+- **THEN** validator repair leaves the check failing, commits no override, and reports the failure and proposed remedy for a human decision

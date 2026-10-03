@@ -11,6 +11,26 @@ from agent_factory.work_kinds.pull_request import launch
 WORKFLOW = Path("src/agent_factory/work_kinds/pull_request/workflow")
 
 
+def test_task_validator_repairs_leave_out_of_scope_checks_for_a_human() -> None:
+    text = (WORKFLOW / "factory-task-v1.0.yaml").read_text()
+    for phase in ("initial", "final"):
+        repair = text.split(f"      - id: repair-{phase}-validation\n", 1)[1].split(
+            f"      - id: recheck-{phase}-validation\n", 1
+        )[0]
+        for phrase in (
+            "either of these independent conditions",
+            "not caused by this branch's changes",
+            "git diff against the merge base",
+            "the failing check's definition and configuration",
+            "git, URL, or fork overrides or resolutions",
+            "even if the branch caused the failure",
+            "leave the check failing",
+            "Out-of-scope failures needing a human decision",
+            "what remedy a human would need to approve",
+        ):
+            assert phrase in repair, (phase, phrase)
+
+
 def run(command: list[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
 

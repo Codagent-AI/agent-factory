@@ -503,3 +503,11 @@ An outcome written after the task-compliance gate SHALL also carry a `task_compl
 - **WHEN** the target does not declare task-compliance and the checks pass
 - **THEN** the outcome's `validator.status` is `passed` and `task_compliance` records `not-declared`
 
+### Requirement: Validator repair reports out-of-scope CHECK failures
+
+Validator repair SHALL be instructed not to remediate a CHECK failure that the branch did not cause (neither the affected code or dependency nor the check's definition and configuration changed against the merge base), or whose only remedy replaces or redirects a dependency source. Each condition SHALL apply independently. It SHALL leave that check failing and report the failure, why it is out of scope, and the proposed remedy for a human decision.
+
+#### Scenario: Unrelated advisory requires an unvetted dependency source
+
+- **WHEN** a dependency audit fails on a newly published advisory affecting an unchanged dependency and the available remedy redirects it to an unvetted fork
+- **THEN** validator repair leaves the check failing, commits no override, and reports the failure and proposed remedy for a human decision

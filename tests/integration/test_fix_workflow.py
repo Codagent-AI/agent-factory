@@ -128,6 +128,23 @@ def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
         assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in recheck
 
 
+def test_validator_repairs_leave_out_of_scope_check_failures_for_a_human() -> None:
+    for phase in ("initial", "final"):
+        repair = _step_block(_workflow_text(), f"repair-{phase}-validation")
+        for phrase in (
+            "either of these independent conditions",
+            "not caused by this branch's changes",
+            "git diff against the merge base",
+            "the failing check's definition and configuration",
+            "git, URL, or fork overrides or resolutions",
+            "even if the branch caused the failure",
+            "leave the check failing",
+            "Out-of-scope failures needing a human decision",
+            "what remedy a human would need to approve",
+        ):
+            assert phrase in repair, (phase, phrase)
+
+
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
     for needle in ("Refs #", "agent-factory:claim:"):
