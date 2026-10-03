@@ -132,9 +132,9 @@ When watching is enabled, configuration loading SHALL fail on a missing reposito
 
 The section SHALL have no per-day session budget. A `daily_sessions` key left in the section SHALL NOT fail configuration loading and SHALL have no effect.
 
-#### Scenario: Configure the dispatch model and concurrency
+#### Scenario: Configure the dispatch model and budget
 
-- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a concurrency cap of 3
+- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a concurrency cap of 3, and sets no session budget because none exists
 - **THEN** dispatched sessions run with that profile, no more than 3 run at once, and no event is skipped because of how many sessions started that day
 
 #### Scenario: A leftover budget setting
