@@ -40,9 +40,13 @@ def step(
     local: LocalConfig,
     cards: list[ProjectQueueItem] | None,
 ) -> None:
-    from agent_factory.notify import deliver, detect, supervise
-    from agent_factory.notify import store as records
-
+    try:
+        from agent_factory.notify import deliver, detect, supervise
+        from agent_factory.notify import store as records
+    except Exception:
+        # A broken submodule must not escape the cycle's finally block.
+        logger.exception("notify import failed")
+        return
     _safe("supervise", lambda: supervise.supervise(store, local))
     if shared.notify.enabled:
         if cards is None:
