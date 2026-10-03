@@ -12,6 +12,15 @@ params:
   - name: implement_plan
     required: false
     default: "true"
+  - name: task_scope
+    required: false
+    default: "false"
+  - name: task_plan
+    required: false
+    default: "false"
+  - name: scope_base
+    required: false
+    default: ""
   - name: artifact_dir
     required: false
     default: /artifacts
@@ -32,6 +41,14 @@ steps:
   - id: seed-ci-status
     command: printf ''
     capture: ci_status
+
+  - id: seed-scope-status
+    command: 'if test "{{task_scope}}" = true; then printf crossed; else printf clean; fi'
+    capture: scope_status
+
+  - id: seed-chore-status
+    command: printf passed
+    capture: chore_status
 
   - id: implement-plan
     skip_if: 'sh: test "{{implement_plan}}" = false'
@@ -55,6 +72,17 @@ steps:
       Follow the repository's existing conventions. When you are done, commit your changes
       following the project's commit message conventions and prepend
       [{{step_id}}]. Then summarize what you changed.
+
+  - id: implement-task-plan
+    session: implementor-agent
+    mode: autonomous
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{task_plan}}" = false'
+    prompt: |
+      Implement the in-scope review plan from {{input_file}} and {{plan_json}}.
+      No red-test-first requirement applies. Run relevant checks and validator.
+      Keep within the Task boundary in
+      `.agent-runner/workflows/factory-task-boundary.md`. Commit as
+      [{{step_id}}] chore: ... Do not rerun acceptance.
 
   - id: run-validator
     workflow: builtin:core/run-validator-v1.0.yaml
@@ -102,11 +130,49 @@ steps:
     capture: ci_status
     skip_if: 'sh: test "{{validator_status}}" != passed'
 
+  - id: prepush-task-guard
+    workflow: factory-task-guard-v1.0.yaml
+    params:
+      base: "{{scope_base}}"
+      mode: prepush
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+    # write-result reports an incomplete guard; scope_status then stays crossed, so
+    # nothing is pushed.
+    continue_on_failure: true
+
+  # Rewrites only the round's unpushed subjects; a refusal leaves them for the check below.
+  - id: normalize-review-commits
+    command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
+    continue_on_failure: true
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+
+  - id: check-review-chore-commits
+    command: |
+      if python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json"; then printf passed; else printf failed; exit 1; fi
+    capture: chore_status
+    continue_on_failure: true
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+
+  - id: record-nonchore-crossing
+    command: |
+      python3 .agent-runner/workflows/scope-state.py cross "{{artifact_dir}}/scope-prepush.json" "review commits must have chore: subjects"
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed || test "{{chore_status}}" = passed'
+
+  - id: read-prepush-scope
+    command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
+    capture: scope_status
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed'
+
+  - id: record-prefinalize-head
+    command: git rev-parse HEAD
+    capture: prefinalize_head
+
   - id: finalize-pr
     workflow: builtin:core/finalize-pr-v1.0.yaml
     params:
       ci_fix_cycles: "1"
-    skip_if: 'sh: test "{{validator_status}}" != passed'
+    skip_if: 'sh: test "{{validator_status}}" != passed || test "{{scope_status}}" = crossed'
     continue_on_failure: true
 
   - id: mark-ci-failed
@@ -114,9 +180,39 @@ steps:
     capture: ci_status
     skip_if: previous_success
 
+  - id: postfinalize-task-guard
+    workflow: factory-task-guard-v1.0.yaml
+    params:
+      base: "{{scope_base}}"
+      mode: postfinalize
+      artifact_dir: "{{artifact_dir}}"
+    skip_if: 'sh: test "{{task_scope}}" != true || test "{{validator_status}}" != passed || test "{{scope_status}}" = crossed || test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
+    continue_on_failure: true
+
   - id: write-result
     command: |
       mkdir -p "$(dirname "{{result_path}}")"
       head=$(git rev-parse HEAD 2>/dev/null || printf '')
       printf '{"validator":{"status":"%s"},"ci":{"status":"%s"},"head_sha":"%s"}\n' \
         "{{validator_status}}" "{{ci_status}}" "$head" > "{{result_path}}"
+      if test "{{task_scope}}" = true; then
+        python3 - "{{result_path}}" "{{artifact_dir}}" <<'PY'
+      import json, sys
+      from pathlib import Path
+      path, evidence = Path(sys.argv[1]), Path(sys.argv[2])
+      result = json.loads(path.read_text())
+      scope = {}
+      for mode in ("prepush", "postfinalize"):
+          source = evidence / f"scope-{mode}.json"
+          if source.exists():
+              scope[mode] = json.loads(source.read_text())
+      if result["validator"]["status"] == "passed" and not scope.get("prepush", {}).get("complete"):
+          scope["prepush"] = {"crossed": True, "complete": False,
+                              "reasons": scope.get("prepush", {}).get("reasons") or ["pre-push Task scope guard did not complete"]}
+      if "{{prefinalize_head}}" != result["head_sha"] and not scope.get("postfinalize", {}).get("complete"):
+          scope["postfinalize"] = {"crossed": True, "complete": False,
+                                   "reasons": scope.get("postfinalize", {}).get("reasons") or ["post-finalize Task scope guard did not complete"]}
+      result["scope"] = scope
+      path.write_text(json.dumps(result) + "\n")
+      PY
+      fi

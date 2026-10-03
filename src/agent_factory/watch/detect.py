@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_factory.store import _dump
 from agent_factory.watch import store as watch_store
+from agent_factory.work_kinds.pull_request.kinds import registered
 
 if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
@@ -28,7 +29,7 @@ def _nested_url(value: dict[str, Any]) -> str | None:
 
 def _is_failure(run: dict[str, Any], result: dict[str, Any]) -> bool:
     return run["status"] in _FAILURES or (
-        run["kind"] in {"fix", "feature"}
+        run["kind"] in {definition.kind for definition in registered()}
         and run["status"] == "completed"
         and result.get("outcome") == "failed"
     )
@@ -59,6 +60,7 @@ def detect(
             AND consumed.key=r.id WHERE r.finished_at >= ?""",
             (run_sql_lower,),
         ).fetchall()
+        pull_request_kinds = {definition.kind for definition in registered()}
         for run in map(dict, runs):
             event_at = datetime.fromisoformat(run["finished_at"])
             result = watch_store.json_field(run, "result_json")
@@ -71,7 +73,7 @@ def detect(
                 event_kind = "FAILURE"
             elif (
                 horizon < event_at <= now
-                and run["kind"] in {"fix", "feature"}
+                and run["kind"] in pull_request_kinds
                 and run["status"] == "completed"
                 and result.get("outcome") == "pull-request"
             ):

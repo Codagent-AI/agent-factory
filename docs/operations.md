@@ -214,6 +214,33 @@ and lists feature claims even if `[feature]` is later removed. Removing that
 section stops new handoffs and admissions while existing claims continue to
 be reported, synced, cleaned up, and pruned.
 
+### Selecting an and-scene fixture for an eval
+
+Add `fixture_ref = "<and-scene branch, tag, or commit>"` to the request's
+fenced `eval` TOML block to test a fixture change. Push the commit to a branch
+or tag on `https://github.com/Codagent-AI/and-scene.git` first. The factory
+uses `[repositories] and_scene` to fetch and resolve it at admission, requiring
+the commit to be published on that origin. The checkout defaults to the
+`and-scene` sibling of `[repositories] agent_runner`; `doctor` reports its
+condition informationally. If the key is omitted, the frozen agent-evals
+harness pin supplies the fixture and the checkout is not used.
+
+The frozen-inputs comment identifies the requested ref and full fixture SHA;
+each repetition comment includes the SHA, and the Project `Refs` field ends in
+`fixture@<first seven characters>` for pinned claims. Results from a
+non-default fixture are not comparable with results using the agent-evals pin.
+If the commit's only published branch is deleted before the claim finishes,
+later repetitions can fail at fixture checkout.
+
+Before rolling back to a release without fixture support, run
+`agent-factory --config <local.toml> pinned-claims --revision fixture` to find
+unfinished pinned claims. `scripts/deploy.sh` refuses that rollback while any
+are present. Pause the factory, let each claim settle or cancel it, then deploy
+the older release. The older release cannot accept `fixture_ref`; if a pinned
+evaluation is still needed, stay on a fixture-capable release. A new request
+without the key evaluates only the default fixture. A hand rollback or a
+deploy with an older script bypasses the refusal.
+
 ### Feature pull requests
 
 Move a writer-authored Feature issue in a configured fix target to Ready to
@@ -280,6 +307,37 @@ copy are released as soon as its attempt has stopped, and its evidence stays
 until retention removes it. A Running item dragged to Ready, Review, or
 Done while its execution is verified is corrected back to Running; its worktrees
 are retained.
+
+## The task work kind
+
+To queue a maintenance chore, file a native Task in a `[fix]` target and move
+its card to Ready, or run `factory-assign` with `--apply task`. It needs a writer
+author, Owner=factory, and no `needs-input` label. Moving a Task to Ready is the
+handoff; routing does not queue Tasks automatically. `[routing] task_type`
+defaults to `Task`. Shared `[task]` enables intake, selects the
+`factory-task/1` contract and three role profiles, and uses the fix targets,
+branches, and credential. Local `[task]` is optional; only `execution = "host"`
+is supported. Its default limits are 900 seconds inactivity, 7200 seconds
+execution, and 10800 seconds total. Its window is always open unless a local
+schedule is supplied, and `minimum_free_gib` can override the shared floor.
+`doctor` shows `task-host`; `status` shows the task slot, blocked claims, and
+claims waiting for review.
+
+Triage declines behavior, public API or CLI, persisted data, OpenSpec specs,
+credentials, release/deploy configuration, branch protection, cross-repository
+work, oversized changes, and any product, design, compatibility, or other
+decision the issue leaves open. Decline any decision the issue leaves open with
+`needs-input`, naming that decision. Development tools and dependencies, CI, docs,
+behavior-preserving refactors and cleanups are in scope. Publishing, versioning,
+signing, tagging, and deploying are release configuration and out of scope.
+The pre-push and post-finalize scope guards check the complete diff.
+Task commits and PR
+titles use `chore:`; review rounds stop for out-of-scope feedback.
+
+Before enabling `[task]`, audit Ready Task cards in every fix target and move
+any that are not approved for factory admission to Backlog.
+Before rollback to a release lacking the task kind, settle or cancel open task
+claims: older releases cannot supervise, report, or sync them.
 
 ## The fix work kind
 
@@ -407,7 +465,7 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.codagent.agent-facto
 
 On Paul's Mac, `scripts/deploy.sh` does all of this, deploying each version as an
 immutable release. It also updates and builds Agent Validator from `origin/main`
-when the checkout is safe and no host fix or feature attempt runs. Use
+when the checkout is safe and no host fix, feature, or task attempt runs. Use
 `--no-validator` to skip that step. A host installation needs a one-time link
 from `agent-validator` on the LaunchAgent PATH to the checkout's `dist/index.js`;
 `doctor` checks it and reports whether the build is behind `origin/main`.
@@ -479,8 +537,8 @@ claim that a static plist proves live launchd acceptance.
 
 The watcher makes sure the factory itself works. It does not review the code the factory builds. The resident runs the watch step once per cycle, including while admissions are paused or the main cycle fails, and dispatches one fresh headless session (the packaged `factory-watch` workflow, contract `factory-watch/2`, in a throwaway checkout of `[watch] repository`) for each of two events:
 
-- `PR-READY`: a fix or feature run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). It posts nothing on the pull request and does not review its code.
-- `FAILURE`: an attempt stayed `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix or feature attempt completed with outcome `failed`. In either case, its result was consumed and `grace_minutes` has passed. `needs-input` outcomes are not triaged. Triage runs after the claim's own automatic retry has had its chance and never holds that retry. The session diagnoses the cause, may pause or resume the factory for containment, and files or updates an issue for a factory defect. The factory posts its cause, evidence, owner, actions, issues, pause state, and next step as one factory-bot comment on the claim's issue. For a transient or environment cause it files no issue unless there is a real defect, and says what the operator must do.
+- `PR-READY`: a fix, feature, or task run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). It posts nothing on the pull request and does not review its code.
+- `FAILURE`: an attempt stayed `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix, feature, or task attempt completed with outcome `failed`. In either case, its result was consumed and `grace_minutes` has passed. `needs-input` outcomes are not triaged. Triage runs after the claim's own automatic retry has had its chance and never holds that retry. The session diagnoses the cause, may pause or resume the factory for containment, and files or updates an issue for a factory defect. The factory posts its cause, evidence, owner, actions, issues, pause state, and next step as one factory-bot comment on the claim's issue. For a transient or environment cause it files no issue unless there is a real defect, and says what the operator must do.
 
 Neither session fixes anything: no branches, commits, pushes, or pull requests. Neither deploys, merges, touches a release, the service clone, or the operator's checkout, or fetches into the factory's mirrors. Both follow the `factory-triage` skill ("Headless PR-READY check", "Headless triage").
 

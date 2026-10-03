@@ -54,6 +54,7 @@ general_sources = [
 eval_label = "eval-request"
 eval_type = "Eval"
 bug_type = "Bug"
+task_type = "Task"
 hold_label = "factory-hold"
 
 [eval]
@@ -97,6 +98,9 @@ repository = "Codagent-AI/agent-evals"
 [[fix.targets]]
 repository = "Codagent-AI/agent-factory"
 
+[[fix.targets]]
+repository = "Codagent-AI/and-scene"
+
 [fix.defaults]
 lead = "claude:claude-opus-5-5:high"
 implementor = "codex:gpt-6-sol:medium"
@@ -110,6 +114,14 @@ lead = "claude:claude-opus-5-5:high"
 implementor = "codex:gpt-6-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
 crosscheck = "codex:gpt-6-sol:high"
+
+[task]
+contract = "factory-task/1"
+
+[task.defaults]
+lead = "claude:claude-sonnet-5-5:high"
+implementor = "codex:gpt-6-sol:medium"
+tester = "claude:claude-sonnet-5:medium"
 
 [watch]
 enabled = true

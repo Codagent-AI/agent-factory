@@ -24,6 +24,7 @@ from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment,
 from agent_factory.operations import Diagnostic, model_authentication
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.suites.and_scene import (
+    FIXTURE_REPOSITORY,
     AndSceneAdapter,
     GitWorktreeManager,
     PreparedWorktrees,
@@ -98,6 +99,7 @@ class EvalHandler:
             local.repositories.agent_skills,
             local.repositories.agent_evals,
             local.repositories.agent_validator if local.eval_execution == "fly" else None,
+            local.repositories.and_scene,
         )
         return cls(
             defaults,
@@ -240,6 +242,8 @@ class EvalHandler:
             if validator_sha and self.sources and self.sources.validator
             else None
         )
+        fixture_ref = request.settings.get("fixture_ref")
+        fixture_sha = self._resolve_fixture(str(fixture_ref)) if fixture_ref is not None else None
         harness_sha = self._resolve_harness_ref()
         frozen = request.freeze(
             runner_sha=runner_sha,
@@ -248,6 +252,7 @@ class EvalHandler:
             suite=self._suite,
             validator_sha=validator_sha,
             validator_source=validator_source,
+            fixture_sha=fixture_sha,
         )
         return ClaimDraft(
             snapshot.repository,
@@ -268,6 +273,11 @@ class EvalHandler:
         return runtime._resolve_revision(  # pyright: ignore[reportPrivateUsage]
             self.sources.evals, self._harness_ref
         )
+
+    def _resolve_fixture(self, ref: str) -> str:
+        if self.sources is None:
+            return ref
+        return resolve_fixture(self.sources.fixture, ref)
 
     def readiness(
         self,
@@ -304,7 +314,9 @@ class EvalHandler:
         failures = [check.detail for check in auth if not check.available]
         if failures:
             raise ReadinessError("; ".join(failures))
-        reason = self.adapter.readiness(worktrees)
+        reason = self.adapter.readiness(
+            worktrees, fixture_pinned="fixture" in mapping(claim.frozen_spec.get("revisions"))
+        )
         if reason:
             raise ReadinessError(reason)
         return Preparation(worktrees=worktrees)
@@ -545,7 +557,11 @@ class EvalHandler:
         )
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
-        body = _completion_message(run.unit_key, stored_result)
+        claim = self._store.get_claim(run.claim_id) if self._store is not None else None
+        fixture = mapping(claim.frozen_spec.get("revisions")).get("fixture") if claim else None
+        body = _completion_message(
+            run.unit_key, stored_result, fixture=str(fixture) if fixture is not None else None
+        )
         if stage == "exhausted":
             return (
                 f"{run.unit_key} exhausted its technical recovery attempt; "
@@ -565,11 +581,12 @@ class EvalHandler:
             for key in ("runner", "skills", "evals")
             if not isinstance(revisions.get(key), str) or not revisions.get(key)
         ]
-        if "validator" in revisions and not (
-            isinstance(revisions["validator"], str)
-            and re.fullmatch(r"[0-9a-f]{40}", revisions["validator"])
-        ):
-            invalid.append("validator")
+        for key in ("validator", "fixture"):
+            revision = revisions.get(key)
+            if key in revisions and not (
+                isinstance(revision, str) and re.fullmatch(r"[0-9a-f]{40}", revision)
+            ):
+                invalid.append(key)
         if invalid:
             if self._store is not None:
                 self._store.record_event(
@@ -580,11 +597,13 @@ class EvalHandler:
                     + ". Repair the saved claim inputs.",
                 )
             return None
-        keys = ("runner", "skills", "evals") + (("validator",) if "validator" in revisions else ())
+        keys = ("runner", "skills", "evals") + tuple(
+            key for key in ("validator", "fixture") if key in revisions
+        )
         return " ".join(f"{key}@{str(revisions[key])[:7]}" for key in keys)
 
     def frozen_inputs_event(self, claim: Claim) -> str:
-        return (
+        body = (
             "Frozen evaluation inputs:\n```json\n"
             + json.dumps(claim.frozen_spec, indent=2)
             + "\n```\nAgent Validator: "
@@ -593,6 +612,14 @@ class EvalHandler:
                 or "published npm release (not pinned)"
             )
         )
+        fixture = mapping(claim.frozen_spec.get("revisions")).get("fixture")
+        if fixture is not None:
+            requested = mapping(claim.frozen_spec.get("settings")).get("fixture_ref")
+            body += (
+                f"\nFixture: `{fixture}` (requested `{requested}`), selected by this request "
+                "instead of the agent-evals pin."
+            )
+        return body
 
 
 def plan_attempt(
@@ -815,7 +842,9 @@ def _public_diagnostic(value: str) -> str:
     )
 
 
-def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
+def _completion_message(
+    unit_key: str, result: Mapping[str, object], *, fixture: str | None = None
+) -> str:
     def text(value: object) -> str:
         if not isinstance(value, (str, int, float)) or isinstance(value, bool):
             return "unavailable"
@@ -826,6 +855,8 @@ def _completion_message(unit_key: str, result: Mapping[str, object]) -> str:
         f"Execution: {text(result.get('execution_status'))}",
         f"Product verdict: {text(result.get('product_verdict'))}",
     ]
+    if fixture is not None:
+        lines.append(f"Fixture: {fixture}")
     raw = result.get("report_summary")
     summary = (
         cast(Mapping[str, object], raw)
@@ -875,6 +906,11 @@ def resolve_revisions(sources: SourceRepositories, request: ParsedRequest) -> tu
 
 def validator_source_url(checkout: Path) -> str:
     """Return the public GitHub origin usable by Fly's remote builder."""
+    return github_https_origin(checkout, "Agent Validator checkout")
+
+
+def github_https_origin(checkout: Path, label: str) -> str:
+    """Normalize a checkout's GitHub origin without exposing its credentials."""
     try:
         result = subprocess.run(
             ["git", "-C", str(checkout), "config", "--get", "remote.origin.url"],
@@ -885,9 +921,7 @@ def validator_source_url(checkout: Path) -> str:
         )
         origin = result.stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
-        raise ReadinessError(
-            f"Cannot read Agent Validator checkout origin at {checkout}"
-        ) from error
+        raise ReadinessError(f"Cannot read {label} origin at {checkout}") from error
     shorthand = re.fullmatch(
         r"git@github\.com:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", origin
     )
@@ -895,7 +929,7 @@ def validator_source_url(checkout: Path) -> str:
         parsed = urlsplit(origin)
     except ValueError:
         raise ReadinessError(
-            "Agent Validator checkout origin is not a GitHub repository the Fly builder can fetch"
+            f"{label} origin is not a GitHub repository the Fly builder can fetch"
         ) from None
     path = (
         re.fullmatch(r"/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?", parsed.path)
@@ -909,16 +943,120 @@ def validator_source_url(checkout: Path) -> str:
     if match is None:
         # Keep the actionable scheme/host without leaking embedded credentials.
         redacted = (
-            origin
-            if parsed.scheme == "file"
-            else (
-                f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
-                if parsed.scheme
-                else origin.split("@", 1)[-1]
-            )
+            f"{parsed.scheme}://{parsed.hostname or 'unknown'}"
+            if parsed.scheme
+            else origin.split("@", 1)[-1]
         )
         raise ReadinessError(
-            f"Agent Validator checkout origin {redacted!r} is not a GitHub repository "
-            "the Fly builder can fetch"
+            f"{label} origin {redacted!r} is not a GitHub repository the Fly builder can fetch"
         )
     return f"https://github.com/{match.group(1)}/{match.group(2)}.git"
+
+
+def resolve_fixture(checkout: Path | None, ref: str) -> str:
+    """Resolve only commits reachable from the published and-scene origin."""
+    prefix = f"and-scene checkout {checkout}: "
+    if checkout is None or not checkout.is_dir() or not (checkout / ".git").exists():
+        raise ReadinessError(
+            prefix
+            + "is missing; clone "
+            + FIXTURE_REPOSITORY
+            + " there or set [repositories] and_scene"
+        )
+    try:
+        origin = github_https_origin(checkout, "and-scene checkout")
+    except ReadinessError as error:
+        raise ReadinessError(prefix + str(error)) from error
+    if origin.lower() != FIXTURE_REPOSITORY.lower():
+        raise ReadinessError(
+            prefix
+            + f"origin {origin} is not the and-scene fixture repository "
+            + FIXTURE_REPOSITORY
+        )
+    from agent_factory.runtime import _resolve_revision  # pyright: ignore[reportPrivateUsage]
+
+    try:
+        sha = _resolve_revision(checkout, ref)
+    except ReadinessError as error:
+        raise ReadinessError(prefix + str(error)) from error
+    try:
+        branches = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "for-each-ref",
+                "--contains",
+                sha,
+                "--format=%(refname)",
+                "refs/remotes/origin/",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReadinessError(
+            prefix + "cannot inspect origin branches; check the checkout"
+        ) from error
+    if branches.returncode != 0:
+        raise ReadinessError(
+            prefix + f"cannot inspect origin branches (git exit {branches.returncode})"
+        )
+    if branches.stdout.strip():
+        return sha
+    try:
+        tags = subprocess.run(
+            ["git", "-C", str(checkout), "ls-remote", "--tags", "origin"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReadinessError(
+            prefix + "cannot list tags on origin (git exit timeout); check remote access"
+        ) from error
+    if tags.returncode != 0:
+        raise ReadinessError(
+            prefix + f"cannot list tags on origin (git exit {tags.returncode}); check remote access"
+        )
+    listed: dict[str, str] = {}
+    for line in tags.stdout.splitlines():
+        object_id, _, name = line.partition("\t")
+        if name.startswith("refs/tags/") and not name.endswith("^{}"):
+            listed[name] = object_id
+    try:
+        containing = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "for-each-ref",
+                "--contains",
+                sha,
+                "--format=%(refname)%09%(objectname)",
+                "refs/tags/",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ReadinessError(prefix + "cannot inspect origin tags; check the checkout") from error
+    if containing.returncode != 0:
+        stderr = containing.stderr.strip()
+        detail = _public_diagnostic(stderr.splitlines()[-1]) if stderr else "no detail"
+        raise ReadinessError(
+            prefix + f"cannot inspect origin tags (git exit {containing.returncode}): {detail}"
+        )
+    for line in containing.stdout.splitlines():
+        name, _, object_id = line.partition("\t")
+        if listed.get(name) == object_id:
+            return sha
+    raise ReadinessError(
+        prefix + f"fixture commit {sha[:12]} is not published on {FIXTURE_REPOSITORY}; "
+        "push it to a branch or tag there"
+    )

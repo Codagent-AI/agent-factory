@@ -22,6 +22,8 @@ params:
 sessions:
   - name: lead-agent
     agent: lead
+  - name: implementor-agent
+    agent: implementor
   - name: proposal-reviewer
     agent: crosscheck
   - name: approach-reviewer
@@ -178,6 +180,42 @@ steps:
     command: printf passed
     capture: validator_status
     skip_if: 'sh: ! .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
+  - id: task-compliance-verified
+    continue_on_failure: true
+    loop:
+      max: 3
+    steps:
+      - id: task-compliance-review
+        script: task-compliance-gate.py
+        script_inputs:
+          phase: verified
+          artifact_dir: "{{artifact_dir}}"
+          tasks_file: "{{archived_dir}}/tasks.md"
+          target_head: "{{target_head}}"
+        continue_on_failure: true
+        break_if: success
+      - id: task-compliance-repair
+        session: implementor-agent
+        mode: autonomous
+        skip_if: previous_success
+        continue_on_failure: true
+        prompt: |
+          Read {{artifact_dir}}/task-compliance.json and its violations. Fix what
+          the tasks require, run agent-validator check, and commit fixes following
+          the project's conventions with [{{step_id}}] prepended. Leave any
+          violation you disagree with unfixed and explain why in your summary.
+          Do not run agent-validator review or update-review. The factory's next
+          review supplies the verdict.
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+  - id: task-compliance-verified-final
+    script: task-compliance-gate.py
+    script_inputs:
+      phase: verified
+      artifact_dir: "{{artifact_dir}}"
+      tasks_file: "{{archived_dir}}/tasks.md"
+      target_head: "{{target_head}}"
+    skip_if: previous_success
+    continue_on_failure: true
   - id: classify
     session: lead-agent
     mode: autonomous
@@ -195,6 +233,7 @@ steps:
       a repository-relative path of a committed file, citing the line or range that
       shows the item (path:12 or path:12-18) where one exists, or a URL; any other
       path is shown as a link to the acceptance evidence.
+      The workflow adds task-compliance items from its record; do not add any.
       Classify every review item into exactly one tier, and make items that share
       one root cause a single item in the highest tier any of them reaches, its
       detail listing each symptom. Red: each acceptance criterion that failed, each
@@ -272,6 +311,7 @@ steps:
       branch_name: "{{branch_name}}"
       pr_details: "{{pr_details}}"
       review_attention_counts: "{{artifact_dir}}/review-attention.json"
+      task_compliance: "{{artifact_dir}}/task-compliance.json"
       resume: "{{artifact_dir}}/resume.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
   - id: verify-outcome

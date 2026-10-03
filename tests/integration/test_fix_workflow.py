@@ -721,7 +721,7 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
     workflows = repo / ".agent-runner" / "workflows"
     workflows.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    for name in ("record-triage.sh",):
+    for name in ("record-triage.sh", "decision_json.py"):
         target = workflows / name
         target.write_text((PACKAGE / name).read_text(encoding="utf-8"), encoding="utf-8")
         target.chmod(0o755)

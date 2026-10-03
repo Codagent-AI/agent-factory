@@ -210,6 +210,47 @@ p.write_text(json.dumps(s));print(json.dumps(result))
     return config, board, environment, shared
 
 
+def _fixture_setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig, str]:
+    config, board, environment, shared = _setup(tmp_path)
+    fixture = tmp_path / "and-scene"
+    sha = _repo(fixture, {"README.md": "fixture"})
+    origin = fixture.parent / "and-scene-origin.git"
+    _git(fixture, "remote", "set-url", "origin", "https://github.com/Codagent-AI/and-scene.git")
+    _git(
+        fixture, "config", f"url.{origin}.insteadOf", "https://github.com/Codagent-AI/and-scene.git"
+    )
+    _git(fixture, "push", "--quiet", "origin", "HEAD:refs/heads/eval/fixture-x")
+    suite = tmp_path / "evals/evals/agent-runner/and-scene/run.sh"
+    content = suite.read_text().replace(
+        "(out/'run-state.json').write_text",
+        "(out/'argv.json').write_text(json.dumps(args))\n(out/'run-state.json').write_text",
+    )
+    content = content.replace(
+        "(out/'result.json').write_text(json.dumps(result))",
+        """if '--fixture-ref' in args:
+ fixture=args[args.index('--fixture-ref')+1]
+ repo=args[args.index('--repo')+1]
+ result['candidate_source']={'fixture_commit':fixture}
+ (out/'proof-metadata.json').write_text(json.dumps({'repo':repo,'fixture_ref':fixture,'fixture_commit':fixture}))
+(out/'result.json').write_text(json.dumps(result))""",
+    )
+    content += '\nOPTIONS = """\n --fixture-ref)\n --repo)\n"""\n'
+    suite.write_text(content)
+    _git(tmp_path / "evals", "add", ".")
+    _git(
+        tmp_path / "evals",
+        "-c",
+        "user.name=Factory Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-m",
+        "accept fixture",
+    )
+    _git(tmp_path / "evals", "push", "--quiet", "origin", "main")
+    return config, board, environment, shared, sha
+
+
 def _cli(
     config: Path,
     environment: dict[str, str],
@@ -308,6 +349,85 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
         assert len(store.runs_for_claim(run.claim_id)) == 1
     finally:
         (artifact / "finish").touch()
+        store.close()
+
+
+def test_fixture_request_runs_and_reports_through_tick(tmp_path: Path) -> None:
+    config, board, env, _shared, sha = _fixture_setup(tmp_path)
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = data["items"][0]["content"]["body"].replace(
+        "repetitions=1", 'repetitions=1\nfixture_ref="eval/fixture-x"'
+    )
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    run = store.nonterminal_runs()[0]
+    artifact = Path(run.evidence_path)
+    try:
+        claim = store.get_claim(run.claim_id)
+        assert claim is not None
+        assert claim.frozen_spec["settings"]["fixture_ref"] == "eval/fixture-x"  # type: ignore[index]
+        assert claim.frozen_spec["revisions"]["fixture"] == sha  # type: ignore[index]
+        deadline = time.monotonic() + 5
+        while not (artifact / "argv.json").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        argv = json.loads((artifact / "argv.json").read_text())
+        assert argv[argv.index("--fixture-ref") + 1] == sha
+        assert argv[argv.index("--repo") + 1] == "https://github.com/Codagent-AI/and-scene.git"
+        _cli(config, env, "pause")
+        _finish(store, artifact)
+        result_bytes = (artifact / "result.json").read_bytes()
+        metadata_bytes = (artifact / "proof-metadata.json").read_bytes()
+        _cli(config, env, "tick")
+        state = json.loads(board.read_text())
+        comments = "\n".join(comment["body"] for comment in state["comments"])
+        assert f"Fixture: `{sha}` (requested `eval/fixture-x`)" in comments
+        assert f"Fixture: {sha}" in comments
+        assert f"fixture@{sha[:7]}" in board.read_text()
+        assert json.loads(result_bytes)["candidate_source"]["fixture_commit"] == sha
+        assert json.loads(metadata_bytes)["repo"] == "https://github.com/Codagent-AI/and-scene.git"
+        assert (artifact / "result.json").read_bytes() == result_bytes
+        assert (artifact / "proof-metadata.json").read_bytes() == metadata_bytes
+    finally:
+        (artifact / "finish").touch()
+        store.close()
+
+
+def test_unpublished_fixture_waits_then_admits_after_push(tmp_path: Path) -> None:
+    config, board, env, _shared, _sha = _fixture_setup(tmp_path)
+    fixture = tmp_path / "and-scene"
+    _git(
+        fixture,
+        "-c",
+        "user.name=Factory Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "--allow-empty",
+        "-m",
+        "unpublished",
+    )
+    sha = _git(fixture, "rev-parse", "HEAD")
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = data["items"][0]["content"]["body"].replace(
+        "repetitions=1", f'repetitions=1\nfixture_ref="{sha}"'
+    )
+    board.write_text(json.dumps(data))
+    _cli(config, env, "tick")
+    _cli(config, env, "tick")
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+    try:
+        assert not store.all_claims()
+        comments = [c["body"] for c in json.loads(board.read_text())["comments"]]
+        assert sum("not published" in body for body in comments) == 1
+        _git(fixture, "push", "--quiet", "origin", "HEAD:refs/heads/eval/new")
+        _cli(config, env, "tick")
+        run = store.nonterminal_runs()[0]
+        assert store.get_claim(run.claim_id).frozen_spec["revisions"]["fixture"] == sha  # type: ignore[union-attr,index]
+        _finish(store, Path(run.evidence_path))
+    finally:
+        for run in store.nonterminal_runs():
+            _finish(store, Path(run.evidence_path))
         store.close()
 
 

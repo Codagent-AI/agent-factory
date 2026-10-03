@@ -53,7 +53,7 @@ Lead with what needs Paul, then the rest. Keep each item to one line with a link
    - Triage next steps that need Paul (from each triage result's `next_step`).
    - Blocked (`needs-input`) claims: the question in one line.
    - Finished evals awaiting a verdict: the score and failed gates.
-2. **Running**: each slot's claim, and how long it has run.
+2. **Running**: each eval, fix, feature, and task slot's claim, and how long it has run. Include blocked task claims and task PRs waiting for review under **Waiting on you**.
 3. **Since last time**: finished claims, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
 4. **Health**, only when something is off:
    - paused, a readiness failure, or a closed admission window;

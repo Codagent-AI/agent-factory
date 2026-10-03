@@ -7,10 +7,10 @@ TBD - created by archiving change feature-61-51640878. Update Purpose after arch
 
 When watching is enabled, every factory cycle, whether started by the resident or by `tick`, SHALL detect watch events after it consumes attempt results. It SHALL detect them whether the factory is paused or not, and whether the admission window is open or not. The watcher exists to make sure the factory itself works, so the factory SHALL detect only two event kinds:
 
-- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix or feature attempt recorded `completed` with the `failed` outcome, once the failure grace period has passed since it finished. A `needs-input` outcome is never a failure event;
-- `PR-READY`: a fix or feature attempt that completed with the `pull-request` outcome. This includes initial, recovery, and review-round attempts.
+- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix, feature, or task attempt recorded `completed` with the `failed` outcome, once the failure grace period has passed since it finished. A `needs-input` outcome is never a failure event;
+- `PR-READY`: a fix, feature, or task attempt that completed with the `pull-request` outcome. This includes initial, recovery, and review-round attempts.
 
-A newly admitted claim and a finished eval SHALL NOT be detected as events. The factory SHALL keep a durable watch cursor holding the time watching was enabled and the time of the last detection pass, and each cycle SHALL record its detection time there. `PR-READY` detection SHALL scan eligible fix and feature attempts completed with the `pull-request` outcome, finished after watching was enabled and within the last 7 days, and not previously detected.
+A newly admitted claim and a finished eval SHALL NOT be detected as events. The factory SHALL keep a durable watch cursor holding the time watching was enabled and the time of the last detection pass, and each cycle SHALL record its detection time there. `PR-READY` detection SHALL scan eligible fix, feature, and task attempts completed with the `pull-request` outcome, finished after watching was enabled and within the last 7 days, and not previously detected.
 
 `FAILURE` detection SHALL NOT depend on that point. Each cycle SHALL detect every attempt that meets all of these conditions:
 
@@ -86,6 +86,16 @@ So a change to the grace period can neither skip a failure nor detect it twice. 
 
 - **WHEN** watching is disabled for a day, a pull request becomes ready during that day, and watching is enabled again
 - **THEN** the pull request that became ready while watching was disabled is not detected
+
+#### Scenario: A task attempt opens a pull request
+
+- **WHEN** watching is enabled and a task attempt completes with the `pull-request` outcome
+- **THEN** the next cycle detects one `PR-READY` event for it
+
+#### Scenario: A task attempt fails
+
+- **WHEN** a task attempt is recorded `failed` and its result has been consumed past the grace period
+- **THEN** one `FAILURE` event is detected for it
 
 ### Requirement: Queue each event exactly once
 
