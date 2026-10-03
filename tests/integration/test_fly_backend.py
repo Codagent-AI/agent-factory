@@ -262,3 +262,10 @@ def test_lost_repetition_is_explained_but_does_not_become_a_product_failure() ->
     assert outcome is not None
     assert outcome.verdict == "pending-human-review"
     assert "rep-1" in outcome.event_body and "machine lost" in outcome.event_body
+
+
+def test_provenance_of_a_run_without_a_recorded_machine_is_empty() -> None:
+    def no_client(app: str, token_file: Path) -> FakeClient:
+        raise AssertionError("no Machine to observe")
+
+    assert FlyMachineBackend(client_factory=no_client).provenance({}) == {}
