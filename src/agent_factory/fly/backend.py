@@ -523,6 +523,9 @@ class FlyMachineBackend:
                     )
 
     def provenance(self, identity: Mapping[str, object]) -> Mapping[str, object]:
+        # A run that ended before its Machine was recorded has no identity to observe.
+        if not identity:
+            return {}
         try:
             machine = self._client(identity).get_machine(_machine_id(identity))
         except FlyApiError:
