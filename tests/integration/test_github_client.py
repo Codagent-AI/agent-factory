@@ -9,6 +9,8 @@ from graphql import parse
 from agent_factory.github import (
     GitHubApiError,
     GitHubClient,
+    GitHubHttpError,
+    GitHubMergeRejectedError,
     GitHubNotFoundError,
     ProjectQueueItem,
     _single_select_fields,  # pyright: ignore[reportPrivateUsage]
@@ -884,3 +886,20 @@ def test_merge_has_parent_checks_rated_head() -> None:
     gh = RecordingGh([json.dumps({"parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]})])
     client = GitHubClient(gh, lambda: "installation-token")
     assert client.merge_has_parent("example/repository", "c" * 40, "b" * 40)
+
+
+def test_merge_pull_request_distinguishes_definitive_rejection() -> None:
+    gh = RecordingGh([json.dumps({"merged": False, "message": "approval required"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+    with pytest.raises(GitHubMergeRejectedError, match="approval required"):
+        client.merge_pull_request("example/repository", 7, "a" * 40)
+
+    class HttpFailure(RecordingGh):
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubHttpError(405)
+
+    client = GitHubClient(HttpFailure([]), lambda: "installation-token")
+    with pytest.raises(GitHubMergeRejectedError, match="HTTP 405"):
+        client.merge_pull_request("example/repository", 7, "a" * 40)

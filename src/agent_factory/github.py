@@ -33,6 +33,18 @@ class GitHubNotFoundError(GitHubApiError):
     """The requested resource does not exist (HTTP 404), distinct from a lookup failure."""
 
 
+class GitHubHttpError(GitHubApiError):
+    """GitHub returned an HTTP error response to a request."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"gh api request failed (HTTP {status_code})")
+
+
+class GitHubMergeRejectedError(GitHubApiError):
+    """GitHub responded to a merge request with a definitive rejection."""
+
+
 @dataclass(frozen=True)
 class BranchInfo:
     name: str
@@ -137,6 +149,8 @@ class SubprocessGhRunner:
         if completed.returncode != 0:
             if "HTTP 404" in completed.stderr:
                 raise GitHubNotFoundError("gh api request failed: not found")
+            if match := re.search(r"\bHTTP (\d{3})\b", completed.stderr):
+                raise GitHubHttpError(int(match[1]))
             raise GitHubApiError("gh api request failed")
         return completed.stdout
 
@@ -510,14 +524,20 @@ class GitHubClient:
         return CommitChecks(reported, tuple(pending), tuple(failed), tuple(successful))
 
     def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
-        payload = _json_object(
-            self._request(
+        try:
+            response = self._request(
                 _write(f"repos/{repository}/pulls/{number}/merge", "PUT"),
                 {"merge_method": "merge", "sha": sha},
             )
-        )
+        except GitHubNotFoundError as error:
+            raise GitHubMergeRejectedError(str(error)) from error
+        except GitHubHttpError as error:
+            if 400 <= error.status_code < 500:
+                raise GitHubMergeRejectedError(str(error)) from error
+            raise
+        payload = _json_object(response)
         if payload.get("merged") is not True:
-            raise GitHubApiError(
+            raise GitHubMergeRejectedError(
                 str(payload.get("message") or "GitHub did not merge the pull request")
             )
         return _required_string(payload, "sha")

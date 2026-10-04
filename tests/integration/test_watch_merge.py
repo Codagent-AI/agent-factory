@@ -11,7 +11,13 @@ from typing import Any
 import pytest
 
 from agent_factory.config import FixConfig, FixTarget, SharedConfig, WatchConfig
-from agent_factory.github import CommitChecks, IssueComment, PullRequestState, ReviewActivity
+from agent_factory.github import (
+    CommitChecks,
+    GitHubMergeRejectedError,
+    IssueComment,
+    PullRequestState,
+    ReviewActivity,
+)
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.watch import deliver, merge, result
 from agent_factory.watch import store as watch_store
@@ -291,6 +297,53 @@ def test_lost_merge_response_is_reconciled_without_retry(tmp_path: Path) -> None
         merge.step(store, client, shared)  # type: ignore[arg-type]
         saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
         assert saved["state"] == "merged"
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_turning_off_does_not_settle_a_request_with_uncertain_outcome(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = UncertainClient()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        client.read_fails = False
+        off = replace(shared, watch=replace(shared.watch, auto_merge=False))
+        merge.step(store, client, off)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "waiting"
+        assert client.merges == [("o/r", 70, HEAD)]
+        client.pull = replace(client.pull, state="MERGED", merged_at="2026-10-03T00:00:00Z")
+        merge.step(store, client, off)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "waiting"
+        client.pull = replace(
+            client.pull,
+            state="MERGED",
+            merged_at="2026-10-03T00:00:00Z",
+            merge_commit_sha="b" * 40,
+        )
+        merge.step(store, client, off)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "merged"
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_definitive_merge_rejection_ends_once(tmp_path: Path) -> None:
+    class Rejected(Client):
+        def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
+            self.merges.append((repository, number, sha))
+            raise GitHubMergeRejectedError("approval required")
+
+    store, row, shared = setup(tmp_path)
+    client = Rejected()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "not-merged" and "approval required" in saved["reason"]
+        merge.step(store, client, shared)  # type: ignore[arg-type]
         assert client.merges == [("o/r", 70, HEAD)]
     finally:
         store.close()
