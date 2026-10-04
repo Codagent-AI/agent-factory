@@ -5,6 +5,8 @@ description: Watch one or more specific issues in the live Agent Factory until t
 
 # Factory watch
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Follow specific issues through the factory, and report once the factory stops moving them. Read `AGENTS.md` first.
 
 This is not the general watcher. The resident already detects PR-READY and FAILURE events and dispatches its own headless sessions (`AGENTS.md`, "Service-driven watcher"). This skill only waits on the issues Paul names. It costs no model session while it waits, because `watch.py` polls with sqlite and `gh` reads.
@@ -25,8 +27,9 @@ An issue counts as progressing while any of these hold:
 
 - a run of its latest claim has not finished;
 - a watch dispatch for that run is pending or launched;
-- that run ended with a PR-READY or FAILURE event and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
+- that run ended with a PR-READY or FAILURE event (a failed status, or a completed run whose outcome is `failed`) and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
 - its card is queued: open, Owner=factory, Status=Ready, and no `needs-input` label.
+- someone (not a bot) reviewed or commented on its pull request after the last run finished, so a review round is due. It waits for a free slot like any other run.
 
 Each state change prints one line, and each issue prints a `STOPPED` line when it stops. A `WATCH EVENT MISSING` part means the run ended with an event the watcher should have handled, but no dispatch appeared.
 

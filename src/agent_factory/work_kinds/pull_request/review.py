@@ -17,9 +17,11 @@ from agent_factory.github import (
     IssueComment,
     ReviewActivity,
 )
-from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
+from agent_factory.job_cap import hold_claim
+from agent_factory.store import Claim, ClaimStore, JobCapReached, NonterminalRunError, Run
 from agent_factory.suites.and_scene import ReadinessError, WorktreeError
 from agent_factory.work_kinds.base import Preparation
+from agent_factory.work_kinds.pull_request.blocked import discard_clones
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
 
 
@@ -126,27 +128,33 @@ def process_review_claim(
     )
     if not has_eligible_review(eligible):
         return None
-    store.set_claim_lifecycle(
-        claim.id, claim.lifecycle, {**claim.outcome, "pr": pr, "waiting_review": eligible}
-    )
-    claim = store.get_claim(claim.id) or claim
-    if (
+    can_start = not (
         store.is_paused()
         or store.nonterminal_runs(kind=handler.kind)
         or not memory_available
         or not handler.window(local).allows_admission(now)
         or not readiness()
-    ):
-        return None
+    )
     # Review rounds honor the same claim and provider quota holds as normal admission.
     quota = store.get_hold(claim.id, "quota")
     if quota is not None and hold_active(quota, now):
-        return None
+        can_start = False
     provider_holds = store.get_settings_by_prefix("admission", "quota:")
     for provider in handler.providers(claim):
         hold = provider_holds.get(f"quota:{provider}")
         if hold is not None and hold_active(hold, now):
+            can_start = False
+    if can_start:
+        cap_state = store.job_cap_state(now)
+        if cap_state.reached:
+            hold_claim(store, claim.id, cap_state, now)
             return None
+    store.set_claim_lifecycle(
+        claim.id, claim.lifecycle, {**claim.outcome, "pr": pr, "waiting_review": eligible}
+    )
+    claim = store.get_claim(claim.id) or claim
+    if not can_start:
+        return None
     branch = pr.get("branch")
     if not isinstance(branch, str):
         return None
@@ -197,6 +205,10 @@ def process_review_claim(
             evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-review"),
         )
     except (NonterminalRunError, OSError):
+        return None
+    except JobCapReached as error:
+        discard_clones(store, claim, preparation)
+        hold_claim(store, claim.id, error.state, now)
         return None
     stamp = now.isoformat()
     store.set_claim_lifecycle(

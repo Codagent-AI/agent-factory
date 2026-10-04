@@ -47,7 +47,7 @@ def end(
 
     A completed triage owes its triage comment on the claim's issue. A completed PR-READY
     check owes no comment: its filed issues are on the board and in status. A
-    budget-exhausted dispatch owes a budget notice, and any other end state an alert.
+    non-completed dispatch owes an alert.
     """
     with store._transaction():  # pyright: ignore[reportPrivateUsage]
         watch_store.update(
@@ -77,10 +77,9 @@ def end(
                 if merge["state"] == "not-merged":
                     queue(store, ended, "risk", result.verdict(validated, merge), target="pr")
             return
-        budget = state == "budget-exhausted"
         run = store.get_run(ended["run_id"]) if ended["run_id"] else None
-        notice = result.notice(ended, config_path, budget=budget, run=run)
-        queue(store, ended, "budget" if budget else "alert", notice)
+        notice = result.notice(ended, config_path, run=run)
+        queue(store, ended, "alert", notice)
 
 
 def deliver(store: ClaimStore, client: GitHubClient, bot_login: str) -> None:

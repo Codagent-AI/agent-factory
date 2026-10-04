@@ -80,6 +80,22 @@ steps:
     command: printf ''
     capture: changes_needed
 
+  # Runs on every round; a fix or feature round only reads these and skips the task steps.
+  - id: is-task
+    script: review-field.sh
+    script_inputs:
+      review_file: "{{review_file}}"
+      field: kind
+      equals: task
+    capture: is_task
+
+  - id: read-scope-base
+    script: review-field.sh
+    script_inputs:
+      review_file: "{{review_file}}"
+      field: head_sha
+    capture: scope_base
+
   - id: triage
     session: lead-agent
     mode: autonomous
@@ -104,6 +120,11 @@ steps:
       specifications. Update both the code and openspec/specs/ to match. Do not
       re-run acceptance; the reply must say acceptance was not re-run and the
       existing evidence still names the commit it describes.
+
+      On a task pull request, judge every requested change against the Task
+      boundary in `.agent-runner/workflows/factory-task-boundary.md`. Put
+      every out-of-scope request in needs_input, naming the request and whether
+      it belongs in a Bug or Feature. Implement nothing when needs_input is set.
 
       Use needs_input only when a human must decide: reviewer requests that
       conflict with each other, a change that needs a non-trivial specification
@@ -168,6 +189,10 @@ steps:
       fi
     capture: push_round
 
+  - id: select-implementation-plan
+    command: 'if test "{{is_task}}" = true; then printf false; else printf "{{changes_needed}}"; fi'
+    capture: shared_implement_plan
+
   # Finalization may rewrite the description; a feature PR's annotated one is restored,
   # with the round's commits and the items they may have fixed added to it.
   - id: save-description
@@ -184,7 +209,10 @@ steps:
     params:
       input_file: "{{review_file}}"
       plan_json: "{{review_decision}}"
-      implement_plan: "{{changes_needed}}"
+      implement_plan: "{{shared_implement_plan}}"
+      task_plan: "{{changes_needed}}"
+      task_scope: "{{is_task}}"
+      scope_base: "{{scope_base}}"
       result_path: "{{artifact_dir}}/implement-result.json"
       artifact_dir: "{{artifact_dir}}"
     skip_if: 'sh: test "{{push_round}}" != true'
@@ -199,6 +227,22 @@ steps:
       artifact_dir: "{{artifact_dir}}"
     skip_if: 'sh: test "{{push_round}}" != true'
     continue_on_failure: true
+
+  - id: record-task-scope-stop
+    command: |
+      python3 - "{{artifact_dir}}" <<'PY'
+      import json, sys
+      from pathlib import Path
+      evidence = Path(sys.argv[1])
+      source = evidence / "scope-prepush.json"
+      result = json.loads(source.read_text()) if source.exists() else {}
+      if result.get("crossed") and result.get("complete"):
+          output = {"contract": "factory-review/1", "outcome": "needs-input",
+                    "reasons": result.get("reasons") or ["Task scope crossed before push"],
+                    "answered": [], "changed": []}
+          (evidence / "review-outcome.json").write_text(json.dumps(output) + "\n")
+      PY
+    skip_if: 'sh: test "{{is_task}}" != true'
 
   - id: respond
     session: lead-agent

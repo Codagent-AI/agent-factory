@@ -169,14 +169,9 @@ def notice(
     row: dict[str, Any],
     config_path: object,
     *,
-    budget: bool,
     run: Run | None = None,
 ) -> str:
-    description = (
-        "No agent ran because today's watch session budget was spent."
-        if budget
-        else f"Watch dispatch {row['state']}: {row['detail']}"
-    )
+    description = f"Watch dispatch {row['state']}: {row['detail']}"
     return "\n".join(
         (
             event_line(row, run),

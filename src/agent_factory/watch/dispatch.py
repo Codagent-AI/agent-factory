@@ -1,4 +1,4 @@
-"""Apply the daily budget and concurrency cap before starting sessions."""
+"""Apply concurrency and readiness gates before starting sessions."""
 
 from __future__ import annotations
 
@@ -47,7 +47,6 @@ def dispatch(
     token_provider: InstallationTokenProvider,
 ) -> None:
     watch = shared.watch
-    started_today = watch_store.daily_count(store, local.schedule.timezone, datetime.now(UTC))
     readiness_failure: str | None = None  # computed once, only when a row could launch
     for row in watch_store.rows(store, "pending"):
         if row["event_kind"] not in {"PR-READY", "FAILURE"}:
@@ -60,12 +59,6 @@ def dispatch(
                 "watch event %s: no parseable pull request URL", result.event_line(row, run)
             )
             watch_store.update(store, row["id"], state="logged")
-            continue
-        # The budget comes first so a spent budget is reported even when nothing could launch.
-        if started_today >= watch.daily_sessions:
-            deliver.end(
-                store, row["id"], "budget-exhausted", "daily session budget spent", config_path
-            )
             continue
         if watch_store.running_count(store) >= watch.max_sessions:
             continue
@@ -92,7 +85,6 @@ def dispatch(
             watch.auto_merge and row["event_kind"] == "PR-READY",
         ):
             continue
-        started_today += 1
         launched = watch_store.get(store, row["id"])
         assert launched is not None
         try:

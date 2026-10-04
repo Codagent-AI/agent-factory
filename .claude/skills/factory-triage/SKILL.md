@@ -5,7 +5,9 @@ description: Diagnose a failed, interrupted, or timed-out Agent Factory run on P
 
 # Factory triage
 
-The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix or feature run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
+The resident's watcher makes sure the factory itself works. It is not code review of what the factory builds. For each failed run it dispatches a headless triage session (see "Headless triage"), and for each pull request a fix, feature, or task run opens it dispatches a headless check of the run for factory defects (see "Headless PR-READY check"). Both only diagnose and file issues; neither fixes anything. Use this skill on demand when Paul asks about a failure, or when `factory-status` shows one nobody has handled; then the fix steps below apply. Read `AGENTS.md` first: it describes the service clone, the deploy script, and configuration pins.
 
 ## Standing rules
 
@@ -147,14 +149,14 @@ For each genuine factory defect:
 
 ## Headless PR-READY check
 
-A fix or feature run finished with a pull request. Check what the run exposed about the factory. When `auto_merge` in the brief is true, also rate the pull request's risk. Otherwise do not review its code. Do not post a review or comment on the pull request, approve, request changes, or merge it. Do not commit, push, or open a pull request.
+A fix, feature, or task run finished with a pull request. Check what the run exposed about the factory. When `auto_merge` in the brief is true, also rate the pull request's risk. Otherwise do not review its code. Do not post a review or comment on the pull request, approve, request changes, or merge it. Do not commit, push, or open a pull request.
 
 1. Read the pull request description: `gh pr view <number> -R <repository> --json title,body,url`. Factory descriptions mark attention items red (needs attention) or orange (worth a look).
 2. For each red and orange item, decide whether it points to a factory defect, for example a workflow step that misfired, a wrong resume, a validator run that misbehaved, or a misleading annotation. Items about the product change, and false alarms, are not factory defects; leave them.
 3. As needed, confirm from the run's evidence (`run.evidence_path` in the brief: logs, the Runner session's `audit.log`, the outcome file) and the code in `paths.clone`.
 4. File or update an issue for each genuine factory defect (see "Filing a factory defect").
 
-When `auto_merge` is true, read the diff, description, and evidence as needed. Rate risk `low`, `medium`, or `high`. Either kind of pull request SHALL NOT be rated `low` when any of these holds:
+When `auto_merge` is true, read the diff, description, and evidence as needed. Rate risk `low`, `medium`, or `high`. A fix, task, or feature pull request SHALL NOT be rated `low` when any of these holds:
 
 - the description has a red attention item;
 - it changes authentication, permissions, tokens, or credentials;
@@ -172,6 +174,13 @@ A fix pull request MAY be rated `low` only when, in addition:
 - it changes at most 300 lines outside test files, counting added plus deleted lines and excluding generated lockfiles;
 - every orange item was checked against the diff and evidence and judged harmless.
 
+A task pull request MAY be rated `low` only when, in addition:
+
+- every change is needed for the task the issue describes, with no unrelated refactoring, cleanup, or new feature;
+- every behavior change is covered by a test it adds or updates; a change with no behavior change, such as documentation or comments, needs no new test;
+- it changes at most 300 lines outside test files, counting added plus deleted lines and excluding generated lockfiles;
+- every orange item was checked against the diff and evidence and judged harmless.
+
 A feature pull request MAY be rated `low` only when, in addition:
 
 - its specification changes only add requirements, with none modified or removed, and existing behavior is unchanged or the new behavior is off unless a setting enables it;
@@ -179,7 +188,7 @@ A feature pull request MAY be rated `low` only when, in addition:
 - its description has no orange attention item;
 - every added specification scenario is covered by a test.
 
-When a criterion cannot be established, do not rate it `low`. Give reasons naming every criterion that kept it from `low`, or confirming each criterion for `low`. For a low-risk fix, explain why every orange item is harmless.
+When a criterion cannot be established, do not rate it `low`. Give reasons naming every criterion that kept it from `low`, or confirming each criterion for `low`. For a low-risk fix or task, explain why every orange item is harmless. Use the bar for the brief's attempt kind.
 
 Write exactly one JSON object to `result_file` with `procedure: "pr-check"`, `summary` (one or two sentences: what you checked and found), `issues_filed` and `issues_updated` (arrays of issue URLs). Leave both arrays empty when you found no factory defect. When `auto_merge` is true, include `risk: {"level": "low"|"medium"|"high", "head_sha": "<40-hex>", "reasons": ["..."]}`. When false, omit `risk`. The resident posts a risk verdict on the pull request only when a rating was required and returned; `status` lists the issues and verdict.
 

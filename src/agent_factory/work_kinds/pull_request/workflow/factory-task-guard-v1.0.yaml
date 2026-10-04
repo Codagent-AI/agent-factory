@@ -1,0 +1,48 @@
+name: factory-task-guard
+description: "Check the complete Task diff against the Task boundary before and after pushing."
+hidden: true
+
+params:
+  - name: base
+    required: true
+  - name: mode
+    required: true
+  - name: artifact_dir
+    required: true
+
+sessions:
+  - name: lead-agent
+    agent: lead
+
+steps:
+  - id: scope-floor
+    command: python3 .agent-runner/workflows/task-scope-floor.py "{{base}}"
+    capture: scope_floor
+
+  - id: task-scope-review
+    session: lead-agent
+    mode: autonomous
+    capture: scope_decision
+    prompt: |
+      Run `git diff {{base}}..HEAD` now and review that complete diff against
+      the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
+      Judge only the current diff: earlier conversation in this session may
+      describe an older tree that later commits already changed.
+      The deterministic floor found these definite crossings: {{scope_floor}}.
+      Return only JSON {"crossed": boolean, "reasons": [strings]}. Name each
+      crossing and whether it belongs in a Bug or Feature. Do not edit files.
+
+  - id: record-scope
+    script: record-scope.sh
+    script_inputs:
+      floor: "{{scope_floor}}"
+      decision: "{{scope_decision}}"
+      scope_path: "{{artifact_dir}}/scope-{{mode}}.json"
+    capture: scope_status
+
+  - id: record-chore-subjects
+    command: python3 .agent-runner/workflows/check-chore-subjects.py "{{base}}" "{{artifact_dir}}/nonchore-commits.json" || test $? -eq 3
+    skip_if: 'sh: test "{{mode}}" != postfinalize'
+
+  - id: complete-guard
+    command: python3 .agent-runner/workflows/scope-state.py complete "{{artifact_dir}}/scope-{{mode}}.json"

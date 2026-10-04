@@ -7,10 +7,10 @@ TBD - created by archiving change feature-61-51640878. Update Purpose after arch
 
 When watching is enabled, every factory cycle, whether started by the resident or by `tick`, SHALL detect watch events after it consumes attempt results. It SHALL detect them whether the factory is paused or not, and whether the admission window is open or not. The watcher exists to make sure the factory itself works, so the factory SHALL detect only two event kinds:
 
-- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix or feature attempt recorded `completed` with the `failed` outcome, once the failure grace period has passed since it finished. A `needs-input` outcome is never a failure event;
-- `PR-READY`: a fix or feature attempt that completed with the `pull-request` outcome. This includes initial, recovery, and review-round attempts.
+- `FAILURE`: an attempt of any kind whose status is `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix, feature, or task attempt recorded `completed` with the `failed` outcome, once the failure grace period has passed since it finished. A `needs-input` outcome is never a failure event;
+- `PR-READY`: a fix, feature, or task attempt that completed with the `pull-request` outcome. This includes initial, recovery, and review-round attempts.
 
-A newly admitted claim and a finished eval SHALL NOT be detected as events. The factory SHALL keep a durable watch cursor holding the time watching was enabled and the time of the last detection pass, and each cycle SHALL record its detection time there. `PR-READY` detection SHALL scan eligible fix and feature attempts completed with the `pull-request` outcome, finished after watching was enabled and within the last 7 days, and not previously detected.
+A newly admitted claim and a finished eval SHALL NOT be detected as events. The factory SHALL keep a durable watch cursor holding the time watching was enabled and the time of the last detection pass, and each cycle SHALL record its detection time there. `PR-READY` detection SHALL scan eligible fix, feature, and task attempts completed with the `pull-request` outcome, finished after watching was enabled and within the last 7 days, and not previously detected.
 
 `FAILURE` detection SHALL NOT depend on that point. Each cycle SHALL detect every attempt that meets all of these conditions:
 
@@ -87,6 +87,16 @@ So a change to the grace period can neither skip a failure nor detect it twice. 
 - **WHEN** watching is disabled for a day, a pull request becomes ready during that day, and watching is enabled again
 - **THEN** the pull request that became ready while watching was disabled is not detected
 
+#### Scenario: A task attempt opens a pull request
+
+- **WHEN** watching is enabled and a task attempt completes with the `pull-request` outcome
+- **THEN** the next cycle detects one `PR-READY` event for it
+
+#### Scenario: A task attempt fails
+
+- **WHEN** a task attempt is recorded `failed` and its result has been consumed past the grace period
+- **THEN** one `FAILURE` event is detected for it
+
 ### Requirement: Queue each event exactly once
 
 Every event that a cycle detects SHALL be recorded durably as a `pending` dispatch, under a key made of the event kind and the id of its attempt. It SHALL be recorded in the same transaction that advances the watch cursor, so an event can never be passed over without a dispatch record. An event detected again SHALL NOT create a second dispatch. Each dispatch SHALL record its event kind, claim, attempt when there is one, issue, pull request when there is one, event time, and state. The states are:
@@ -94,13 +104,21 @@ Every event that a cycle detects SHALL be recorded durably as a `pending` dispat
 - `pending`;
 - `logged`;
 - `launched`;
-- `budget-exhausted`;
+- `budget-exhausted`, a historical state only;
 - `completed`;
 - `interrupted`;
 - `timed-out`;
 - `launch-failed`.
 
-Each cycle SHALL process `pending` dispatches oldest first, by event time and then key. Only a `pending` `PR-READY` or `FAILURE` dispatch SHALL start a session. A `pending` dispatch of any other kind, left by an earlier release, SHALL be recorded `logged` without a session, a comment, or a budget count. The factory SHALL record the change to `launched` before it starts the session, and only when the dispatch is still `pending`. So no cycle, concurrent `tick`, or restarted resident starts a second session for the same dispatch.
+No dispatch SHALL enter `budget-exhausted`. A dispatch that an earlier release recorded `budget-exhausted` SHALL stay readable, as an ended dispatch, in the store, status, and its evidence. It SHALL remain eligible for redispatch.
+
+Each cycle SHALL process `pending` dispatches oldest first, by event time and then key. Only a `pending` `PR-READY` or `FAILURE` dispatch SHALL start a session. A `pending` dispatch of any other kind, left by an earlier release, SHALL be recorded `logged` without a session or a comment. A `pending` `PR-READY` or `FAILURE` dispatch SHALL wait only for:
+
+- the concurrency cap;
+- the one-session-per-pull-request rule;
+- the watch readiness checks.
+
+The factory SHALL NOT skip or end it because of how many sessions have started in a day or any other period. The factory SHALL record the change to `launched` before it starts the session, and only when the dispatch is still `pending`. So no cycle, concurrent `tick`, or restarted resident starts a second session for the same dispatch.
 
 #### Scenario: Exactly one triage session across a restart
 
@@ -121,6 +139,21 @@ Each cycle SHALL process `pending` dispatches oldest first, by event time and th
 
 - **WHEN** a `pending` `CLAIM` or `EVAL-DONE` dispatch recorded by an earlier release is processed
 - **THEN** it is recorded `logged`, and no session starts and no comment is posted for it
+
+#### Scenario: A busy day
+
+- **WHEN** 30 dispatched sessions have already started in the local day, no session is running, the watch readiness checks pass, and a `FAILURE` event is detected
+- **THEN** a triage session starts for it, and no dispatch is recorded `budget-exhausted`
+
+#### Scenario: A busy day while the concurrency cap is full
+
+- **WHEN** many sessions have started today, running sessions fill the concurrency cap, and a `PR-READY` event is detected
+- **THEN** the dispatch stays `pending`, no notice is posted for it, and a PR-READY check session starts for it once a session ends
+
+#### Scenario: A dispatch an earlier release skipped for budget
+
+- **WHEN** the store holds a `FAILURE` dispatch that an earlier release recorded `budget-exhausted`
+- **THEN** the dispatch keeps that state, no cycle starts a session for it on its own, and the operator can redispatch it
 
 ### Requirement: Triage a failure in a dispatched session
 
@@ -236,30 +269,6 @@ A dispatch SHALL NOT be relaunched automatically. Pausing the factory SHALL NOT 
 - **WHEN** a dispatched session ends in any state
 - **THEN** its checkout no longer exists, and the release, the service clone, and the operator's checkout are unchanged by it
 
-### Requirement: Bound sessions with a daily budget
-
-The factory SHALL count the dispatched sessions it starts in each local day of the configured schedule timezone. A redispatched attempt counts like any other. When the count has reached the configured per-day budget, a `pending` `PR-READY` or `FAILURE` dispatch SHALL NOT start a session. It SHALL be recorded `budget-exhausted`, and the factory SHALL post one factory-bot comment on the claim's issue. That comment names the event, states that no agent ran because the day's budget was spent, and gives the command that redispatches it. A budget of zero SHALL post every such event this way. The budget SHALL be applied before the watch readiness checks, the one-session-per-pull-request rule, and the concurrency cap, and it SHALL need none of the session's prerequisites. So a spent budget is reported even while sessions could not start anyway. The count SHALL survive restarts.
-
-#### Scenario: Budget spent
-
-- **WHEN** the budget is 10, ten sessions have started today, and a `FAILURE` event is detected
-- **THEN** no session starts, the dispatch is recorded `budget-exhausted`, and one comment on the claim's issue reports the failure and the redispatch command
-
-#### Scenario: Zero budget while readiness fails
-
-- **WHEN** the budget is zero, the watch readiness checks fail, and a `FAILURE` event is detected
-- **THEN** the dispatch is recorded `budget-exhausted` and its notice is posted in that cycle
-
-#### Scenario: Budget spent while the cap is full
-
-- **WHEN** the budget is spent, sessions fill the concurrency cap, and a `PR-READY` event is detected
-- **THEN** the dispatch is recorded `budget-exhausted` and its notice is posted without waiting for a slot
-
-#### Scenario: A new day
-
-- **WHEN** the budget was spent yesterday and a `PR-READY` event is detected after local midnight
-- **THEN** a PR-READY check session starts
-
 ### Requirement: Alert on a dispatch that did not finish
 
 When a dispatch is recorded `interrupted`, `timed-out`, or `launch-failed`, the factory SHALL post one factory-bot comment on the claim's issue. The comment SHALL name the event, the pull request when there is one, what happened, the dispatch's evidence path, and the command that redispatches it.
@@ -271,7 +280,7 @@ When a dispatch is recorded `interrupted`, `timed-out`, or `launch-failed`, the 
 
 ### Requirement: Deliver dispatch comments exactly once
 
-Every comment the factory posts for a dispatch SHALL carry a marker unique to that dispatch and that comment's purpose. Before posting, the factory SHALL look for a comment by the factory bot on the same issue that already carries the marker, and adopt it instead of posting again. A delivery that fails SHALL be recorded with its reason and retried in a later cycle. Every new dispatch comment SHALL go to the claim's issue; the factory SHALL NOT queue a comment on a pull request. Across restarts and retries, each such comment SHALL be delivered at most once, and it SHALL be retried until delivered.
+Every comment the factory posts for a dispatch SHALL carry a marker unique to that dispatch and that comment's purpose. Before posting, the factory SHALL look for a comment by the factory bot on the same issue that already carries the marker, and adopt it instead of posting again. A delivery that fails SHALL be recorded with its reason and retried in a later cycle. Every new dispatch comment SHALL go to the claim's issue; the factory SHALL NOT queue a comment on a pull request. Across restarts and retries, each such comment SHALL be delivered at most once, and it SHALL be retried until delivered. A comment that an earlier release queued and did not deliver SHALL be delivered the same way. That includes a budget notice for a `budget-exhausted` dispatch. The factory SHALL NOT queue any new budget notice.
 
 #### Scenario: A restart after posting
 
@@ -282,6 +291,11 @@ Every comment the factory posts for a dispatch SHALL carry a marker unique to th
 
 - **WHEN** posting a triage comment on the claim's issue fails
 - **THEN** the failure and its reason are recorded, and a later cycle posts the comment once
+
+#### Scenario: A budget notice queued before the upgrade
+
+- **WHEN** the release that removes the watch budget starts with a `budget-exhausted` dispatch whose budget notice was queued and not yet posted
+- **THEN** a cycle posts that notice once on the claim's issue, and no later cycle posts it again
 
 ### Requirement: Record each dispatched session's usage
 
@@ -341,7 +355,7 @@ The session SHALL NOT post a review or any comment on the pull request, SHALL NO
 #### Scenario: A ready pull request has no parseable URL
 
 - **WHEN** a `PR-READY` dispatch has no parseable pull request URL
-- **THEN** the event is logged and recorded `logged`, and no session starts or counts against the budget
+- **THEN** the event is logged and recorded `logged`, and no session starts
 
 #### Scenario: One check session per ready pull request
 
@@ -376,3 +390,4 @@ A dispatched session that finds a defect in the factory stack SHALL first search
 
 - **WHEN** a session finds a new Agent Validator defect and Agent Validator is a fix target
 - **THEN** it files a Bug issue in Agent Validator with the evidence, sets Owner factory, Status Ready, and Priority Low, and reports the issue as filed
+

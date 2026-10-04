@@ -104,6 +104,7 @@ class RoutingConfig:
     eval_type: str
     bug_type: str = "Bug"
     feature_type: str = "Feature"
+    task_type: str = "Task"
     hold_label: str = "factory-hold"
 
 
@@ -125,6 +126,7 @@ class RepositoryConfig:
     agent_skills: Path
     working_clones: Mapping[str, Path] = field(default_factory=lambda: dict[str, Path]())
     agent_validator: Path | None = None
+    and_scene: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,14 @@ class FeatureLocalConfig:
 
 
 @dataclass(frozen=True)
+class TaskLocalConfig:
+    limits: FixLimitsConfig = field(default_factory=FixLimitsConfig)
+    schedule: ScheduleConfig | None = None
+    execution: Literal["host"] = "host"
+    minimum_free_gib: float | None = None
+
+
+@dataclass(frozen=True)
 class FlyLocalConfig:
     app: str
     image: str
@@ -224,6 +234,7 @@ class LocalConfig:
     credentials: CredentialsConfig
     fix: FixLocalConfig = field(default_factory=FixLocalConfig)
     feature: FeatureLocalConfig = field(default_factory=FeatureLocalConfig)
+    task: TaskLocalConfig = field(default_factory=TaskLocalConfig)
     eval_execution: Literal["docker", "fly"] = "docker"
     fly: FlyLocalConfig | None = None
 
@@ -292,6 +303,11 @@ class LocalConfig:
             if "agent_validator" in repositories
             else runner_path.parent / "agent-validator"
         )
+        fixture_path = (
+            _path(repositories, "and_scene", "repositories")
+            if "and_scene" in repositories
+            else runner_path.parent / "and-scene"
+        )
         return cls(
             shared_config=_path(document, "shared_config", "local configuration"),
             storage_root=_path(document, "storage_root", "local configuration"),
@@ -301,6 +317,7 @@ class LocalConfig:
                 agent_skills=_path(repositories, "agent_skills", "repositories"),
                 working_clones=working_clones,
                 agent_validator=validator_path,
+                and_scene=fixture_path,
             ),
             schedule=ScheduleConfig(
                 timezone,
@@ -335,6 +352,7 @@ class LocalConfig:
             ),
             fix=_fix_local_config(document.get("fix")),
             feature=_feature_local_config(document.get("feature")),
+            task=_task_local_config(document.get("task")),
             eval_execution=eval_execution,
             fly=fly,
         )
@@ -366,11 +384,17 @@ class FeatureConfig:
     contract: str = "factory-feature/1"
 
 
+@dataclass(frozen=True)
+class TaskConfig:
+    defaults: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
+    contract: str = "factory-task/1"
+
+
 # A role or dispatch model profile: `cli:model:effort`.
 PROFILE = re.compile(r"^([a-z]+):([^:]*):([^:]*)$")
 
 # Each integer watch setting and its smallest valid value; defaults come from WatchConfig.
-_WATCH_MINIMUMS = {"max_sessions": 1, "daily_sessions": 0, "grace_minutes": 0, "timeout_minutes": 1}
+_WATCH_MINIMUMS = {"max_sessions": 1, "grace_minutes": 0, "timeout_minutes": 1}
 
 
 @dataclass(frozen=True)
@@ -380,13 +404,30 @@ class WatchConfig:
     agent: str = ""
     agents: Mapping[str, str] = field(default_factory=lambda: dict[str, str]())
     max_sessions: int = 2
-    daily_sessions: int = 20
     grace_minutes: int = 7
     timeout_minutes: int = 90
     auto_merge: bool = False
     expected_checks: Mapping[str, tuple[str, ...]] = field(
         default_factory=lambda: dict[str, tuple[str, ...]]()
     )
+
+
+@dataclass(frozen=True)
+class JobCapConfig:
+    attempts: int = 100
+    window_hours: int = 24
+
+
+def _job_cap_config(raw: object) -> JobCapConfig:
+    table = _table(raw if raw is not None else {}, "job_cap")
+    values: dict[str, int] = {}
+    defaults = JobCapConfig()
+    for key in ("attempts", "window_hours"):
+        value = table.get(key, getattr(defaults, key))
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigurationError(f"job_cap.{key} must be an integer >= 1")
+        values[key] = value
+    return JobCapConfig(**values)
 
 
 def _watch_config(raw: object) -> WatchConfig:
@@ -460,7 +501,9 @@ class SharedConfig:
     bot_login: str = ""
     fix: FixConfig = field(default_factory=FixConfig)
     feature: FeatureConfig | None = None
+    task: TaskConfig | None = None
     watch: WatchConfig = field(default_factory=WatchConfig)
+    job_cap: JobCapConfig = field(default_factory=JobCapConfig)
 
     @classmethod
     def from_file(cls, path: Path) -> SharedConfig:
@@ -525,6 +568,7 @@ class SharedConfig:
                 eval_type=_string(routing, "eval_type", "routing"),
                 bug_type=_optional_string(routing, "bug_type", "routing", "Bug"),
                 feature_type=_optional_string(routing, "feature_type", "routing", "Feature"),
+                task_type=_optional_string(routing, "task_type", "routing", "Task"),
                 hold_label=_optional_string(routing, "hold_label", "routing", "factory-hold"),
             ),
             eval=EvalConfig(
@@ -540,8 +584,12 @@ class SharedConfig:
                 results_branch=_optional_string(eval_config, "results_branch", "eval", "main"),
             ),
             fix=_fix_shared_config(document.get("fix")),
-            feature=_feature_shared_config(document.get("feature")),
+            feature=_optional_kind_shared_config(document.get("feature"), "feature", FeatureConfig),
+            task=_optional_kind_shared_config(
+                document.get("task"), "task", TaskConfig, strict_defaults=True
+            ),
             watch=_watch_config(document.get("watch")),
+            job_cap=_job_cap_config(document.get("job_cap")),
         )
 
 
@@ -611,14 +659,22 @@ def _fix_shared_config(raw: object) -> FixConfig:
     )
 
 
-def _feature_shared_config(raw: object) -> FeatureConfig | None:
+def _optional_kind_shared_config[T: FeatureConfig | TaskConfig](
+    raw: object, section: str, cls: type[T], *, strict_defaults: bool = False
+) -> T | None:
+    """Parse an optional kind section. `strict_defaults` rejects non-string role profiles;
+    `[feature.defaults]` keeps stringifying them, as it always has."""
     if raw is None:
         return None
-    feature = _table(raw, "feature")
-    defaults_raw = _table(feature.get("defaults", {}), "feature.defaults")
+    table = _table(raw, section)
+    defaults_raw = _table(table.get("defaults", {}), f"{section}.defaults")
+    if strict_defaults:
+        for key, value in defaults_raw.items():
+            if not isinstance(value, str):
+                raise ConfigurationError(f"{section}.defaults.{key} must be a string")
     defaults = {key: str(value) for key, value in defaults_raw.items()}
-    contract = _optional_string(feature, "contract", "feature", "factory-feature/1")
-    return FeatureConfig(defaults=defaults, contract=contract)
+    contract = _optional_string(table, "contract", section, cls().contract)
+    return cls(defaults=defaults, contract=contract)
 
 
 def _fix_local_config(raw: object) -> FixLocalConfig:
@@ -679,31 +735,40 @@ def _fix_local_config(raw: object) -> FixLocalConfig:
 
 
 def _feature_local_config(raw: object) -> FeatureLocalConfig:
-    if raw is None:
-        return FeatureLocalConfig()
-    feature = _table(raw, "feature")
-    limits_raw = _table(feature.get("limits", {}), "feature.limits")
-    limits = FeatureLimitsConfig(
-        inactivity_seconds=_optional_positive_int(
-            limits_raw, "inactivity_seconds", "feature.limits", 1800
-        ),
-        execution_seconds=_optional_positive_int(
-            limits_raw, "execution_seconds", "feature.limits", 21600
-        ),
-        total_seconds=_optional_positive_int(limits_raw, "total_seconds", "feature.limits", 28800),
+    limits, schedule, floor = _host_kind_local_config(raw, "feature", FeatureLimitsConfig)
+    return FeatureLocalConfig(limits, schedule, "host", floor)
+
+
+def _task_local_config(raw: object) -> TaskLocalConfig:
+    limits, schedule, floor = _host_kind_local_config(raw, "task", FixLimitsConfig)
+    return TaskLocalConfig(limits, schedule, "host", floor)
+
+
+def _host_kind_local_config[L: FixLimitsConfig | FeatureLimitsConfig](
+    raw: object, section: str, limits_cls: type[L]
+) -> tuple[L, ScheduleConfig | None, float | None]:
+    """Parse a host-only kind's local section; limit defaults come from `limits_cls`."""
+    section_table: Mapping[str, Any] = _table(raw, section) if raw is not None else {}
+    limits_raw = _table(section_table.get("limits", {}), f"{section}.limits")
+    defaults = limits_cls()
+    limits = limits_cls(
+        *(
+            _optional_positive_int(limits_raw, name, f"{section}.limits", getattr(defaults, name))
+            for name in ("inactivity_seconds", "execution_seconds", "total_seconds")
+        )
     )
-    schedule_raw = feature.get("schedule")
+    schedule_raw = section_table.get("schedule")
     schedule: ScheduleConfig | None = None
     if schedule_raw is not None:
-        table = _table(schedule_raw, "feature.schedule")
-        timezone_name = _string(table, "timezone", "feature.schedule")
+        table = _table(schedule_raw, f"{section}.schedule")
+        timezone_name = _string(table, "timezone", f"{section}.schedule")
         try:
             timezone = ZoneInfo(timezone_name)
         except (ZoneInfoNotFoundError, ValueError) as error:
             raise ConfigurationError(
-                f"feature.schedule.timezone is invalid or unknown: {timezone_name}"
+                f"{section}.schedule.timezone is invalid or unknown: {timezone_name}"
             ) from error
-        poll_seconds = _optional_positive_int(table, "poll_seconds", "feature.schedule", 300)
+        poll_seconds = _optional_positive_int(table, "poll_seconds", f"{section}.schedule", 300)
         if "start_hour" in table or "stop_hour" in table:
             start_hour = _hour(table, "start_hour")
             stop_hour = _hour(table, "stop_hour")
@@ -712,10 +777,10 @@ def _feature_local_config(raw: object) -> FeatureLocalConfig:
             )
         else:
             schedule = ScheduleConfig.always(timezone, poll_seconds)
-    execution = feature.get("execution", "host")
+    execution = section_table.get("execution", "host")
     if execution != "host":
-        raise ConfigurationError(f"feature.execution does not support {execution!r}; use 'host'")
-    floor = feature.get("minimum_free_gib")
+        raise ConfigurationError(f"{section}.execution does not support {execution!r}; use 'host'")
+    floor = section_table.get("minimum_free_gib")
     minimum_free_gib: float | None = None
     if floor is not None:
         if (
@@ -724,9 +789,9 @@ def _feature_local_config(raw: object) -> FeatureLocalConfig:
             or not math.isfinite(floor)
             or floor < 0
         ):
-            raise ConfigurationError("feature.minimum_free_gib must be a non-negative number")
+            raise ConfigurationError(f"{section}.minimum_free_gib must be a non-negative number")
         minimum_free_gib = float(floor)
-    return FeatureLocalConfig(limits, schedule, "host", minimum_free_gib)
+    return limits, schedule, minimum_free_gib
 
 
 def _fly_local_config(raw: object) -> FlyLocalConfig:

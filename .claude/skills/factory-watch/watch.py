@@ -33,6 +33,7 @@ OPEN_DISPATCH = {"pending", "launched"}
 # FAILURE waits for the grace period (7 minutes) and result consumption; allow a few ticks.
 DETECTION_WINDOW = timedelta(minutes=25)
 CARD_TTL = timedelta(minutes=3)
+PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
 REF = re.compile(r"(?:https://github\.com/)?([\w.-]+/[\w.-]+)(?:#|/issues/)(\d+)")
 
 
@@ -93,6 +94,41 @@ def card(repository: str, number: int) -> dict:
     }
 
 
+def pull_request_url(*documents: str | None) -> str | None:
+    """The first GitHub pull request URL in the claim outcome or run result."""
+    for document in documents:
+        match = PR_URL.search(document or "")
+        if match:
+            return match[0]
+    return None
+
+
+def human_feedback_times(pr_url: str) -> list[datetime]:
+    """Times of reviews and comments on the PR by accounts that are not bots."""
+    repository, number = PR_URL.fullmatch(pr_url).group(1, 2)
+    times: list[datetime] = []
+    for endpoint, field in (
+        (f"repos/{repository}/pulls/{number}/reviews", "submitted_at"),
+        (f"repos/{repository}/issues/{number}/comments", "created_at"),
+        (f"repos/{repository}/pulls/{number}/comments", "created_at"),
+    ):
+        completed = subprocess.run(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                endpoint,
+                "--jq",
+                f'.[] | select(.user.type != "Bot") | .{field}',
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        times.extend(parse_time(line) for line in completed.stdout.split() if line)
+    return [moment for moment in times if moment is not None]
+
+
 class Watched:
     def __init__(self, repository: str, number: int, started: datetime) -> None:
         self.repository, self.number, self.started = repository, number, started
@@ -102,15 +138,24 @@ class Watched:
         self.stopped = False
         self._card: dict = {}
         self._card_at: datetime | None = None
+        self._feedback: list[datetime] = []
+        self._feedback_at: datetime | None = None
 
     def card(self) -> dict:
         if self._card_at is None or now() - self._card_at > CARD_TTL:
             self._card, self._card_at = card(self.repository, self.number), now()
         return self._card
 
+    def feedback_since(self, pr_url: str, since: datetime) -> bool:
+        """Whether a person reviewed or commented on the PR after the last run finished."""
+        if self._feedback_at is None or now() - self._feedback_at > CARD_TTL:
+            self._feedback, self._feedback_at = human_feedback_times(pr_url), now()
+        return any(moment > since for moment in self._feedback)
+
     def observe(self) -> tuple[bool, str]:
         claims = query(
-            "SELECT id, kind, lifecycle FROM claim WHERE repository=? AND issue_number=? "
+            "SELECT id, kind, lifecycle, outcome_json FROM claim "
+            "WHERE repository=? AND issue_number=? "
             "ORDER BY created_at DESC LIMIT 1",
             (self.repository, self.number),
         )
@@ -145,10 +190,11 @@ class Watched:
                     if dispatch["state"] in OPEN_DISPATCH:
                         busy.append("watch session open")
                 finished = parse_time(run["finished_at"])
+                # PR-READY, and FAILURE for a failed status or a completed run whose outcome failed.
                 expected = run["status"] in FAILURES or (
-                    run["kind"] in {"fix", "feature"}
+                    run["kind"] != "eval"
                     and run["status"] == "completed"
-                    and outcome == "pull-request"
+                    and outcome in {"pull-request", "failed"}
                 )
                 recent = finished is not None and finished >= self.started - DETECTION_WINDOW
                 if expected and not dispatches and recent:
@@ -156,6 +202,10 @@ class Watched:
                         busy.append("awaiting watcher detection")
                     else:
                         parts.append("WATCH EVENT MISSING")
+                if not busy and finished is not None and claim["lifecycle"] != "cancelled":
+                    pr = pull_request_url(claim["outcome_json"], run["result_json"])
+                    if pr and self.feedback_since(pr, finished):
+                        busy.append("review round pending")
         else:
             parts.append("no claim")
         if not busy:

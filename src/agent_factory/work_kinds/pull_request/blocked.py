@@ -17,7 +17,8 @@ from agent_factory.github import (
     IssueComment,
     ProjectQueueItem,
 )
-from agent_factory.store import Claim, ClaimStore, NonterminalRunError, Run
+from agent_factory.job_cap import hold_claim
+from agent_factory.store import Claim, ClaimStore, JobCapReached, NonterminalRunError, Run
 from agent_factory.suites.and_scene import ReadinessError, WorktreeError
 from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
@@ -118,6 +119,10 @@ def process_blocked_claim(
     )
     if handler.gesture(claim, card, eligible) != "unblock":
         return None
+    cap_state = store.job_cap_state(now)
+    if cap_state.reached:
+        hold_claim(store, claim.id, cap_state, now)
+        return None
     store.set_preparation(
         claim.id,
         {
@@ -158,7 +163,11 @@ def process_blocked_claim(
             evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-unblock"),
         )
     except NonterminalRunError:
-        _discard_clones(store, claim, preparation)
+        discard_clones(store, claim, preparation)
+        return None
+    except JobCapReached as error:
+        discard_clones(store, claim, preparation)
+        hold_claim(store, claim.id, error.state, now)
         return None
     store.set_claim_lifecycle(claim.id, "active", {})
     client.set_attention_label(claim.repository, claim.issue_number, False)
@@ -168,7 +177,7 @@ def process_blocked_claim(
     return run, preparation
 
 
-def _discard_clones(store: ClaimStore, claim: Claim, preparation: Preparation) -> None:
+def discard_clones(store: ClaimStore, claim: Claim, preparation: Preparation) -> None:
     """Remove clones cut for an attempt that lost the slot race; report what is left behind."""
     clones = preparation.payload.get("clones")
     if not isinstance(clones, Mapping):

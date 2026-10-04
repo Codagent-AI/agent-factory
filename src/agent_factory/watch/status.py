@@ -32,9 +32,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
             watch_store.json_field(row, "usage_json").get("estimated_cost_usd") or 0
             for row in today
         )
-        output.append(
-            f"watch sessions today: {len(today)}/{watch.daily_sessions}, known cost ${cost:.2f}"
-        )
+        output.append(f"watch sessions today: {len(today)}, known cost ${cost:.2f}")
     else:
         output = ["watch: disabled, auto-merge off"]
     pending = [row for row in dispatches if row["state"] == "pending"]

@@ -15,17 +15,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, retention, terminal, watch, work_kinds
+from agent_factory import audit, job_cap, retention, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
     AttemptResult,
     Controller,
     advisory_lock,
+    hold_active,
     quota_deadline,
 )
 from agent_factory.github import (
     AppCredentials,
+    GitHubApiError,
     GitHubClient,
     InstallationTokenProvider,
     ProjectQueueItem,
@@ -75,7 +77,7 @@ def cycle(state: Path, config_path: Path) -> None:
         handler.attach_github(client, token_provider)
     with (
         advisory_lock(state, "cycle"),
-        closing(ClaimStore(state)) as store,
+        closing(ClaimStore(state, job_cap=shared.job_cap)) as store,
         _watch_finally(store, client, shared, local, config_path, token_provider),
     ):
         controller = Controller(
@@ -97,6 +99,11 @@ def cycle(state: Path, config_path: Path) -> None:
             for handler in registered.values():
                 handler.ready_handoff(card, shared, permission_cache)
         _consume_results(store, controller, local)
+        job_cap.observe(
+            store,
+            store.job_cap_state(datetime.now(local.schedule.timezone)),
+            datetime.now(local.schedule.timezone),
+        )
         # Results are captured whether or not anyone reviews them; a failure is
         # reported on the item and retried next tick, never blocking the cycle.
         publish_eval_results(store, client, shared)
@@ -260,20 +267,27 @@ def cycle(state: Path, config_path: Path) -> None:
         for card in cards:
             snapshot = None
             handler: WorkKindHandler | None = None
+            candidate_card = _readiness_labelled(store, client, shared, card)
             for candidate in registered.values():
-                snapshot = candidate.snapshot(card, client, shared)
+                snapshot = candidate.snapshot(candidate_card, client, shared)
                 if snapshot is not None:
                     handler = candidate
                     break
             if snapshot is None or handler is None:
                 continue
+            factory_readiness_label = (
+                handler.kind in {"fix", "feature"}
+                and "needs-input" in card.source.labels
+                and "needs-input" not in candidate_card.source.labels
+            )
             parsed = handler.request_fingerprint(snapshot)
             if isinstance(parsed, Feedback):
                 # Existing controller supplies durable corrective comment feedback.
                 controller.accept(snapshot, resolve=lambda _: ("", ""))
                 client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
                 continue
-            client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            if not factory_readiness_label:
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
             # Admission is per kind: this kind's slot and window gate independently.
             # Quota holds are provider-scoped and enforced in Controller.reserve_next
             # against the specific claim's providers, not pre-filtered here.
@@ -289,18 +303,66 @@ def cycle(state: Path, config_path: Path) -> None:
             try:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
+                cap_state = store.job_cap_state(now)
+                if cap_state.reached:
+                    selected = controller.select_existing(snapshot, fresh=fresh)
+                    if selected is not None:
+                        unit, _ = handler.next_unit(selected, store.runs_for_claim(selected.id))
+                        if unit is not None:
+                            job_cap.hold_claim(store, selected.id, cap_state, now)
+                            _report(store, controller, client, shared, card, selected.id, handler)
+                    else:
+                        episode = job_cap.open_episode(store, cap_state, now)
+                        key = f"{snapshot.repository}:{snapshot.issue_number}"
+                        receipt = store.get_setting("job-cap-card", key)
+                        if receipt is None or receipt.get("episode") != episode:
+                            draft = controller.preflight(snapshot, resolve=handler.resolve_request)
+                            if draft is None:
+                                continue
+                            holds = store.get_settings_by_prefix("admission", "quota:")
+                            if any(
+                                (hold := holds.get(f"quota:{provider}")) is not None
+                                and hold_active(hold, now)
+                                for provider in handler.providers_for_spec(draft.frozen_spec)
+                            ):
+                                continue
+                        if (
+                            receipt is None
+                            or receipt.get("episode") != episode
+                            or not receipt.get("comment_id")
+                        ):
+                            job_cap.notify_card(
+                                store,
+                                client,
+                                shared.bot_login,
+                                snapshot.repository,
+                                snapshot.issue_number,
+                                episode,
+                                cap_state,
+                            )
+                    continue
                 claim = controller.accept(
                     snapshot,
                     resolve=handler.resolve_request,
                     fresh=fresh,
                 )
             except ReadinessError as error:
-                controller.report_request_readiness(snapshot, str(error))
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                if not factory_readiness_label:
+                    key = f"{snapshot.repository}:{snapshot.issue_number}"
+                    store.set_setting(
+                        "request-readiness",
+                        key,
+                        {**(store.get_setting("request-readiness", key) or {}), "label": "factory"},
+                    )
+                    client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                controller.report_request_readiness(snapshot, str(error), factory_label=True)
                 continue
-            store.set_setting(
-                "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
-            )
+            if factory_readiness_label and claim is not None:
+                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+            if claim is not None or not factory_readiness_label:
+                store.set_setting(
+                    "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
+                )
             if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
                 continue
             try:
@@ -319,6 +381,38 @@ def cycle(state: Path, config_path: Path) -> None:
             except (WorktreeError, ReadinessError) as error:
                 _hold_for_readiness(store, claim.id, error)
                 _report(store, controller, client, shared, card, claim.id, handler)
+
+
+def _readiness_labelled(
+    store: ClaimStore, client: GitHubClient, shared: SharedConfig, card: ProjectQueueItem
+) -> ProjectQueueItem:
+    """Let a pre-claim readiness label through admission only while the factory owns it."""
+    key = f"{card.source.repository}:{card.source.number}"
+    receipt = store.get_setting("request-readiness", key)
+    if not receipt or receipt.get("label") != "factory":
+        return card
+    if "needs-input" not in card.source.labels:
+        store.set_setting(
+            "request-readiness", key, {k: v for k, v in receipt.items() if k != "label"}
+        )
+        return card
+    if card.source.issue_type in {shared.routing.bug_type, shared.routing.feature_type}:
+        try:
+            factory_added = (
+                client.attention_label_actor(card.source.repository, card.source.number)
+                == shared.bot_login
+            )
+        except GitHubApiError:
+            return card
+    else:
+        factory_added = True
+    if not factory_added:
+        store.set_setting(
+            "request-readiness", key, {k: v for k, v in receipt.items() if k != "label"}
+        )
+        return card
+    source = replace(card.source, labels=card.source.labels - {"needs-input"})
+    return replace(card, source=source)
 
 
 def _hold_for_readiness(store: ClaimStore, claim_id: str, error: Exception) -> None:
@@ -367,6 +461,7 @@ def _launch(
         return
     # The attempt launched, so an earlier readiness failure no longer blocks the claim.
     store.clear_setting("claim-hold", f"{claim.id}:readiness")
+    store.clear_setting("claim-hold", f"{claim.id}:job-cap")
 
 
 def _quota_hold_error(holds: Mapping[str, Mapping[str, object]]) -> str | None:

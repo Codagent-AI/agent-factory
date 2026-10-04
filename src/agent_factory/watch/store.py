@@ -155,13 +155,6 @@ def launched_today(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> list
     ]
 
 
-def daily_count(store: ClaimStore, timezone: ZoneInfo, now: datetime) -> int:
-    return store._connection.execute(
-        "SELECT count(*) FROM watch_dispatch WHERE launched_at >= ? AND launched_at < ?",
-        _local_day_bounds(timezone, now),
-    ).fetchone()[0]
-
-
 def running_count(store: ClaimStore) -> int:
     return store._connection.execute(
         "SELECT count(*) FROM watch_dispatch WHERE state='launched'"

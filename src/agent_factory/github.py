@@ -767,6 +767,35 @@ class GitHubClient:
             if any(_object(label).get("name") == "needs-input" for label in labels):
                 self._request(["api", endpoint + "/needs-input", "--method", "DELETE"], None)
 
+    def attention_label_actor(self, repository: str, number: int) -> str | None:
+        """Return who last applied needs-input, or None if its history is unavailable."""
+        actor: str | None = None
+        page = 1
+        while True:
+            events = _json_list(
+                self._request(
+                    [
+                        "api",
+                        f"repos/{repository}/issues/{number}/events?per_page=100&page={page}",
+                        "--method",
+                        "GET",
+                    ],
+                    None,
+                )
+            )
+            for value in events:
+                event = _object(value)
+                if _object(event.get("label")).get("name") != "needs-input":
+                    continue
+                if event.get("event") == "unlabeled":
+                    actor = None
+                elif event.get("event") == "labeled":
+                    login = _object(event.get("actor")).get("login")
+                    actor = login if isinstance(login, str) else None
+            if len(events) < 100:
+                return actor
+            page += 1
+
     def list_comments(self, repository: str, number: int) -> list[str]:
         return [comment.body for comment in self.list_comment_records(repository, number)]
 

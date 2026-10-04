@@ -22,6 +22,23 @@
 
 ## Deploying
 
+`fixture_ref` in an eval request selects an and-scene branch, tag, or commit.
+Without it, the frozen agent-evals harness pin remains the fixture. Admission
+uses `[repositories] and_scene` (default: the `and-scene` sibling of
+`agent_runner`), requires the commit to be published on the and-scene origin,
+and freezes its SHA. Push a fixture branch before requesting it. Deleting its
+only branch before the claim finishes can fail later repetitions at fixture
+checkout. The frozen-inputs comment and `Refs` field show the selected fixture;
+results from a non-default fixture are not comparable with default-pin results.
+
+The deploy script refuses rollback past fixture support while any unfinished
+claim has a frozen fixture revision. Check them with `agent-factory --config
+<local.toml> pinned-claims --revision fixture`; pause, let each claim settle or
+cancel it, then deploy the older release. That release cannot accept
+`fixture_ref`. Stay on a fixture-capable release if the pinned evaluation is
+still needed; a new request without the key evaluates only the default fixture.
+A hand rollback or an older deploy script bypasses this guard.
+
 Use the `factory-deploy` skill, or run `scripts/deploy.sh` from any checkout of
 this repository (optionally `--no-runner`, or a factory ref; the default is
 `origin/main`). You can deploy, or restart the factory, at any time, including
@@ -104,6 +121,33 @@ validator's end-to-end tests. Commit any pin through a PR.
 - The eval judge model is not set here. Agent Evals uses the Codex CLI default
   (`codex-default`), so it changes with the CLI version.
 
+## Task pull requests
+
+File low-risk maintenance as a native Task in a configured `[fix]` target. A Task
+reaches the factory only when a writer moves its card to Ready (or uses the
+`factory-assign` skill); routing does not queue it automatically. Shared
+`[task]` enables new admissions, sets `contract = "factory-task/1"`, and provides
+lead, implementor, and tester profiles. Local `[task]` is optional: host-only
+execution, an always-open schedule by default, an optional disk floor, and
+inactivity/execution/total limits of 900/7200/10800 seconds. `doctor` reports
+`task-host`, while `status` reports the task slot and task claims.
+
+Task triage declines runtime behavior or public interface changes, persisted
+data and OpenSpec specification changes, credentials, release/deploy settings,
+branch protection, work outside the target, oversized work, or any product,
+design, compatibility, or other decision the issue leaves open. Development tools, development
+dependencies, CI, docs, behavior-preserving refactors and cleanups are in scope;
+release, publish, version, sign, tag, and deploy configuration is not. Decline
+any decision the issue leaves open with `needs-input`, naming that decision.
+Task commits and PR
+titles use `chore:`. Task review rounds stop with `needs-input` when requested
+changes cross the same boundary.
+
+Before enabling `[task]` on a live release, audit all Ready Task cards across
+every fix target. Move any that are not approved for factory admission to
+Backlog. Before rolling back to a release without the task
+kind, settle or cancel open task claims; that release cannot handle them.
+
 ## Fly eval images
 
 - Each eval claim builds its own image on Fly's remote builder from its pinned
@@ -138,7 +182,7 @@ See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
 ## Service-driven watcher
 
-The watcher makes sure the factory itself works; when auto-merge is on, its PR-READY sessions also rate pull request risk. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix or feature run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. The session posts nothing on the PR; the resident may merge a low-risk PR after deterministic gates and posts its risk verdict there. On `FAILURE` (a failed attempt, including a fix or feature run that completed with outcome `failed`), the session diagnoses the run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. `needs-input` outcomes are not triaged. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, filed issues, and audit. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
+The watcher makes sure the factory itself works; when auto-merge is on, its PR-READY sessions also rate pull request risk. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix, feature, or task run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. The session posts nothing on the PR; the resident may merge a low-risk PR after deterministic gates and posts its risk verdict there. On `FAILURE` (a failed attempt, including a fix, feature, or task run that completed with outcome `failed`), the session diagnoses the run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. `needs-input` outcomes are not triaged. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, sessions, costs, comments, filed issues, merge verdicts, and audit. No watch event is skipped for volume; `[job_cap]` bounds factory attempts instead. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
 
 Do not start a general long-running watcher, `/loop`, or polling session: it
 duplicates the service's work and costs a session per poll. To follow specific

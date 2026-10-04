@@ -14,7 +14,17 @@ import pytest
 from tests.e2e import test_fix_cycle as fix_cycle
 
 
-def test_feature_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    "compliance,comment",
+    [
+        ({"result": "not-run", "reason": "Trusted"}, "Task-compliance did not run: Trusted."),
+        ({"result": "failed"}, "Task-compliance violations remain."),
+        ({"result": "passed"}, ""),
+    ],
+)
+def test_feature_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compliance: dict[str, str], comment: str
+) -> None:
     monkeypatch.setattr(
         fix_cycle, "RUNNER", fix_cycle.RUNNER.replace("fix-outcome.json", "feature-outcome.json")
     )
@@ -68,7 +78,18 @@ def test_feature_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
             "contract": "factory-feature/1",
             "outcome": "pull-request",
             "reasons": [],
-            "review_attention_counts": {"red": 2, "orange": 3, "yellow": 12},
+            "review_attention_counts": {
+                "red": 1 if compliance["result"] != "passed" else 0,
+                "orange": 3,
+                "yellow": 12,
+            },
+            "validator": {
+                "checks": "passed",
+                "status": {"not-run": "incomplete", "failed": "review-failed", "passed": "passed"}[
+                    compliance["result"]
+                ],
+            },
+            "task_compliance": compliance,
             "pr": {
                 "url": "https://github.com/example/work/pull/214",
                 "number": 214,
@@ -82,7 +103,14 @@ def test_feature_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         assert h.field(h.shared.project.verdict.id) == h.shared.project.verdict.option(
             "pending-human-review"
         )
-        assert any("2 red flags, 3 orange flags, 12 yellow items" in c for c in h.comments())
+        red = 1 if compliance["result"] != "passed" else 0
+        assert any(f"{red} red flags, 3 orange flags, 12 yellow items" in c for c in h.comments())
+        if comment:
+            assert any(comment in c for c in h.comments())
+        else:
+            assert all(
+                "Task-compliance" not in c for c in h.comments() if "Pull request opened" in c
+            )
         merged_sha = fix_cycle._commit(tmp_path / "work", "the feature")
         fix_cycle._git(tmp_path / "work", "push", "-q", "origin", "main")
         h.update(pr_states={"214": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"}})
