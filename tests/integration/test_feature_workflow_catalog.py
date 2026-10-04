@@ -226,23 +226,52 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
 def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
     from agent_factory.work_kinds.pull_request import launch
 
-    scripts = {
-        name
+    workflow_scripts = {
+        workflow.name: set(
+            re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
+        )
         for workflow in PACKAGE.iterdir()
         if workflow.name.endswith(".yaml")
-        for name in re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
     }
+    scripts = {name for names in workflow_scripts.values() for name in names}
     assert scripts
     assert "task-compliance-gate.py" in scripts
     for name in scripts:
         assert name in launch.STAGED_FILES
         assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
 
-    contracts = [(kind.default_contract, kind) for kind in registered()]
-    contracts.append((launch.REVIEW_CONTRACT, FIX))
-    for index, (contract, kind) in enumerate(contracts):
+    contracts = [
+        (
+            kind.default_contract,
+            kind,
+            {
+                name
+                for name in (kind.workflow_file, "factory-define-v1.0.yaml")
+                if name in kind.staged_files
+            },
+            set(kind.staged_files),
+        )
+        for kind in registered()
+    ]
+    contracts.append(
+        (
+            launch.REVIEW_CONTRACT,
+            FIX,
+            {
+                launch.REVIEW_WORKFLOW_FILE,
+                launch.IMPLEMENT_WORKFLOW_FILE,
+                "factory-task-guard-v1.0.yaml",
+            },
+            set(launch.STAGED_FILES),
+        )
+    )
+    assert set(workflow_scripts) == set().union(*(workflows for _, _, workflows, _ in contracts))
+    for index, (contract, kind, workflows, staged_files) in enumerate(contracts):
+        referenced_scripts = {name for workflow in workflows for name in workflow_scripts[workflow]}
+        for name in referenced_scripts:
+            assert name in staged_files, (contract, name)
         catalog = launch.stage_workflow_into(tmp_path / str(index), contract, kind)
-        for name in scripts:
+        for name in referenced_scripts:
             assert os.access(catalog / name, os.X_OK), (contract, name)
 
 
