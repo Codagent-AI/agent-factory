@@ -37,7 +37,10 @@ from agent_factory.work_kinds.eval import parse_request
 
 try:
     from agent_factory.notify import marker, registry
-except ImportError:  # The release predates session notifications: degrade to no marker.
+except ModuleNotFoundError as error:
+    # Only a release that predates session notifications degrades to no marker.
+    if error.name != "agent_factory.notify":
+        raise
     marker = registry = None
 
 

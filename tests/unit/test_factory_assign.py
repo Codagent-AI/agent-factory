@@ -233,3 +233,17 @@ def test_apply_without_notify_package_hands_off_without_marker(
     output = capsys.readouterr().out
     assert "session not recorded: this release has no agent_factory.notify" in output
     assert "session: none" in output
+
+
+def test_broken_notify_package_is_not_mistaken_for_an_old_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import agent_factory.notify
+
+    monkeypatch.delattr(agent_factory.notify, "registry", raising=False)
+    monkeypatch.setitem(sys.modules, "agent_factory.notify.registry", None)
+    broken_spec = importlib.util.spec_from_file_location("factory_assign_broken", HELPER)
+    assert broken_spec is not None and broken_spec.loader is not None
+    with pytest.raises(ModuleNotFoundError) as raised:
+        broken_spec.loader.exec_module(importlib.util.module_from_spec(broken_spec))
+    assert raised.value.name == "agent_factory.notify.registry"
