@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX
+from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX, registered
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
@@ -201,13 +201,52 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
 
 def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
     from agent_factory.work_kinds.pull_request import launch
-    from agent_factory.work_kinds.pull_request.kinds import FEATURE
 
-    catalog = launch.stage_workflow_into(tmp_path / "workflows", "factory-feature/1", FEATURE)
-    scripts = [name for name in launch.STAGED_FILES if name.endswith((".sh", ".py"))]
+    scripts = {
+        name
+        for workflow in PACKAGE.iterdir()
+        if workflow.name.endswith(".yaml")
+        for name in re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
+    }
+    assert scripts
     assert "task-compliance-gate.py" in scripts
     for name in scripts:
-        assert os.access(catalog / name, os.X_OK), name
+        assert name in launch.STAGED_FILES
+        assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
+
+    contracts = [(kind.default_contract, kind) for kind in registered()]
+    contracts.append((launch.REVIEW_CONTRACT, FIX))
+    for index, (contract, kind) in enumerate(contracts):
+        catalog = launch.stage_workflow_into(tmp_path / str(index), contract, kind)
+        for name in scripts:
+            assert os.access(catalog / name, os.X_OK), (contract, name)
+
+
+def test_staged_catalog_modes_follow_shebang_not_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+
+    package = tmp_path / "package" / "workflow"
+    package.mkdir(parents=True)
+    (package / FIX.workflow_file).write_text(f"{launch.contract_marker(FIX.default_contract)}\n")
+    (package / "script-without-extension").write_bytes(b"#!/bin/sh\nexit 0\n")
+    (package / "not-a-script.sh").write_text("plain data\n")
+
+    def fake_files(_package: str) -> Path:
+        return package.parent
+
+    monkeypatch.setattr(launch, "files", fake_files)
+    monkeypatch.setattr(
+        launch,
+        "STAGED_FILES",
+        (FIX.workflow_file, "script-without-extension", "not-a-script.sh"),
+    )
+
+    catalog = launch.stage_workflow_into(tmp_path / "staged", FIX.default_contract, FIX)
+    assert (catalog / "script-without-extension").stat().st_mode & 0o777 == 0o755
+    assert (catalog / "not-a-script.sh").stat().st_mode & 0o777 == 0o644
+    assert (catalog / FIX.workflow_file).stat().st_mode & 0o777 == 0o644
 
 
 @pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
