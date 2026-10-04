@@ -822,7 +822,11 @@ def _report(
     active = any(r.status in NONTERMINAL_RUN_STATUSES for r in runs)
     current = card_status(shared, card)
     desired = controller.presentation(claim_id)
-    status = desired.status
+    status = (
+        "Done"
+        if claim.lifecycle == "settled" and card.source.state.lower() == "closed"
+        else desired.status
+    )
     # A reviewed Done card releases worktrees; never bounce it back to Review.
     if not (current == "Done" and claim.lifecycle == "settled"):
         option = shared.project.status.option(status.lower())
