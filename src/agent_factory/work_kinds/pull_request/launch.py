@@ -222,7 +222,9 @@ def stage_workflow_into(
         with as_file(package / name) as source:
             target = destination / name
             shutil.copyfile(source, target)
-            target.chmod(0o755 if name.endswith(".sh") else 0o644)
+            with source.open("rb") as packaged:
+                executable = packaged.read(2) == b"#!"
+            target.chmod(0o755 if executable else 0o644)
     return destination
 
 

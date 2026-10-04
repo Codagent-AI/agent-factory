@@ -50,6 +50,8 @@ If the script timed out, report the issues that are still moving and what each o
 
 Lead with what needs Paul. Keep it short, and do not repeat what the board already shows plainly.
 
+PR updates: when the report covers several pull requests, group them under **Merged**, **Ready for you to merge**, and **Other status**, with the full PR URL and one short clause on each line. Include only the watched issues' PRs.
+
 ## Follow-ups
 
 Act only when Paul asks: `factory-pr-review` to review a PR, `factory-triage` to investigate a failure, `factory-assign` to queue an issue, and `agent-factory … watch redispatch <id>` to retry a watcher session.

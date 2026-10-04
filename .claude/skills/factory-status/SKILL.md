@@ -64,6 +64,8 @@ Lead with what needs Paul, then the rest. Keep each item to one line with a link
 
 Do not repeat what the board already shows plainly (card titles in columns); add what it lacks: PR state, which PR or failure each factory issue came from, costs, and failures.
 
+PR updates: when the report covers several pull requests, group them under **Merged**, **Ready for you to merge**, and **Other status**, with the full PR URL and one short clause on each line.
+
 ## Follow-ups
 
 Act only when Paul asks:
