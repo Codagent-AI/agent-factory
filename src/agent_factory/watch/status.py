@@ -25,7 +25,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
     current = watch_store.cursor(store)
     if watch.enabled:
         output = [
-            f"watch: enabled, last detection {current.get('handled_up_to') if current else 'not started'}"
+            f"watch: enabled, auto-merge {'on' if watch.auto_merge else 'off'}, last detection {current.get('handled_up_to') if current else 'not started'}"
         ]
         today = watch_store.launched_today(store, local.schedule.timezone, now)
         cost = sum(
@@ -36,7 +36,7 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
             f"watch sessions today: {len(today)}/{watch.daily_sessions}, known cost ${cost:.2f}"
         )
     else:
-        output = ["watch: disabled"]
+        output = ["watch: disabled, auto-merge off"]
     pending = [row for row in dispatches if row["state"] == "pending"]
     running = [row for row in dispatches if row["state"] == "launched"]
     for row in running:
@@ -94,6 +94,11 @@ def lines(store: ClaimStore, local: LocalConfig) -> list[str]:
                 output.append(f"watch audit: {row['id']} {audit.get('outcome', 'missing')}")
         if current_claim:
             result = watch_store.json_field(row, "result_json")
+            merge = watch_store.json_field(row, "merge_json")
+            if row["state"] == "completed" and merge.get("level"):
+                output.append(
+                    f"watch risk: {row['pr_url']} {merge['level']} {merge['state']}: {merge.get('reason') or 'waiting'}"
+                )
             issues = [*result.get("issues_filed", []), *result.get("issues_updated", [])]
             if issues:
                 source = row["pr_url"] or f"{row['repository']}#{row['issue_number']}"

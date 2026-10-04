@@ -138,7 +138,7 @@ def test_session_stages_and_launches_with_no_token_in_environment(
         assert wrapper.splitlines()[1].startswith("echo $$ > ")
         assert "must-not-pass" not in wrapper
         assert ("-m agent_factory.audit host" in wrapper) is audit_enabled
-        assert (clone / ".agent-runner" / "workflows" / "factory-watch-v2.0.yaml").is_file()
+        assert (clone / ".agent-runner" / "workflows" / "factory-watch-v3.0.yaml").is_file()
         for _ in range(100):
             if (evidence / "exit.json").is_file():
                 break

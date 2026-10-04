@@ -113,17 +113,19 @@ def claim_launch(
     timeout_minutes: int,
     profile: str,
     evidence_path: str,
+    auto_merge: bool = False,
 ) -> bool:
     with store._transaction():
         result = store._connection.execute(
             """UPDATE watch_dispatch SET state='launched',
-            launched_at=?, deadline_at=?, profile=?, evidence_path=?, updated_at=?
+            launched_at=?, deadline_at=?, profile=?, evidence_path=?, merge_json=?, updated_at=?
             WHERE id=? AND state='pending'""",
             (
                 now.isoformat(),
                 (now + timedelta(minutes=timeout_minutes)).isoformat(),
                 profile,
                 evidence_path,
+                json.dumps({"auto_merge": auto_merge}) if auto_merge else None,
                 now.isoformat(),
                 dispatch_id,
             ),
@@ -220,5 +222,5 @@ def redispatch(store: ClaimStore, dispatch_id: str) -> str:
 
 
 def json_field(row: dict[str, Any], name: str) -> dict[str, Any]:
-    value = json.loads(row[name])
+    value = json.loads(row[name] or "{}")
     return cast(dict[str, Any], value) if isinstance(value, dict) else {}

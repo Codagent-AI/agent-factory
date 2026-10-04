@@ -628,7 +628,7 @@ def test_factory_pr_lookup_scans_all_pages_and_filters_by_issue() -> None:
 
 
 def test_get_pull_request_reads_state_and_merged_at() -> None:
-    gh = RecordingGh([json.dumps({"state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z"})])
+    gh = RecordingGh([json.dumps({"state": "closed", "merged_at": "2026-01-01T00:00:00Z"})])
     client = GitHubClient(gh, lambda: "installation-token")
 
     state = client.get_pull_request("example/repository", 214)
@@ -636,18 +636,15 @@ def test_get_pull_request_reads_state_and_merged_at() -> None:
     assert state.state == "MERGED"
     assert state.merged_at == "2026-01-01T00:00:00Z"
     assert gh.calls[0].arguments == [
-        "pr",
-        "view",
-        "214",
-        "--repo",
-        "example/repository",
-        "--json",
-        "state,mergedAt",
+        "api",
+        "repos/example/repository/pulls/214",
+        "--method",
+        "GET",
     ]
 
 
 def test_get_pull_request_reports_missing_merged_at_as_none() -> None:
-    gh = RecordingGh([json.dumps({"state": "OPEN", "mergedAt": None})])
+    gh = RecordingGh([json.dumps({"state": "open", "merged_at": None})])
     client = GitHubClient(gh, lambda: "installation-token")
 
     state = client.get_pull_request("example/repository", 214)
@@ -804,3 +801,50 @@ def test_commit_files_skips_the_commit_when_the_tree_is_unchanged() -> None:
 
     assert client.commit_files("org/evals", "main", {"a": b"a"}, "message") is None
     assert len(gh.calls) == 4
+
+
+def test_commit_checks_combine_runs_and_latest_commit_statuses() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "check_runs": [
+                        {"name": "build", "status": "completed", "conclusion": "success"},
+                        {"name": "test", "status": "in_progress", "conclusion": None},
+                    ]
+                }
+            ),
+            json.dumps(
+                [
+                    {"context": "lint", "state": "success"},
+                    {"context": "lint", "state": "failure"},
+                    {"context": "deploy", "state": "failure"},
+                ]
+            ),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    checks = client.commit_checks("example/repository", "a" * 40)
+
+    assert checks.reported
+    assert checks.pending == ("test",)
+    assert checks.failed == ("deploy",)
+    assert "check-runs" in gh.calls[0].arguments[1]
+    assert "statuses" in gh.calls[1].arguments[1]
+
+
+def test_merge_pull_request_pins_head_and_uses_merge_commit() -> None:
+    gh = RecordingGh([json.dumps({"merged": True, "sha": "b" * 40})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.merge_pull_request("example/repository", 7, "a" * 40) == "b" * 40
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/pulls/7/merge",
+        "--method",
+        "PUT",
+        "--input",
+        "-",
+    ]
+    assert gh.calls[0].body == {"merge_method": "merge", "sha": "a" * 40}

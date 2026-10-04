@@ -83,7 +83,13 @@ def dispatch(
         evidence, _ = session.paths(local, row["id"])
         now = datetime.now(UTC)
         if not watch_store.claim_launch(
-            store, row["id"], now, watch.timeout_minutes, profile, str(evidence)
+            store,
+            row["id"],
+            now,
+            watch.timeout_minutes,
+            profile,
+            str(evidence),
+            watch.auto_merge and row["event_kind"] == "PR-READY",
         ):
             continue
         started_today += 1

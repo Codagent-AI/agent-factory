@@ -15,14 +15,16 @@ if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
 
-def queue(store: ClaimStore, row: dict[str, Any], purpose: str, body: str) -> None:
-    """Queue one comment on the claim's issue; the watcher never comments on a pull request."""
+def queue(
+    store: ClaimStore, row: dict[str, Any], purpose: str, body: str, *, target: str = "issue"
+) -> None:
+    """Queue one comment on the claim's issue or its pull request."""
     deliveries = watch_store.json_field(row, "deliveries_json")
     if purpose in deliveries:
         return
     deliveries[purpose] = {
-        "target": "issue",
-        "number": row["issue_number"],
+        "target": target,
+        "number": row["pr_number"] if target == "pr" else row["issue_number"],
         "marker": f"<!-- agent-factory:watch:{row['id']}:{purpose} -->",
         "body": body,
         "comment_id": None,
@@ -61,6 +63,19 @@ def end(
         if state == "completed":
             if validated is not None and ended["event_kind"] == "FAILURE":
                 queue(store, ended, "triage", result.triage(ended, validated, store.is_paused()))
+            if validated is not None and "risk" in validated:
+                risk = validated["risk"]
+                merge = watch_store.json_field(ended, "merge_json")
+                merge.update(
+                    state="waiting" if risk["level"] == "low" else "not-merged",
+                    level=risk["level"],
+                    head_sha=risk["head_sha"],
+                    reason="" if risk["level"] == "low" else f"{risk['level']} risk",
+                    checked_at=ended["finished_at"],
+                )
+                watch_store.update(store, dispatch_id, merge_json=json.dumps(merge))
+                if merge["state"] == "not-merged":
+                    queue(store, ended, "risk", result.verdict(validated, merge), target="pr")
             return
         budget = state == "budget-exhausted"
         run = store.get_run(ended["run_id"]) if ended["run_id"] else None

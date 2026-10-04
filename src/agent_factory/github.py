@@ -68,6 +68,7 @@ class IssueComment:
     body: str
     author: str
     created_at: str = ""
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,18 @@ class ReviewActivity:
 class PullRequestState:
     state: str
     merged_at: str | None
+    draft: bool = False
+    mergeable: bool | None = None
+    base_ref: str = ""
+    head_sha: str = ""
+    merge_commit_sha: str | None = None
+
+
+@dataclass(frozen=True)
+class CommitChecks:
+    reported: bool
+    pending: tuple[str, ...]
+    failed: tuple[str, ...]
 
 
 class GhRunner(Protocol):
@@ -392,14 +405,105 @@ class GitHubClient:
 
     def get_pull_request(self, repository: str, number: int) -> PullRequestState:
         response = self._request(
-            ["pr", "view", str(number), "--repo", repository, "--json", "state,mergedAt"], None
+            ["api", f"repos/{repository}/pulls/{number}", "--method", "GET"], None
         )
         payload = _json_object(response)
-        merged_at = payload.get("mergedAt")
+        merged_at = payload.get("merged_at")
+        mergeable = payload.get("mergeable")
+        merge_commit_sha = payload.get("merge_commit_sha")
         return PullRequestState(
-            state=_required_string(payload, "state"),
+            state=_required_string(payload, "state").upper() if not merged_at else "MERGED",
             merged_at=merged_at if isinstance(merged_at, str) else None,
+            draft=payload.get("draft") is True,
+            mergeable=mergeable if isinstance(mergeable, bool) else None,
+            base_ref=str(_object(payload.get("base") or {}).get("ref") or ""),
+            head_sha=str(_object(payload.get("head") or {}).get("sha") or ""),
+            merge_commit_sha=merge_commit_sha if isinstance(merge_commit_sha, str) else None,
         )
+
+    def merge_has_parent(self, repository: str, merge_sha: str, head_sha: str) -> bool:
+        payload = _json_object(
+            self._request(
+                ["api", f"repos/{repository}/commits/{merge_sha}", "--method", "GET"], None
+            )
+        )
+        return any(
+            _object(parent).get("sha") == head_sha for parent in _list(payload.get("parents"))
+        )
+
+    def commit_checks(self, repository: str, sha: str) -> CommitChecks:
+        pending: list[str] = []
+        failed: list[str] = []
+        reported = False
+        page = 1
+        while True:
+            payload = _json_object(
+                self._request(
+                    [
+                        "api",
+                        f"repos/{repository}/commits/{sha}/check-runs?per_page=100&page={page}",
+                        "--method",
+                        "GET",
+                    ],
+                    None,
+                )
+            )
+            runs = _list(payload.get("check_runs"))
+            reported |= bool(runs)
+            for raw in runs:
+                run = _object(raw)
+                name = str(run.get("name") or "check")
+                if run.get("status") != "completed":
+                    pending.append(name)
+                elif run.get("conclusion") not in {"success", "neutral", "skipped"}:
+                    failed.append(name)
+            if len(runs) < 100:
+                break
+            page += 1
+        page = 1
+        latest: dict[str, str] = {}
+        while True:
+            statuses = _list(
+                json.loads(
+                    self._request(
+                        [
+                            "api",
+                            f"repos/{repository}/commits/{sha}/statuses?per_page=100&page={page}",
+                            "--method",
+                            "GET",
+                        ],
+                        None,
+                    )
+                )
+            )
+            for raw in statuses:
+                status = _object(raw)
+                context = status.get("context")
+                if isinstance(context, str) and context not in latest:
+                    latest[context] = str(status.get("state") or "pending")
+            reported |= bool(statuses)
+            if len(statuses) < 100:
+                break
+            page += 1
+        for name, state in latest.items():
+            if state == "pending":
+                pending.append(name)
+            elif state != "success":
+                failed.append(name)
+        return CommitChecks(reported, tuple(pending), tuple(failed))
+
+    def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
+        payload = _json_object(
+            self._request(
+                _write(f"repos/{repository}/pulls/{number}/merge", "PUT"),
+                {"merge_method": "merge", "sha": sha},
+            )
+        )
+        if payload.get("merged") is not True:
+            raise GitHubApiError(
+                str(payload.get("message") or "GitHub did not merge the pull request")
+            )
+        return _required_string(payload, "sha")
 
     def close_issue(self, repository: str, number: int) -> None:
         self._request(
@@ -712,7 +816,7 @@ class GitHubClient:
                 "$reviews: String, $threads: String) { "
                 "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
                 "reviews(first: 100, after: $reviews) { "
-                "nodes { id body submittedAt author { login } } "
+                "nodes { id body submittedAt state author { login } } "
                 "pageInfo { hasNextPage endCursor } } "
                 "reviewThreads(first: 100, after: $threads) { "
                 "nodes { id isResolved path line comments(first: 100) "
@@ -729,7 +833,15 @@ class GitHubClient:
             if "reviews" in pending:
                 for raw in _list(connections["reviews"].get("nodes")):
                     if (entry := comment(_object(raw), "submittedAt")) is not None:
-                        reviews.append(entry)
+                        reviews.append(
+                            IssueComment(
+                                entry.id,
+                                entry.body,
+                                entry.author,
+                                entry.created_at,
+                                str(_object(raw).get("state") or ""),
+                            )
+                        )
             if "threads" in pending:
                 for raw in _list(connections["threads"].get("nodes")):
                     thread = _object(raw)

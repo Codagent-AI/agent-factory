@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -43,7 +44,7 @@ def _issues(value: dict[str, Any]) -> dict[str, list[str]]:
     }
 
 
-def validate(value: object, procedure: str) -> dict[str, Any]:
+def validate(value: object, procedure: str, *, auto_merge: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("result must be an object")
     value = cast(dict[str, Any], value)
@@ -52,11 +53,31 @@ def validate(value: object, procedure: str) -> dict[str, Any]:
     if value.get("procedure") != procedure:
         raise ValueError("procedure does not match dispatch")
     if procedure == "pr-check":
-        return {
+        checked: dict[str, Any] = {
             "procedure": procedure,
             "summary": _clean(value.get("summary"), "summary"),
             **_issues(value),
         }
+        risk = value.get("risk")
+        if auto_merge:
+            if not isinstance(risk, dict):
+                raise ValueError("risk must be an object when auto-merge is on")
+            risk = cast(dict[str, object], risk)
+            level = risk.get("level")
+            head = risk.get("head_sha")
+            reasons = _strings(risk.get("reasons"), "risk.reasons")
+            if (
+                level not in {"low", "medium", "high"}
+                or not isinstance(head, str)
+                or not re.fullmatch(r"[a-fA-F0-9]{40}", head)
+                or not reasons
+                or any(not item.strip() for item in reasons)
+            ):
+                raise ValueError("risk needs a level, 40-hex head_sha, and nonempty reasons")
+            checked["risk"] = {"level": level, "head_sha": head.lower(), "reasons": reasons}
+        elif risk is not None:
+            raise ValueError("risk must be absent when auto-merge is off")
+        return checked
     owner = _clean(value.get("owner"), "owner")
     if owner not in OWNERS:
         raise ValueError("invalid owner")
@@ -86,8 +107,26 @@ def procedure(row: dict[str, Any]) -> str:
     return "pr-check" if row["event_kind"] == "PR-READY" else "triage"
 
 
-def read(path: str | Path, expected: str) -> dict[str, Any]:
-    return validate(json.loads(Path(path).read_text(encoding="utf-8")), expected)
+def read(path: str | Path, expected: str, *, auto_merge: bool = False) -> dict[str, Any]:
+    return validate(
+        json.loads(Path(path).read_text(encoding="utf-8")), expected, auto_merge=auto_merge
+    )
+
+
+def verdict(result: dict[str, Any], merge: dict[str, Any]) -> str:
+    risk = result["risk"]
+    outcome = (
+        "Merged automatically" if merge["state"] == "merged" else f"Not merged: {merge['reason']}"
+    )
+    return "\n".join(
+        (
+            f"Factory risk verdict: {risk['level']}",
+            f"Rated head: {risk['head_sha']}",
+            "Reasons:",
+            *(f"- {reason}" for reason in risk["reasons"]),
+            outcome,
+        )
+    )
 
 
 def event_line(row: dict[str, Any], run: Run | None = None) -> str:
