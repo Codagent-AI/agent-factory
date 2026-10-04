@@ -9,7 +9,7 @@ The session SHALL NOT post a review or any comment on the pull request, SHALL NO
 #### Scenario: A ready pull request has no parseable URL
 
 - **WHEN** a `PR-READY` dispatch has no parseable pull request URL
-- **THEN** the event is logged and recorded `logged`, and no session starts or counts against the budget
+- **THEN** the event is logged and recorded `logged`, and no session starts
 
 #### Scenario: One check session per ready pull request
 
@@ -33,7 +33,7 @@ The session SHALL NOT post a review or any comment on the pull request, SHALL NO
 
 ### Requirement: Deliver dispatch comments exactly once
 
-Every comment the factory posts for a dispatch SHALL carry a marker unique to that dispatch and that comment's purpose. Before posting, the factory SHALL look for a comment by the factory bot on the same issue or pull request that already carries the marker, and adopt it instead of posting again. A delivery that fails SHALL be recorded with its reason and retried in a later cycle. Every dispatch comment SHALL go to the claim's issue, except the risk-verdict comment, which SHALL go to the dispatch's pull request. Across restarts and retries, each such comment SHALL be delivered at most once, and it SHALL be retried until delivered.
+Every comment the factory posts for a dispatch SHALL carry a marker unique to that dispatch and that comment's purpose. Before posting, the factory SHALL look for a comment by the factory bot on the same issue or pull request that already carries the marker, and adopt it instead of posting again. A delivery that fails SHALL be recorded with its reason and retried in a later cycle. Every dispatch comment SHALL go to the claim's issue, except the risk-verdict comment, which SHALL go to the dispatch's pull request. Across restarts and retries, each such comment SHALL be delivered at most once, and it SHALL be retried until delivered. A comment that an earlier release queued and did not deliver SHALL be delivered the same way. That includes a budget notice for a `budget-exhausted` dispatch. The factory SHALL NOT queue any new budget notice.
 
 #### Scenario: A restart after posting
 
@@ -44,6 +44,11 @@ Every comment the factory posts for a dispatch SHALL carry a marker unique to th
 
 - **WHEN** posting a triage comment on the claim's issue fails
 - **THEN** the failure and its reason are recorded, and a later cycle posts the comment once
+
+#### Scenario: A budget notice queued before the upgrade
+
+- **WHEN** the release that removes the watch budget starts with a `budget-exhausted` dispatch whose budget notice was queued and not yet posted
+- **THEN** a cycle posts that notice once on the claim's issue, and no later cycle posts it again
 
 #### Scenario: A restart after posting a risk verdict
 
@@ -56,7 +61,7 @@ Every comment the factory posts for a dispatch SHALL carry a marker unique to th
 
 When auto-merge is on, the PR-READY check session SHALL read the pull request's diff, description, and, as needed, the attempt's evidence, and SHALL rate the pull request `low`, `medium`, or `high`. Its result SHALL hold the rating, the head commit it rated, and reasons that name each criterion that kept it from `low`, or confirm each criterion for `low`, including every orange item it judged harmless and why.
 
-Either kind of pull request SHALL NOT be rated `low` when any of these holds:
+A fix, feature, or task pull request SHALL NOT be rated `low` when any of these holds:
 
 - the description has a red attention item;
 - it changes authentication, permissions, tokens, or credentials;
@@ -71,6 +76,13 @@ A fix pull request MAY be rated `low` only when, in addition:
 
 - every behavior change is needed to fix the defect the issue describes, with no refactoring, unrelated cleanup, or new feature;
 - a test it adds or updates fails without the fix and passes with it;
+- it changes at most 300 lines outside test files, counting added plus deleted lines and excluding generated lockfiles;
+- every orange item was checked against the diff and evidence and judged harmless.
+
+A task pull request MAY be rated `low` only when, in addition:
+
+- every change is needed for the task the issue describes, with no unrelated refactoring, cleanup, or new feature;
+- every behavior change is covered by a test it adds or updates; a change with no behavior change, such as documentation or comments, needs no new test;
 - it changes at most 300 lines outside test files, counting added plus deleted lines and excluding generated lockfiles;
 - every orange item was checked against the diff and evidence and judged harmless.
 
@@ -98,6 +110,16 @@ When the session cannot establish a criterion, it SHALL NOT rate the pull reques
 - **WHEN** a fix pull request's description has a red item
 - **THEN** the session does not rate it `low` and names the item
 
+#### Scenario: A documentation task
+
+- **WHEN** a task pull request changes only documentation in 60 lines, touches no sensitive area, and has no red or orange items
+- **THEN** the session may rate it `low` without a new test, with reasons confirming each criterion
+
+#### Scenario: A task that changes behavior without a test
+
+- **WHEN** a task pull request changes how a command behaves and adds or updates no test covering it
+- **THEN** the session does not rate it `low` and names the missing test
+
 #### Scenario: A feature with an orange item
 
 - **WHEN** a small, additive, fully tested feature pull request has one orange attention item
@@ -124,10 +146,11 @@ When a PR-READY check completes with a valid `low` rating, the factory itself, n
 - the pull request is open, not a draft, and has no merge conflict;
 - its head commit is the commit the session rated;
 - at least one check or commit status is reported on that head, and every one has completed successfully;
-- every check named for the repository in `[watch.expected_checks]` has reported success; when no names are configured, the merge waits and times out without merging;
-- it has no unresolved review thread, and no writer's latest submitted review requests changes.
+- the repository's active rulesets require at least one status check on the base branch, and every required check has reported success on that head;
+- it has no unresolved review thread;
+- no writer's standing review requests changes. A reviewer's standing review is their latest review that approves, requests changes, or was dismissed; a later comment-only review does not change it. When a reviewer whose standing review requests changes cannot have their permission read, the merge waits for it.
 
-Before evaluating the gates, the factory SHALL check whether the pull request is already merged with the rated head; if it is, it SHALL record the merge as merged and SHALL NOT send another merge request, so a restart after a successful merge is never reported as not merged. The merge SHALL be a merge commit made as the factory bot and pinned to the rated head, so GitHub refuses it if the head moved. The factory SHALL NOT approve the pull request, bypass branch protection, or delete its branch. While checks are still running, no check or commit status has been reported yet, or the factory is paused, the merge SHALL wait and be re-evaluated each cycle until 60 minutes after the check completed; then it SHALL end not merged with that reason. When any other gate fails, or GitHub rejects the merge, the merge SHALL end not merged with the gate or GitHub's reason, and SHALL NOT be retried for that dispatch. A `medium` or `high` rating SHALL end not merged with the rating as the reason. Each dispatch SHALL attempt at most one merge. After a merge, the existing post-merge sync SHALL update the working clone and close the issue.
+Before evaluating the gates, the factory SHALL check whether the pull request is already merged with the rated head; if it is, it SHALL record the merge as merged and SHALL NOT send another merge request, so a restart after a successful merge is never reported as not merged. The merge SHALL be a merge commit made as the factory bot and pinned to the rated head, so GitHub refuses it if the head moved. The factory SHALL NOT approve the pull request, bypass branch protection, or delete its branch. While checks are still running, no check or commit status has been reported yet, a required check has not reported yet, a reviewer's permission cannot be read, or the factory is paused, the merge SHALL wait and be re-evaluated each cycle until 60 minutes after the check completed; then it SHALL end not merged with that reason. A base branch with no required status checks SHALL end not merged at once, naming the branch. Each unmergeable state SHALL have its own reason: closed, draft, or conflicting. When any other gate fails, or GitHub rejects the merge, the merge SHALL end not merged with the gate or GitHub's reason, and SHALL NOT be retried for that dispatch. A `medium` or `high` rating SHALL end not merged with the rating as the reason. Each dispatch SHALL attempt at most one merge. When the outcome of a merge request is unknown, the factory SHALL read the pull request on later cycles without sending another request: merged with the rated head is merged, closed is not merged, and still open five minutes after the request is not merged with the reason that the merge request did not complete. After a merge, the existing post-merge sync SHALL update the working clone and close the issue.
 
 #### Scenario: Merge a low-risk fix
 
@@ -163,6 +186,31 @@ Before evaluating the gates, the factory SHALL check whether the pull request is
 
 - **WHEN** a review round pushes a new commit after the session rated the previous head `low`
 - **THEN** the factory does not merge for that dispatch, names the moved head, and the review round's own `PR-READY` check rates the new head
+
+#### Scenario: No required checks on the base branch
+
+- **WHEN** a pull request rated `low` targets a branch with no ruleset-required status checks
+- **THEN** the factory does not merge it and the risk-verdict comment names the branch
+
+#### Scenario: A required check has not reported
+
+- **WHEN** a ruleset requires `test` and `lint`, and only `test` has reported success on the rated head
+- **THEN** the merge waits, and merges in the first cycle after `lint` reports success within 60 minutes
+
+#### Scenario: A comment-only review after a change request
+
+- **WHEN** a writer requests changes and later leaves a comment-only review on the pull request
+- **THEN** the factory does not merge it and names the outstanding change request
+
+#### Scenario: A reviewer's permission cannot be read
+
+- **WHEN** a reviewer whose standing review requests changes cannot have their permission read
+- **THEN** the merge waits and does not merge until the permission is read, for at most 60 minutes
+
+#### Scenario: A merge request with no answer
+
+- **WHEN** the merge request's response is lost and the pull request is still open five minutes later
+- **THEN** the merge ends not merged with the reason that the merge request did not complete, and no second merge request is sent
 
 #### Scenario: A writer requested changes
 

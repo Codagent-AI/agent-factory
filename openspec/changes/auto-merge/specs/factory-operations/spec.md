@@ -9,18 +9,23 @@ The shared configuration SHALL accept an optional `[watch]` section with these s
 - the default dispatch `agent` profile in `cli:model:effort` form, required when watching is enabled;
 - optional per-event profiles for `PR-READY` and `FAILURE`;
 - the concurrency cap (default 2, at least 1);
-- the per-day session budget (default 20, zero or more);
 - the failure grace period in minutes (default 7, zero or more);
 - the session timeout in minutes (default 90, at least 1);
 - `auto_merge`, a boolean (default false) that turns on risk rating and auto-merge of low-risk pull requests.
-- `expected_checks`, an optional map from fix-target repository to a nonempty list of check names that must report success before auto-merge. Duplicate names require that many successful reports. A missing repository list prevents its pull requests from auto-merging.
 
-When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, a value out of range, or an `auto_merge` that is not a boolean, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior, with auto-merge off. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium` and `auto_merge = true`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, cap, budget, grace period, timeout, or `auto_merge` applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout. A merge that is waiting SHALL use the `auto_merge` value of the cycle that evaluates it, so turning it off stops every waiting merge.
+When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, a value out of range, or an `auto_merge` that is not a boolean, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior, with auto-merge off. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium` and `auto_merge = true`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, concurrency cap, grace period, timeout, or `auto_merge` applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout. A merge that is waiting SHALL use the `auto_merge` value of the cycle that evaluates it, so turning it off stops every waiting merge. The checks a merge requires SHALL come from each repository's GitHub rulesets, not from this configuration.
+
+The section SHALL have no per-day session budget. A `daily_sessions` key left in the section SHALL NOT fail configuration loading and SHALL have no effect.
 
 #### Scenario: Configure the dispatch model and budget
 
-- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a budget of 12
-- **THEN** dispatched sessions run with that profile, and no more than 12 sessions start in a local day
+- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a concurrency cap of 3, and sets no session budget because none exists
+- **THEN** dispatched sessions run with that profile, no more than 3 run at once, and no event is skipped because of how many sessions started that day
+
+#### Scenario: A leftover budget setting
+
+- **WHEN** watching is enabled and the `[watch]` section still sets `daily_sessions = 5`
+- **THEN** configuration loads, and a sixth event in a local day starts a session like any other
 
 #### Scenario: Reject an invalid profile
 
@@ -51,7 +56,7 @@ When watching is enabled, `agent-factory status` SHALL show a watch section with
 - each `launched` dispatch with its event, claim, pull request when there is one, model profile, and elapsed time;
 - the number of `pending` dispatches, and why they wait: the concurrency cap, a failing watch doctor group, or a running check of the same pull request;
 - each ended dispatch whose usage delivery to the development-audit destination did not succeed;
-- the number of sessions started today against the budget, and today's known estimated cost;
+- the number of sessions started today and today's known estimated cost, with no budget;
 - every dispatch recorded `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted` whose claim is not yet observed Done, cancelled, or superseded;
 - each undelivered dispatch comment with its last failure reason;
 - for each completed dispatch whose claim is not yet observed Done, cancelled, or superseded, the factory issues its session filed or updated, with the pull request, or the claim's issue for a triage;
@@ -66,8 +71,13 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 #### Scenario: Inspect the day's spend
 
-- **WHEN** seven sessions have started today with known costs, and the budget is 20
-- **THEN** status shows 7 of 20 sessions and the sum of their estimated costs
+- **WHEN** seven sessions have started today with known costs
+- **THEN** status shows seven sessions started today and the sum of their estimated costs, and shows no session budget
+
+#### Scenario: Inspect a dispatch an earlier release skipped for budget
+
+- **WHEN** a `FAILURE` dispatch that an earlier release recorded `budget-exhausted` belongs to a claim not yet observed Done, cancelled, or superseded
+- **THEN** status lists that dispatch as `budget-exhausted`
 
 #### Scenario: Inspect a failed dispatch
 
@@ -95,10 +105,10 @@ The operations documentation SHALL describe service-driven watching as the norma
 
 - the two events and what each one does;
 - the `[watch]` settings and their defaults, and how to escalate a failure to a stronger model;
-- the budget and concurrency behavior, and the budget-exhausted comment;
+- the concurrency behavior; that no event is skipped because of session volume, which the factory job cap bounds instead; and that `budget-exhausted` dispatches from earlier releases remain in history and can be redispatched;
 - the actions a dispatched session may and may not take, including that it files issues for factory defects and never fixes or merges anything;
-- auto-merge: the risk bars for fixes and features, the gates the factory checks before it merges, the risk-verdict comment on the pull request, the 60-minute wait, and how to turn it off;
-- that branch protection requiring an approving review blocks auto-merge in that repository;
+- auto-merge: the risk bars for fixes, tasks, and features, the gates the factory checks before it merges, the risk-verdict comment on the pull request, the 60-minute wait, and how to turn it off;
+- that auto-merge requires a GitHub ruleset requiring status checks on each fix target's base branch, that a repository without one never auto-merges, and that branch protection requiring an approving review blocks auto-merge in that repository;
 - that triage runs after a failed claim's automatic retry and does not hold it;
 - the watch doctor group, including the `gh` login that files issues;
 - the watch section of status;
@@ -110,12 +120,17 @@ They SHALL state that no interactive watcher session is used. An on-demand `fact
 #### Scenario: Operate the service watcher
 
 - **WHEN** an operator follows the documentation to enable watching
-- **THEN** they can set the profile and budget, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
+- **THEN** they can set the profile and concurrency cap, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
 
 #### Scenario: Turn off auto-merge
 
 - **WHEN** an operator follows the documentation to stop auto-merging
 - **THEN** they set `[watch] auto_merge = false` in committed configuration; sessions launched after the change do not rate risk, no pull request is merged after the change, and a rating from a session already running gets a risk-verdict comment saying it was not merged because auto-merge is off
+
+#### Scenario: Enable auto-merge for a repository
+
+- **WHEN** an operator follows the documentation to let a fix target auto-merge
+- **THEN** they add a ruleset on its base branch that requires its CI status checks, and the factory then merges `low`-rated pull requests there once those checks pass
 
 #### Scenario: Ask for a factory update
 

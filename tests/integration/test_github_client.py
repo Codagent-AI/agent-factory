@@ -840,6 +840,39 @@ def test_commit_checks_combine_runs_and_latest_commit_statuses() -> None:
     assert "statuses" in gh.calls[1].arguments[1]
 
 
+def test_required_checks_read_ruleset_status_checks_for_the_branch() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                [
+                    {"type": "deletion"},
+                    {
+                        "type": "required_status_checks",
+                        "parameters": {
+                            "required_status_checks": [{"context": "test"}, {"context": "lint"}]
+                        },
+                    },
+                    {
+                        "type": "required_status_checks",
+                        "parameters": {"required_status_checks": [{"context": "test"}]},
+                    },
+                ]
+            )
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.required_checks("example/repository", "main") == ("test", "lint")
+    assert gh.calls[0].arguments[1].startswith("repos/example/repository/rules/branches/main?")
+
+
+def test_required_checks_are_empty_without_rulesets() -> None:
+    gh = RecordingGh([json.dumps([])])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.required_checks("example/repository", "main") == ()
+
+
 def test_merge_pull_request_pins_head_and_uses_merge_commit() -> None:
     gh = RecordingGh([json.dumps({"merged": True, "sha": "b" * 40})])
     client = GitHubClient(gh, lambda: "installation-token")

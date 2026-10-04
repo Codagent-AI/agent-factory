@@ -407,9 +407,6 @@ class WatchConfig:
     grace_minutes: int = 7
     timeout_minutes: int = 90
     auto_merge: bool = False
-    expected_checks: Mapping[str, tuple[str, ...]] = field(
-        default_factory=lambda: dict[str, tuple[str, ...]]()
-    )
 
 
 @dataclass(frozen=True)
@@ -442,22 +439,6 @@ def _watch_config(raw: object) -> WatchConfig:
     auto_merge = table.get("auto_merge", False)
     if not isinstance(auto_merge, bool):
         raise ConfigurationError("watch.auto_merge must be a boolean")
-    expected_raw = _table(table.get("expected_checks", {}), "watch.expected_checks")
-    expected_checks: dict[str, tuple[str, ...]] = {}
-    for repository, names in expected_raw.items():
-        if (
-            re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None
-            or not isinstance(names, list)
-            or not names
-        ):
-            raise ConfigurationError(
-                f"watch.expected_checks.{repository} must be a nonempty list of check names"
-            )
-        if any(not isinstance(name, str) or not name.strip() for name in cast(list[object], names)):
-            raise ConfigurationError(
-                f"watch.expected_checks.{repository} must be a nonempty list of check names"
-            )
-        expected_checks[repository.lower()] = tuple(cast(list[str], names))
     repository = _string(table, "repository", "watch")
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise ConfigurationError("watch.repository must be owner/name")
@@ -482,7 +463,6 @@ def _watch_config(raw: object) -> WatchConfig:
     return WatchConfig(
         enabled=enabled,
         auto_merge=auto_merge,
-        expected_checks=expected_checks,
         repository=repository,
         agent=agent,
         agents=dict(agents),

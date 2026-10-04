@@ -29,6 +29,8 @@ class Client:
     def __init__(self) -> None:
         self.pull = PullRequestState("OPEN", None, False, True, "main", HEAD)
         self.checks = CommitChecks(True, (), (), ("CI",))
+        self.required: tuple[str, ...] = ("CI",)
+        self.permissions: dict[str, str | None] = {}
         self.activity = ReviewActivity((), (), ())
         self.merges: list[tuple[str, int, str]] = []
         self.comments: list[int] = []
@@ -45,11 +47,14 @@ class Client:
     def commit_checks(self, repository: str, sha: str) -> CommitChecks:
         return self.checks
 
+    def required_checks(self, repository: str, branch: str) -> tuple[str, ...]:
+        return self.required
+
     def list_review_activity(self, repository: str, number: int) -> ReviewActivity:
         return self.activity
 
-    def get_permission(self, repository: str, login: str) -> str:
-        return "write"
+    def get_permission(self, repository: str, login: str) -> str | None:
+        return self.permissions.get(login, "write")
 
     def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
         self.merges.append((repository, number, sha))
@@ -108,9 +113,7 @@ def setup(tmp_path: Path, level: str = "low") -> tuple[ClaimStore, dict[str, Any
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
     shared = replace(
         shared,
-        watch=WatchConfig(
-            True, "o/r", "claude:model:medium", auto_merge=True, expected_checks={"o/r": ("CI",)}
-        ),
+        watch=WatchConfig(True, "o/r", "claude:model:medium", auto_merge=True),
         fix=FixConfig(targets=(FixTarget("o/r", "main"),)),
     )
     return store, watch_store.get(store, row["id"]) or {}, shared
@@ -349,16 +352,18 @@ def test_definitive_merge_rejection_ends_once(tmp_path: Path) -> None:
         store.close()
 
 
-def test_expected_check_not_reported_waits_for_it(tmp_path: Path) -> None:
+def _merge_state(store: ClaimStore, row: dict[str, Any]) -> dict[str, Any]:
+    return watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+
+
+def test_required_check_not_reported_waits_for_it(tmp_path: Path) -> None:
     store, row, shared = setup(tmp_path)
-    shared = replace(
-        shared, watch=replace(shared.watch, expected_checks={"o/r": ("CI", "security")})
-    )
     client = Client()
+    client.required = ("CI", "security")
     try:
         merge.step(store, client, shared)  # type: ignore[arg-type]
-        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
-        assert saved["state"] == "waiting" and "security" in saved["reason"]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "waiting" and saved["reason"].endswith("security")
         assert not client.merges
         client.checks = CommitChecks(True, (), (), ("CI", "security"))
         merge.step(store, client, shared)  # type: ignore[arg-type]
@@ -367,15 +372,117 @@ def test_expected_check_not_reported_waits_for_it(tmp_path: Path) -> None:
         store.close()
 
 
-def test_expected_duplicate_check_requires_both_results(tmp_path: Path) -> None:
-    store, _, shared = setup(tmp_path)
-    shared = replace(shared, watch=replace(shared.watch, expected_checks={"o/r": ("CI", "CI")}))
+def test_no_required_checks_never_merges(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
     client = Client()
+    client.required = ()
     try:
         merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged"
+        assert saved["reason"] == "no required checks on main"
         assert not client.merges
-        client.checks = CommitChecks(True, (), (), ("CI", "CI"))
+    finally:
+        store.close()
+
+
+def test_comment_review_does_not_hide_a_change_request(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = Client()
+    client.activity = ReviewActivity(
+        (
+            IssueComment("r1", "", "writer", "2026-10-03T00:00:00Z", "CHANGES_REQUESTED"),
+            IssueComment("r2", "nit", "writer", "2026-10-03T01:00:00Z", "COMMENTED"),
+        ),
+        (),
+        (),
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged" and saved["reason"] == "writer requested changes"
+        assert not client.merges
+    finally:
+        store.close()
+
+
+def test_later_approval_clears_a_change_request(tmp_path: Path) -> None:
+    store, _, shared = setup(tmp_path)
+    client = Client()
+    client.activity = ReviewActivity(
+        (
+            IssueComment("r1", "", "writer", "2026-10-03T00:00:00Z", "CHANGES_REQUESTED"),
+            IssueComment("r2", "", "writer", "2026-10-03T01:00:00Z", "APPROVED"),
+        ),
+        (),
+        (),
+    )
+    try:
         merge.step(store, client, shared)  # type: ignore[arg-type]
         assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_unknown_reviewer_permission_waits_instead_of_merging(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = Client()
+    client.permissions = {"someone": None}
+    client.activity = ReviewActivity(
+        (IssueComment("r1", "", "someone", "2026-10-03T00:00:00Z", "CHANGES_REQUESTED"),),
+        (),
+        (),
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "waiting"
+        assert saved["reason"] == "reviewer permission unavailable: someone"
+        assert not client.merges
+        client.permissions = {"someone": "read"}
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_open_pull_request_after_uncertain_request_ends_not_merged(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = UncertainClient()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        client.read_fails = False
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert _merge_state(store, row)["state"] == "waiting"
+        saved = _merge_state(store, row)
+        saved["request_sent_at"] = (datetime.now(UTC) - timedelta(minutes=6)).isoformat()
+        watch_store.update(store, row["id"], merge_json=json.dumps(saved))
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged"
+        assert saved["reason"] == "merge request did not complete"
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"state": "CLOSED"}, "pull request closed"),
+        ({"draft": True}, "pull request is a draft"),
+        ({"mergeable": False}, "pull request has a merge conflict"),
+    ],
+)
+def test_each_unmergeable_state_has_its_own_reason(
+    tmp_path: Path, change: dict[str, Any], reason: str
+) -> None:
+    store, row, shared = setup(tmp_path)
+    client = Client()
+    client.pull = replace(client.pull, **change)
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged" and saved["reason"] == reason
     finally:
         store.close()

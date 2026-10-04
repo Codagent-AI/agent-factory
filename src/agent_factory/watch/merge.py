@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import logging
 import re
-from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +21,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _PR_URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
 _WRITERS = {"admin", "maintain", "write"}
+# A review in one of these states sets its author's standing; a plain comment does not.
+_DECISIVE = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
+# GitHub answers a merge request synchronously, so an open pull request this long
+# after the request means the merge did not happen.
+_UNCONFIRMED = timedelta(minutes=5)
 
 
 def _finish(
@@ -99,6 +103,8 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
                     watch_store.update(store, row["id"], merge_json=json.dumps(merge))
             elif pull.state == "CLOSED":
                 _finish(store, row, merge, "not-merged", "pull request closed without merge")
+            elif now >= datetime.fromisoformat(merge["request_sent_at"]) + _UNCONFIRMED:
+                _finish(store, row, merge, "not-merged", "merge request did not complete")
             else:
                 reason = "merge outcome uncertain: " + str(
                     merge.get("request_error") or "no confirmation"
@@ -122,8 +128,14 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
         if repository.lower() not in targets or pull.base_ref != targets.get(repository.lower()):
             _finish(store, row, merge, "not-merged", "repository or base is not a fix target")
             continue
-        if pull.state != "OPEN" or pull.draft or pull.mergeable is False:
-            _finish(store, row, merge, "not-merged", "pull request closed, draft, or conflicting")
+        if pull.state != "OPEN":
+            _finish(store, row, merge, "not-merged", "pull request closed")
+            continue
+        if pull.draft:
+            _finish(store, row, merge, "not-merged", "pull request is a draft")
+            continue
+        if pull.mergeable is False:
+            _finish(store, row, merge, "not-merged", "pull request has a merge conflict")
             continue
         if pull.head_sha != head:
             _finish(store, row, merge, "not-merged", "rated head moved")
@@ -133,43 +145,51 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             continue
         try:
             checks = client.commit_checks(repository, head)
+            required = client.required_checks(repository, pull.base_ref)
             activity = client.list_review_activity(repository, number)
-            permissions = {
-                review.author: client.get_permission(repository, review.author)
-                for review in activity.reviews
-            }
         except Exception:
             logger.exception("watch merge checks failed for %s", row["id"])
             _wait_or_finish(store, row, merge, "GitHub read unavailable", now)
             continue
         if checks.failed:
             _finish(store, row, merge, "not-merged", "failed checks: " + ", ".join(checks.failed))
+        elif not required:
+            _finish(store, row, merge, "not-merged", f"no required checks on {pull.base_ref}")
         elif not checks.reported:
             _wait_or_finish(store, row, merge, "no checks reported", now)
         elif checks.pending:
             _wait_or_finish(store, row, merge, "checks pending: " + ", ".join(checks.pending), now)
-        elif not (expected := shared.watch.expected_checks.get(repository.lower())):
-            _wait_or_finish(store, row, merge, "expected checks not configured", now)
-        elif missing := Counter(expected) - Counter(checks.successful):
+        elif missing := [name for name in required if name not in checks.successful]:
             _wait_or_finish(
-                store,
-                row,
-                merge,
-                "expected checks not reported: " + ", ".join(missing.elements()),
-                now,
+                store, row, merge, "required checks not reported: " + ", ".join(missing), now
             )
         elif any(not thread.is_resolved for thread in activity.threads):
             _finish(store, row, merge, "not-merged", "unresolved review thread")
         else:
             latest: dict[str, Any] = {}
             for review in activity.reviews:
-                if permissions[review.author] in _WRITERS and (
+                if review.state in _DECISIVE and (
                     review.author not in latest
                     or review.created_at > latest[review.author].created_at
                 ):
                     latest[review.author] = review
-            if any(review.state == "CHANGES_REQUESTED" for review in latest.values()):
+            requesting = [
+                author for author, review in latest.items() if review.state == "CHANGES_REQUESTED"
+            ]
+            permissions = {
+                author: client.get_permission(repository, author) for author in requesting
+            }
+            if any(permission in _WRITERS for permission in permissions.values()):
                 _finish(store, row, merge, "not-merged", "writer requested changes")
+                continue
+            if unknown := [author for author, value in permissions.items() if value is None]:
+                _wait_or_finish(
+                    store,
+                    row,
+                    merge,
+                    "reviewer permission unavailable: " + ", ".join(sorted(unknown)),
+                    now,
+                )
                 continue
             # Persist the attempt before the network call. A restart must never
             # send a second merge request when the first outcome is unknown.

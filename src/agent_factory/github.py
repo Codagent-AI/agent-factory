@@ -523,6 +523,37 @@ class GitHubClient:
                 failed.append(name)
         return CommitChecks(reported, tuple(pending), tuple(failed), tuple(successful))
 
+    def required_checks(self, repository: str, branch: str) -> tuple[str, ...]:
+        """Status check contexts that active rulesets require on the branch."""
+        required: list[str] = []
+        page = 1
+        while True:
+            rules = _list(
+                json.loads(
+                    self._request(
+                        [
+                            "api",
+                            f"repos/{repository}/rules/branches/{branch}?per_page=100&page={page}",
+                            "--method",
+                            "GET",
+                        ],
+                        None,
+                    )
+                )
+            )
+            for raw in rules:
+                rule = _object(raw)
+                if rule.get("type") != "required_status_checks":
+                    continue
+                parameters = _object(rule.get("parameters"))
+                for check in _list(parameters.get("required_status_checks")):
+                    context = _object(check).get("context")
+                    if isinstance(context, str) and context and context not in required:
+                        required.append(context)
+            if len(rules) < 100:
+                return tuple(required)
+            page += 1
+
     def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
         try:
             response = self._request(
