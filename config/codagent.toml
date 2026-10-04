@@ -116,3 +116,11 @@ enabled = true
 auto_merge = true
 repository = "Codagent-AI/agent-factory"
 agent = "claude:claude-sonnet-5-5:medium"
+
+[watch.expected_checks]
+"Codagent-AI/agent-runner" = ["route / route", "build", "security-code", "lint", "test", "security-deps", "CodeRabbit"]
+"Codagent-AI/agent-skills" = ["route / route", "CodeRabbit"]
+"Codagent-AI/agent-validator" = ["route / route", "security-deps (.)", "security-code (.)", "lint (.)", "test (.)", "typecheck (.)", "Discover Jobs", "Integration Tests (E2E)", "CodeRabbit"]
+"Codagent-AI/agent-plugin" = ["route / route", "test", "CodeRabbit"]
+"Codagent-AI/agent-evals" = ["route / route", "check", "check", "CodeRabbit"]
+"Codagent-AI/agent-factory" = ["CodeRabbit"]

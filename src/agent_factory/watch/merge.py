@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -64,8 +65,13 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
         if merge.get("state") != "waiting":
             continue
         repository, number, head = row["repository"], row["pr_number"], merge["head_sha"]
+        if (not shared.watch.enabled or not shared.watch.auto_merge) and not merge.get(
+            "request_sent_at"
+        ):
+            _finish(store, row, merge, "not-merged", "auto-merge off")
+            continue
         try:
-            pull = client.get_pull_request(repository, number)
+            pull = client.get_pull_request_details(repository, number)
             if (
                 pull.state == "MERGED"
                 and pull.merge_commit_sha
@@ -75,10 +81,26 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
                 continue
         except Exception:
             logger.exception("watch merge read failed for %s", row["id"])
-            _wait_or_finish(store, row, merge, "GitHub read unavailable", now)
+            if merge.get("request_sent_at"):
+                # The request may have succeeded. A read failure is not evidence
+                # that GitHub rejected it, even after the usual wait deadline.
+                merge["reason"] = "merge outcome uncertain: GitHub read unavailable"
+                watch_store.update(store, row["id"], merge_json=json.dumps(merge))
+            else:
+                _wait_or_finish(store, row, merge, "GitHub read unavailable", now)
             continue
-        if not shared.watch.enabled or not shared.watch.auto_merge:
-            _finish(store, row, merge, "not-merged", "auto-merge off")
+        if merge.get("request_sent_at"):
+            if not shared.watch.enabled or not shared.watch.auto_merge:
+                _finish(store, row, merge, "not-merged", "auto-merge off")
+            else:
+                _wait_or_finish(
+                    store,
+                    row,
+                    merge,
+                    "merge outcome uncertain: "
+                    + str(merge.get("request_error") or "no confirmation"),
+                    now,
+                )
             continue
         if store.is_paused():
             _wait_or_finish(store, row, merge, "factory paused", now)
@@ -121,6 +143,16 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             _wait_or_finish(store, row, merge, "no checks reported", now)
         elif checks.pending:
             _wait_or_finish(store, row, merge, "checks pending: " + ", ".join(checks.pending), now)
+        elif not (expected := shared.watch.expected_checks.get(repository.lower())):
+            _wait_or_finish(store, row, merge, "expected checks not configured", now)
+        elif missing := Counter(expected) - Counter(checks.successful):
+            _wait_or_finish(
+                store,
+                row,
+                merge,
+                "expected checks not reported: " + ", ".join(missing.elements()),
+                now,
+            )
         elif any(not thread.is_resolved for thread in activity.threads):
             _finish(store, row, merge, "not-merged", "unresolved review thread")
         else:
@@ -134,6 +166,11 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             if any(review.state == "CHANGES_REQUESTED" for review in latest.values()):
                 _finish(store, row, merge, "not-merged", "writer requested changes")
                 continue
+            # Persist the attempt before the network call. A restart must never
+            # send a second merge request when the first outcome is unknown.
+            merge["request_sent_at"] = datetime.now(UTC).isoformat()
+            merge["reason"] = "merge request outcome uncertain"
+            watch_store.update(store, row["id"], merge_json=json.dumps(merge))
             try:
                 merge_sha = client.merge_pull_request(repository, number, head)
             except Exception as error:
@@ -141,7 +178,7 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
                 # recording a terminal rejection; never send another merge request.
                 accepted_sha: str | None = None
                 try:
-                    current = client.get_pull_request(repository, number)
+                    current = client.get_pull_request_details(repository, number)
                     if (
                         current.state == "MERGED"
                         and current.merge_commit_sha
@@ -153,6 +190,8 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
                 if accepted_sha:
                     _finish(store, row, merge, "merged", "merged automatically", accepted_sha)
                 else:
-                    _finish(store, row, merge, "not-merged", f"GitHub rejected merge: {error}")
+                    merge["request_error"] = str(error)
+                    merge["reason"] = f"merge outcome uncertain: {error}"
+                    watch_store.update(store, row["id"], merge_json=json.dumps(merge))
             else:
                 _finish(store, row, merge, "merged", "merged automatically", merge_sha)

@@ -6,11 +6,12 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agent_factory.config import FixConfig, FixTarget, SharedConfig, WatchConfig
-from agent_factory.github import CommitChecks, PullRequestState, ReviewActivity
+from agent_factory.github import CommitChecks, IssueComment, PullRequestState, ReviewActivity
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.watch import deliver, merge, result
 from agent_factory.watch import store as watch_store
@@ -21,12 +22,15 @@ HEAD = "a" * 40
 class Client:
     def __init__(self) -> None:
         self.pull = PullRequestState("OPEN", None, False, True, "main", HEAD)
-        self.checks = CommitChecks(True, (), ())
+        self.checks = CommitChecks(True, (), (), ("CI",))
         self.activity = ReviewActivity((), (), ())
         self.merges: list[tuple[str, int, str]] = []
         self.comments: list[int] = []
 
     def get_pull_request(self, repository: str, number: int) -> PullRequestState:
+        return self.pull
+
+    def get_pull_request_details(self, repository: str, number: int) -> PullRequestState:
         return self.pull
 
     def merge_has_parent(self, repository: str, merge_sha: str, head_sha: str) -> bool:
@@ -45,7 +49,7 @@ class Client:
         self.merges.append((repository, number, sha))
         return "b" * 40
 
-    def list_comment_records(self, repository: str, number: int) -> list:
+    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]:
         return []
 
     def create_comment(self, repository: str, number: int, body: str) -> str:
@@ -53,7 +57,7 @@ class Client:
         return "1"
 
 
-def setup(tmp_path: Path, level: str = "low") -> tuple[ClaimStore, dict, SharedConfig]:
+def setup(tmp_path: Path, level: str = "low") -> tuple[ClaimStore, dict[str, Any], SharedConfig]:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("o/r", 5, "I", "P", "fix", "fp", {}))
     now = datetime.now(UTC).isoformat()
@@ -98,7 +102,9 @@ def setup(tmp_path: Path, level: str = "low") -> tuple[ClaimStore, dict, SharedC
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
     shared = replace(
         shared,
-        watch=WatchConfig(True, "o/r", "claude:model:medium", auto_merge=True),
+        watch=WatchConfig(
+            True, "o/r", "claude:model:medium", auto_merge=True, expected_checks={"o/r": ("CI",)}
+        ),
         fix=FixConfig(targets=(FixTarget("o/r", "main"),)),
     )
     return store, watch_store.get(store, row["id"]) or {}, shared
@@ -115,7 +121,7 @@ def test_low_risk_waits_then_merges_and_comments_on_pr(tmp_path: Path) -> None:
             == "waiting"
         )
         assert not client.merges
-        client.checks = CommitChecks(True, (), ())
+        client.checks = CommitChecks(True, (), (), ("CI",))
         merge.step(store, client, shared)  # type: ignore[arg-type]
         merge.step(store, client, shared)  # type: ignore[arg-type]
         assert client.merges == [("o/r", 70, HEAD)]
@@ -164,7 +170,12 @@ def test_head_move_and_no_checks_fail_closed(tmp_path: Path) -> None:
 
 
 def test_rating_required_only_when_launch_enabled() -> None:
-    value = {"procedure": "pr-check", "summary": "ok", "issues_filed": [], "issues_updated": []}
+    value: dict[str, Any] = {
+        "procedure": "pr-check",
+        "summary": "ok",
+        "issues_filed": [],
+        "issues_updated": [],
+    }
     assert "risk" not in result.validate(value, "pr-check")
     with pytest.raises(ValueError, match="risk"):
         result.validate(value, "pr-check", auto_merge=True)
@@ -228,5 +239,90 @@ def test_medium_risk_never_enters_merge_queue(tmp_path: Path) -> None:
         assert not client.merges
         deliver.deliver(store, client, "factory[bot]")  # type: ignore[arg-type]
         assert client.comments == [70]
+    finally:
+        store.close()
+
+
+class UncertainClient(Client):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads = 0
+        self.read_fails = False
+
+    def get_pull_request_details(self, repository: str, number: int) -> PullRequestState:
+        self.reads += 1
+        if self.read_fails:
+            raise RuntimeError("read unavailable")
+        return self.pull
+
+    def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
+        self.merges.append((repository, number, sha))
+        self.read_fails = True
+        raise RuntimeError("response lost")
+
+
+def test_switch_off_finishes_without_github_read(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = UncertainClient()
+    client.read_fails = True
+    try:
+        merge.step(store, client, replace(shared, watch=replace(shared.watch, auto_merge=False)))  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "not-merged" and saved["reason"] == "auto-merge off"
+        assert client.reads == 0
+    finally:
+        store.close()
+
+
+def test_lost_merge_response_is_reconciled_without_retry(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = UncertainClient()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "waiting" and saved["request_sent_at"]
+        assert client.merges == [("o/r", 70, HEAD)]
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert client.merges == [("o/r", 70, HEAD)]
+        client.read_fails = False
+        client.pull = replace(
+            client.pull, state="MERGED", merged_at="2026-10-03T00:00:00Z", merge_commit_sha="b" * 40
+        )
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "merged"
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_expected_check_not_reported_waits_for_it(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    shared = replace(
+        shared, watch=replace(shared.watch, expected_checks={"o/r": ("CI", "security")})
+    )
+    client = Client()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = watch_store.json_field(watch_store.get(store, row["id"]) or {}, "merge_json")
+        assert saved["state"] == "waiting" and "security" in saved["reason"]
+        assert not client.merges
+        client.checks = CommitChecks(True, (), (), ("CI", "security"))
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_expected_duplicate_check_requires_both_results(tmp_path: Path) -> None:
+    store, _, shared = setup(tmp_path)
+    shared = replace(shared, watch=replace(shared.watch, expected_checks={"o/r": ("CI", "CI")}))
+    client = Client()
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert not client.merges
+        client.checks = CommitChecks(True, (), (), ("CI", "CI"))
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert client.merges == [("o/r", 70, HEAD)]
     finally:
         store.close()

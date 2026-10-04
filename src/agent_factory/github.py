@@ -107,6 +107,7 @@ class CommitChecks:
     reported: bool
     pending: tuple[str, ...]
     failed: tuple[str, ...]
+    successful: tuple[str, ...] = ()
 
 
 class GhRunner(Protocol):
@@ -405,6 +406,17 @@ class GitHubClient:
 
     def get_pull_request(self, repository: str, number: int) -> PullRequestState:
         response = self._request(
+            ["pr", "view", str(number), "--repo", repository, "--json", "state,mergedAt"], None
+        )
+        payload = _json_object(response)
+        merged_at = payload.get("mergedAt")
+        return PullRequestState(
+            state=_required_string(payload, "state"),
+            merged_at=merged_at if isinstance(merged_at, str) else None,
+        )
+
+    def get_pull_request_details(self, repository: str, number: int) -> PullRequestState:
+        response = self._request(
             ["api", f"repos/{repository}/pulls/{number}", "--method", "GET"], None
         )
         payload = _json_object(response)
@@ -434,6 +446,7 @@ class GitHubClient:
     def commit_checks(self, repository: str, sha: str) -> CommitChecks:
         pending: list[str] = []
         failed: list[str] = []
+        successful: list[str] = []
         reported = False
         page = 1
         while True:
@@ -455,6 +468,8 @@ class GitHubClient:
                 name = str(run.get("name") or "check")
                 if run.get("status") != "completed":
                     pending.append(name)
+                elif run.get("conclusion") == "success":
+                    successful.append(name)
                 elif run.get("conclusion") not in {"success", "neutral", "skipped"}:
                     failed.append(name)
             if len(runs) < 100:
@@ -488,9 +503,11 @@ class GitHubClient:
         for name, state in latest.items():
             if state == "pending":
                 pending.append(name)
-            elif state != "success":
+            elif state == "success":
+                successful.append(name)
+            else:
                 failed.append(name)
-        return CommitChecks(reported, tuple(pending), tuple(failed))
+        return CommitChecks(reported, tuple(pending), tuple(failed), tuple(successful))
 
     def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
         payload = _json_object(

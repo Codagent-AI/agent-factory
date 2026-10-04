@@ -628,7 +628,7 @@ def test_factory_pr_lookup_scans_all_pages_and_filters_by_issue() -> None:
 
 
 def test_get_pull_request_reads_state_and_merged_at() -> None:
-    gh = RecordingGh([json.dumps({"state": "closed", "merged_at": "2026-01-01T00:00:00Z"})])
+    gh = RecordingGh([json.dumps({"state": "MERGED", "mergedAt": "2026-01-01T00:00:00Z"})])
     client = GitHubClient(gh, lambda: "installation-token")
 
     state = client.get_pull_request("example/repository", 214)
@@ -636,15 +636,18 @@ def test_get_pull_request_reads_state_and_merged_at() -> None:
     assert state.state == "MERGED"
     assert state.merged_at == "2026-01-01T00:00:00Z"
     assert gh.calls[0].arguments == [
-        "api",
-        "repos/example/repository/pulls/214",
-        "--method",
-        "GET",
+        "pr",
+        "view",
+        "214",
+        "--repo",
+        "example/repository",
+        "--json",
+        "state,mergedAt",
     ]
 
 
 def test_get_pull_request_reports_missing_merged_at_as_none() -> None:
-    gh = RecordingGh([json.dumps({"state": "open", "merged_at": None})])
+    gh = RecordingGh([json.dumps({"state": "OPEN", "mergedAt": None})])
     client = GitHubClient(gh, lambda: "installation-token")
 
     state = client.get_pull_request("example/repository", 214)
@@ -830,6 +833,7 @@ def test_commit_checks_combine_runs_and_latest_commit_statuses() -> None:
     assert checks.reported
     assert checks.pending == ("test",)
     assert checks.failed == ("deploy",)
+    assert checks.successful == ("build", "lint")
     assert "check-runs" in gh.calls[0].arguments[1]
     assert "statuses" in gh.calls[1].arguments[1]
 
@@ -848,3 +852,35 @@ def test_merge_pull_request_pins_head_and_uses_merge_commit() -> None:
         "-",
     ]
     assert gh.calls[0].body == {"merge_method": "merge", "sha": "a" * 40}
+
+
+def test_get_pull_request_details_reads_merge_gates() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "state": "open",
+                    "merged_at": None,
+                    "draft": False,
+                    "mergeable": True,
+                    "base": {"ref": "main"},
+                    "head": {"sha": "a" * 40},
+                    "merge_commit_sha": None,
+                }
+            )
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    pull = client.get_pull_request_details("example/repository", 7)
+
+    assert pull.state == "OPEN"
+    assert pull.base_ref == "main" and pull.head_sha == "a" * 40
+    assert pull.mergeable is True and not pull.draft
+    assert gh.calls[0].arguments == ["api", "repos/example/repository/pulls/7", "--method", "GET"]
+
+
+def test_merge_has_parent_checks_rated_head() -> None:
+    gh = RecordingGh([json.dumps({"parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]})])
+    client = GitHubClient(gh, lambda: "installation-token")
+    assert client.merge_has_parent("example/repository", "c" * 40, "b" * 40)

@@ -13,6 +13,7 @@ The shared configuration SHALL accept an optional `[watch]` section with these s
 - the failure grace period in minutes (default 7, zero or more);
 - the session timeout in minutes (default 90, at least 1);
 - `auto_merge`, a boolean (default false) that turns on risk rating and auto-merge of low-risk pull requests.
+- `expected_checks`, an optional map from fix-target repository to a nonempty list of check names that must report success before auto-merge. Duplicate names require that many successful reports. A missing repository list prevents its pull requests from auto-merging.
 
 When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, a value out of range, or an `auto_merge` that is not a boolean, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior, with auto-merge off. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium` and `auto_merge = true`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, cap, budget, grace period, timeout, or `auto_merge` applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout. A merge that is waiting SHALL use the `auto_merge` value of the cycle that evaluates it, so turning it off stops every waiting merge.
 
