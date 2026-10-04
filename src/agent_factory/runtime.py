@@ -10,12 +10,12 @@ import shutil
 import subprocess
 from collections.abc import Callable, Generator, Mapping
 from contextlib import closing, contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, job_cap, retention, terminal, watch, work_kinds
+from agent_factory import audit, job_cap, notify, retention, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
@@ -47,6 +47,11 @@ from agent_factory.work_kinds.eval.publication import publish_eval_results
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class CycleView:
+    cards: list[ProjectQueueItem] | None = None
+
+
 @contextmanager
 def _watch_finally(
     store: ClaimStore,
@@ -55,11 +60,19 @@ def _watch_finally(
     local: LocalConfig,
     config_path: Path,
     token_provider: InstallationTokenProvider,
-) -> Generator[None, None, None]:
+) -> Generator[CycleView, None, None]:
+    view = CycleView()
     try:
-        yield
+        notify.begin(store, shared)
+    except Exception:
+        logger.exception("notify begin failed")
+    try:
+        yield view
     finally:
-        watch.step(store, client, shared, local, config_path, token_provider)
+        try:
+            watch.step(store, client, shared, local, config_path, token_provider)
+        finally:
+            notify.step(store, client, shared, local, view.cards)
 
 
 def cycle(state: Path, config_path: Path) -> None:
@@ -78,7 +91,7 @@ def cycle(state: Path, config_path: Path) -> None:
     with (
         advisory_lock(state, "cycle"),
         closing(ClaimStore(state, job_cap=shared.job_cap)) as store,
-        _watch_finally(store, client, shared, local, config_path, token_provider),
+        _watch_finally(store, client, shared, local, config_path, token_provider) as view,
     ):
         controller = Controller(
             store,
@@ -92,6 +105,7 @@ def cycle(state: Path, config_path: Path) -> None:
         _reconcile_backends(store, local)
         client.validate_project(shared.project)
         cards = client.list_project_items(shared.project.id, priority_id=shared.project.priority_id)
+        view.cards = cards
         permission_cache: dict[tuple[str, str], str | None] = {}
         seen: dict[str, str] = {}
         sync_cache: dict[str, bool] = {}

@@ -409,6 +409,42 @@ class WatchConfig:
 
 
 @dataclass(frozen=True)
+class NotifyConfig:
+    enabled: bool = False
+    agent: str = ""
+    settle_seconds: int = 360
+    watch_wait_minutes: int = 25
+    daily_sessions: int = 30
+    timeout_minutes: int = 5
+
+
+def _notify_config(raw: object) -> NotifyConfig:
+    if raw is None:
+        return NotifyConfig()
+    table = _table(raw, "notify")
+    enabled = table.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ConfigurationError("notify.enabled must be a boolean")
+    agent = table.get("agent", "")
+    profile = PROFILE.fullmatch(agent) if isinstance(agent, str) else None
+    if enabled and (profile is None or profile.group(1) != "claude" or not all(profile.groups())):
+        raise ConfigurationError("notify.agent must be a claude:model:effort profile")
+    defaults = NotifyConfig()
+    limits: dict[str, int] = {}
+    for key, minimum in (
+        ("settle_seconds", 0),
+        ("watch_wait_minutes", 0),
+        ("daily_sessions", 0),
+        ("timeout_minutes", 1),
+    ):
+        value = table.get(key, getattr(defaults, key))
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ConfigurationError(f"notify.{key} must be an integer >= {minimum}")
+        limits[key] = value
+    return NotifyConfig(enabled=enabled, agent=agent if isinstance(agent, str) else "", **limits)
+
+
+@dataclass(frozen=True)
 class JobCapConfig:
     attempts: int = 100
     window_hours: int = 24
@@ -478,6 +514,7 @@ class SharedConfig:
     feature: FeatureConfig | None = None
     task: TaskConfig | None = None
     watch: WatchConfig = field(default_factory=WatchConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
     job_cap: JobCapConfig = field(default_factory=JobCapConfig)
 
     @classmethod
@@ -564,6 +601,7 @@ class SharedConfig:
                 document.get("task"), "task", TaskConfig, strict_defaults=True
             ),
             watch=_watch_config(document.get("watch")),
+            notify=_notify_config(document.get("notify")),
             job_cap=_job_cap_config(document.get("job_cap")),
         )
 

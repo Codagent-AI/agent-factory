@@ -15,6 +15,7 @@ Give one issue to the live factory, then confirm the factory claimed it. Read `A
 - Never invent eval inputs. If the request body is invalid, stop and report the parse error.
 - Never print tokens. `assign.py` keeps both tokens in memory.
 - Never edit a release or the service clone.
+- After refusal checks pass, `assign.py --apply` records this Claude session in the issue body before setting Owner and Status. The read-back includes `session:`. With no Claude session, it makes no body write.
 
 ## What admission requires
 

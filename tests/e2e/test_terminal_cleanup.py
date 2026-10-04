@@ -199,13 +199,23 @@ def fail_command(self, repository, number, body):
 GitHubClient.create_comment = fail_command
 """
     try:
+        deadline = time.monotonic() + 10
+        while not (artifact / "started").exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert (artifact / "started").exists()
         (artifact / "finish").touch()
         _finish(store, artifact)
         _cli(config, env, "tick", before_cli=failure)
         claim = store.get_claim(run.claim_id)
         assert claim is not None and claim.lifecycle == "settled"
+        assert any(
+            event.key.endswith(":review-command") for event in store.pending_events(claim.id)
+        )
         _status(board, shared, "done")
         _cli(config, env, "tick", before_cli=failure)
+        assert any(
+            event.key.endswith(":review-command") for event in store.pending_events(claim.id)
+        )
         root = tmp_path / "factory/worktrees" / claim.id
         assert (root / "runner").exists()
         _cli(config, env, "tick")
@@ -214,7 +224,8 @@ GitHubClient.create_comment = fail_command
         comments = json.loads(board.read_text())["comments"]
         assert sum("human-review.sh" in c["body"] for c in comments) == 1
     finally:
-        (artifact / "finish").touch()
+        if artifact.is_dir():
+            (artifact / "finish").touch()
         store.close()
 
 
