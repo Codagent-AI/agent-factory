@@ -226,12 +226,22 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
 def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
     from agent_factory.work_kinds.pull_request import launch
 
-    workflow_scripts = {
-        workflow.name: set(
-            re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
-        )
+    workflows = {
+        workflow.name: workflow.read_text()
         for workflow in PACKAGE.iterdir()
         if workflow.name.endswith(".yaml")
+    }
+    workflow_scripts = {
+        name: set(re.findall(r"^\s*script:\s*(\S+)\s*$", text, re.MULTILINE))
+        for name, text in workflows.items()
+    }
+    workflow_calls = {
+        name: {
+            target
+            for target in re.findall(r"^\s*workflow:\s*(\S+)\s*$", text, re.MULTILINE)
+            if not target.startswith("builtin:")
+        }
+        for name, text in workflows.items()
     }
     scripts = {name for names in workflow_scripts.values() for name in names}
     assert scripts
@@ -240,16 +250,21 @@ def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
         assert name in launch.STAGED_FILES
         assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
 
+    review_staged_files = {
+        launch.REVIEW_WORKFLOW_FILE,
+        launch.IMPLEMENT_WORKFLOW_FILE,
+        *launch.REVIEW_WORKFLOW_SCRIPTS,
+    }
+    # The task guard is shared with review and copied by the global staged catalog.
+    task_guard = "factory-task-guard-v1.0.yaml"
+    shared_guard_files = {task_guard} | workflow_scripts[task_guard]
+    assert shared_guard_files <= review_staged_files
     contracts = [
         (
             kind.default_contract,
             kind,
-            {
-                name
-                for name in (kind.workflow_file, "factory-define-v1.0.yaml")
-                if name in kind.staged_files
-            },
-            set(kind.staged_files),
+            kind.workflow_file,
+            set(kind.staged_files) | (shared_guard_files if kind.kind == "task" else set[str]()),
         )
         for kind in registered()
     ]
@@ -257,22 +272,32 @@ def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
         (
             launch.REVIEW_CONTRACT,
             FIX,
-            {
-                launch.REVIEW_WORKFLOW_FILE,
-                launch.IMPLEMENT_WORKFLOW_FILE,
-                "factory-task-guard-v1.0.yaml",
-            },
-            set(launch.STAGED_FILES),
+            launch.REVIEW_WORKFLOW_FILE,
+            review_staged_files,
         )
     )
-    assert set(workflow_scripts) == set().union(*(workflows for _, _, workflows, _ in contracts))
-    for index, (contract, kind, workflows, staged_files) in enumerate(contracts):
-        referenced_scripts = {name for workflow in workflows for name in workflow_scripts[workflow]}
-        for name in referenced_scripts:
-            assert name in staged_files, (contract, name)
+    covered_workflows: set[str] = set()
+    for index, (contract, kind, root, staged_files) in enumerate(contracts):
         catalog = launch.stage_workflow_into(tmp_path / str(index), contract, kind)
+        pending = [root]
+        seen: set[str] = set()
+        referenced_scripts: set[str] = set()
+        while pending:
+            workflow = pending.pop()
+            assert workflow in workflow_scripts, (contract, workflow)
+            if workflow in seen:
+                continue
+            seen.add(workflow)
+            assert workflow in staged_files, (contract, workflow)
+            assert (catalog / workflow).is_file(), (contract, workflow)
+            for name in workflow_scripts[workflow]:
+                assert name in staged_files, (contract, workflow, name)
+            referenced_scripts.update(workflow_scripts[workflow])
+            pending.extend(workflow_calls[workflow])
+        covered_workflows.update(seen)
         for name in referenced_scripts:
             assert os.access(catalog / name, os.X_OK), (contract, name)
+    assert set(workflow_scripts) == covered_workflows
 
 
 def test_staged_catalog_modes_follow_shebang_not_extension(
