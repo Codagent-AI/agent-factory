@@ -61,6 +61,16 @@ def test_stamp_carry_and_eval_template(tmp_path: Path) -> None:
     _command("carry", str(body), str(edited), environment=env)
     carried = parse(edited.read_text())
     assert carried is not None and carried["session_id"] == SESSION
+    other = "c2ae018f-230c-437f-bd07-ff9f49ab6a83"
+    replaced = tmp_path / "replaced.md"
+    prefix, suffix = "Alpha\n", "\nBeta\n\n\n"
+    old_marker = f'<!-- codagent-session: {{"session_id":"{other}"}} -->'
+    replaced.write_text(prefix + old_marker + suffix)
+    _command("stamp", str(replaced), environment=env)
+    restamped = replaced.read_text()
+    assert restamped.startswith(prefix) and restamped.endswith(suffix)
+    assert parse(restamped)["session_id"] == SESSION  # type: ignore[index]
+    assert restamped.count("codagent-session:") == 1
     unmarked = tmp_path / "unmarked.md"
     unmarked.write_text("plain\n")
     env.pop("CLAUDE_CODE_SESSION_ID")

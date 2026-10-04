@@ -46,14 +46,24 @@ def render(session_id: str, name: str | None = None, now: datetime | None = None
     return f"<!-- codagent-session: {json.dumps(value, separators=(',', ':'))} -->"
 
 
-def _remove(body: str) -> str:
-    return PATTERN.sub("", body).rstrip("\n")
-
-
 def _append(body: str, marker: str) -> str:
-    clean = _remove(body) if PATTERN.search(body) else body
-    separator = "" if clean.endswith("\n\n") else "\n" if clean.endswith("\n") else "\n\n"
-    return clean + separator + marker + "\n"
+    matches = list(PATTERN.finditer(body))
+    if not matches:
+        separator = "" if body.endswith("\n\n") else "\n" if body.endswith("\n") else "\n\n"
+        return body + separator + marker + "\n"
+    # Replace the last marker where it stands and drop any earlier ones, so every other byte
+    # of the body is kept. An earlier marker on its own line takes its line break with it.
+    parts: list[str] = []
+    position = 0
+    for match in matches[:-1]:
+        parts.append(body[position : match.start()])
+        position = match.end()
+        own_line = match.start() == 0 or body[match.start() - 1] == "\n"
+        if own_line and body.startswith("\n", position):
+            position += 1
+    last = matches[-1]
+    parts.extend((body[position : last.start()], marker, body[last.end() :]))
+    return "".join(parts)
 
 
 def stamp(body: str, session_id: str, name: str | None = None, now: datetime | None = None) -> str:

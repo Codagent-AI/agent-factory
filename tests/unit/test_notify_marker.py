@@ -44,6 +44,21 @@ def test_stamp_and_carry_preserve_prose() -> None:
     assert marker.carry("unmarked", original) == original
 
 
+def test_replacing_a_marker_keeps_every_other_byte() -> None:
+    """Acceptance round 0 F-1: replacing a marker must not move it or touch the prose."""
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    old = marker.render(FIRST, "first", now)
+    new = marker.render(SECOND, "second", now)
+    for before, after in (
+        ("Alpha\n" + old + "\nBeta\n", "Alpha\n" + new + "\nBeta\n"),
+        ("x\n\n" + old + "\n\n\n", "x\n\n" + new + "\n\n\n"),
+        ("x\n\n" + old, "x\n\n" + new),
+        (old + "\nmiddle\n" + old + "\nend\n", "middle\n" + new + "\nend\n"),
+    ):
+        assert marker.stamp(before, SECOND, "second", now) == after
+        assert marker.carry(new, before) == after
+
+
 def test_each_message_phrase_has_only_required_links() -> None:
     claim = Claim("claim", "o/r", 12, "I", "P", "fix", "fp", {}, "settled", {}, {}, {}, {})
     for kind, phrase in PHRASES.items():
