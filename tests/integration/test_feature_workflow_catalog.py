@@ -26,8 +26,13 @@ def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> 
     for phrase in (
         "either of these independent conditions",
         "not caused by this branch's changes",
-        "git diff against the merge base",
-        "the failing check's definition and configuration",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
         "git, URL, or fork overrides or resolutions",
         "even if the branch caused the failure",
         "leave the check failing",
@@ -251,8 +256,13 @@ def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_huma
     for phrase in (
         "either of these independent conditions",
         "not caused by this branch's changes",
-        "git diff against the merge base",
-        "the failing check's definition and configuration",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
         "git, URL, or fork overrides or resolutions",
         "even if the branch caused the failure",
         "leave the check failing",
@@ -260,3 +270,27 @@ def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_huma
         "what remedy a human would need to approve",
     ):
         assert phrase in prompt, (workflow, phrase)
+
+
+def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    prompt = text.split("      - id: task-compliance-repair\n", 1)[1].split(
+        "  - id: task-compliance-verified-final\n", 1
+    )[0]
+    for phrase in (
+        "For CHECK failures from agent-validator check",
+        "either of these independent conditions",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, phrase

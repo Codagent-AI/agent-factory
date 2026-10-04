@@ -229,9 +229,19 @@ The Validator commit SHALL be derived from the version the executable reports, e
 
 ### Requirement: Validator repair reports out-of-scope CHECK failures
 
-Validator repair SHALL be instructed not to remediate a CHECK failure that the branch did not cause (neither the affected code or dependency nor the check's definition and configuration changed against the merge base), or whose only remedy replaces or redirects a dependency source. Each condition SHALL apply independently. It SHALL leave that check failing and report the failure, why it is out of scope, and the proposed remedy for a human decision.
+Validator repair SHALL be instructed not to remediate a CHECK failure when the same check fails with the same error at the merge base with the target branch (`origin/<target branch>`, never a local branch), or when its only remedy replaces or redirects a dependency source. Each condition SHALL apply independently. Repair SHALL confirm a pre-existing failure by running the check on a temporary worktree of that merge base; for a dependency audit, unchanged lockfile entries for the flagged package and unchanged check definition and configuration suffice. A newly published advisory that also fails at the merge base counts as pre-existing. An unconfirmed failure SHALL be treated as branch-caused and fixed, even if the failing file was untouched. A branch change to the check or its policy SHALL count as branch-caused. For an out-of-scope failure, repair SHALL leave the check failing and report the failure, why it is out of scope, and the proposed remedy for a human decision.
 
 #### Scenario: Unrelated advisory requires an unvetted dependency source
 
 - **WHEN** a dependency audit fails on a newly published advisory affecting an unchanged dependency and the available remedy redirects it to an unvetted fork
 - **THEN** validator repair leaves the check failing, commits no override, and reports the failure and proposed remedy for a human decision
+
+#### Scenario: Branch-caused failure requires an unvetted dependency source
+
+- **WHEN** a CHECK failure is caused by this branch but the only available remedy redirects a dependency to an unvetted source
+- **THEN** validator repair leaves the check failing, commits no override, and reports the proposed remedy for a human decision
+
+#### Scenario: Indirect regression in an untouched file
+
+- **WHEN** the branch changes a function signature and a check fails in an untouched file with unchanged configuration and no such error at the merge base
+- **THEN** validator repair treats the failure as branch-caused and fixes it
