@@ -25,47 +25,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _read_result(path: Path) -> tuple[str, str, float | None]:
+    value: Any = json.loads(path.read_text())
+    if not isinstance(value, dict):
+        raise ValueError("Claude result is not an object")
+    value = cast(dict[str, object], value)
+    if value.get("is_error") is not False:
+        raise ValueError("Claude reported an error")
+    output = value.get("structured_output")
+    if not isinstance(output, dict):
+        raise ValueError("invalid structured output")
+    output = cast(dict[str, object], output)
+    if output.get("outcome") not in {"sent", "no-session", "failed"} or not isinstance(
+        output.get("detail"), str
+    ):
+        raise ValueError("invalid structured output")
+    cost = value.get("total_cost_usd")
+    return (
+        cast(str, output["outcome"]),
+        cast(str, output["detail"]),
+        float(cost) if isinstance(cost, int | float) else None,
+    )
+
+
 def parse_result(path: Path) -> tuple[str, str, float | None]:
     try:
-        value: Any = json.loads(path.read_text())
-        if not isinstance(value, dict):
-            raise ValueError("Claude result is not an object")
-        value = cast(dict[str, object], value)
-        if value.get("is_error") is not False:
-            raise ValueError("Claude reported an error")
-        output = value.get("structured_output")
-        if not isinstance(output, dict):
-            raise ValueError("invalid structured output")
-        output = cast(dict[str, object], output)
-        if output.get("outcome") not in {"sent", "no-session", "failed"} or not isinstance(
-            output.get("detail"), str
-        ):
-            raise ValueError("invalid structured output")
-        cost = value.get("total_cost_usd")
-        return (
-            cast(str, output["outcome"]),
-            cast(str, output["detail"]),
-            float(cost) if isinstance(cost, int | float) else None,
-        )
+        return _read_result(path)
     except (OSError, ValueError, TypeError) as error:
         return "failed", str(error), None
 
 
 def _valid_result(path: Path) -> bool:
     try:
-        value: Any = json.loads(path.read_text())
-        if not isinstance(value, dict):
-            return False
-        value = cast(dict[str, object], value)
-        output = value.get("structured_output")
-        if not isinstance(output, dict):
-            return False
-        result = cast(dict[str, object], output)
-        return (
-            value.get("is_error") is False
-            and result.get("outcome") in {"sent", "no-session", "failed"}
-            and isinstance(result.get("detail"), str)
-        )
+        _read_result(path)
+        return True
     except (OSError, ValueError):
         return False
 
