@@ -31,10 +31,14 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.notify import marker, registry
 from agent_factory.routing import SourceItem
 from agent_factory.work_kinds.base import Feedback, card_status
 from agent_factory.work_kinds.eval import parse_request
+
+try:
+    from agent_factory.notify import marker, registry
+except ImportError:  # The release predates session notifications: degrade to no marker.
+    marker = registry = None
 
 
 def paul_gh(*arguments: str) -> str:
@@ -111,7 +115,7 @@ def report(factory: Factory, repository: str, number: int, kind: str | None) -> 
     source = card.source if card else detail
     kind = kind or factory.kind_of(source)
     print(f"issue: https://github.com/{repository}/issues/{number} {detail.title!r}")
-    recorded = marker.parse(detail.body)
+    recorded = marker.parse(detail.body) if marker else None
     print(
         f"session: {recorded.get('name', 'unknown')} ({recorded['session_id']})"
         if recorded
@@ -266,7 +270,9 @@ def apply(factory: Factory, repository: str, number: int, kind: str, retype: boo
         item = factory.app.add_project_item(project.id, source.id)
         print(f"added to board: {item.id}")
     session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    if session_id:
+    if session_id and marker is None:
+        print("session not recorded: this release has no agent_factory.notify")
+    elif session_id and registry is not None:
         current = factory.app.get_source_item(repository, number)
         live = registry.resolve(session_id)
         marked = marker.stamp(current.body, session_id, live.name if live else None)

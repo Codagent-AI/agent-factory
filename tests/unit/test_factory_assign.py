@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -167,3 +168,68 @@ def test_apply_replaces_marker_before_board_handoff(
     with pytest.raises(SystemExit, match="refused: claim"):
         helper.apply(factory, "o/r", 12, "feature", False)
     assert not writes
+
+
+def test_apply_without_notify_package_hands_off_without_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A release that predates session notifications has no agent_factory.notify.
+    monkeypatch.setitem(sys.modules, "agent_factory.notify", None)
+    old_spec = importlib.util.spec_from_file_location("factory_assign_old_release", HELPER)
+    assert old_spec is not None and old_spec.loader is not None
+    old = importlib.util.module_from_spec(old_spec)
+    old_spec.loader.exec_module(old)
+    assert old.marker is None
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    body = "Issue prose\n"
+    writes: list[str] = []
+    source = SourceItem("I", "o/r", 12, "author", frozenset(), "Feature", "open", body)
+
+    class App:
+        def list_project_items(
+            self, project_id: str, *, priority_id: str = ""
+        ) -> list[ProjectQueueItem]:
+            return []
+
+        def get_source_item(self, repository: str, number: int) -> SourceItem:
+            return source
+
+        def get_permission(self, repository: str, author: str) -> str:
+            return "write"
+
+        def find_project_item(self, project_id: str, issue_id: str) -> ProjectItem:
+            return ProjectItem("P", "I", {})
+
+        def set_single_select_field(
+            self, project_id: str, item_id: str, field_id: str, option_id: str
+        ) -> None:
+            writes.append("board")
+
+    class Paul:
+        def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None:
+            pass
+
+    def fake_gh(*args: str) -> str:
+        writes.append("body")
+        return ""
+
+    monkeypatch.setattr(old, "paul_gh", fake_gh)
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "c2ae018f-230c-437f-bd07-ff9f49ab6a82")
+    path = tmp_path / "state.sqlite3"
+    ClaimStore(path).close()
+    factory = old.Factory.__new__(old.Factory)
+    factory.shared = shared
+    factory.local = SimpleNamespace(state_path=path)
+    factory.app = App()
+    factory.paul = Paul()
+    factory.targets = {"o/r"}
+    factory.feature_targets = {"o/r"}
+    factory.task_targets = {"o/r"}
+    factory.handlers = {}
+    old.apply(factory, "o/r", 12, "feature", False)
+    assert writes == ["board", "board"]
+    assert source.body == body
+    old.report(factory, "o/r", 12, "feature")
+    output = capsys.readouterr().out
+    assert "session not recorded: this release has no agent_factory.notify" in output
+    assert "session: none" in output
