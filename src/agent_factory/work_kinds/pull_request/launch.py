@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from importlib.resources import as_file, files
 from pathlib import Path
 
+from agent_factory import audit
 from agent_factory.config import PROFILE, LocalConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.suites.and_scene import ReadinessError
@@ -35,6 +36,16 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "record-review-outcome.sh",
     "review-description.sh",
     "mark-later-commits.py",
+    "factory-task-guard-v1.0.yaml",
+    "task-scope-floor.py",
+    "record-scope.sh",
+    "decision_json.py",
+    "check-chore-subjects.py",
+    "normalize-chore-commits.py",
+    "scope-state.py",
+    "json-flag.py",
+    "factory-task-boundary.md",
+    "review-field.sh",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
 # their shared implementation sub-workflow, and the scripts each references by bare name.
@@ -769,13 +780,30 @@ def host_script(
             f" --param prior_branch={shlex.quote(prior_branch)}"
             f" --param base_head={shlex.quote(base_head)}"
         )
+    # When post-run audits are enabled, every attempt is audited whatever its result,
+    # before the exit trap restores a tracked config: replay resolves the auditor from
+    # the staged factory profile. The audit runs with the operator's own GitHub identity,
+    # never the attempt's token, and its outcome never changes the attempt's exit status.
+    audit_command = " ".join(
+        (
+            "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
+            "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
+            # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
+            f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
+            f"--runner {shlex.quote(runner)}",
+            f"--session-dir {shlex.quote(str(session_dir))}",
+            f"--project {shlex.quote(str(repo_clone))}",
+            f"--evidence {shlex.quote(str(evidence))}",
+            "|| true",
+        )
+    )
     lines = [
         "#!/bin/bash",
         "# Written by agent-factory for one host fix attempt.",
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(str(evidence / 'logs'))}",
         f"exec > >(tee -a {shlex.quote(str(evidence / 'logs' / 'agent-runner.log'))}) 2>&1",
-        f"echo 'factory-fix: launching on the host' | tee -a "
+        f"echo '{definition.workflow_name}: launching on the host' | tee -a "
         f"{shlex.quote(str(evidence / 'factory-suite.log'))}",
         # The credential copy is read as data, never sourced: a token value is exported
         # literally even if it contains shell syntax.
@@ -800,23 +828,7 @@ def host_script(
         "set +e",
         run_command,
         "run_status=$?",
-        # Every attempt is audited whatever its result, before the exit trap restores a
-        # tracked config: replay resolves the auditor from the staged factory profile. The
-        # audit runs with the operator's own GitHub identity, never the attempt's token,
-        # and its outcome never changes the attempt's exit status.
-        " ".join(
-            (
-                "env -u GH_TOKEN -u GITHUB_TOKEN -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_NOSYSTEM",
-                "-u GIT_ASKPASS -u GIT_TERMINAL_PROMPT",
-                # -P keeps the clone's own files off sys.path, so they cannot shadow the audit.
-                f"{shlex.quote(sys.executable)} -P -m agent_factory.audit host",
-                f"--runner {shlex.quote(runner)}",
-                f"--session-dir {shlex.quote(str(session_dir))}",
-                f"--project {shlex.quote(str(repo_clone))}",
-                f"--evidence {shlex.quote(str(evidence))}",
-                "|| true",
-            )
-        ),
+        *([audit_command] if audit.AUDIT_ENABLED else []),
         'exit "$run_status"',
     ]
     return "\n".join(lines) + "\n"

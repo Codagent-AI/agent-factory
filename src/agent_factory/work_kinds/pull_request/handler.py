@@ -173,20 +173,23 @@ class PullRequestHandler:
             )
             return
         if permission_cache[key] not in WRITER_PERMISSIONS:
-            if self.kind == "feature":
-                marker = "<!-- agent-factory-feature-handoff:v1 -->"
+            if self.kind != "fix":
+                marker = f"<!-- agent-factory-{self.kind}-handoff:v1 -->"
                 try:
                     comments = self._github.list_comment_records(source.repository, source.number)
                     if not any(marker in comment.body for comment in comments):
                         self._github.create_comment(
                             source.repository,
                             source.number,
-                            f"{marker}\nFeature handoff requires the issue author to have "
+                            f"{marker}\n{self.definition.noun} handoff requires the issue "
+                            "author to have "
                             "write, maintain, or admin access to this repository. "
                             "The card remains unassigned.",
                         )
                 except GitHubApiError as error:
-                    logger.warning("Cannot explain Feature handoff for %s: %s", card.id, error)
+                    logger.warning(
+                        "Cannot explain %s handoff for %s: %s", self.definition.noun, card.id, error
+                    )
             return
         try:
             cast(GitHubClient, self._github).set_single_select_field(
@@ -1024,6 +1027,8 @@ class PullRequestHandler:
                     if self.kind == "feature" and latest.reason != "review"
                     else f"Needs input.\n\n{reasons}"
                 )
+                if self.kind == "task" and latest.reason != "review":
+                    body += "\n\nNo branch was pushed."
                 self._store.record_event(
                     claim.id, f"{latest.id}:needs-input", _with_host_note(body, latest.result)
                 )
@@ -1143,7 +1148,10 @@ class PullRequestHandler:
         return ScheduleConfig.always(local.schedule.timezone, local.schedule.poll_seconds)
 
     def providers(self, claim: Claim) -> set[str]:
-        return providers_from_roles(mapping(claim.frozen_spec.get("roles")))
+        return self.providers_for_spec(claim.frozen_spec)
+
+    def providers_for_spec(self, frozen_spec: Mapping[str, object]) -> set[str]:
+        return providers_from_roles(mapping(frozen_spec.get("roles")))
 
     def attempt_message(self, run: Run, stored_result: Mapping[str, object], *, stage: str) -> str:
         attempt = run.attempt_number + 1
@@ -1293,6 +1301,11 @@ def _pr_message(result: Mapping[str, object]) -> str:
             f"\n\n{counts['red']} red flags, {counts['orange']} orange flags, "
             f"{counts['yellow']} yellow items."
         )
+    compliance = mapping(result.get("task_compliance"))
+    if compliance.get("result") == "not-run":
+        body += f"\n\nTask-compliance did not run: {compliance.get('reason') or 'unknown reason'}."
+    elif compliance.get("result") == "failed":
+        body += "\n\nTask-compliance violations remain."
     return _with_host_note(body, result)
 
 

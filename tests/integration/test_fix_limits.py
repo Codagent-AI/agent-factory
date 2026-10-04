@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore, Run
 from agent_factory.supervisor import SupervisionLimits, _timeout, launch_supervisor
 from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
-from agent_factory.work_kinds.pull_request.kinds import FIX
+from agent_factory.work_kinds.pull_request.kinds import FEATURE, FIX, TASK, PullRequestKind
 
 _SHARED = """\
 [github]
@@ -149,13 +150,17 @@ def _program(tmp_path: Path, behaviour: str) -> Path:
     return program
 
 
-def _auditing_program(tmp_path: Path) -> Path:
+def _auditing_program(tmp_path: Path, kind: PullRequestKind) -> Path:
     program = tmp_path / "auditing.py"
+    outcome: dict[str, object] = {"contract": kind.default_contract, "outcome": "pull-request"}
+    if kind is FEATURE:
+        outcome["pr"] = {"url": "https://github.com/o/r/pull/7", "number": 7, "branch": "work"}
+        outcome["review_attention_counts"] = {"red": 0, "orange": 0, "yellow": 0}
     program.write_text(
         "import pathlib, sys, time\n"
         "artifact = pathlib.Path(sys.argv[1]); artifact.mkdir(parents=True, exist_ok=True)\n"
-        "(artifact / 'fix-outcome.json').write_text("
-        '\'{"contract":"factory-fix/1","outcome":"pull-request"}\')\n'
+        f"(artifact / {kind.outcome_file!r}).write_text("
+        f"{json.dumps(outcome)!r})\n"
         "log = artifact / 'factory-suite.log'\n"
         "for _ in range(30):\n"
         "    with log.open('a') as stream: stream.write('waiting for audit\\n')\n"
@@ -253,17 +258,20 @@ def test_each_fix_limit_stops_the_attempt_and_names_itself(
     ("limits", "expected_timeout"),
     [((10, 0.8, 10), None), ((10, 0.8, 1.1), "total")],
 )
+@pytest.mark.parametrize("kind", [FIX, FEATURE, TASK], ids=lambda kind: kind.kind)
 def test_durable_outcome_survives_audit_wait_limits(
-    tmp_path: Path, limits: tuple[float, float, float], expected_timeout: str | None
+    tmp_path: Path,
+    limits: tuple[float, float, float],
+    expected_timeout: str | None,
+    kind: PullRequestKind,
 ) -> None:
     local = LocalConfig.from_toml(_LOCAL)
-    handler = PullRequestHandler(FIX, _shared(), local, resolver=_resolver)
+    handler = PullRequestHandler(kind, _shared(), local, resolver=_resolver)
     store = ClaimStore(tmp_path / "state.sqlite3")
-    controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
-    claim = controller.accept(_snapshot(), resolve=_resolver)
-    assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
-    assert run is not None
+    claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", kind.kind, "x", {}))
+    run = store.reserve_run(
+        claim.id, kind.unit_key, reason="initial", evidence_path=str(tmp_path / "a")
+    )
     artifact = Path(run.evidence_path) / "attempt-1"
     fix_limits = replace(
         handler.limits(local),
@@ -272,7 +280,10 @@ def test_durable_outcome_survives_audit_wait_limits(
         total_seconds=limits[2],
     )
     watcher = launch_supervisor(
-        tmp_path / "state.sqlite3", run.id, _plan(_auditing_program(tmp_path), artifact), fix_limits
+        tmp_path / "state.sqlite3",
+        run.id,
+        _plan(_auditing_program(tmp_path, kind), artifact),
+        fix_limits,
     )
     watcher.wait(timeout=15)
     finished = store.get_run(run.id)

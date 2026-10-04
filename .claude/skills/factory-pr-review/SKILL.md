@@ -5,6 +5,8 @@ description: Review a pull request the Agent Factory opened or updated. Runs the
 
 # Factory PR review
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Run this only when Paul asks for a factory PR to be reviewed. The service watcher does not review pull requests: its PR-READY check only looks for defects in the factory itself and files issues for them (see the `factory-triage` skill). Paul reviews the PR after this has run, so it has to catch what he would.
 
 ## 1. Start the reviewer

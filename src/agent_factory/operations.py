@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from xml.parsers.expat import ExpatError
 
-from agent_factory import audit
-from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
+from agent_factory import audit, job_cap
+from agent_factory.config import ConfigurationError, JobCapConfig, LocalConfig, SharedConfig
 from agent_factory.github import (
     AppCredentials,
     GitHubApiError,
@@ -29,7 +29,7 @@ from agent_factory.github import (
     SubprocessGhRunner,
 )
 from agent_factory.store import Claim, ClaimStore, Event
-from agent_factory.suites.and_scene import AndSceneAdapter, ReadinessError
+from agent_factory.suites.and_scene import FIXTURE_REPOSITORY, AndSceneAdapter, ReadinessError
 from agent_factory.work_kinds.pull_request.kinds import FIX, registered
 
 if TYPE_CHECKING:
@@ -128,6 +128,8 @@ def doctor(
     )
     diagnostics.append(_private_file("GitHub App key", config.credentials.github_app_key))
     diagnostics.extend(_repository_checks(config, include_sandbox=needs_docker))
+    if include_informational:
+        diagnostics.append(_fixture_checkout_diagnostic(config))
     diagnostics.append(_suite_environment(config.credentials.suite_environment))
     docker: Diagnostic | None = None
     if needs_docker:
@@ -266,6 +268,13 @@ def status(
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
+    cap = JobCapConfig()
+    if config is not None:
+        try:
+            cap = SharedConfig.from_file(config.shared_config).job_cap
+        except (ConfigurationError, OSError) as error:
+            lines.append(f"job cap: configuration unreadable ({error}); showing defaults")
+    lines.extend(job_cap.status_lines(store, cap, datetime.now(UTC)))
     lines.append(f"host attempts: {_host_attempts(store)}")
     if config is not None:
         from agent_factory.watch.status import lines as watch_lines
@@ -377,6 +386,30 @@ def render_launch_agent(
     for token, value in values.items():
         rendered = rendered.replace(token, html.escape(value, quote=True))
     return rendered
+
+
+def _fixture_checkout_diagnostic(config: LocalConfig) -> Diagnostic:
+    checkout = config.repositories.and_scene
+    name = "and-scene checkout"
+    wait = "fixture_ref requests will wait for revision readiness until this is fixed"
+    if checkout is None or not checkout.is_dir():
+        detail = f"{checkout} is missing; {wait}"
+    elif not (checkout / ".git").exists():
+        detail = f"{checkout} is not a Git repository; {wait}"
+    else:
+        from agent_factory.work_kinds.eval.handler import github_https_origin
+
+        try:
+            origin = github_https_origin(checkout, name)
+        except ReadinessError as error:
+            detail = f"{checkout}: {error}; {wait}"
+        else:
+            detail = (
+                f"{checkout} origin matches {FIXTURE_REPOSITORY}"
+                if origin.lower() == FIXTURE_REPOSITORY.lower()
+                else f"{checkout} origin {origin} differs from {FIXTURE_REPOSITORY}; {wait}"
+            )
+    return Diagnostic(name, True, detail + " (informational)", "", group="eval")
 
 
 def _harness_branch_diagnostic(shared: SharedConfig, config: LocalConfig) -> Diagnostic:
@@ -1232,6 +1265,14 @@ def _progress_lines(run: Run) -> list[str]:
 
 def _hold_lines(store: ClaimStore, claim: Claim, config: LocalConfig | None) -> list[str]:
     lines: list[str] = []
+    cap_hold = store.get_hold(claim.id, "job-cap")
+    episode = store.get_setting("job-cap", "episode")
+    if (
+        cap_hold is not None
+        and episode is not None
+        and cap_hold.get("episode") == episode.get("id")
+    ):
+        lines.append("blocking condition: factory job cap reached; see job cap line")
     readiness = store.get_hold(claim.id, "readiness")
     if readiness is not None:
         reason = readiness.get("reason", "unknown prerequisite")
@@ -1284,6 +1325,8 @@ def _audit_lines(
             evidence = Path(run.evidence_path)
             summary = audit.read_summary(evidence)
             if summary is None:
+                if not audit.AUDIT_ENABLED:
+                    continue
                 if not (evidence / audit.HOST_SESSION_DIR / audit.METRICS_FILE).is_file():
                     continue
                 outcome, reason = audit.MISSING, "the attempt recorded no post-run audit"

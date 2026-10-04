@@ -5,6 +5,8 @@ description: Give Paul an on-demand update on the live Agent Factory — what is
 
 # Factory status
 
+This skill is also linked into `~/.claude/skills`, so it can start from another project. Run every command from the Agent Factory checkout, `/Users/paul/codagent/agent-factory` (read its `AGENTS.md`), unless you are already in a checkout of this repository. Never switch that checkout's branch.
+
 Take one snapshot of the factory and report it. Do not start a watcher, a `/loop`, or background polling (to follow specific issues until they stop, use `factory-watch`): the resident detects events and dispatches its own factory-defect checks of ready PRs and failure triage (`AGENTS.md`, "Service-driven watcher"). Read `AGENTS.md` first.
 
 Never print tokens, credential files, or anything under `~/.agent-factory/private/`. Filter output before showing it.
@@ -51,16 +53,18 @@ Lead with what needs Paul, then the rest. Keep each item to one line with a link
    - Triage next steps that need Paul (from each triage result's `next_step`).
    - Blocked (`needs-input`) claims: the question in one line.
    - Finished evals awaiting a verdict: the score and failed gates.
-2. **Running**: each slot's claim, and how long it has run.
+2. **Running**: each eval, fix, feature, and task slot's claim, and how long it has run. Include blocked task claims and task PRs waiting for review under **Waiting on you**.
 3. **Since last time**: finished claims, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
 4. **Health**, only when something is off:
    - paused, a readiness failure, or a closed admission window;
-   - a watch session budget near its limit, undelivered comments, or missing audits for recent sessions;
+   - a reached factory job cap (report the earliest clear time and reset command), undelivered comments, or missing audits for recent sessions;
    - commits on `origin/main` not in the live release (offer to deploy with `factory-deploy`);
    - a Fly Machine left over, or disk near `minimum_free_gib`;
    - a Review card whose issue is closed and PR merged, which the board has not moved to Done.
 
 Do not repeat what the board already shows plainly (card titles in columns); add what it lacks: PR state, which PR or failure each factory issue came from, costs, and failures.
+
+PR updates: when the report covers several pull requests, group them under **Merged**, **Ready for you to merge**, and **Other status**, with the full PR URL and one short clause on each line.
 
 ## Follow-ups
 

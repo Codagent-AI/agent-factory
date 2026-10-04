@@ -22,6 +22,8 @@ params:
 sessions:
   - name: lead-agent
     agent: lead
+  - name: implementor-agent
+    agent: implementor
   - name: proposal-reviewer
     agent: crosscheck
   - name: approach-reviewer
@@ -67,6 +69,11 @@ steps:
       within these rules, write
       {{artifact_dir}}/merge-stop.json with non-empty questions and
       direction_summary, and leave the merge in progress.
+
+      For CHECK failures from agent-validator run, do not apply a remedy when either of these independent conditions holds:
+      - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
+      - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
+      For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
   - id: check-merge
     script: check-merge.sh
     script_inputs:
@@ -178,6 +185,47 @@ steps:
     command: printf passed
     capture: validator_status
     skip_if: 'sh: ! .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
+  - id: task-compliance-verified
+    continue_on_failure: true
+    loop:
+      max: 3
+    steps:
+      - id: task-compliance-review
+        script: task-compliance-gate.py
+        script_inputs:
+          phase: verified
+          artifact_dir: "{{artifact_dir}}"
+          tasks_file: "{{archived_dir}}/tasks.md"
+          target_head: "{{target_head}}"
+        continue_on_failure: true
+        break_if: success
+      - id: task-compliance-repair
+        session: implementor-agent
+        mode: autonomous
+        skip_if: previous_success
+        continue_on_failure: true
+        prompt: |
+          Read {{artifact_dir}}/task-compliance.json and its violations. Fix what
+          the tasks require, run agent-validator check, and commit fixes following
+          the project's conventions with [{{step_id}}] prepended. Leave any
+          violation you disagree with unfixed and explain why in your summary.
+          Do not run agent-validator review or update-review. The factory's next
+          review supplies the verdict.
+
+          For CHECK failures from agent-validator check, do not apply a remedy when either of these independent conditions holds:
+          - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
+          - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
+          For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+  - id: task-compliance-verified-final
+    script: task-compliance-gate.py
+    script_inputs:
+      phase: verified
+      artifact_dir: "{{artifact_dir}}"
+      tasks_file: "{{archived_dir}}/tasks.md"
+      target_head: "{{target_head}}"
+    skip_if: previous_success
+    continue_on_failure: true
   - id: classify
     session: lead-agent
     mode: autonomous
@@ -195,6 +243,7 @@ steps:
       a repository-relative path of a committed file, citing the line or range that
       shows the item (path:12 or path:12-18) where one exists, or a URL; any other
       path is shown as a link to the acceptance evidence.
+      The workflow adds task-compliance items from its record; do not add any.
       Classify every review item into exactly one tier, and make items that share
       one root cause a single item in the highest tier any of them reaches, its
       detail listing each symptom. Red: each acceptance criterion that failed, each
@@ -272,6 +321,7 @@ steps:
       branch_name: "{{branch_name}}"
       pr_details: "{{pr_details}}"
       review_attention_counts: "{{artifact_dir}}/review-attention.json"
+      task_compliance: "{{artifact_dir}}/task-compliance.json"
       resume: "{{artifact_dir}}/resume.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
   - id: verify-outcome

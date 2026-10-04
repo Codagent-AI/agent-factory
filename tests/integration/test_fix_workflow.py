@@ -128,6 +128,28 @@ def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
         assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in recheck
 
 
+def test_validator_repairs_leave_out_of_scope_check_failures_for_a_human() -> None:
+    for phase in ("initial", "final"):
+        repair = _step_block(_workflow_text(), f"repair-{phase}-validation")
+        for phrase in (
+            "either of these independent conditions",
+            "not caused by this branch's changes",
+            "same check fails with the same error at the merge base",
+            "origin/<target branch>",
+            "temporary worktree",
+            "lockfile entries",
+            "check's definition and configuration",
+            "If you cannot confirm it, treat the failure as caused by the branch",
+            "If the branch added or changed the check or its policy, the branch caused the failure",
+            "git, URL, or fork overrides or resolutions",
+            "even if the branch caused the failure",
+            "leave the check failing",
+            "Out-of-scope failures needing a human decision",
+            "what remedy a human would need to approve",
+        ):
+            assert phrase in repair, (phase, phrase)
+
+
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
     for needle in ("Refs #", "agent-factory:claim:"):
@@ -721,7 +743,7 @@ def test_installed_runner_gates_steps_on_the_packaged_script_captures(tmp_path: 
     workflows = repo / ".agent-runner" / "workflows"
     workflows.mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "-b", "main", str(repo)], check=True)
-    for name in ("record-triage.sh",):
+    for name in ("record-triage.sh", "decision_json.py"):
         target = workflows / name
         target.write_text((PACKAGE / name).read_text(encoding="utf-8"), encoding="utf-8")
         target.chmod(0o755)

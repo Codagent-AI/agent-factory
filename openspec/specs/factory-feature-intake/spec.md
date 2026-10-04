@@ -28,6 +28,8 @@ On each Project poll, the factory SHALL treat placement of an open issue from a 
 
 The factory SHALL select open issues from configured fix targets with the configured native feature type, `Owner=factory`, and `Status=Ready`, whose authors have effective write, maintain, or admin access verified again at admission, that carry no `needs-input` label, and that have no applicable admission hold. Selection SHALL rank eligible features by the Project Priority field, highest first with unset values last, then by newest creation time. An ineligible feature SHALL NOT prevent selection of a later eligible feature. Feature selection SHALL be independent of eval and bug selection: each kind fills only its own execution slot. Features SHALL carry no per-issue execution overrides; role profiles, branches, limits, and window come from factory configuration. Reordering or reprioritizing SHALL NOT interrupt an active attempt.
 
+A `needs-input` label the factory added for a pre-claim revision readiness failure SHALL NOT block a later admission check. The factory SHALL remove that label when readiness passes. An author-added `needs-input` label remains ineligible.
+
 #### Scenario: Pick the highest-priority feature
 
 - **WHEN** the feature slot is free and two eligible features with different Priority values sit in Ready
@@ -132,4 +134,3 @@ Before launching any attempt for a feature, including a recovery retry, a resume
 
 - **WHEN** the reconciliation lookup fails
 - **THEN** the factory does not launch and retries reconciliation on a later poll
-

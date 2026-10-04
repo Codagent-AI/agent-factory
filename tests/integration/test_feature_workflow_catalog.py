@@ -18,6 +18,30 @@ PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
 
 
+def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-implement-v1.0.yaml").read_text()
+    repair = text.split("  - id: repair-validation\n", 1)[1].split(
+        "  - id: recheck-validation\n", 1
+    )[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in repair, phrase
+
+
 def suitable_runner() -> bool:
     if not RUNNER.is_file():
         return False
@@ -221,3 +245,52 @@ def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     ):
         assert required in prompt
     assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")
+
+
+@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_human(
+    workflow: str,
+) -> None:
+    text = (PACKAGE / workflow).read_text()
+    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, (workflow, phrase)
+
+
+def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    prompt = text.split("      - id: task-compliance-repair\n", 1)[1].split(
+        "  - id: task-compliance-verified-final\n", 1
+    )[0]
+    for phrase in (
+        "For CHECK failures from agent-validator check",
+        "either of these independent conditions",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, phrase

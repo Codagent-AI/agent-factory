@@ -4,12 +4,17 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import replace
+from pathlib import Path
+from typing import cast
 
+from agent_factory import runtime
 from agent_factory.config import FixConfig, FixTarget, LocalConfig, SharedConfig
 from agent_factory.controller import RequestSnapshot
-from agent_factory.github import IssueComment, ProjectQueueItem
+from agent_factory.github import GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.routing import SourceItem
+from agent_factory.store import ClaimStore
 from agent_factory.work_kinds import handlers
 from tests.integration.test_fix_config import _LOCAL_BASE, _SHARED_BASE
 
@@ -45,6 +50,41 @@ def test_feature_admission_requires_configuration_and_writer() -> None:
     assert feature.handles(_snapshot())
     assert not feature.handles(_snapshot("read"))
     assert not feature.handles(replace(_snapshot(), repository="other/repo"))
+
+
+def test_factory_readiness_label_allows_feature_snapshot(tmp_path: Path) -> None:
+    shared = SharedConfig.from_toml(_SHARED_BASE + "\n[feature]\n")
+    shared = replace(shared, fix=FixConfig(targets=(FixTarget("example/work"),)))
+    feature = handlers(shared, LocalConfig.from_toml(_LOCAL_BASE))["feature"]
+    card = ProjectQueueItem(
+        "P12",
+        "I12",
+        {
+            shared.project.status.id: shared.project.status.option("ready"),
+            shared.project.owner.id: shared.project.owner.option("factory"),
+        },
+        SourceItem(
+            "I12", "example/work", 12, "author", frozenset({"needs-input"}), "Feature", "OPEN"
+        ),
+    )
+
+    class GitHub:
+        def get_permission(self, repository: str, login: str) -> str:
+            return "write"
+
+        def attention_label_actor(self, repository: str, number: int) -> str:
+            return shared.bot_login
+
+    github = GitHub()
+    with closing(ClaimStore(tmp_path / "state.sqlite3")) as store:
+        store.set_setting("request-readiness", "example/work:12", {"label": "factory"})
+        eligible = runtime._readiness_labelled(store, cast(GitHubClient, github), shared, card)
+
+    assert feature.snapshot(card, github, shared) is None
+    snapshot = feature.snapshot(eligible, github, shared)
+    assert snapshot is not None and feature.handles(snapshot)
+    assert "needs-input" not in snapshot.labels
+    assert card.source.labels == frozenset({"needs-input"})
 
 
 def test_non_writer_ready_feature_gets_one_explanation() -> None:

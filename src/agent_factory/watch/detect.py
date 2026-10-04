@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from agent_factory.store import _dump
 from agent_factory.watch import store as watch_store
+from agent_factory.work_kinds.pull_request.kinds import registered
 
 if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
@@ -24,6 +25,14 @@ def _nested_url(value: dict[str, Any]) -> str | None:
     pr = cast(dict[str, object], pr) if isinstance(pr, dict) else {}
     url = pr.get("url")
     return url if isinstance(url, str) else None
+
+
+def _is_failure(run: dict[str, Any], result: dict[str, Any]) -> bool:
+    return run["status"] in _FAILURES or (
+        run["kind"] in {definition.kind for definition in registered()}
+        and run["status"] == "completed"
+        and result.get("outcome") == "failed"
+    )
 
 
 def detect(
@@ -51,19 +60,20 @@ def detect(
             AND consumed.key=r.id WHERE r.finished_at >= ?""",
             (run_sql_lower,),
         ).fetchall()
+        pull_request_kinds = {definition.kind for definition in registered()}
         for run in map(dict, runs):
             event_at = datetime.fromisoformat(run["finished_at"])
             result = watch_store.json_field(run, "result_json")
             event_kind = None
             if (
-                run["status"] in _FAILURES
+                _is_failure(run, result)
                 and run["result_consumed"]
                 and horizon < event_at <= grace_end
             ):
                 event_kind = "FAILURE"
             elif (
                 horizon < event_at <= now
-                and run["kind"] in {"fix", "feature"}
+                and run["kind"] in pull_request_kinds
                 and run["status"] == "completed"
                 and result.get("outcome") == "pull-request"
             ):

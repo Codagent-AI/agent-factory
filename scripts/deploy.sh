@@ -14,6 +14,8 @@
 # and supervisors and Fly launchers survive that. Releases beyond the newest
 # AGENT_FACTORY_KEEP_RELEASES (default 2) are removed, but only while every
 # slot is free and no process references them.
+# A rollback to a release without fixture revision support is refused while
+# unfinished fixture-pinned eval claims exist, both before and after pausing.
 #
 # Agent Runner: unless --no-runner, the operator's checkout is fast-forwarded
 # to origin/main (scripts/update-runner.sh), and make build updates the host
@@ -76,6 +78,8 @@ grep -q '^paused: true$' <<<"$status_text" && was_paused=true
 # shellcheck source=scripts/slots.sh
 source "$(dirname "$0")/slots.sh"
 source "$(dirname "$0")/validator.sh"
+# shellcheck source=scripts/fixture-guard.sh
+source "$(dirname "$0")/fixture-guard.sh"
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $base/.git ]]; then
@@ -125,6 +129,7 @@ else
   say "built release $short ($ref) at $release"
 fi
 
+fixture_guard "$executable" "$running" before
 "$running" --config "$config" pause >/dev/null
 say "paused the factory"
 
@@ -140,6 +145,7 @@ if [[ $build_validator == true ]]; then
   fi
 fi
 
+fixture_guard "$executable" "$running" after
 # Point the LaunchAgent and the local configuration at the release. The plist gets the
 # resolved path, never the current symlink, so each process keeps the release it started from.
 grep -q '^shared_config = ' "$config" || die "no shared_config line in $config; the factory stays paused"

@@ -6,12 +6,14 @@ import argparse
 import signal
 import time
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
 
-from agent_factory.config import ConfigurationError, LocalConfig, SharedConfig
+from agent_factory.config import ConfigurationError, JobCapConfig, LocalConfig, SharedConfig
 from agent_factory.operations import Diagnostic, doctor, format_doctor, status
-from agent_factory.store import ClaimStore
+from agent_factory.store import TERMINAL_LIFECYCLES, ClaimStore
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
+from agent_factory.work_kinds.eval import HONORED_REVISIONS
 
 
 def _tick(state: Path, config_path: Path | None = None) -> None:
@@ -49,6 +51,9 @@ def main() -> None:
     parser.add_argument("--config", type=Path, help="explicit installed local configuration path")
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("tick")
+    subcommands.add_parser("honored-revisions")
+    pinned = subcommands.add_parser("pinned-claims")
+    pinned.add_argument("--revision", required=True)
     status_parser = subcommands.add_parser("status")
     status_parser.add_argument(
         "--all", action="store_true", help="list every saved claim, including settled ones"
@@ -56,12 +61,17 @@ def main() -> None:
     subcommands.add_parser("doctor")
     subcommands.add_parser("pause")
     subcommands.add_parser("resume")
+    job_cap_parser = subcommands.add_parser("job-cap")
+    job_cap_parser.add_subparsers(dest="job_cap_command", required=True).add_parser("reset")
     watch_parser = subcommands.add_parser("watch")
     watch_commands = watch_parser.add_subparsers(dest="watch_command", required=True)
     watch_commands.add_parser("redispatch").add_argument("dispatch_id")
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
+    if args.command == "honored-revisions":
+        print("\n".join(HONORED_REVISIONS))
+        return
     if args.command == "doctor":
         if args.config is None:
             parser.error("doctor requires --config")
@@ -77,6 +87,17 @@ def main() -> None:
         state = args.state
     if args.command == "tick":
         _tick(state, args.config)
+    elif args.command == "pinned-claims":
+        with closing(ClaimStore(state, read_only=True)) as store:
+            for claim in store.all_claims():
+                revisions = claim.frozen_spec.get("revisions")
+                if (
+                    claim.kind == "eval"
+                    and claim.lifecycle not in TERMINAL_LIFECYCLES
+                    and isinstance(revisions, dict)
+                    and args.revision in revisions
+                ):
+                    print(f"{claim.id}\t{claim.repository}#{claim.issue_number}")
     elif args.command == "watch":
         from agent_factory.watch.store import redispatch
 
@@ -91,6 +112,19 @@ def main() -> None:
             print("waits until watching is enabled")
     elif args.command == "status":
         print(_status(state, local, include_all=args.all))
+    elif args.command == "job-cap":
+        cap = SharedConfig.from_file(local.shared_config).job_cap if local else JobCapConfig()
+        with closing(ClaimStore(state, job_cap=cap)) as store:
+            now = datetime.now(UTC)
+            before = store.job_cap_state(now)
+            store.set_setting("job-cap", "reset", {"at": now.isoformat()})
+            after = store.job_cap_state(now)
+            print(
+                f"job cap reset at {now.isoformat()}; {after.count}/{after.attempts} "
+                f"attempts in the last {after.window_hours} h"
+            )
+            if before.reached:
+                print("held work can start in the next cycle")
     elif args.command in {"pause", "resume"}:
         store = ClaimStore(state)
         try:

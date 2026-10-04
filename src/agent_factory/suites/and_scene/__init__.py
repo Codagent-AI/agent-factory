@@ -30,6 +30,9 @@ _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 # The dry run only parses arguments; a harness that stalls must not stall readiness.
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
+_ACCEPTS_FIXTURE_REF = re.compile(r"^[ \t]*--fixture-ref\)", re.MULTILINE)
+_ACCEPTS_REPO = re.compile(r"^[ \t]*--repo\)", re.MULTILINE)
+FIXTURE_REPOSITORY = "https://github.com/Codagent-AI/and-scene.git"
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -67,6 +70,7 @@ class SourceRepositories:
     skills: Path
     evals: Path
     validator: Path | None = None
+    fixture: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -215,10 +219,21 @@ class AndSceneAdapter:
             commands.append(("cursor", "agent", "--help"))
         return commands
 
-    def readiness(self, worktrees: PreparedWorktrees) -> str | None:
+    def readiness(
+        self, worktrees: PreparedWorktrees, *, fixture_pinned: bool = False
+    ) -> str | None:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
+        if fixture_pinned:
+            run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
+            script = run_script.read_text(encoding="utf-8")
+            if not (_ACCEPTS_FIXTURE_REF.search(script) and _ACCEPTS_REPO.search(script)):
+                harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+                return (
+                    f"selected and-scene harness {harness_commit[:12]} does not accept "
+                    "--fixture-ref and --repo, which this claim's frozen fixture revision needs"
+                )
         if self._execution == "fly":
             if self._fly is None:
                 return "Fly settings are unavailable"
@@ -349,7 +364,8 @@ class AndSceneAdapter:
         run_id: str = "",
         unit_key: str = "",
     ) -> ExecutionPlan:
-        readiness = self.readiness(worktrees)
+        fixture = _fixture_revision(frozen)
+        readiness = self.readiness(worktrees, fixture_pinned=fixture is not None)
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
@@ -374,6 +390,8 @@ class AndSceneAdapter:
             arguments.extend(
                 (f"--{role}-cli", cli, f"--{role}-model", model, f"--{role}-effort", effort)
             )
+        if fixture is not None:
+            arguments.extend(("--fixture-ref", fixture, "--repo", FIXTURE_REPOSITORY))
         if settings.get("skip_validator") is True:
             arguments.append("--skip-validator")
         if resume:
@@ -671,6 +689,16 @@ def _revisions(value: Mapping[str, object]) -> dict[str, str]:
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
     return result
+
+
+def _fixture_revision(frozen: Mapping[str, object]) -> str | None:
+    revisions = frozen.get("revisions")
+    if not isinstance(revisions, Mapping) or "fixture" not in revisions:
+        return None
+    fixture = cast(Mapping[str, object], revisions)["fixture"]
+    if not isinstance(fixture, str) or not _SHA.fullmatch(fixture):
+        raise ReadinessError("accepted fixture revision is not a full commit SHA")
+    return fixture
 
 
 def _fly_manifest(

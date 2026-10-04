@@ -7,6 +7,83 @@ from pathlib import Path
 from agent_factory.store import ClaimDraft, ClaimStore
 
 
+def test_revision_commands_read_only(tmp_path: Path) -> None:
+    honored = subprocess.run(
+        [sys.executable, "-m", "agent_factory.cli", "honored-revisions"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert honored.returncode == 0
+    assert honored.stdout.splitlines() == ["runner", "skills", "evals", "validator", "fixture"]
+    state = tmp_path / "state.sqlite3"
+    store = ClaimStore(state)
+    pinned = store.create_claim(
+        ClaimDraft(
+            "example/evals",
+            91,
+            "I91",
+            "P91",
+            "eval",
+            "a",
+            {"revisions": {"fixture": "a" * 40}},
+        )
+    )
+    settled = store.create_claim(
+        ClaimDraft(
+            "example/evals",
+            92,
+            "I92",
+            "P92",
+            "eval",
+            "b",
+            {"revisions": {"fixture": "b" * 40}},
+        )
+    )
+    store.set_claim_lifecycle(settled.id, "settled", {})
+    store.close()
+    before = state.read_bytes()
+    listed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory.cli",
+            "--state",
+            str(state),
+            "pinned-claims",
+            "--revision",
+            "fixture",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert listed.returncode == 0
+    assert listed.stdout == f"{pinned.id}\texample/evals#91\n"
+    assert state.read_bytes() == before
+
+
+def test_pinned_claims_does_not_create_missing_state(tmp_path: Path) -> None:
+    state = tmp_path / "missing" / "state.sqlite3"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_factory.cli",
+            "--state",
+            str(state),
+            "pinned-claims",
+            "--revision",
+            "fixture",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert not state.parent.exists()
+
+
 def test_cli_doctor_reports_a_broken_local_configuration_instead_of_exiting(
     tmp_path: Path,
 ) -> None:

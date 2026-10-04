@@ -5,7 +5,7 @@ TBD - created by archiving change iteration-1. Update Purpose after archive.
 ## Requirements
 ### Requirement: Configure deployment without Codagent-specific controller code
 
-The factory SHALL use TOML configuration for GitHub organization and repository identities, Project destinations, routing rules including native issue types and bypass markers per work kind, request labels, field and option mappings, repository locations, evaluation defaults, fix defaults, schedule, supervision limits, minimum free disk space, memory reservation, evidence retention, and local storage paths. Fix configuration SHALL include, per target repository, the mirror location and the operator's working clone path; and globally the branch names for the target, Runner, and Skills (default `main`), fix role profiles, fix limits, the fix admission window, the fix credential file location, the fix execution mode (`docker` by default, or `host`), and an optional fix-specific minimum free disk space that defaults to the shared minimum. Feature configuration SHALL include the feature role profiles, feature limits, the feature admission window, and the feature workflow contract; the feature kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new feature work SHALL be enabled only when the feature configuration is present; when it is removed, existing feature claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The feature kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. The eval kind SHALL accept `docker` (the default) or `fly` execution and SHALL NOT accept host execution. Fly configuration SHALL be local and SHALL include the Fly app, region (default `ewr`), Machine CPU kind, CPU count, and memory (default shared, 4 CPUs, 8 GiB), the sandbox image reference, the deploy-token file location alongside the other controller credentials, and the collection grace period. The execution mode, fix disk floor, Fly settings, and retention period SHALL be local configuration. It SHALL supply Codagent as an example deployment configuration whose eval role defaults are `lead = claude:opus:medium`, `implementor = codex:gpt-5.6-luna:medium`, and `tester = codex:gpt-5.6-luna:medium`, and which enables the feature kind with role defaults matching its fix role defaults. The controller SHALL use configured mappings for logical queue states rather than require literal column names such as Ready or Review. An admission window whose start hour equals its stop hour SHALL be always open.
+The factory SHALL use TOML configuration for GitHub organization and repository identities, Project destinations, routing rules including native issue types and bypass markers per work kind, request labels, field and option mappings, repository locations, evaluation defaults, fix defaults, schedule, supervision limits, minimum free disk space, memory reservation, evidence retention, and local storage paths. Fix configuration SHALL include, per target repository, the mirror location and the operator's working clone path; and globally the branch names for the target, Runner, and Skills (default `main`), fix role profiles, fix limits, the fix admission window, the fix credential file location, the fix execution mode (`docker` by default, or `host`), and an optional fix-specific minimum free disk space that defaults to the shared minimum. Feature configuration SHALL include the feature role profiles, feature limits, the feature admission window, and the feature workflow contract; the feature kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new feature work SHALL be enabled only when the feature configuration is present; when it is removed, existing feature claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The feature kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. Task configuration SHALL include the native task type in routing configuration (default `Task`), the task role profiles (lead, implementor, tester), the task workflow contract (default `factory-task/1`), task limits, the task admission window, and an optional task-specific minimum free disk space; the task kind SHALL use the fix targets, branch names, and fix credential. Handoff and admission of new task work SHALL be enabled only when the shared task configuration is present; when it is removed, existing task claims SHALL continue to be supervised, reported, synced after merge, cleaned up, and pruned. The task kind SHALL accept only host execution; configuration selecting Docker or Fly execution for it SHALL be rejected when configuration loads. The eval kind SHALL accept `docker` (the default) or `fly` execution and SHALL NOT accept host execution. Fly configuration SHALL be local and SHALL include the Fly app, region (default `ewr`), Machine CPU kind, CPU count, and memory (default shared, 4 CPUs, 8 GiB), the sandbox image reference, the deploy-token file location alongside the other controller credentials, and the collection grace period. The execution mode, fix disk floor, Fly settings, and retention period SHALL be local configuration. It SHALL supply Codagent as an example deployment configuration whose eval role defaults are `lead = claude:opus:medium`, `implementor = codex:gpt-5.6-luna:medium`, and `tester = codex:gpt-5.6-luna:medium`, and which enables the feature kind with role defaults matching its fix role defaults and the task kind with a Sonnet-class lead. The controller SHALL use configured mappings for logical queue states rather than require literal column names such as Ready or Review. An admission window whose start hour equals its stop hour SHALL be always open.
 
 Another organization SHALL be able to deploy the supported factory behavior using its own configuration and credentials without modifying core controller code. Suite-specific and workflow-specific repository and executable locations SHALL be supplied to the relevant handler rather than embedded as Codagent or personal-machine assumptions in the controller. GitHub Projects, SQLite, one worker, and the Mac launchd service SHALL remain the supported initial deployment choices; this requirement does not introduce interchangeable providers.
 
@@ -17,7 +17,7 @@ Another organization SHALL be able to deploy the supported factory behavior usin
 #### Scenario: Supply the Codagent deployment
 
 - **WHEN** an operator uses the supplied Codagent example configuration
-- **THEN** it establishes the Eval, Bug, and Feature behavior and the field names, options, and defaults described by the active specifications
+- **THEN** it establishes the Eval, Bug, Feature, and Task behavior and the field names, options, and defaults described by the active specifications
 
 #### Scenario: Configure fix targets
 
@@ -58,6 +58,31 @@ Another organization SHALL be able to deploy the supported factory behavior usin
 
 - **WHEN** the feature section is removed while one feature attempt is running and another feature claim is settled with an open pull request
 - **THEN** the running attempt is still supervised and its result reported, the settled claim still receives review rounds, merge sync, and cleanup, and no new feature is handed off or admitted
+
+#### Scenario: Leave the task kind unconfigured
+
+- **WHEN** the configuration has no task section
+- **THEN** no Task-typed issue is handed off or admitted and the other kinds behave as before
+
+#### Scenario: Configure Docker execution for tasks
+
+- **WHEN** the configuration selects Docker or Fly execution for the task kind
+- **THEN** configuration loading fails and names the unsupported mode
+
+#### Scenario: Leave task settings at their defaults
+
+- **WHEN** the shared configuration has a task section with role profiles only and the local configuration sets nothing for tasks
+- **THEN** tasks use issue type `Task`, contract `factory-task/1`, host execution, an always-open window, and limits of 15 minutes without progress, two hours of execution, and three hours in total
+
+#### Scenario: Reject a malformed task section
+
+- **WHEN** the task section's defaults or limits have a value of the wrong type
+- **THEN** configuration loading fails and names the offending task setting
+
+#### Scenario: Remove the task section with task claims in flight
+
+- **WHEN** the task section is removed while one task attempt is running and another task claim is settled with an open pull request
+- **THEN** the running attempt is still supervised and its result reported, the settled claim still receives review rounds, merge sync, and cleanup, and no new task is handed off or admitted
 
 ### Requirement: Apply shared deployment changes through explicit updates
 
@@ -130,7 +155,7 @@ The service SHALL poll GitHub every five minutes while independently supervising
 
 ### Requirement: Diagnose readiness with doctor
 
-`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH, which dispatched sessions use to file issues, is authenticated as a login that is not the factory bot and has write access to the factory repository, so the factory admits the issues it files. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
+`agent-factory doctor` SHALL check GitHub authentication and required access, configured Project fields and options, required model authentication, repository/worktree availability, selected-suite readiness, required token environment files, and free disk space against each kind's configured minimum. It SHALL group checks as shared, eval, eval-sandbox, eval-fly, fix-sandbox, fix-host, feature-host, task-host, or watch and label each so the operator can see which kind a failure holds; the eval group holds the mode-neutral eval checks that apply under every eval execution mode. It SHALL run only the groups that apply to a kind under its configured execution mode, and the watch group only when watching is enabled. The watch group SHALL verify that the installed Agent Runner, `git`, and `gh` are executable on the service PATH; that the default dispatch profile and every per-event profile are in `cli:model:effort` form, and each CLI they select is authenticated and carries the codagent plugin; that the packaged watch session workflow declares a compatible contract version; that the factory repository can be fetched for session checkouts; and that `gh` on the service PATH, which dispatched sessions use to file issues, is authenticated as a login that is not the factory bot and has write access to the factory repository, so the factory admits the issues it files. A failing watch group SHALL hold only the launch of dispatched sessions. Detection, queueing, and the other kinds' admission SHALL continue. Docker availability, memory allowance against one reservation, sandbox launcher checks, and reclaimable Docker space SHALL be checked and reported only under kinds configured for Docker execution; when no kind is configured for Docker, doctor SHALL neither probe Docker nor print any Docker line. The eval-fly group SHALL verify that the Fly API is reachable with the configured deploy token, the configured app exists, the configured image's repository (the configured `image` with any tag removed) is the configured app's `registry.fly.io` repository that the per-claim build pushes to, a Claude login is deliverable as defined in `factory-fly-execution` whenever an eval role uses Claude, using the same bounded Keychain read the launcher uses, the deploy-token file is owner-readable and contains only that token, the factory's own Fly launcher is resolvable, and `flyctl` is executable on the service PATH for transport. The factory SHALL resolve its launcher from the service PATH when present and otherwise from the directory holding the running factory, so that a service started without a bespoke PATH entry still finds the launcher shipped with it. For the fix kind it SHALL additionally verify that each target mirror can be fetched, each configured working clone exists and is a Git repository, the fix credential file is owner-readable, contains exactly one repository token variable and no other variable, authenticates, reaches each target repository, and is not the controller's own identity nor an organization administrator, the packaged fix and review workflows each declare a compatible contract version, and every fix role has a `cli:model:effort` profile. In host mode it SHALL verify, against the service environment, that the installed Agent Runner, `git`, `gh`, `jq`, `python3`, and the validator are executable, that each CLI selected by the fix roles is authenticated and carries the codagent plugin, and that the operator's Runner user settings select the headless backend and yolo permission mode. When the feature kind is configured, it SHALL run the host checks of the fix-host group against the feature roles, verify that every feature role has a `cli:model:effort` profile, that the packaged feature and define workflows declare a compatible contract version, and that the installed Agent Runner provides the `core/verify-change` builtin workflow, and report each fix target without an `openspec/` directory or without an Agent Validator configuration as informational. When the task kind is configured, it SHALL run the host checks of the fix-host group, including the Agent Validator build checks, against the task roles in the task-host group, and verify that every task role has a `cli:model:effort` profile and that the packaged task and review workflows declare a compatible contract version. When a kind is configured for Docker and Docker is running it SHALL report the space Docker could reclaim and the command that reclaims it, without running that command. On macOS, when a login-Keychain item with service `Claude Code-credentials` and account `unknown` exists, doctor SHALL report it as informational only, explaining that it is a stale login created by a process without `USER`; it SHALL NOT fail on it or delete it. It SHALL distinguish available prerequisites from problems needing operator action, explain each failed check, and print no action on a passing check. Diagnosis SHALL NOT launch an attempt, create a Machine, build an image, print any credential, or attempt to repair credentials, Keychain items, or configuration.
 
 Shared diagnostics SHALL remain distinct from checks supplied by each work kind and suite.
 
@@ -229,17 +254,31 @@ Shared diagnostics SHALL remain distinct from checks supplied by each work kind 
 - **WHEN** watching is disabled or unconfigured
 - **THEN** doctor runs no watch check and prints no watch group
 
+#### Scenario: Diagnose task readiness
+
+- **WHEN** the task kind is configured and the packaged task workflow lacks a compatible contract, or a task role has no `cli:model:effort` profile
+- **THEN** doctor fails the task-host group naming the problem and shows the other kinds' readiness independently
+
+#### Scenario: Run doctor without the task kind
+
+- **WHEN** the task kind is not configured
+- **THEN** doctor runs no task-host check and prints no task-host group
+
 ### Requirement: Expose current operational status
 
 `agent-factory status` SHALL show, per work kind:
 
 - the slot holder and progress;
 - waiting work and why it waits;
-- blocked fix and feature claims;
-- settled fix and feature claims with eligible review comments waiting for their kind's slot;
+- blocked fix, feature, and task claims;
+- settled fix, feature, and task claims with eligible review comments waiting for their kind's slot;
 - pending merge syncs and their last failure reason;
 - pause state and blocking conditions;
-- the next permitted start time, when it can be determined.
+- the next permitted start time, when it can be determined;
+- the factory job cap: the attempts counted in its window against the cap and the window length;
+  while the cap is reached, also that it is reached, its earliest clear time, and the reset
+  command;
+- the unclaimed Ready cards that wait only for the job cap in the current cap episode.
 
 For an eval attempt under Fly execution it SHALL show the Machine identity, the Machine's
 state including whether it is stopped for a quota hold, and the attempt's recorded deadline.
@@ -255,7 +294,7 @@ superseded. Claims whose card is Done with nothing pending, and superseded claim
 nothing pending, SHALL be omitted unless `--all` is given, which lists every saved claim.
 
 It SHALL expose enough saved state to distinguish active execution, an admission-window
-wait, a usage hold, a memory or disk hold, an unavailable prerequisite, a blocked claim, a
+wait, a usage hold, a memory or disk hold, a job-cap hold, an unavailable prerequisite, a blocked claim, a
 waiting review round, and unfinished reporting. Status SHALL remain usable while execution
 is active and SHALL NOT start work or change execution controls.
 
@@ -306,9 +345,29 @@ is active and SHALL NOT start work or change execution controls.
 - **WHEN** a superseded eval claim's registry image deletion failed on the last poll
 - **THEN** plain `status` lists that claim with the image tag and the registry's reason until a later poll deletes the image
 
+#### Scenario: Inspect a declined task
+
+- **WHEN** a task claim was declined by triage
+- **THEN** status shows the task slot as free and the blocked task with its decline reason
+
+#### Scenario: Inspect the task slot
+
+- **WHEN** a task attempt is running
+- **THEN** status shows the task slot's holder and progress beside the eval, fix, and feature slots
+
+#### Scenario: Inspect the job cap below its limit
+
+- **WHEN** 42 attempts have started in the last 24 hours and the cap is 100 attempts per 24 hours
+- **THEN** status shows 42 of 100 attempts in the last 24 hours and no job-cap hold
+
+#### Scenario: Inspect a reached job cap
+
+- **WHEN** the job cap is reached, a fix claim's retry is held by it, and a Ready feature card waits only for it
+- **THEN** status shows that the cap is reached, its earliest clear time, and the reset command; it shows the fix claim waiting on the job cap; and it lists the feature card's issue as waiting for the job cap
+
 ### Requirement: Run an immediate normal cycle with tick
 
-`agent-factory tick` SHALL perform one normal polling cycle immediately, including reconciliation, merge syncs, and pending reporting, and MAY start eligible work in any free slot. It SHALL apply the same admission windows, pause state, prerequisite, memory, and quota holds, and per-kind slot guard as the resident service. It SHALL NOT act as a preview or force work past those controls. Execution started through tick SHALL receive the same supervision, persistence, and recovery guarantees as service-started execution.
+`agent-factory tick` SHALL perform one normal polling cycle immediately, including reconciliation, merge syncs, and pending reporting, and MAY start eligible work in any free slot. It SHALL apply the same admission windows, pause state, factory job cap, prerequisite, memory, and quota holds, and per-kind slot guard as the resident service. It SHALL NOT act as a preview or force work past those controls. Execution started through tick SHALL receive the same supervision, persistence, and recovery guarantees as service-started execution.
 
 #### Scenario: Tick with eligible queued work
 
@@ -317,7 +376,7 @@ is active and SHALL NOT start work or change execution controls.
 
 #### Scenario: Tick while execution is disallowed
 
-- **WHEN** the operator runs tick outside a kind's window, while paused, or while that kind's slot is occupied
+- **WHEN** the operator runs tick outside a kind's window, while paused, while the factory job cap is reached, or while that kind's slot is occupied
 - **THEN** tick does not bypass the blocking condition or start overlapping execution
 - **AND** its cycle can still reconcile existing work, syncs, and reporting
 
@@ -824,16 +883,22 @@ The shared configuration SHALL accept an optional `[watch]` section with these s
 - the default dispatch `agent` profile in `cli:model:effort` form, required when watching is enabled;
 - optional per-event profiles for `PR-READY` and `FAILURE`;
 - the concurrency cap (default 2, at least 1);
-- the per-day session budget (default 20, zero or more);
 - the failure grace period in minutes (default 7, zero or more);
 - the session timeout in minutes (default 90, at least 1).
 
-When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, or a value out of range, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, cap, budget, grace period, or timeout applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout.
+When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, or a value out of range, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, concurrency cap, grace period, or timeout applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout.
+
+The section SHALL have no per-day session budget. A `daily_sessions` key left in the section SHALL NOT fail configuration loading and SHALL have no effect.
 
 #### Scenario: Configure the dispatch model and budget
 
-- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a budget of 12
-- **THEN** dispatched sessions run with that profile, and no more than 12 sessions start in a local day
+- **WHEN** the shared configuration enables watching with the agent `claude:claude-sonnet-5-5:medium` and a concurrency cap of 3, and sets no session budget because none exists
+- **THEN** dispatched sessions run with that profile, no more than 3 run at once, and no event is skipped because of how many sessions started that day
+
+#### Scenario: A leftover budget setting
+
+- **WHEN** watching is enabled and the `[watch]` section still sets `daily_sessions = 5`
+- **THEN** configuration loads, and a sixth event in a local day starts a session like any other
 
 #### Scenario: Reject an invalid profile
 
@@ -854,7 +919,7 @@ When watching is enabled, `agent-factory status` SHALL show a watch section with
 - each `launched` dispatch with its event, claim, pull request when there is one, model profile, and elapsed time;
 - the number of `pending` dispatches, and why they wait: the concurrency cap, a failing watch doctor group, or a running check of the same pull request;
 - each ended dispatch whose usage delivery to the development-audit destination did not succeed;
-- the number of sessions started today against the budget, and today's known estimated cost;
+- the number of sessions started today and today's known estimated cost, with no budget;
 - every dispatch recorded `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted` whose claim is not yet observed Done, cancelled, or superseded;
 - each undelivered dispatch comment with its last failure reason;
 - for each completed dispatch whose claim is not yet observed Done, cancelled, or superseded, the factory issues its session filed or updated, with the pull request, or the claim's issue for a triage.
@@ -868,8 +933,13 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 #### Scenario: Inspect the day's spend
 
-- **WHEN** seven sessions have started today with known costs, and the budget is 20
-- **THEN** status shows 7 of 20 sessions and the sum of their estimated costs
+- **WHEN** seven sessions have started today with known costs
+- **THEN** status shows seven sessions started today and the sum of their estimated costs, and shows no session budget
+
+#### Scenario: Inspect a dispatch an earlier release skipped for budget
+
+- **WHEN** a `FAILURE` dispatch that an earlier release recorded `budget-exhausted` belongs to a claim not yet observed Done, cancelled, or superseded
+- **THEN** status lists that dispatch as `budget-exhausted`
 
 #### Scenario: Inspect a failed dispatch
 
@@ -883,7 +953,7 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 ### Requirement: Redispatch a watch event
 
-`agent-factory watch redispatch <dispatch>` SHALL queue a new `pending` attempt for the same event as the named dispatch, under a new attempt key. It SHALL accept only a `PR-READY` or `FAILURE` dispatch whose state is `completed`, `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted`. It SHALL refuse any other dispatch, naming its state, and change nothing. The new attempt SHALL be processed like any `pending` dispatch, under the cap, the budget, and one session per pull request at a time. The command SHALL print the new dispatch's id. When watching is disabled, it SHALL say that the attempt waits until watching is enabled. The command SHALL NOT start the session itself.
+`agent-factory watch redispatch <dispatch>` SHALL queue a new `pending` attempt for the same event as the named dispatch, under a new attempt key. It SHALL accept only a `PR-READY` or `FAILURE` dispatch whose state is `completed`, `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted`. It SHALL refuse any other dispatch, naming its state, and change nothing. The new attempt SHALL be processed like any `pending` dispatch, under the concurrency cap, the watch readiness checks, and one session per pull request at a time. The command SHALL print the new dispatch's id. When watching is disabled, it SHALL say that the attempt waits until watching is enabled. The command SHALL NOT start the session itself.
 
 #### Scenario: Redispatch an interrupted review
 
@@ -895,13 +965,18 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 - **WHEN** the operator redispatches a `launched` dispatch
 - **THEN** the command names the `launched` state, queues nothing, and exits with an error
 
+#### Scenario: Redispatch an event skipped for budget
+
+- **WHEN** the operator redispatches a `FAILURE` dispatch that an earlier release recorded `budget-exhausted`
+- **THEN** a new pending attempt is queued, and a cycle starts one triage session for it once the concurrency cap and readiness checks allow
+
 ### Requirement: Document the service-driven watcher
 
 The operations documentation SHALL describe service-driven watching as the normal mode, and SHALL state that the watcher's job is to make sure the factory itself works, not to review the code the factory builds:
 
 - the two events and what each one does;
 - the `[watch]` settings and their defaults, and how to escalate a failure to a stronger model;
-- the budget and concurrency behavior, and the budget-exhausted comment;
+- the concurrency behavior; that no event is skipped because of session volume, which the factory job cap bounds instead; and that `budget-exhausted` dispatches from earlier releases remain in history and can be redispatched;
 - the actions a dispatched session may and may not take, including that it files issues for factory defects and never fixes anything;
 - that triage runs after a failed claim's automatic retry and does not hold it;
 - the watch doctor group, including the `gh` login that files issues;
@@ -914,7 +989,7 @@ They SHALL state that no interactive watcher session is used. An on-demand `fact
 #### Scenario: Operate the service watcher
 
 - **WHEN** an operator follows the documentation to enable watching
-- **THEN** they can set the profile and budget, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
+- **THEN** they can set the profile and concurrency cap, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
 
 #### Scenario: Ask for a factory update
 
@@ -925,4 +1000,414 @@ They SHALL state that no interactive watcher session is used. An on-demand `fact
 
 - **WHEN** the operator asks an agent to review a factory pull request
 - **THEN** the agent follows `factory-pr-review` interactively; no watch session reviews it
+
+### Requirement: Document the task kind
+
+The operator documentation (`AGENTS.md` and `docs/operations.md`) SHALL describe the task kind:
+
+- the native Task type, and that a Task reaches the factory only by moving it to Ready;
+- the `[task]` shared and local settings and their defaults, and the task-host doctor group;
+- what triage declines and the boundary between maintenance work and release configuration;
+- the `chore:` commit and pull request convention;
+- that review rounds on a task pull request stop on out-of-scope requests;
+- that rolling back to a release without the task kind leaves open task claims unhandled, so they should be settled or cancelled first.
+
+#### Scenario: Learn how to hand a chore to the factory
+
+- **WHEN** an operator reads the documentation to queue maintenance work
+- **THEN** it tells them to file a Task in a fix target, move it to Ready or use the assign skill, and what kinds of work triage will decline
+
+### Requirement: Assign and report tasks through the operator skills
+
+The repository's `factory-assign` skill SHALL accept `--apply task`. It SHALL then check, and where possible set, what task admission needs: an open issue in a fix target, native type Task, an author with write access, no `needs-input` label, `Owner=factory`, `Status=Ready`, and a default Priority. It SHALL then run one tick and confirm that the factory claimed the issue as a task. It SHALL refuse `--apply task` for an issue whose type is Bug or Feature, and SHALL refuse `--apply fix` and `--apply feature` for a Task. The `factory-status` skill SHALL report the task slot and task claims beside the other kinds, including blocked tasks and task pull requests waiting for review.
+
+#### Scenario: Assign a Task
+
+- **WHEN** an operator runs the assign skill with `--apply task` on a writer's open Task in a fix target
+- **THEN** the card gets `Owner=factory`, `Status=Ready`, and a default Priority, one tick runs, and the skill reports the task claim
+
+#### Scenario: Apply the wrong kind
+
+- **WHEN** an operator runs the assign skill with `--apply fix` on a Task
+- **THEN** the skill refuses and names the task kind
+
+### Requirement: Govern post-run audits with one switch
+
+One factory audit switch SHALL govern every post-run development audit the factory starts or settles. This covers the host attempt audit, the resident's settlement of an attempt's audit outcome (including delivery of an eval's collected reports), the post-run audit lines in `status`, and the post-run audit check in `doctor`. The switch SHALL be off. That is a temporary disable pending a decision on whether audits are worth their cost (Codagent-AI/agent-factory#60). Turning the switch back on SHALL restore the factory-owned audit behavior that applied before it was turned off, unchanged.
+
+The switch governs only what the factory itself starts or settles. Audits that Agent Runner starts by its own automatic hook are outside it, including the audits inside an eval's sandbox or a Fly guest whose reports the resident delivers. Agent Runner turns that hook off separately (Codagent-AI/agent-runner#191). So:
+
+- An attempt that runs a Runner revision which still has the hook, such as a claim admitted with an older pinned Runner, may still produce Runner-side audit reports while the switch is off. The resident SHALL NOT deliver or report them.
+- Restoring eval audits requires both the switch and the Runner's automatic hook to be on.
+
+While the switch is off:
+
+- A host fix, feature, task, or review attempt SHALL run no post-run audit replay, and its outcome SHALL NOT depend on audits.
+- When the resident consumes an attempt's result, it SHALL record no post-run audit outcome for that attempt, deliver no collected eval reports to the development-audit destination, and post no `post-run-audit` issue event.
+- `status` SHALL NOT list an attempt as missing its post-run audit only because it has no recorded audit outcome. It SHALL still list a recorded undelivered outcome from within the last seven days.
+- The `doctor` post-run audit check SHALL pass and state that post-run audits are disabled. It SHALL NOT probe the installed Agent Runner for audit support or require the development-audit reporting connection. So neither a missing connection nor a Runner built without development audits fails `doctor` or blocks admission.
+
+Agent Runner's own execution log in an attempt's session evidence is not a post-run audit outcome, and this requirement SHALL NOT remove it.
+
+#### Scenario: A host attempt finishes with audits off
+
+- **WHEN** the switch is off and a host fix, feature, task, or review attempt's workflow ends, whether it succeeded or failed
+- **THEN** no `agent-runner audit replay` runs for the attempt, the attempt's exit status is the workflow's own, and its evidence holds no post-run audit outcome
+
+#### Scenario: The resident consumes an attempt with audits off
+
+- **WHEN** the switch is off and the resident consumes the result of any attempt, including one whose Agent Runner metrics were recorded and an eval whose sandbox collected reports
+- **THEN** no `post-run-audit` issue event is posted, no audit outcome is recorded, no reports are delivered to the development-audit destination, and the rest of result consumption and reporting proceeds as before
+
+#### Scenario: Status after a run with audits off
+
+- **WHEN** the switch is off and a host attempt finished within the last seven days with Agent Runner metrics but no recorded audit outcome
+- **THEN** `status` shows no post-run audit line for that attempt
+
+#### Scenario: Status keeps earlier recorded outcomes
+
+- **WHEN** the switch is off and an attempt that finished within the last seven days recorded an undelivered audit outcome before the switch was turned off
+- **THEN** `status` still lists that attempt's post-run audit outcome and reason
+
+#### Scenario: Doctor without a reporting connection
+
+- **WHEN** the switch is off and the Mac has no development-audit reporting connection, or the installed Agent Runner lacks development audits
+- **THEN** `doctor` reports the post-run audit check as passing, with a detail saying post-run audits are disabled, and admission is not held because of audits
+
+#### Scenario: Re-enabling audits
+
+- **WHEN** the switch is turned on
+- **THEN** host attempts replay their audit, the resident settles and reports undelivered audits as `post-run-audit` events, `status` lists missing and undelivered audits, and `doctor` checks Runner audit support and the reporting connection, exactly as before the switch was turned off
+- **AND** the resident again delivers an eval's reports only when the attempt's Agent Runner collected them, which requires the Runner's automatic audit hook to be on
+
+### Requirement: Locate the and-scene fixture checkout
+
+The local configuration SHALL accept an optional `[repositories] and_scene` path to the operator's and-scene checkout. When the key is unset, the checkout SHALL be the `and-scene` directory next to the configured `agent_runner` checkout. The public example configuration SHALL show the key without a personal path.
+
+Only eval requests that supply `fixture_ref` use the checkout. A deployment SHALL NOT need one to load configuration, pass `doctor`, or admit evals that do not select a fixture.
+
+`doctor` SHALL report the checkout in the eval group as informational:
+
+- whether it exists and is a Git repository;
+- whether its origin is the and-scene suite's fixture repository.
+
+A missing checkout or a mismatched origin SHALL NOT fail `doctor` or hold admission. The report SHALL say that requests supplying `fixture_ref` will wait for revision readiness until the problem is fixed. `doctor` SHALL NOT fetch the checkout or print credentials embedded in its origin.
+
+#### Scenario: Use the sibling default
+
+- **WHEN** the local configuration sets `agent_runner = "/Users/paul/codagent/agent-runner"` and leaves `and_scene` unset
+- **THEN** the factory resolves requested fixture refs through `/Users/paul/codagent/and-scene`
+
+#### Scenario: Use an explicit path
+
+- **WHEN** the local configuration sets `and_scene` to a path
+- **THEN** the factory uses that path and ignores the sibling default
+
+#### Scenario: Run without an and-scene checkout
+
+- **WHEN** `and_scene` is unset and no sibling checkout exists
+- **THEN** configuration loads, `doctor` reports the missing checkout as informational without failing, and evals that do not supply `fixture_ref` are admitted as before this change
+
+#### Scenario: Diagnose a checkout with the wrong origin
+
+- **WHEN** the and-scene checkout's origin is not the suite's fixture repository
+- **THEN** `doctor` reports it as informational, names the checkout and the normalized origin without credentials, and states that fixture-selecting requests will wait until the origin is corrected
+
+### Requirement: Refuse a deploy that would drop frozen fixture revisions
+
+`scripts/deploy.sh` SHALL NOT make live a release that cannot honor claims' frozen fixture revisions while any eval claim that recorded a fixture revision is unfinished. A release cannot honor them when it would launch the claim's next attempt without passing the frozen fixture. An unfinished claim is one that can still launch or recover an attempt. Making a release live means pointing the LaunchAgent or `shared_config` at it, or moving `releases/current` to it.
+
+The deploy SHALL check before it pauses the factory. On refusal at that point it SHALL stop with a failing exit status and deploy nothing, leave the factory's pause state unchanged, and name each affected claim by claim identity and issue. Two preparatory steps that precede every deploy are the only exceptions to "deploy nothing": the Agent Runner checkout fast-forward, and building the target release's immutable worktree. Neither changes what the service runs.
+
+The deploy SHALL check again after pausing and before it changes the LaunchAgent, `shared_config`, or `releases/current`, so that a claim admitted after the first check is also covered. On refusal at that point it SHALL stop, name each affected claim, leave the live release unchanged, and leave the factory paused, as other post-pause deploy failures do.
+
+The refusal message SHALL give the rollback procedure:
+
+1. pause the factory;
+2. let each named claim settle, or cancel it;
+3. deploy the older release.
+
+The message SHALL also state that the older release cannot accept `fixture_ref`. A pinned evaluation that is still needed requires staying on a fixture-capable release. A new request without the key evaluates only the agent-evals default fixture.
+
+The release's own executable SHALL answer whether the target release honors fixture revisions, through a read-only `agent-factory honored-revisions` command. It prints the frozen revision keys the release acts on and needs no configuration. A target release that lacks the command, or does not list `fixture`, does not honor them.
+
+The live release's executable SHALL list the unfinished fixture-pinned claims, through a read-only `agent-factory --config <local> pinned-claims --revision fixture` command. It prints each such eval claim's identity and issue, and nothing when there are none. Handling depends on what the live release supports:
+
+- If the live release does not honor fixture revisions itself, it cannot have admitted such a claim. The deploy SHALL warn and proceed.
+- If the live release honors fixture revisions but cannot list the claims, the deploy SHALL stop as for a refusal at that stage.
+
+The deploy SHALL offer no option that bypasses the check. A deploy of a release that honors fixture revisions, or a deploy while no unfinished claim recorded a fixture revision, SHALL be unaffected.
+
+#### Scenario: Roll back while a fixture-pinned claim is unfinished
+
+- **WHEN** the operator deploys a release that cannot honor fixture revisions while an eval claim with a fixture revision has unstarted or recoverable repetitions
+- **THEN** the deploy stops before pausing the factory, names that claim and its issue, gives the rollback procedure, exits with failure, and leaves the live release, its plist, `shared_config`, and `releases/current` unchanged
+
+#### Scenario: Claim admitted during the deploy
+
+- **WHEN** a fixture-pinned claim is admitted after the deploy's first check and before the factory is paused, and the target release cannot honor fixture revisions
+- **THEN** the second check, after the pause, refuses the deploy, names the claim, and leaves the live release unchanged with the factory paused
+
+#### Scenario: Roll back after fixture-pinned claims finish
+
+- **WHEN** the operator deploys a release that cannot honor fixture revisions and every claim that recorded a fixture revision has settled or been cancelled
+- **THEN** the deploy proceeds as before this change
+
+#### Scenario: Live release predates fixture revisions
+
+- **WHEN** the operator deploys, with a deploy script that has this check, a target release that cannot honor fixture revisions while the live release also predates them
+- **THEN** the deploy warns that the live release cannot have admitted fixture-pinned claims and proceeds as before this change
+
+#### Scenario: Live release cannot list its fixture-pinned claims
+
+- **WHEN** the live release honors fixture revisions, the target release does not, and listing the live release's fixture-pinned claims fails
+- **THEN** the deploy stops at that stage without making the target release live, and states that the claims could not be listed
+
+#### Scenario: List fixture-pinned claims
+
+- **WHEN** the operator runs `agent-factory --config <local> pinned-claims --revision fixture` while one eval claim with a fixture revision is waiting and another has settled
+- **THEN** the command prints only the waiting claim's identity and issue and changes nothing
+
+#### Scenario: Deploy a release that honors fixture revisions
+
+- **WHEN** the operator deploys a release that honors fixture revisions while fixture-pinned claims are unfinished
+- **THEN** the deploy proceeds as before this change, and those claims keep their frozen fixture revisions
+
+### Requirement: Document request-selected fixture revisions
+
+The operations documentation and `AGENTS.md` SHALL explain:
+
+- the `fixture_ref` eval-request key and that omitting it keeps the agent-evals pin;
+- that the factory resolves it at admission through the and-scene checkout and its sibling default, and freezes the commit for the claim;
+- that the commit must be published on the and-scene origin, and that deleting its branch before the claim finishes fails the remaining repetitions at fixture checkout;
+- how reports and the `Refs` field show a pinned fixture;
+- that results from a non-default fixture are not comparable with results from the agent-evals pin;
+- the deploy's refusal to roll back past fixture support, and the rollback procedure: settle or cancel every unfinished fixture-pinned claim before rolling back. The older release cannot accept `fixture_ref`, so a pinned evaluation that is still needed means staying on a fixture-capable release, while a new request without the key evaluates only the default fixture;
+- that a rollback done by hand, or with a deploy script without this check, bypasses the refusal.
+
+#### Scenario: Request an eval against a fixture branch
+
+- **WHEN** an operator reads the documentation to evaluate an unmerged and-scene fixture change
+- **THEN** it tells them to push the fixture commit to a branch on the and-scene origin, add `fixture_ref` to the eval block, and how to confirm in the frozen inputs and `Refs` field which fixture was used
+
+#### Scenario: Roll back with fixture-pinned claims
+
+- **WHEN** an operator reads the documentation before rolling back to an older release
+- **THEN** it tells them how to find unfinished fixture-pinned claims, to let them settle or cancel them before rolling back, and that the deploy refuses the rollback otherwise
+- **AND** it states that the older release cannot accept `fixture_ref`, so a pinned evaluation still needed requires staying on a fixture-capable release
+
+### Requirement: Cap attempts started across the factory
+
+The shared configuration SHALL accept an optional `[job_cap]` section with these settings:
+
+- `attempts`: the most attempts that may start in the window, across all work kinds. It defaults
+  to 100 and SHALL be an integer of at least 1.
+- `window_hours`: the length of the rolling window. It defaults to 24 and SHALL be an integer of
+  at least 1.
+
+The cap SHALL always apply. When the section is missing, the defaults apply. Configuration loading
+SHALL fail on a value that is not an integer or is out of range, and the failure SHALL name the
+setting. Each cycle SHALL read the cap from the configuration it loads. The Codagent example
+configuration SHALL set the section explicitly.
+
+The factory SHALL count every attempt it reserves whose reservation time is within the last
+`window_hours` hours and not earlier than the latest job-cap reset:
+
+- an initial attempt;
+- a retry;
+- a recovery;
+- an unblock;
+- a review round;
+- an eval repetition.
+
+Watch sessions, merge syncs, and post-run audits SHALL NOT count. The cap is reached while the
+count is at or above `attempts`.
+
+While the cap is reached, the factory SHALL NOT reserve any new attempt of any kind:
+
+- it SHALL NOT claim a new Ready card;
+- it SHALL NOT start a retry, recovery, unblock, review round, or eval repetition.
+
+The check and the reservation SHALL be one atomic step for every reservation path. So concurrent
+cycles, a `tick` overlapping the resident, or several paths in one cycle cannot together start
+more attempts than the cap allows.
+
+An attempt held by the cap SHALL NOT consume an execution or recovery retry. Its claim SHALL keep
+its lifecycle, frozen inputs, completed work, and card status. Attempts already running SHALL
+continue under their own limits. The hold SHALL clear without operator action once enough counted
+attempts leave the window for the count to fall below `attempts`. Held work then starts in a later
+cycle under the normal admission controls.
+
+The earliest clear time is when the (N − `attempts` + 1)th oldest counted attempt leaves the
+window, where N is the count. This assumes no reset and no configuration change. `pause` and
+`resume` SHALL NOT change the count or clear the hold. The resident SHALL log one line when it
+finds the cap reached, and one when it finds the cap clear again.
+
+#### Scenario: Reach the cap
+
+- **WHEN** the cap is 100 attempts per 24 hours, 100 attempts have started in the last 24 hours, and a fix claim's automatic retry is due
+- **THEN** no attempt is reserved, the claim stays active with its retry unconsumed, and a running eval repetition continues
+
+#### Scenario: Every reservation path is held
+
+- **WHEN** the cap is reached while a blocked claim has a writer's answer, a claim in Review has eligible review comments, and an eval claim has a repetition left
+- **THEN** no unblock, review round, or repetition starts, and each claim keeps its lifecycle and card status
+
+#### Scenario: The cap clears with the window
+
+- **WHEN** the cap is reached and the oldest counted attempt leaves the 24-hour window
+- **THEN** the count falls below the cap, and a later cycle starts held work under the normal admission controls
+
+#### Scenario: Concurrent reservations at the edge
+
+- **WHEN** 99 of 100 attempts have started in the window, and the resident's cycle and an operator's `tick` each try to reserve an attempt at the same time
+- **THEN** exactly one attempt is reserved
+
+#### Scenario: Work that does not count
+
+- **WHEN** a watch session, a merge sync, and a post-run audit run in the window
+- **THEN** the job cap count does not change
+
+#### Scenario: A lowered cap
+
+- **WHEN** 120 attempts count, and a configuration change lowers `attempts` from 150 to 100
+- **THEN** the cap is reached, and its earliest clear time is when the 21st-oldest counted attempt leaves the window
+
+#### Scenario: A raised cap
+
+- **WHEN** the cap is reached at 100, and a configuration change raises `attempts` to 150
+- **THEN** the next cycle finds the cap clear and can start held work
+
+#### Scenario: Resume does not clear the cap
+
+- **WHEN** the factory is paused while the cap is reached and the operator resumes it
+- **THEN** the pause clears, and no attempt starts until the cap clears
+
+#### Scenario: Reject an invalid cap
+
+- **WHEN** the shared configuration sets `[job_cap] attempts = 0`
+- **THEN** configuration loading fails and names the `job_cap.attempts` setting
+
+#### Scenario: Leave the cap unconfigured
+
+- **WHEN** the shared configuration has no `[job_cap]` section
+- **THEN** the factory caps attempts at 100 per 24 hours
+
+### Requirement: Notify when the job cap holds work
+
+A cap episode SHALL begin when the factory finds the job cap reached while no episode is open. It
+SHALL end when the factory finds the count below the cap. The open episode SHALL survive restarts.
+In each episode, the factory SHALL post at most one factory-bot comment:
+
+- on the issue of each claim that has an attempt held by the cap. This includes a Ready card
+  whose existing claim admission would reuse, for example a fix awaiting its retry or an eval
+  awaiting its next repetition. Such a card is a held claim, not an unclaimed card;
+- on the issue of each unclaimed Ready card that the factory would admit now except for the cap.
+  This applies only when all of these hold:
+  - the factory is not paused;
+  - the card's kind's window is open;
+  - its slot is free;
+  - the kind's readiness checks pass;
+  - the request's revisions resolve;
+  - the request is valid for admission;
+  - no provider quota hold applies to the roles it would freeze.
+
+  A card that fails one of these checks gets the notice it gets today, such as revision
+  readiness or invalid-request feedback, or no notice. It does not get the job-cap comment.
+  Checking a card SHALL NOT create, change, or supersede a claim.
+
+Each comment SHALL state that the factory job cap is reached. It SHALL give:
+
+- the cap and the window;
+- the number of attempts counted when the comment was posted;
+- the earliest clear time at that moment, noting that `status` shows the current value;
+- the reset command.
+
+Comments SHALL be delivered at most once per issue in each episode, across restarts and retries,
+and SHALL be retried until delivered. An unclaimed card SHALL stay Ready and unclaimed, and the
+factory SHALL record which cards it notified so that status can list them. A new episode SHALL
+post new comments.
+
+#### Scenario: A held retry is announced once
+
+- **WHEN** the cap holds a fix claim's retry over several cycles and a resident restart
+- **THEN** exactly one job-cap comment is posted on that claim's issue for the episode
+
+#### Scenario: A new request arrives while the cap is reached
+
+- **WHEN** the cap is reached, the factory is not paused, and a Feature card moves to Ready while the feature window is open, its slot is free, and its readiness checks pass
+- **THEN** the card is not claimed, stays Ready, receives one job-cap comment, and status lists it as waiting for the job cap
+
+#### Scenario: A card waiting for a busy slot
+
+- **WHEN** the cap is reached and a Ready fix card waits while the fix slot is occupied
+- **THEN** no job-cap comment is posted on it
+
+#### Scenario: A previously claimed card awaiting a retry
+
+- **WHEN** the cap is reached and a Ready fix card's existing claim has an automatic retry due, with no attempt running
+- **THEN** the retry does not start, the claim's issue receives one job-cap comment, and status shows the claim held by the job cap and does not list the card among unclaimed waiting cards
+
+#### Scenario: A new request whose revisions do not resolve
+
+- **WHEN** the cap is reached and a new Ready card names a revision that cannot be resolved
+- **THEN** no claim is created, the issue receives the existing revision-readiness comment, and no job-cap comment is posted on it
+
+#### Scenario: A new request held by a provider quota
+
+- **WHEN** the cap is reached and a new Ready card's roles would use a provider under an active quota hold
+- **THEN** no claim is created and no job-cap comment is posted on it
+
+#### Scenario: A later episode
+
+- **WHEN** an episode ends because the count falls below the cap, and the cap is reached again the next day while the same claim's review round is held
+- **THEN** that claim's issue receives one new job-cap comment for the new episode
+
+### Requirement: Reset the job cap
+
+`agent-factory job-cap reset` SHALL record the current time as the job-cap reset time in the
+store. Attempts reserved before that time SHALL no longer count toward the cap. The reset SHALL
+survive restarts. The command SHALL print the reset time and the count after the reset. When the
+cap was reached, it SHALL also say that held work can start in the next cycle. The command SHALL
+NOT start work itself, SHALL NOT clear a pause or other holds, and SHALL NOT change running
+attempts. It SHALL be accepted whether or not the cap is reached.
+
+#### Scenario: Reset a reached cap
+
+- **WHEN** the cap is reached with a held unblock and the operator runs `agent-factory job-cap reset`
+- **THEN** the command reports a count of zero, and the next cycle can start the unblock under the normal admission controls
+
+#### Scenario: Reset while paused
+
+- **WHEN** the factory is paused and the cap is reached, and the operator resets the cap
+- **THEN** the count is reset, the factory stays paused, and no attempt starts until resume
+
+### Requirement: Document the factory job cap
+
+The operations documentation SHALL describe:
+
+- the `[job_cap]` settings and their defaults;
+- which attempts count and which work does not;
+- what a reached cap holds and what continues;
+- how the cap clears;
+- the claim and card comments;
+- the job cap in status;
+- `agent-factory job-cap reset`;
+- that raising `attempts` needs a committed configuration change.
+
+The `AGENTS.md` "Service-driven watcher" section SHALL state that every PR-READY and FAILURE
+event gets a session, limited only by the concurrency settings. It SHALL state that the watch
+status shows no session budget, and it SHALL point to the factory job cap as the volume bound.
+The on-demand `factory-status` skill SHALL report a job cap that is reached or near its limit,
+instead of a watch session budget.
+
+#### Scenario: Relieve a reached cap
+
+- **WHEN** an operator sees a job-cap comment on an issue and follows the documentation
+- **THEN** they can find the count and earliest clear time in status, and either wait, reset the cap, or raise it through a configuration change
+
+#### Scenario: Ask for a factory update while the cap is reached
+
+- **WHEN** the operator asks an agent for a factory update while the cap is reached
+- **THEN** the agent following `factory-status` reports that the job cap holds work, when it clears, and the reset command
 
