@@ -40,6 +40,8 @@ Check the diff against the issue and the repository's openspec specs (for featur
 - scope creep;
 - spec drift.
 
+For changes to agent prompts and workflow instructions, prefer the agent's judgment over prescriptive rules. Do not ask for stricter or more detailed guidance written around the one incident that prompted the PR; Paul rejects that. Ask for wording only when the instruction is wrong or misleads the agent in general.
+
 Run the relevant tests (`uv run pytest <files>`) and `uv run pyright <touched files>` in the worktree when that is quick. Report only results you saw.
 
 ## 3. Check the description's attention items
