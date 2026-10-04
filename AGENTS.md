@@ -85,7 +85,10 @@ pins (see its `AGENTS.md`), not from this repository.
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
 by hand before deploying. To run `tick` by hand from a shell, put
 `~/.agent-factory/releases/current/.venv/bin` first on `PATH`.
-`controller.log` is stale because `resident` does not write to it.
+The LaunchAgent sends the resident's stdout and stderr to
+`~/.agent-factory/logs/controller.log`. The resident logs nothing else there,
+but an uncaught exception's traceback lands in it, so read its tail first when
+the factory fails every cycle.
 
 ## Configuration pins
 
@@ -177,6 +180,11 @@ reached Done without a recorded Review observation.
 - There is no `timeout` command.
 - The shell is zsh: `set -- $var` does not split words. Pass arguments
   explicitly or use arrays.
+- In zsh, `$var:path` applies a history modifier to `$var`. Write
+  `"${var}:path"`.
+- `gh pr merge --delete-branch` reports an error after merging, because `main`
+  is checked out in Paul's checkout. Merge without it, then run
+  `git push origin --delete <branch>`.
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
