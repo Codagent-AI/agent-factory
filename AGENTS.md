@@ -198,3 +198,6 @@ issues until the factory stops progressing on them, use the `factory-watch`
 skill, which polls with a script and reports once. For an update on demand, use
 the `factory-status` skill. To investigate or fix a failure by hand, use
 `factory-triage`. To review a factory PR when Paul asks, use `factory-pr-review`.
+To take an issue from handoff to a reviewed PR (assign, watch, answer
+`needs-input`, restart after a fixed factory defect, review), use
+`factory-drive-ticket`.
