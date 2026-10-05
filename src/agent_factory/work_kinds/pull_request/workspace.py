@@ -120,7 +120,7 @@ class PullRequestWorkspace:
         return self.claim_directory(claim_id) / str(attempt)
 
     def claim_directory(self, claim_id: str) -> Path:
-        return self._root / "clones" / _safe(claim_id)
+        return self._root / "clones" / safe_name(claim_id)
 
     def prepare_clones(
         self, claim_id: str, attempt: int, repository: str, revisions: Mapping[str, object]
@@ -256,7 +256,7 @@ def _require(completed: subprocess.CompletedProcess[str], prefix: str) -> None:
         raise WorktreeError(f"{prefix}: {detail}")
 
 
-def _safe(value: str) -> str:
+def safe_name(value: str) -> str:
     result = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
     if not result:
         raise WorktreeError("claim identity cannot be converted to a safe directory name")

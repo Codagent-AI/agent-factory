@@ -484,7 +484,25 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image. Once a reviewed card reaches Done, Factory releases its
+per-run Docker image.
+
+**Slimming.** On every tick, the factory removes the files finished attempts
+leave behind that git or a rebuild can regenerate. It does not wait for
+release or retention.
+
+- Fix, feature, and task claims: once no run of the claim is active, the
+  factory removes its clones under `<root>/clones/<claim>` and each attempt's
+  `attempt-*/audit-*/snapshot/runner-source`. This applies even while the
+  claim is blocked or in Review, because the next attempt or review round
+  clones afresh.
+- Eval claims: once the claim is settled, cancelled, or superseded, the
+  factory cuts each repetition's `.runtime/candidate-worktree` down to `dist`,
+  which is what the human-review command serves, and removes
+  `.runtime/agent-runner-projects`.
+
+`claim.cleanup.slimmed` records the slimmed runs and any failures.
+
+Once a reviewed card reaches Done, Factory releases its
 recorded owned worktrees, clones, images, and credential copies. Cancelled and
 superseded claims are released as soon as their runs stop and reporting is
 delivered. Settled claims still outside Done are released after `[limits]
@@ -498,7 +516,7 @@ Factory removes only its recorded owned worktrees, clones, and images;
 it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
 only prunes evidence under the rule below.
 
-**Evidence retention.** `[limits] evidence_retention_days` (default 14) starts
+**Evidence retention.** `[limits] evidence_retention_days` (default 3) starts
 from the first durable Done observation for a settled claim. Leaving Done
 resets that observation. For cancelled and superseded claims it starts from
 the recorded terminal transition, even if the card never reaches Done.
@@ -508,7 +526,7 @@ period has elapsed, release has completed, and no run, reporting, or merged
 PR sync is pending, the next tick prunes that
 claim's evidence: logs, Runner and agent session state, and agent output
 under each attempt's artifact directory (and, for a host attempt, its
-recorded Runner session directory). It keeps the fix outcome or eval result
+recorded Runner session directory), plus an eval's remaining candidate checkout. It keeps the fix outcome or eval result
 and provenance records, the attempt's issue input, and never touches
 candidate branches, PRs, mirrors, SQLite history, or the operator's working
 clones. Pruning is

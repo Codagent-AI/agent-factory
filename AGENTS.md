@@ -174,6 +174,10 @@ claims outside Done are released and pruned after `unreviewed_retention_days`.
 Done claims are cleaned after the Done observation and pruned after
 `evidence_retention_days` from that observation, including settled claims that
 reached Done without a recorded Review observation.
+Each tick also slims finished work without waiting for retention. An idle fix,
+feature, or task claim loses its clones and Runner source snapshots. A
+terminal eval's candidate checkouts shrink to `dist`. See
+`docs/operations.md` ("Slimming"). The default `evidence_retention_days` is 3.
 
 ## Shell on this Mac
 

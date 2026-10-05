@@ -30,6 +30,7 @@ _EVAL_REP_REMOVE = (
     ".runtime/agent-session-state",
     ".runtime/judge-workspace",
     ".runtime/judge",
+    ".runtime/candidate-worktree",
 )
 
 
