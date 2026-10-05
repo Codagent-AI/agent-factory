@@ -327,7 +327,7 @@ def test_e2e_001_cancelling_a_host_attempt_stops_the_runner_and_its_children(
             assert _pid_alive(runner_pid)
             store.request_cancellation(fixture.run_id)
         watcher.wait(timeout=60)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while (
             any(_pid_alive(pid) for pid in (runner_pid, step, grandchild))
             and time.monotonic() < deadline

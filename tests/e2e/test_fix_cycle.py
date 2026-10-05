@@ -16,6 +16,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore, Run
+from tests.e2e.test_factory_cycle import NO_GITHUB
 
 REPOSITORY = "example/work"
 FIX_TOKEN = "fix-token-value"
@@ -435,6 +436,8 @@ fix_environment = "{tmp_path / "fix.env"}"
             "docker": DOCKER,
             "codex": CODEX,
             "cursor": "#!/bin/sh\nexit 0",
+            # Readiness probes must never reach the developer's own CLIs.
+            "claude": "#!/bin/sh\nexit 0",
             "agent-runner": RUNNER,
             "jq": "#!/bin/sh\nexit 0",
         }.items():
@@ -447,6 +450,7 @@ fix_environment = "{tmp_path / "fix.env"}"
             **os.environ,
             "PATH": f"{bin_dir}:{os.environ['PATH']}",
             "HOME": str(self.home),
+            **NO_GITHUB,
         }
         self.store = ClaimStore(self.root / "state.sqlite3")
 
@@ -520,7 +524,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
 
     def wait_started(self, run: Run) -> Path:
         artifact = Path(run.evidence_path) / f"attempt-{run.attempt_number + 1}"
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + 30
         while not (artifact / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert (artifact / "started").exists(), "execution stub never started"
@@ -528,7 +532,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
 
     def finish(self, artifact: Path, script: str) -> None:
         (artifact / "finish").write_text(script)
-        deadline = time.monotonic() + 8
+        deadline = time.monotonic() + 30
         while self.store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not self.store.nonterminal_runs(), "attempt did not terminate"
@@ -1123,7 +1127,7 @@ def test_terminal_host_fix_releases_then_reopens_for_writer_review(tmp_path: Pat
         assert review.reason == "review" and review.claim_id == claim.id
         review_artifact = h.wait_started(review)
         later.append(review_artifact)
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while (
             not (review_artifact / "agent-runner-session/state.json").exists()
             and time.monotonic() < deadline

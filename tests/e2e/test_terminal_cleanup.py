@@ -26,11 +26,11 @@ def test_unreviewed_eval_expiry_is_delivered_once_before_release(tmp_path: Path)
     run = store.nonterminal_runs()[0]
     evidence = Path(run.evidence_path)
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while not (evidence / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         (evidence / "finish").touch()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not store.nonterminal_runs()

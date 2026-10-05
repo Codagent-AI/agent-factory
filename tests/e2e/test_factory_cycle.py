@@ -16,6 +16,23 @@ import pytest
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
 
+# Readiness probes answer from this stand-in rather than the developer's installed Runner.
+HERMETIC_RUNNER = """#!/bin/sh
+case "$1" in
+  -version) echo 'stub-runner 1.0' ;;
+  run) echo 'Usage: agent-runner run <workflow> [--session-dir <path>] [--param key=value]' ;;
+esac
+exit 0
+"""
+
+# Git never reaches github.com from a test: any https://github.com/ remote resolves to a
+# missing local path and fails at once, as an unreadable private repository would.
+NO_GITHUB = {
+    "GIT_CONFIG_COUNT": "1",
+    "GIT_CONFIG_KEY_0": "url.file:///nonexistent-github/.insteadOf",
+    "GIT_CONFIG_VALUE_0": "https://github.com/",
+}
+
 
 def _git(path: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
@@ -202,11 +219,14 @@ p.write_text(json.dumps(s));print(json.dumps(result))
         ),
         "codex": "#!/bin/sh\nexit 0",
         "cursor": "#!/bin/sh\nexit 0",
+        # Readiness probes must never reach the developer's own CLIs.
+        "claude": "#!/bin/sh\nexit 0",
+        "agent-runner": HERMETIC_RUNNER,
     }.items():
         script = bin_dir / name
         script.write_text(content)
         script.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **NO_GITHUB}
     return config, board, environment, shared
 
 
@@ -322,7 +342,7 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
     run = runs[0]
     artifact = Path(run.evidence_path)
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while not (artifact / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert (artifact / "started").exists()
@@ -332,7 +352,7 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
         assert (tmp_path / "factory/worktrees" / run.claim_id / "runner").exists()
         _cli(config, env, "pause")
         (artifact / "finish").touch()
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not store.nonterminal_runs()
@@ -368,7 +388,7 @@ def test_fixture_request_runs_and_reports_through_tick(tmp_path: Path) -> None:
         assert claim is not None
         assert claim.frozen_spec["settings"]["fixture_ref"] == "eval/fixture-x"  # type: ignore[index]
         assert claim.frozen_spec["revisions"]["fixture"] == sha  # type: ignore[index]
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while not (artifact / "argv.json").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
         argv = json.loads((artifact / "argv.json").read_text())
@@ -432,8 +452,11 @@ def test_unpublished_fixture_waits_then_admits_after_push(tmp_path: Path) -> Non
 
 
 def _finish(store: ClaimStore, evidence: Path) -> None:
+    # A loaded host can take a while to start the suite, which creates its artifact folder.
+    deadline = time.monotonic() + 30
+    while not evidence.is_dir() and time.monotonic() < deadline:
+        time.sleep(0.02)
     (evidence / "finish").touch()
-    deadline = time.monotonic() + 5
     while store.nonterminal_runs() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not store.nonterminal_runs()
@@ -640,7 +663,7 @@ def test_cli_retries_proven_precheckpoint_launch_failure_under_same_unit(tmp_pat
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
     claim = store.all_claims()[0]
     first = store.runs_for_claim(claim.id)[0]
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30
     while store.nonterminal_runs() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert store.get_run(first.id).result["reason"] == "suite launch failed"  # pyright: ignore[reportOptionalMemberAccess]
