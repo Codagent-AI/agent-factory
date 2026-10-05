@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TypedDict, cast
+from typing import Any, TypedDict, cast
 
 import pytest
 
+from agent_factory.fly import transport
 from agent_factory.fly.api import FlyMachinesClient
-from agent_factory.fly.guest import guest_init_script, stand_in_script
+from agent_factory.fly.guest import stand_in_script
 from agent_factory.fly.launcher import main
 from agent_factory.fly.transport import (
     EXIT_COLLECTION_FAILED,
@@ -29,6 +29,20 @@ from agent_factory.fly.transport import (
 )
 from tests.fixtures.fly.api import FakeMachinesApi
 from tests.fixtures.fly.flyctl import write_guest_flyctl
+from tests.fixtures.fly.guest import start_guest, stop_guest
+
+
+def fast_poll(seconds: float) -> None:
+    """Observe the local guest five times as often as the manifest's whole-second interval."""
+    time.sleep(seconds / 5)
+
+
+class FastLifecycle(Lifecycle):
+    """The launcher's own Lifecycle, observing at the fast test cadence."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("sleep", fast_poll)
+        super().__init__(*args, **kwargs)
 
 
 class FlyctlCall(TypedDict):
@@ -85,7 +99,7 @@ class Environment:
 
     def lifecycle(self, manifest: dict[str, object]) -> Lifecycle:
         client = FlyMachinesClient("app", self.token, base_url=self.api.base_url)
-        return Lifecycle(manifest, self.factory, client=client)
+        return Lifecycle(manifest, self.factory, client=client, sleep=fast_poll)
 
     def request(self, body: str, *, auth: bool = True) -> JobRequest:
         return JobRequest(
@@ -109,27 +123,27 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Environment
         environment = Environment(tmp_path, api)
         monkeypatch.setenv("PATH", f"{environment.bin}{os.pathsep}{os.environ['PATH']}")
         monkeypatch.setenv("HOME", str(environment.home))
-        guest = subprocess.Popen(
-            ["bash", "-c", guest_init_script()],
-            env={
+        monkeypatch.setattr(transport, "Lifecycle", FastLifecycle)
+        guest = start_guest(
+            {
                 **os.environ,
                 "FACTORY_ROOT": str(environment.guest_root),
-                "FACTORY_WATCHDOG_SECONDS": "1",
+                # The guest's job loop picks up delivered jobs at this cadence.
+                "FACTORY_WATCHDOG_SECONDS": "0.2",
                 "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
-            },
+            }
         )
         try:
             yield environment
         finally:
-            guest.kill()
-            guest.wait()
+            stop_guest(guest)
 
 
 _SUITE = (
     "echo suite-output; "
     "ls -A /host-home/codex /host-home/claude > /artifacts/seen-credentials.txt; "
     "cat /eval-input/controller.mjs > /artifacts/seen-input.txt; "
-    "echo '{\"schema_version\": 1}' > /artifacts/run-state.json; sleep 2; "
+    "echo '{\"schema_version\": 1}' > /artifacts/run-state.json; sleep 1; "
     'echo \'{"evaluation_status": "completed"}\' > /artifacts/result.json; exit 7'
 )
 
@@ -184,7 +198,7 @@ def test_fresh_launch_records_ownership_then_delivers_runs_and_collects(
 
 
 def test_heartbeat_is_rewritten_only_when_its_content_changes(env: Environment) -> None:
-    env.lifecycle(env.manifest()).run(env.request("sleep 3"))
+    env.lifecycle(env.manifest()).run(env.request("sleep 1"))
     first = (env.factory / "heartbeat.json").stat().st_mtime_ns
     # Several polls happened during the sleep; an unchanged guest leaves one write.
     polls = [c for c in env.flyctl_calls() if "job.log" in c["argv"][-1]]
@@ -292,7 +306,7 @@ def test_attach_continues_a_running_job_without_repeating_output(
     client = FlyMachinesClient("app", env.token, base_url=env.api.base_url)
     first = Lifecycle(env.manifest(), env.factory, client=client, sleep=die)
     with pytest.raises(Died):
-        first.run(env.request("echo one; sleep 3; echo two", auth=False))
+        first.run(env.request("echo one; sleep 1; echo two", auth=False))
 
     assert env.lifecycle(env.manifest()).attach(env.artifact) == 0
     assert capfdbinary.readouterr().out == b"one\ntwo\n"

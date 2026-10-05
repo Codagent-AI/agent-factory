@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Mapping
 from dataclasses import replace
@@ -32,6 +33,17 @@ from tests.integration.test_fix_gestures import (
     _card,
     _ReviewPreparedHandler,
 )
+
+
+@pytest.fixture(autouse=True)
+def codex_logged_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preparation checks the Codex judge's login; answer as a logged-in host would."""
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    codex = bin_dir / "codex"
+    codex.write_text("#!/bin/sh\nexit 0\n")
+    codex.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:

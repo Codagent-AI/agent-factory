@@ -84,7 +84,7 @@ def test_resume_does_not_spawn_a_second_live_watcher(tmp_path: Path) -> None:
         assert resume_supervisor(state, run.id) is None
     finally:
         watcher.terminate()
-        watcher.wait(timeout=5)
+        watcher.wait(timeout=30)
 
 
 def test_valid_result_waits_for_owned_process_exit(tmp_path: Path) -> None:
@@ -103,13 +103,13 @@ def test_valid_result_waits_for_owned_process_exit(tmp_path: Path) -> None:
     )
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(10, 10, 10))
     ready = tmp_path / "artifact" / "ready"
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 30
     while not ready.exists() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert ready.exists()
     time.sleep(0.05)
     assert store.get_run(run.id).status == "running"  # type: ignore[union-attr]
-    watcher.wait(timeout=3)
+    watcher.wait(timeout=30)
     assert store.get_run(run.id).status == "completed"  # type: ignore[union-attr]
 
 
@@ -124,7 +124,7 @@ def test_invalid_result_is_preserved_as_failed_execution(tmp_path: Path) -> None
         "import pathlib, sys\npathlib.Path(sys.argv[1], 'result.json').write_text('{not json')\n",
     )
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(10, 10, 10))
-    watcher.wait(timeout=3)
+    watcher.wait(timeout=30)
     finished = store.get_run(run.id)
     assert finished is not None and finished.status == "failed"
     assert finished.result["reason"] == "invalid result.json"
@@ -282,7 +282,7 @@ def test_unchanged_quota_log_is_not_reparsed_each_poll(
 
 
 def _wait_for_child_exit(pid: int, _plan: ExecutionPlan) -> None:
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + 30
     while process_start_identity(pid) is not None and time.monotonic() < deadline:
         time.sleep(0.01)
     assert process_start_identity(pid) is None
@@ -446,11 +446,12 @@ def _pid_alive(pid: int) -> bool:
     )
 
 
-def _wait_file(path: Path, timeout: float = 5) -> None:
+def _wait_file(path: Path, timeout: float = 30) -> None:
+    """Wait until the stand-in has written the file, not merely created it."""
     end = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < end:
+    while not (path.exists() and path.read_text().strip()) and time.monotonic() < end:
         time.sleep(0.02)
-    assert path.exists(), path
+    assert path.exists() and path.read_text().strip(), path
 
 
 @pytest.mark.darwin
@@ -465,7 +466,7 @@ def test_host_attempt_progresses_through_the_session_directory_then_times_out_by
     started = time.monotonic()
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.8, 30, 30))
     try:
-        _wait_file(evidence / "child.pid")
+        _wait_file(evidence / "script.pid")  # written after child.pid
         child = int((evidence / "child.pid").read_text())
         script = int((evidence / "script.pid").read_text())
         watcher.wait(timeout=20)
@@ -476,7 +477,7 @@ def test_host_attempt_progresses_through_the_session_directory_then_times_out_by
         # Eight writes 0.25s apart outlast the 0.8s inactivity limit only if session writes count.
         assert elapsed >= 2.0, elapsed
         assert "container" not in finished.progress
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 30
         while (_pid_alive(script) or _pid_alive(child)) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not _pid_alive(script) and not _pid_alive(child)
@@ -498,14 +499,14 @@ def test_cancelling_a_host_attempt_kills_the_runner_stand_in_and_its_child(
     run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(30, 60, 60))
     try:
-        _wait_file(evidence / "child.pid")
+        _wait_file(evidence / "script.pid")  # written after child.pid
         child = int((evidence / "child.pid").read_text())
         script = int((evidence / "script.pid").read_text())
         store.request_cancellation(run.id)
         watcher.wait(timeout=20)
         finished = store.get_run(run.id)
         assert finished is not None and finished.status == "cancelled", finished
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 30
         while (_pid_alive(script) or _pid_alive(child)) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not _pid_alive(script) and not _pid_alive(child)

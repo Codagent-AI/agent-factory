@@ -24,7 +24,6 @@ from typing import cast
 import pytest
 
 from agent_factory.config import LocalConfig
-from agent_factory.fly.guest import guest_init_script
 from agent_factory.store import ClaimDraft, ClaimStore, Run
 from agent_factory.work_kinds.eval import EvalDefaults, parse_request
 from tests.e2e.test_factory_cycle import (
@@ -35,6 +34,7 @@ from tests.e2e.test_factory_cycle import (
 )
 from tests.fixtures.fly.api import FakeMachinesApi
 from tests.fixtures.fly.flyctl import write_guest_flyctl
+from tests.fixtures.fly.guest import start_guest
 
 REVIEWABLE: dict[str, object] = {
     "evaluation_status": "pending-human-review",
@@ -74,9 +74,16 @@ sys.exit(subprocess.call(command))
 _LAUNCHER = """#!{python}
 import os, sys
 os.environ["AGENT_FACTORY_FLY_API_URL"] = {url!r}
-from agent_factory.fly import guest, launcher
+import time
+from agent_factory.fly import guest, launcher, transport
 # A local guest cannot clone and build Runner; the suite script runs as the job.
 guest.job_script = lambda manifest, script: guest.stand_in_script(script)
+# Observe the local guest five times per configured whole-second heartbeat.
+class FastLifecycle(transport.Lifecycle):
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("sleep", lambda seconds: time.sleep(seconds / 5))
+        super().__init__(*args, **kwargs)
+transport.Lifecycle = FastLifecycle
 sys.exit(launcher.main())
 """
 
@@ -107,24 +114,23 @@ class Guests:
                 continue
             root = self.root(machine_id)
             root.mkdir(parents=True, exist_ok=True)
-            self.processes[machine_id] = subprocess.Popen(
-                ["bash", "-c", guest_init_script()],
-                env={
+            self.processes[machine_id] = start_guest(
+                {
                     **os.environ,
                     "FACTORY_ROOT": str(root),
-                    "FACTORY_WATCHDOG_SECONDS": "1",
+                    "FACTORY_WATCHDOG_SECONDS": "0.2",
                     "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
                 },
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
+                quiet=True,
             )
 
     def finish(self, machine_id: str, result: dict[str, object]) -> None:
         artifacts = self.root(machine_id) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        (artifacts / "finish").write_text(json.dumps(result), encoding="utf-8")
+        # Whole or absent: the suite copies the file as soon as it appears.
+        staged = artifacts / "finish.tmp"
+        staged.write_text(json.dumps(result), encoding="utf-8")
+        staged.replace(artifacts / "finish")
 
     def lose(self, machine_id: str) -> None:
         """The Machine vanishes: the API forgets it and ssh no longer reaches it."""
@@ -172,9 +178,10 @@ class Factory:
         _repo(tmp_path / "agent-validator", {"build.ts": "// fixture\n"})
         public = "https://github.com/Codagent-AI/agent-validator.git"
         _git(tmp_path / "agent-validator", "config", "remote.origin.url", public)
-        self.env["GIT_CONFIG_COUNT"] = "1"
-        self.env["GIT_CONFIG_KEY_0"] = f"url.{tmp_path / 'agent-validator-origin.git'}.insteadOf"
-        self.env["GIT_CONFIG_VALUE_0"] = public
+        # The longer insteadOf prefix wins over the setup's catch-all GitHub redirect.
+        self.env["GIT_CONFIG_COUNT"] = "2"
+        self.env["GIT_CONFIG_KEY_1"] = f"url.{tmp_path / 'agent-validator-origin.git'}.insteadOf"
+        self.env["GIT_CONFIG_VALUE_1"] = public
         bin_dir = tmp_path / "bin"
         self.roots = tmp_path / "machines"
         self.guests = Guests(api, self.roots)

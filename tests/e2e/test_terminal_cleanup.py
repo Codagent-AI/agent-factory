@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from agent_factory.config import LocalConfig
 from agent_factory.operations import status
 from agent_factory.store import ClaimDraft, ClaimStore
 from tests.e2e.test_factory_cycle import (
@@ -16,6 +17,7 @@ from tests.e2e.test_factory_cycle import (
     _finish,  # pyright: ignore[reportPrivateUsage]
     _setup,  # pyright: ignore[reportPrivateUsage]
     _status,  # pyright: ignore[reportPrivateUsage]
+    _write_finish,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -26,11 +28,11 @@ def test_unreviewed_eval_expiry_is_delivered_once_before_release(tmp_path: Path)
     run = store.nonterminal_runs()[0]
     evidence = Path(run.evidence_path)
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 30
         while not (evidence / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        (evidence / "finish").touch()
-        deadline = time.monotonic() + 5
+        _write_finish(evidence)
+        deadline = time.monotonic() + 30
         while store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
         assert not store.nonterminal_runs()
@@ -81,7 +83,7 @@ GitHubClient.create_comment = fail_expiry
         comments = json.loads(board.read_text())["comments"]
         assert sum("review-expired" in comment["body"] for comment in comments) == 1
     finally:
-        (evidence / "finish").touch()
+        _write_finish(evidence)
         store.close()
 
 
@@ -92,16 +94,17 @@ def test_failed_eval_has_no_expiry_comment_but_is_released(tmp_path: Path) -> No
     run = store.nonterminal_runs()[0]
     artifact = Path(run.evidence_path)
     try:
-        (artifact / "finish").write_text(
+        _finish(
+            store,
+            artifact,
             json.dumps(
                 {
                     "evaluation_status": "complete",
                     "product_verdict": "failed",
                     "automated_subtotal": 0,
                 }
-            )
+            ),
         )
-        _finish(store, artifact)
         _cli(config, env, "tick")
         claim = store.get_claim(run.claim_id)
         assert claim is not None and claim.lifecycle == "settled"
@@ -119,18 +122,18 @@ def test_failed_eval_has_no_expiry_comment_but_is_released(tmp_path: Path) -> No
             "review-expired" in c["body"] for c in json.loads(board.read_text())["comments"]
         )
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
 def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) -> None:
     config, board, env, shared = _setup(tmp_path)
+    retention = LocalConfig.from_file(config).limits.evidence_retention_days
     _cli(config, env, "tick")
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
     run = store.nonterminal_runs()[0]
     artifact = Path(run.evidence_path)
     try:
-        (artifact / "finish").touch()
         _finish(store, artifact)
         _cli(config, env, "tick")
         claim = store.get_claim(run.claim_id)
@@ -161,7 +164,7 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
             claim.id,
             {
                 **saved.cleanup,
-                "done_observed_at": (datetime.now(UTC) - timedelta(days=13)).isoformat(),
+                "done_observed_at": (datetime.now(UTC) - timedelta(days=retention - 1)).isoformat(),
             },
         )
         _cli(config, env, "tick")
@@ -172,14 +175,16 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
             claim.id,
             {
                 **saved.cleanup,
-                "done_observed_at": (datetime.now(UTC) - timedelta(days=14, minutes=1)).isoformat(),
+                "done_observed_at": (
+                    datetime.now(UTC) - timedelta(days=retention, minutes=1)
+                ).isoformat(),
             },
         )
         _cli(config, env, "tick")
         assert not (artifact / "logs").exists()
         assert (artifact / "result.json").exists()
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
@@ -199,7 +204,6 @@ def fail_command(self, repository, number, body):
 GitHubClient.create_comment = fail_command
 """
     try:
-        (artifact / "finish").touch()
         _finish(store, artifact)
         _cli(config, env, "tick", before_cli=failure)
         claim = store.get_claim(run.claim_id)
@@ -214,7 +218,7 @@ GitHubClient.create_comment = fail_command
         comments = json.loads(board.read_text())["comments"]
         assert sum("human-review.sh" in c["body"] for c in comments) == 1
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
