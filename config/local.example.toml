@@ -30,7 +30,7 @@ memory_reservation_gib = 3
 # How long a claim's evidence is kept after its card is observed Done, before the
 # factory prunes logs, session state, and agent output (keeping outcome/result
 # records, issue input, candidate branches, and PRs).
-evidence_retention_days = 14
+evidence_retention_days = 3
 
 [credentials]
 github_app_key = "/etc/agent-factory/github-app.pem"

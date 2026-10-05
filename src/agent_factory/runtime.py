@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, job_cap, retention, terminal, watch, work_kinds
+from agent_factory import audit, job_cap, retention, slimming, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
@@ -257,6 +257,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 ):
                     handler.cleanup(claim, board_status=card_status(shared, card))
         terminal.sweep(store, controller, client, registered, local, seen, now, sync_cache)
+        slimming.sweep(store, local, now)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
