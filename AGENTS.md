@@ -85,7 +85,10 @@ pins (see its `AGENTS.md`), not from this repository.
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
 by hand before deploying. To run `tick` by hand from a shell, put
 `~/.agent-factory/releases/current/.venv/bin` first on `PATH`.
-`controller.log` is stale because `resident` does not write to it.
+The LaunchAgent sends the resident's stdout and stderr to
+`~/.agent-factory/logs/controller.log`. The resident logs nothing else there,
+but an uncaught exception's traceback lands in it, so read its tail first when
+the factory fails every cycle.
 
 ## Configuration pins
 
@@ -171,18 +174,27 @@ claims outside Done are released and pruned after `unreviewed_retention_days`.
 Done claims are cleaned after the Done observation and pruned after
 `evidence_retention_days` from that observation, including settled claims that
 reached Done without a recorded Review observation.
+Each tick also slims finished work without waiting for retention. An idle fix,
+feature, or task claim loses its clones and Runner source snapshots. A
+terminal eval loses its candidate `node_modules`. See
+`docs/operations.md` ("Slimming"). The default `evidence_retention_days` is 3.
 
 ## Shell on this Mac
 
 - There is no `timeout` command.
 - The shell is zsh: `set -- $var` does not split words. Pass arguments
   explicitly or use arrays.
+- In zsh, `$var:path` applies a history modifier to `$var`. Write
+  `"${var}:path"`.
+- `gh pr merge --delete-branch` reports an error after merging, because `main`
+  is checked out in Paul's checkout. Merge without it, then run
+  `git push origin --delete <branch>`.
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
 ## Service-driven watcher
 
-The watcher's only job is to make sure the factory itself works; it does not review the code the factory builds. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix, feature, or task run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. It posts nothing on the PR. On `FAILURE` (a failed attempt, including a fix, feature, or task run that completed with outcome `failed`), the session diagnoses the run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. `needs-input` outcomes are not triaged. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, budget, sessions, costs, comments, filed issues, and audit. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
+The watcher's only job is to make sure the factory itself works; it does not review the code the factory builds. When `[watch] enabled` is true in shared configuration, the resident dispatches a fresh headless session for two events. On `PR-READY` (a fix, feature, or task run opened or updated a pull request) the session mines the PR description's red and orange items, and the run's evidence as needed, for defects in the factory stack, and files or updates a Bug issue assigned to the factory for each one. It posts nothing on the PR. On `FAILURE` (a failed attempt, including a fix, feature, or task run that completed with outcome `failed`), the session diagnoses the run, may pause or resume the factory for containment, files or updates an issue for a factory defect, and its result is posted on the claim's issue. `needs-input` outcomes are not triaged. Neither session fixes anything: no branches, commits, pushes, or PRs. Both follow `factory-triage` ("Headless PR-READY check", "Headless triage"). Check `agent-factory --config <local.toml> doctor` for the `watch` group and `status` for its cursor, sessions, costs, comments, filed issues, and audit. No watch event is skipped for volume; `[job_cap]` bounds factory attempts instead. The operator's `gh` login files the issues, so it must have write access (the factory admits only writers' issues) and must differ from the factory bot. To retry an ended check or triage, use `agent-factory --config <local.toml> watch redispatch <id>`. Disable watching through committed configuration; running sessions and comment delivery continue.
 
 Do not start a general long-running watcher, `/loop`, or polling session: it
 duplicates the service's work and costs a session per poll. To follow specific
@@ -190,3 +202,6 @@ issues until the factory stops progressing on them, use the `factory-watch`
 skill, which polls with a script and reports once. For an update on demand, use
 the `factory-status` skill. To investigate or fix a failure by hand, use
 `factory-triage`. To review a factory PR when Paul asks, use `factory-pr-review`.
+To take an issue from handoff to a reviewed PR (assign, watch, answer
+`needs-input`, restart after a fixed factory defect, review), use
+`factory-drive-ticket`.

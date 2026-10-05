@@ -515,9 +515,10 @@ class EvalHandler:
         return local.schedule
 
     def providers(self, claim: Claim) -> set[str]:
-        return providers_from_roles(
-            mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
-        )
+        return self.providers_for_spec(claim.frozen_spec)
+
+    def providers_for_spec(self, frozen_spec: Mapping[str, object]) -> set[str]:
+        return providers_from_roles(mapping(mapping(frozen_spec.get("settings")).get("roles")))
 
     def cleanup(self, claim: Claim, *, board_status: str = "") -> None:
         if self._worktree_cleanup is not None:

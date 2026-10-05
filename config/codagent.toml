@@ -103,7 +103,7 @@ repository = "Codagent-AI/and-scene"
 
 [fix.defaults]
 lead = "claude:claude-opus-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "codex:gpt-6.1-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
 
 [feature]
@@ -111,19 +111,23 @@ contract = "factory-feature/1"
 
 [feature.defaults]
 lead = "claude:claude-opus-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "codex:gpt-6.1-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
-crosscheck = "codex:gpt-6-sol:high"
+crosscheck = "codex:gpt-6.1-sol:high"
 
 [task]
 contract = "factory-task/1"
 
 [task.defaults]
 lead = "claude:claude-sonnet-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "codex:gpt-6.1-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
 
 [watch]
 enabled = true
 repository = "Codagent-AI/agent-factory"
 agent = "claude:claude-sonnet-5-5:medium"
+
+[job_cap]
+attempts = 100
+window_hours = 24

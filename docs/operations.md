@@ -484,7 +484,35 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image. Once a reviewed card reaches Done, Factory releases its
+per-run Docker image.
+
+**Slimming.** On every tick, the factory removes the bulk that finished
+attempts leave behind and that a later attempt rebuilds. It does not wait for
+release or retention.
+
+- **Fix, feature, and task claims.** Once no run of the claim is active, the
+  factory removes:
+  - `<root>/clones/<claim>/<N>` for every attempt whose run was reserved;
+  - each attempt's `attempt-*/audit-*/snapshot/runner-source`.
+
+  This applies even while the claim is blocked or in Review, because the next
+  attempt or review round clones afresh.
+
+  Before removing a clone, the factory copies the target clone's
+  `validator_logs` and a `clone-state.patch` (status and uncommitted diff)
+  into `attempt-<N+1>/`, where retention prunes them with the rest of the
+  evidence.
+- **Eval claims.** Once the claim is settled, cancelled, or superseded, the
+  factory removes only `node_modules` from each repetition's
+  `.runtime/candidate-worktree`, at the top level and one level down. The
+  rest of the checkout and `.runtime/agent-runner-projects` stay until
+  retention, because `run.sh --rescore-from` hashes the acceptance artifacts
+  they hold, and the human-review command serves `dist`.
+
+Slimming never follows a link out of the artifact or clone directory.
+`claim.cleanup.slimmed` records the slimmed runs and any failures.
+
+Once a reviewed card reaches Done, Factory releases its
 recorded owned worktrees, clones, images, and credential copies. Cancelled and
 superseded claims are released as soon as their runs stop and reporting is
 delivered. Settled claims still outside Done are released after `[limits]
@@ -498,7 +526,7 @@ Factory removes only its recorded owned worktrees, clones, and images;
 it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
 only prunes evidence under the rule below.
 
-**Evidence retention.** `[limits] evidence_retention_days` (default 14) starts
+**Evidence retention.** `[limits] evidence_retention_days` (default 3) starts
 from the first durable Done observation for a settled claim. Leaving Done
 resets that observation. For cancelled and superseded claims it starts from
 the recorded terminal transition, even if the card never reaches Done.
@@ -508,7 +536,7 @@ period has elapsed, release has completed, and no run, reporting, or merged
 PR sync is pending, the next tick prunes that
 claim's evidence: logs, Runner and agent session state, and agent output
 under each attempt's artifact directory (and, for a host attempt, its
-recorded Runner session directory). It keeps the fix outcome or eval result
+recorded Runner session directory), plus an eval's remaining candidate checkout. It keeps the fix outcome or eval result
 and provenance records, the attempt's issue input, and never touches
 candidate branches, PRs, mirrors, SQLite history, or the operator's working
 clones. Pruning is
@@ -542,7 +570,13 @@ The watcher makes sure the factory itself works. It does not review the code the
 
 Neither session fixes anything: no branches, commits, pushes, or pull requests. Neither deploys, merges, touches a release, the service clone, or the operator's checkout, or fetches into the factory's mirrors. Both follow the `factory-triage` skill ("Headless PR-READY check", "Headless triage").
 
-Configure `[watch]` in shared TOML with `enabled`, `repository`, `agent`, optional `agents.PR-READY` and `agents.FAILURE` (for example, set `agents.FAILURE` to an Opus profile to escalate triage), `max_sessions` (default 2), `daily_sessions` (default 20), `grace_minutes` (default 7), and `timeout_minutes` (default 90). The profile syntax is `cli:model:effort`. At most `max_sessions` sessions run at once, and one at a time per pull request. When `daily_sessions` have started in the local day, a new event starts no session: it is recorded `budget-exhausted` and a factory-bot comment on the claim's issue gives the redispatch command. A session that ends without a valid result is alerted the same way.
+Configure `[watch]` in shared TOML with `enabled`, `repository`, `agent`, optional `agents.PR-READY` and `agents.FAILURE` (for example, set `agents.FAILURE` to an Opus profile to escalate triage), `max_sessions` (default 2), `grace_minutes` (default 7), and `timeout_minutes` (default 90). The profile syntax is `cli:model:effort`. At most `max_sessions` sessions run at once, and one at a time per pull request. Every eligible event can get a session. Older `budget-exhausted` dispatches remain visible and can be redispatched. A session that ends without a valid result is alerted on the claim's issue.
+
+## Factory job cap
+
+`[job_cap]` in shared TOML limits attempts started across all work kinds. `attempts` defaults to 100 and `window_hours` to 24; both must be positive integers. Initial attempts, retries, recoveries, unblocks, review rounds, and eval repetitions count. Watch sessions and post-run work do not. The cap applies even when the section is absent.
+
+When the rolling count reaches the cap, new work waits without consuming a retry or changing its claim lifecycle. A held claim receives one issue comment per cap episode. An eligible Ready card that has not been claimed receives one waiting comment per episode. `status` shows the count, earliest clear time, held claims, and waiting cards. Attempts leave the count when the window passes; `pause` and `resume` do not reset it. Run `agent-factory --config <local.toml> job-cap reset` to exclude earlier attempts and admit held work on the next cycle. Raising `[job_cap] attempts` requires a committed configuration change.
 
 Doctor includes a `watch` group when enabled. It checks the Runner, `git`, `gh`, each profile's CLI, the packaged workflow's contract, the watch repository mirror, and the `gh` login sessions file issues with. That login must differ from the factory bot and have write access, because the factory admits only issues written by writers.
 

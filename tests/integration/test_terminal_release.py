@@ -518,7 +518,7 @@ def test_permission_failure_records_error_and_retries(
     root.mkdir(parents=True)
     store.set_claim_lifecycle(claim.id, "cancelled", {})
     cleanup = PullRequestCleanup(store, claim_directory=lambda _: root)
-    original = cleanup_module._remove_tree  # pyright: ignore[reportPrivateUsage]
+    original = cleanup_module.remove_tree
     calls = 0
 
     def denied(path: str) -> None:
@@ -528,7 +528,7 @@ def test_permission_failure_records_error_and_retries(
             raise PermissionError("permission denied")
         original(path)
 
-    monkeypatch.setattr(cleanup_module, "_remove_tree", denied)
+    monkeypatch.setattr(cleanup_module, "remove_tree", denied)
     assert cleanup.release(claim.id) is False
     saved = store.get_claim(claim.id)
     assert saved is not None and saved.cleanup["complete"] is False
