@@ -103,6 +103,7 @@ def test_continuation_closes_prior_draft_pr_once_and_preserves_handoff(
     assert comments[0][0] == 105
     assert "https://example.test/pr/114" in comments[0][1]
     assert current_branch in comments[0][1]
+    assert "Please review the new pull request instead." in comments[0][1]
     if close_error:
         assert any(
             event.key == "superseded-pr-error:105"

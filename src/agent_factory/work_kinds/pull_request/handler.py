@@ -1116,7 +1116,8 @@ class PullRequestHandler:
                     if comment_key not in events:
                         body = (
                             f"Superseded by {new_url}: claim {claim.id[:8]} continued this "
-                            f"branch on `{self.branch_name(claim)}`. Closing this pull request."
+                            f"branch on `{self.branch_name(claim)}`. "
+                            "Please review the new pull request instead."
                         )
                         self._github.create_comment(claim.repository, pull.number, body)
                         self._store.record_event(claim.id, comment_key, body)
