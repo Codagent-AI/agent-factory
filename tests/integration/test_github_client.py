@@ -673,6 +673,23 @@ def test_close_issue_patches_state_closed() -> None:
     assert gh.calls[0].body == {"state": "closed"}
 
 
+def test_close_pull_request_patches_state_closed() -> None:
+    gh = RecordingGh([json.dumps({"number": 42, "state": "closed"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    client.close_pull_request("example/repository", 42)
+
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/pulls/42",
+        "--method",
+        "PATCH",
+        "--input",
+        "-",
+    ]
+    assert gh.calls[0].body == {"state": "closed"}
+
+
 def _review_node(identifier: str) -> dict[str, object]:
     return {
         "id": identifier,

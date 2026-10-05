@@ -407,6 +407,12 @@ class GitHubClient:
             {"state": "closed"},
         )
 
+    def close_pull_request(self, repository: str, number: int) -> None:
+        self._request(
+            ["api", f"repos/{repository}/pulls/{number}", "--method", "PATCH", "--input", "-"],
+            {"state": "closed"},
+        )
+
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self._request(
             ["api", f"repos/{repository}/issues/{number}", "--method", "PATCH", "--input", "-"],
