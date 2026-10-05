@@ -228,7 +228,8 @@ class HostFixture:
 
 def _wait_file(path: Path, timeout: float = 60) -> None:
     end = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < end:
+    # Written, not merely created: the shell truncates before it writes.
+    while not (path.exists() and path.read_text().strip()) and time.monotonic() < end:
         time.sleep(0.05)
     assert path.exists(), path
 
@@ -316,6 +317,7 @@ def test_e2e_001_cancelling_a_host_attempt_stops_the_runner_and_its_children(
     watcher = fixture.launch(SupervisionLimits(120, 300, 300))
     try:
         _wait_file(fixture.evidence / "grandchild.pid")
+        _wait_file(fixture.evidence / "step.pid")
         step = int((fixture.evidence / "step.pid").read_text())
         grandchild = int((fixture.evidence / "grandchild.pid").read_text())
         with closing(ClaimStore(fixture.state)) as store:

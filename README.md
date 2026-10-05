@@ -92,4 +92,5 @@ uv run pytest
 `uv run pytest` runs the suite in parallel (pytest-xdist, `-n auto`); pass `-n0` to run
 it serially, for example under a debugger. The whole suite must finish in under three
 minutes. Tests never reach the developer's Docker daemon, model CLIs, GitHub login, or
-Fly account: `tests/conftest.py` puts unavailable stand-ins for them first on `PATH`.
+Fly account: `tests/conftest.py` puts unavailable stand-ins for them first on `PATH`, and
+limits git to local repositories (`GIT_ALLOW_PROTOCOL=file`).

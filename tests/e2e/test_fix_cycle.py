@@ -16,7 +16,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore, Run
-from tests.e2e.test_factory_cycle import NO_GITHUB
+from tests.fixtures.network import NO_GITHUB
 
 REPOSITORY = "example/work"
 FIX_TOKEN = "fix-token-value"
@@ -531,7 +531,10 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
         return artifact
 
     def finish(self, artifact: Path, script: str) -> None:
-        (artifact / "finish").write_text(script)
+        # Whole or absent: the stand-in polls for the file and reads it at once.
+        staged = artifact / "finish.tmp"
+        staged.write_text(script)
+        staged.replace(artifact / "finish")
         deadline = time.monotonic() + 30
         while self.store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)

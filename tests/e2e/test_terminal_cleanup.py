@@ -17,6 +17,7 @@ from tests.e2e.test_factory_cycle import (
     _finish,  # pyright: ignore[reportPrivateUsage]
     _setup,  # pyright: ignore[reportPrivateUsage]
     _status,  # pyright: ignore[reportPrivateUsage]
+    _write_finish,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -30,7 +31,7 @@ def test_unreviewed_eval_expiry_is_delivered_once_before_release(tmp_path: Path)
         deadline = time.monotonic() + 30
         while not (evidence / "started").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        (evidence / "finish").touch()
+        _write_finish(evidence)
         deadline = time.monotonic() + 30
         while store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -82,7 +83,7 @@ GitHubClient.create_comment = fail_expiry
         comments = json.loads(board.read_text())["comments"]
         assert sum("review-expired" in comment["body"] for comment in comments) == 1
     finally:
-        (evidence / "finish").touch()
+        _write_finish(evidence)
         store.close()
 
 
@@ -93,16 +94,17 @@ def test_failed_eval_has_no_expiry_comment_but_is_released(tmp_path: Path) -> No
     run = store.nonterminal_runs()[0]
     artifact = Path(run.evidence_path)
     try:
-        (artifact / "finish").write_text(
+        _finish(
+            store,
+            artifact,
             json.dumps(
                 {
                     "evaluation_status": "complete",
                     "product_verdict": "failed",
                     "automated_subtotal": 0,
                 }
-            )
+            ),
         )
-        _finish(store, artifact)
         _cli(config, env, "tick")
         claim = store.get_claim(run.claim_id)
         assert claim is not None and claim.lifecycle == "settled"
@@ -120,7 +122,7 @@ def test_failed_eval_has_no_expiry_comment_but_is_released(tmp_path: Path) -> No
             "review-expired" in c["body"] for c in json.loads(board.read_text())["comments"]
         )
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
@@ -132,7 +134,6 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
     run = store.nonterminal_runs()[0]
     artifact = Path(run.evidence_path)
     try:
-        (artifact / "finish").touch()
         _finish(store, artifact)
         _cli(config, env, "tick")
         claim = store.get_claim(run.claim_id)
@@ -183,7 +184,7 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
         assert not (artifact / "logs").exists()
         assert (artifact / "result.json").exists()
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
@@ -203,7 +204,6 @@ def fail_command(self, repository, number, body):
 GitHubClient.create_comment = fail_command
 """
     try:
-        (artifact / "finish").touch()
         _finish(store, artifact)
         _cli(config, env, "tick", before_cli=failure)
         claim = store.get_claim(run.claim_id)
@@ -218,7 +218,7 @@ GitHubClient.create_comment = fail_command
         comments = json.loads(board.read_text())["comments"]
         assert sum("human-review.sh" in c["body"] for c in comments) == 1
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 

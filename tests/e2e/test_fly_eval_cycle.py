@@ -127,7 +127,10 @@ class Guests:
     def finish(self, machine_id: str, result: dict[str, object]) -> None:
         artifacts = self.root(machine_id) / "artifacts"
         artifacts.mkdir(parents=True, exist_ok=True)
-        (artifacts / "finish").write_text(json.dumps(result), encoding="utf-8")
+        # Whole or absent: the suite copies the file as soon as it appears.
+        staged = artifacts / "finish.tmp"
+        staged.write_text(json.dumps(result), encoding="utf-8")
+        staged.replace(artifacts / "finish")
 
     def lose(self, machine_id: str) -> None:
         """The Machine vanishes: the API forgets it and ssh no longer reaches it."""

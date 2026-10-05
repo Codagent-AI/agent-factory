@@ -174,7 +174,12 @@ def test_e2e_002_supervisor_survives_launcher_and_recovers_completion(tmp_path: 
     # The independently sessioned supervisor is not tied to this test's controller/store object.
     store.close()
     restarted = ClaimStore(state)
+    # A child can start before its supervisor records the run as running.
+    deadline = time.monotonic() + 30
     active = restarted.get_run(run.id)
+    while time.monotonic() < deadline and (active is None or active.status != "running"):
+        time.sleep(0.02)
+        active = restarted.get_run(run.id)
     assert active is not None and active.status == "running"
     assert active.process.get("pid") == int(marker.read_text(encoding="utf-8"))
 
@@ -371,6 +376,12 @@ def test_e2e_003_two_slots_survive_a_controller_restart_and_refuse_seconds(tmp_p
     fix_supervisor = launch_supervisor(state, fix_run.id, _plan(fix_dir, fix_marker), limits)
     _wait_for(eval_marker)
     _wait_for(fix_marker)
+    # A child can start before its supervisor records the run as running.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and any(
+        run.status != "running" for run in store.nonterminal_runs()
+    ):
+        time.sleep(0.02)
     active = store.nonterminal_runs()
     assert {run.kind for run in active} == {"eval", "fix"}
     assert len({run.supervisor.get("pid") for run in active}) == 2

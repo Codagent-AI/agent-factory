@@ -446,11 +446,12 @@ def _pid_alive(pid: int) -> bool:
     )
 
 
-def _wait_file(path: Path, timeout: float = 5) -> None:
+def _wait_file(path: Path, timeout: float = 30) -> None:
+    """Wait until the stand-in has written the file, not merely created it."""
     end = time.monotonic() + timeout
-    while not path.exists() and time.monotonic() < end:
+    while not (path.exists() and path.read_text().strip()) and time.monotonic() < end:
         time.sleep(0.02)
-    assert path.exists(), path
+    assert path.exists() and path.read_text().strip(), path
 
 
 @pytest.mark.darwin
@@ -465,7 +466,7 @@ def test_host_attempt_progresses_through_the_session_directory_then_times_out_by
     started = time.monotonic()
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.8, 30, 30))
     try:
-        _wait_file(evidence / "child.pid")
+        _wait_file(evidence / "script.pid")  # written after child.pid
         child = int((evidence / "child.pid").read_text())
         script = int((evidence / "script.pid").read_text())
         watcher.wait(timeout=20)
@@ -498,7 +499,7 @@ def test_cancelling_a_host_attempt_kills_the_runner_stand_in_and_its_child(
     run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(30, 60, 60))
     try:
-        _wait_file(evidence / "child.pid")
+        _wait_file(evidence / "script.pid")  # written after child.pid
         child = int((evidence / "child.pid").read_text())
         script = int((evidence / "script.pid").read_text())
         store.request_cancellation(run.id)

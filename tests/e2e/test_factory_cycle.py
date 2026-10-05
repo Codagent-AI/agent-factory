@@ -15,6 +15,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
+from tests.fixtures.network import NO_GITHUB
 
 # Readiness probes answer from this stand-in rather than the developer's installed Runner.
 HERMETIC_RUNNER = """#!/bin/sh
@@ -24,14 +25,6 @@ case "$1" in
 esac
 exit 0
 """
-
-# Git never reaches github.com from a test: any https://github.com/ remote resolves to a
-# missing local path and fails at once, as an unreadable private repository would.
-NO_GITHUB = {
-    "GIT_CONFIG_COUNT": "1",
-    "GIT_CONFIG_KEY_0": "url.file:///nonexistent-github/.insteadOf",
-    "GIT_CONFIG_VALUE_0": "https://github.com/",
-}
 
 
 def _git(path: Path, *args: str) -> str:
@@ -351,7 +344,7 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
         _cli(config, env, "tick")
         assert (tmp_path / "factory/worktrees" / run.claim_id / "runner").exists()
         _cli(config, env, "pause")
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         deadline = time.monotonic() + 30
         while store.nonterminal_runs() and time.monotonic() < deadline:
             time.sleep(0.02)
@@ -368,7 +361,7 @@ def test_e2e_001_003_cli_admits_reports_and_cleans_reviewed_worktrees(tmp_path: 
         assert (artifact / "result.json").exists()
         assert len(store.runs_for_claim(run.claim_id)) == 1
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
@@ -409,7 +402,7 @@ def test_fixture_request_runs_and_reports_through_tick(tmp_path: Path) -> None:
         assert (artifact / "result.json").read_bytes() == result_bytes
         assert (artifact / "proof-metadata.json").read_bytes() == metadata_bytes
     finally:
-        (artifact / "finish").touch()
+        _write_finish(artifact)
         store.close()
 
 
@@ -451,12 +444,27 @@ def test_unpublished_fixture_waits_then_admits_after_push(tmp_path: Path) -> Non
         store.close()
 
 
-def _finish(store: ClaimStore, evidence: Path) -> None:
-    # A loaded host can take a while to start the suite, which creates its artifact folder.
+def _write_finish(evidence: Path, content: str | None = None) -> None:
+    """Tell the suite stand-in to finish, once it has created its artifact folder.
+
+    A loaded host can take a while to start the suite. Without content the stand-in
+    writes its default result; an existing finish file keeps its content.
+    """
     deadline = time.monotonic() + 30
     while not evidence.is_dir() and time.monotonic() < deadline:
         time.sleep(0.02)
-    (evidence / "finish").touch()
+    if content is None:
+        (evidence / "finish").touch()
+    else:
+        # Whole or absent: the stand-in polls for the file and reads it at once.
+        staged = evidence / "finish.tmp"
+        staged.write_text(content)
+        staged.replace(evidence / "finish")
+
+
+def _finish(store: ClaimStore, evidence: Path, content: str | None = None) -> None:
+    _write_finish(evidence, content)
+    deadline = time.monotonic() + 30
     while store.nonterminal_runs() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not store.nonterminal_runs()
@@ -528,12 +536,13 @@ def test_cli_quota_result_holds_admission_without_consuming_recovery(tmp_path: P
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
     run = store.nonterminal_runs()[0]
     artifact = Path(run.evidence_path)
-    (artifact / "finish").write_text(
+    _finish(
+        store,
+        artifact,
         json.dumps(
             {"evaluation_status": "failed", "failure": {"reason": "Codex usage limit reached"}}
-        )
+        ),
     )
-    _finish(store, artifact)
     _cli(config, env, "tick")
     assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
     assert store.get_setting("admission", "quota:codex")
@@ -580,7 +589,9 @@ def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recov
         f"{json.dumps({'exit_code': 1, 'stdout': limit}, ensure_ascii=False)}\n",
         encoding="utf-8",
     )
-    (artifact / "finish").write_text(
+    _finish(
+        store,
+        artifact,
         json.dumps(
             {
                 "evaluation_status": "implementation-workflow-failed",
@@ -589,9 +600,8 @@ def test_cli_codex_limit_only_in_the_runner_audit_defers_without_consuming_recov
                     "run_id": runner_run,
                 },
             }
-        )
+        ),
     )
-    _finish(store, artifact)
     _cli(config, env, "tick")
     assert store.get_run(run.id).status == "deferred"  # pyright: ignore[reportOptionalMemberAccess]
     assert store.get_hold(run.claim_id, "quota") == {"until": reset.isoformat()}
@@ -606,15 +616,16 @@ def test_cli_clearing_delivered_deferral_verdict_creates_fresh_claim(tmp_path: P
     first = store.nonterminal_runs()[0]
     artifact = Path(first.evidence_path)
     _cli(config, env, "pause")
-    (artifact / "finish").write_text(
+    _finish(
+        store,
+        artifact,
         json.dumps(
             {
                 "evaluation_status": "failed",
                 "failure": {"reason": "controlled infrastructure failure"},
             }
-        )
+        ),
     )
-    _finish(store, artifact)
     _cli(config, env, "tick")
     data = json.loads(board.read_text())
     values = data["items"][0]["fieldValues"]["nodes"]
