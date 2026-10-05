@@ -645,37 +645,50 @@ Credentials for the suite's candidate branch, the fix PR credential, the Fly dep
 
 ### Requirement: Slim finished attempts
 
-On every tick, once no run of a claim is non-terminal, the factory SHALL remove the
-regenerable files that the claim's finished attempts leave on disk. It SHALL NOT wait for
-release or retention to do this:
+On every tick, once no run of a claim is non-terminal, the factory SHALL remove the bulk that
+the claim's finished attempts leave on disk and that a later attempt rebuilds. It SHALL NOT
+wait for release or retention to do this:
 
-- For a fix, feature, or task claim, it SHALL remove the per-attempt clones under the local
-  root of every attempt whose run was reserved, and each attempt's Runner source snapshots
-  (`attempt-*/audit-*/snapshot/runner-source`). Every attempt and review round cuts fresh
-  clones, so this SHALL apply whether the claim is open, blocked, in Review, or terminal.
-  Clones cut for an attempt whose run is not yet reserved SHALL be kept.
+- For a fix, feature, or task claim, it SHALL remove:
+  - the per-attempt clones under the local root of every attempt whose run was reserved;
+  - each attempt's Runner source snapshots (`attempt-*/audit-*/snapshot/runner-source`).
+
+  Every attempt and review round cuts fresh clones, so this SHALL apply whether the claim is
+  open, blocked, in Review, or terminal. Clones cut for an attempt whose run is not yet
+  reserved SHALL be kept.
+
+  Before it removes a clone, the factory SHALL copy into that attempt's artifact directory
+  what the clone holds that git cannot rebuild:
+  - the target clone's `validator_logs`;
+  - a `clone-state.patch` with the clone's status and uncommitted diff.
+
+  If the copy fails, the factory SHALL keep the clone. The retention rule SHALL cover both
+  copies.
 - For an eval claim whose lifecycle is `settled`, `cancelled`, or `superseded`, it SHALL remove
-  every entry of each repetition's `.runtime/candidate-worktree` except `dist`, which the
-  human-review command serves, and SHALL remove `.runtime/agent-runner-projects`. An eval
-  claim that is still open SHALL keep them, because a recovery attempt may resume a repetition
-  from its checkpoint.
+  only the installed dependency directories (`node_modules`) at the top level of each
+  repetition's `.runtime/candidate-worktree` and one level below it. Everything else SHALL be
+  kept, because rescoring hashes the acceptance artifacts recorded in the checkout and the
+  Runner output, and human review serves `dist`. An eval claim that is still open SHALL keep
+  its dependencies, because a recovery attempt may resume a repetition from its checkpoint.
 
-Slimming SHALL keep outcomes, results, provenance, diffs, logs, and session state for the
-retention rule. It SHALL record in the claim's cleanup record the runs it slimmed and any
-failures, and it SHALL retry failures on later ticks. When a later run of the claim finishes,
-the factory SHALL slim it too.
+Slimming SHALL NOT follow a link to remove anything outside the attempt's artifact directory
+or the claim's clone directory. It SHALL keep outcomes, results, provenance, diffs, logs,
+Runner output, and session state for the retention rule. It SHALL record in the claim's cleanup
+record the runs it slimmed and any failures, and it SHALL retry failures on later ticks. When a
+later run of the claim finishes, the factory SHALL slim it too.
 
 #### Scenario: Slim a blocked fix claim
 
 - **WHEN** a fix claim's attempt ends with `needs-input` and no other run of the claim is non-terminal
-- **THEN** the next tick removes the claim's clones and the attempt's Runner source snapshots
+- **THEN** the next tick copies the clone's validator logs and uncommitted state into the attempt's evidence
+- **AND** the next tick removes the claim's clones and the attempt's Runner source snapshots
 - **AND** its outcome, logs, and session state remain
 
 #### Scenario: Slim a settled eval
 
 - **WHEN** an eval claim settles as `pending-human-review`
-- **THEN** the next tick removes each repetition's candidate checkout except `dist`
-- **AND** the human-review command can still serve the scored build
+- **THEN** the next tick removes the installed dependencies from each repetition's candidate checkout
+- **AND** the human-review command can still serve the scored build, and the repetition can still be rescored
 
 ### Requirement: Retain evidence for a bounded period
 
@@ -748,7 +761,7 @@ SHALL be kept.
 
 #### Scenario: Keep a recently superseded claim whose runs finished long ago
 
-- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 3 days ago
+- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 1 day ago
 - **THEN** its evidence is kept until 3 days after it was superseded
 
 #### Scenario: Prune a settled claim left in Review

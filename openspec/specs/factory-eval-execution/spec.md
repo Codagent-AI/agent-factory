@@ -139,8 +139,8 @@ Factory logs SHALL be kept separately from suite-owned evidence. Evidence under 
 factory's artifact root SHALL remain available until the evidence retention rule in
 `factory-operations` removes it. That rule SHALL keep each repetition's result and
 provenance records and SHALL NOT delete candidate branches or PRs. Once the claim is
-terminal, the factory SHALL reduce the candidate checkout to its served build, as "Slim
-finished attempts" in `factory-operations` defines.
+terminal, the factory SHALL remove only the candidate checkout's installed dependencies
+earlier than that, as "Slim finished attempts" in `factory-operations` defines.
 
 The suite worktree needed for human review SHALL remain available until the first of these
 events:

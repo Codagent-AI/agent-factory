@@ -486,20 +486,30 @@ through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
 per-run Docker image.
 
-**Slimming.** On every tick, the factory removes the files finished attempts
-leave behind that git or a rebuild can regenerate. It does not wait for
+**Slimming.** On every tick, the factory removes the bulk that finished
+attempts leave behind and that a later attempt rebuilds. It does not wait for
 release or retention.
 
-- Fix, feature, and task claims: once no run of the claim is active, the
-  factory removes `<root>/clones/<claim>/<N>` for every attempt whose run was reserved, and each attempt's
-  `attempt-*/audit-*/snapshot/runner-source`. This applies even while the
-  claim is blocked or in Review, because the next attempt or review round
-  clones afresh.
-- Eval claims: once the claim is settled, cancelled, or superseded, the
-  factory cuts each repetition's `.runtime/candidate-worktree` down to `dist`,
-  which is what the human-review command serves, and removes
-  `.runtime/agent-runner-projects`.
+- **Fix, feature, and task claims.** Once no run of the claim is active, the
+  factory removes:
+  - `<root>/clones/<claim>/<N>` for every attempt whose run was reserved;
+  - each attempt's `attempt-*/audit-*/snapshot/runner-source`.
 
+  This applies even while the claim is blocked or in Review, because the next
+  attempt or review round clones afresh.
+
+  Before removing a clone, the factory copies the target clone's
+  `validator_logs` and a `clone-state.patch` (status and uncommitted diff)
+  into `attempt-<N+1>/`, where retention prunes them with the rest of the
+  evidence.
+- **Eval claims.** Once the claim is settled, cancelled, or superseded, the
+  factory removes only `node_modules` from each repetition's
+  `.runtime/candidate-worktree`, at the top level and one level down. The
+  rest of the checkout and `.runtime/agent-runner-projects` stay until
+  retention, because `run.sh --rescore-from` hashes the acceptance artifacts
+  they hold, and the human-review command serves `dist`.
+
+Slimming never follows a link out of the artifact or clone directory.
 `claim.cleanup.slimmed` records the slimmed runs and any failures.
 
 Once a reviewed card reaches Done, Factory releases its

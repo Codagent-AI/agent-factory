@@ -176,7 +176,7 @@ Done claims are cleaned after the Done observation and pruned after
 reached Done without a recorded Review observation.
 Each tick also slims finished work without waiting for retention. An idle fix,
 feature, or task claim loses its clones and Runner source snapshots. A
-terminal eval's candidate checkouts shrink to `dist`. See
+terminal eval loses its candidate `node_modules`. See
 `docs/operations.md` ("Slimming"). The default `evidence_retention_days` is 3.
 
 ## Shell on this Mac
