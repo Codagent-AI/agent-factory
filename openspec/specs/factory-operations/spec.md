@@ -491,6 +491,11 @@ released.
 - **THEN** its factory-owned worktrees or clones and any run-specific images are removed
 - **AND** results, logs, SQLite history, candidate branches, and PRs remain available
 
+#### Scenario: Closed settled claim reaches Done without routing
+
+- **WHEN** the poll observes that a settled factory-owned claim's issue is closed and its card is not Done
+- **THEN** the poll moves the card to Done
+
 #### Scenario: Release a Done claim with no Review observation
 
 - **WHEN** a settled claim's card is observed as Done with a durable Done observation but no recorded Review observation
