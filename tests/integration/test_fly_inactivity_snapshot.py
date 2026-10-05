@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -66,8 +67,17 @@ def test_snapshot_failure_is_recorded_and_does_not_raise(tmp_path: Path) -> None
 
 
 class FakeBackend:
-    def __init__(self, launcher: subprocess.Popen[bytes]) -> None:
+    def __init__(
+        self,
+        launcher: subprocess.Popen[bytes],
+        artifact: Path,
+        collected_result: Mapping[str, object] | None,
+        guest_exit_code: int | None,
+    ) -> None:
         self.launcher = launcher
+        self.artifact = artifact
+        self.collected_result = collected_result
+        self.guest_exit_code = guest_exit_code
         self.calls: list[str] = []
         self.snapshots: list[Path] = []
 
@@ -81,6 +91,14 @@ class FakeBackend:
 
     def terminate(self, _identity: Mapping[str, object]) -> bool:
         self.calls.append("terminate")
+        if self.collected_result is not None:
+            (self.artifact / "result.json").write_text(
+                json.dumps(self.collected_result), encoding="utf-8"
+            )
+        if self.guest_exit_code is not None:
+            (self.artifact / "guest-exit-code").write_text(
+                f"{self.guest_exit_code}\n", encoding="utf-8"
+            )
         self.launcher.kill()
         self.launcher.wait()
         return True
@@ -89,7 +107,13 @@ class FakeBackend:
         self.calls.append("dispose")
 
 
-def _observe(tmp_path: Path, *, cancel: bool) -> tuple[FakeBackend, str, ClaimStore]:
+def _observe(
+    tmp_path: Path,
+    *,
+    cancel: bool,
+    collected_result: Mapping[str, object] | None = None,
+    guest_exit_code: int | None = None,
+) -> tuple[FakeBackend, str, ClaimStore]:
     artifact = tmp_path / "artifact"
     (artifact / ".factory").mkdir(parents=True)
     plan = ExecutionPlan(
@@ -111,7 +135,7 @@ def _observe(tmp_path: Path, *, cancel: bool) -> tuple[FakeBackend, str, ClaimSt
     launcher = subprocess.Popen(["sleep", "30"])
     identity = _process_identity(launcher.pid, plan)
     assert identity is not None
-    backend = FakeBackend(launcher)
+    backend = FakeBackend(launcher, artifact, collected_result, guest_exit_code)
     _observe_fly(
         store,
         run.id,
@@ -138,6 +162,52 @@ def test_inactivity_stop_snapshots_the_guest_before_terminating_it(tmp_path: Pat
             "path": str(backend.snapshots[0]),
             "captured": True,
         }
+    finally:
+        store.close()
+
+
+def test_inactivity_stop_uses_finished_guest_result(tmp_path: Path) -> None:
+    collected = {"evaluation_status": "pending-human-review", "delivery": "verified"}
+    backend, run_id, store = _observe(
+        tmp_path, cancel=False, collected_result=collected, guest_exit_code=0
+    )
+    try:
+        finished = store.get_run(run_id)
+        assert finished is not None and finished.status == "completed"
+        assert finished.result == collected
+        assert backend.calls[:2] == ["snapshot", "terminate"]
+        assert finished.progress["inactivity_snapshot"] == {
+            "path": str(backend.snapshots[0]),
+            "captured": True,
+        }
+    finally:
+        store.close()
+
+
+def test_inactivity_stop_keeps_timeout_when_guest_was_killed(tmp_path: Path) -> None:
+    collected = {"evaluation_status": "pending-human-review", "delivery": "verified"}
+    backend, run_id, store = _observe(
+        tmp_path, cancel=False, collected_result=collected, guest_exit_code=137
+    )
+    try:
+        finished = store.get_run(run_id)
+        assert finished is not None and finished.status == "timed_out"
+        assert finished.result == collected
+        assert backend.calls[:2] == ["snapshot", "terminate"]
+    finally:
+        store.close()
+
+
+def test_inactivity_stop_uses_finished_guest_interruption(tmp_path: Path) -> None:
+    collected = {"evaluation_status": "interrupted", "reason": "suite interrupted"}
+    backend, run_id, store = _observe(
+        tmp_path, cancel=False, collected_result=collected, guest_exit_code=0
+    )
+    try:
+        finished = store.get_run(run_id)
+        assert finished is not None and finished.status == "interrupted"
+        assert finished.result == collected
+        assert backend.calls[:2] == ["snapshot", "terminate"]
     finally:
         store.close()
 

@@ -448,6 +448,14 @@ def _launcher_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
         return None
 
 
+def _guest_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
+    path = Path(_artifact_root(plan, evidence_path)) / "guest-exit-code"
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
 def launch(plan: ExecutionPlan, argv: Sequence[str], evidence_path: str) -> subprocess.Popen[bytes]:
     """Spawn either an initial launcher or a backend attachment in its own session."""
     output = Path(evidence_path) / "factory-suite.log"
@@ -604,6 +612,7 @@ def _observe_fly(
             deadline = time.monotonic() + _collection_grace(plan)
             while _identity_status(launcher) == "alive" and time.monotonic() < deadline:
                 time.sleep(_POLL_SECONDS)
+            collected: dict[str, object] | None = None
             if _identity_status(launcher) == "alive":
                 _terminate(launcher)
                 result_value: dict[str, object] = {"collection": "failed", "reason": "machine lost"}
@@ -620,7 +629,12 @@ def _observe_fly(
                 machine_backend.dispose(identity, "destroy")
                 store.finish_run(run_id, execution_status="cancelled", result=result_value)
             else:
-                store.finish_run(run_id, execution_status="timed_out", result=result_value)
+                status = (
+                    _result_status(collected)
+                    if collected is not None and _guest_exit_code(plan, run.evidence_path) == 0
+                    else "timed_out"
+                )
+                store.finish_run(run_id, execution_status=status, result=result_value)
             return
         time.sleep(_POLL_SECONDS)
 
