@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import textwrap
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -111,6 +112,60 @@ def test_validation_runs_after_initial_implementation_and_after_findings_repairs
     final_at = text.index("- id: final-validator\n")
     finalize_at = text.index("- id: finalize-pr\n")
     assert implement_at < initial_at < test_at < review_at < address_at < final_at < finalize_at
+
+
+def test_implement_group_marks_completion_only_after_implementor_succeeds() -> None:
+    text = _workflow_text()
+    seed_at = text.index("- id: seed-implement-status\n")
+    implement_at = text.index("- id: implement-fix\n")
+    mark_at = text.index("- id: mark-implemented\n")
+    initial_at = text.index("- id: initial-validator\n")
+    assert seed_at < implement_at < mark_at < initial_at
+    assert not re.search(r"^      - id: ", text[implement_at + 1 : mark_at], re.MULTILINE)
+    assert "command: printf 'failed'" in _step_block(text, "seed-implement-status")
+    assert "capture: implement_status" in _step_block(text, "seed-implement-status")
+    assert "command: printf 'passed'" in _step_block(text, "mark-implemented")
+    assert "capture: implement_status" in _step_block(text, "mark-implemented")
+
+
+def test_record_outcome_skips_when_implementor_did_not_complete() -> None:
+    assert (
+        "skip_if: 'sh: test {{fixable}} != true || test \"{{implement_status}}\" != passed'"
+        in _step_block(_workflow_text(), "record-outcome")
+    )
+
+
+def test_non_fixable_run_has_implement_status_for_record_outcome_guard() -> None:
+    text = _workflow_text()
+    assert re.search(r"^  - id: seed-skipped-implement-status\n", text, re.MULTILINE)
+    assert text.index("- id: seed-skipped-implement-status\n") < text.index("- id: implement\n")
+    seed = _step_block(text, "seed-skipped-implement-status")
+    assert "command: printf 'failed'" in seed
+    assert "capture: implement_status" in seed
+    assert "skip_if:" not in seed
+
+
+@pytest.mark.parametrize(
+    ("fixable", "implement_status", "mentions_implementor"),
+    [("true", "failed", True), ("false", "failed", False), ("true", "passed", False)],
+)
+def test_missing_outcome_names_incomplete_implementor_only_when_it_failed(
+    tmp_path: Path, fixable: str, implement_status: str, mentions_implementor: bool
+) -> None:
+    block = _step_block(_workflow_text(), "verify-outcome")
+    command = textwrap.dedent(block.split("command: |\n", 1)[1])
+    command = command.replace("{{artifact_dir}}", str(tmp_path))
+    command = command.replace("{{fixable}}", fixable)
+    command = command.replace("{{implement_status}}", implement_status)
+
+    result = subprocess.run(["sh", "-c", command], capture_output=True, text=True)
+
+    assert result.returncode == 1
+    assert (
+        "fix-outcome.json was not written; treating this run as a technical failure"
+        in result.stderr
+    )
+    assert ("implementor step did not complete" in result.stderr) is mentions_implementor
 
 
 def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
