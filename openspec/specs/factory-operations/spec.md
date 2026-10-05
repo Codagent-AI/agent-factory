@@ -649,10 +649,11 @@ On every tick, once no run of a claim is non-terminal, the factory SHALL remove 
 regenerable files that the claim's finished attempts leave on disk. It SHALL NOT wait for
 release or retention to do this:
 
-- For a fix, feature, or task claim, it SHALL remove the claim's per-attempt clones under the
-  local root and each attempt's Runner source snapshots
+- For a fix, feature, or task claim, it SHALL remove the per-attempt clones under the local
+  root of every attempt whose run was reserved, and each attempt's Runner source snapshots
   (`attempt-*/audit-*/snapshot/runner-source`). Every attempt and review round cuts fresh
   clones, so this SHALL apply whether the claim is open, blocked, in Review, or terminal.
+  Clones cut for an attempt whose run is not yet reserved SHALL be kept.
 - For an eval claim whose lifecycle is `settled`, `cancelled`, or `superseded`, it SHALL remove
   every entry of each repetition's `.runtime/candidate-worktree` except `dist`, which the
   human-review command serves, and SHALL remove `.runtime/agent-runner-projects`. An eval

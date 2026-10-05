@@ -491,7 +491,7 @@ leave behind that git or a rebuild can regenerate. It does not wait for
 release or retention.
 
 - Fix, feature, and task claims: once no run of the claim is active, the
-  factory removes its clones under `<root>/clones/<claim>` and each attempt's
+  factory removes `<root>/clones/<claim>/<N>` for every attempt whose run was reserved, and each attempt's
   `attempt-*/audit-*/snapshot/runner-source`. This applies even while the
   claim is blocked or in Review, because the next attempt or review round
   clones afresh.

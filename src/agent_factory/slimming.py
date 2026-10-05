@@ -21,6 +21,7 @@ from agent_factory.store import (
     Run,
 )
 from agent_factory.work_kinds.pull_request.cleanup import remove_tree
+from agent_factory.work_kinds.pull_request.kinds import registered
 from agent_factory.work_kinds.pull_request.workspace import safe_name
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,9 @@ _AUDIT_SNAPSHOTS = "attempt-*/audit-*/snapshot/runner-source"
 def sweep(store: ClaimStore, local: LocalConfig, now: datetime) -> None:
     clones_root = local.storage_root.expanduser().resolve() / "clones"
     for claim in store.all_claims():
+        # Released and pruned claims hold nothing left to slim; a new run clears the flag.
+        if claim.cleanup.get("sweep_complete") is True:
+            continue
         try:
             slim_claim(store, claim, clones_root, now)
         except Exception:
@@ -49,22 +53,22 @@ def slim_claim(store: ClaimStore, claim: Claim, clones_root: Path, now: datetime
     done = {item for item in cast(list[object], record.get("runs") or []) if isinstance(item, str)}
     pending = [run for run in runs if run.id not in done]
     targets: list[Path] = []
+    errors: list[dict[str, str]] = []
     if claim.kind == "eval":
         # An open eval claim may recover a repetition from its checkpoint in the same directory.
         if claim.lifecycle not in TERMINAL_LIFECYCLES:
             return
         for run in pending:
-            targets.extend(eval_targets(run))
+            try:
+                targets.extend(eval_targets(run))
+            except OSError as error:
+                errors.append({"path": run.evidence_path, "error": str(error)})
     else:
-        # Every attempt and review round cuts fresh clones, so an idle claim's clones are spare.
-        clones = clones_root / safe_name(claim.id)
-        if clones.exists():
-            targets.append(clones)
+        targets.extend(finished_clones(claim, runs, clones_root))
         for run in pending:
             targets.extend(sorted(Path(run.evidence_path).resolve().glob(_AUDIT_SNAPSHOTS)))
     if not pending and not targets:
         return
-    errors: list[dict[str, str]] = []
     for path in dict.fromkeys(targets):
         try:
             _remove(path)
@@ -76,6 +80,22 @@ def slim_claim(store: ClaimStore, claim: Claim, clones_root: Path, now: datetime
         record["slimmed_at"] = now.isoformat()
     record["errors"] = errors
     store.set_cleanup(claim.id, {**fresh.cleanup, "slimmed": record})
+
+
+def finished_clones(claim: Claim, runs: list[Run], clones_root: Path) -> list[Path]:
+    """Clone directories of attempts whose run exists; every new attempt cuts fresh clones.
+
+    Attempt N's clones are cut before its run is reserved, numbered by the unit's run count,
+    so a directory numbered at or past that count may belong to an attempt being prepared.
+    """
+    definition = next((item for item in registered() if item.kind == claim.kind), None)
+    directory = clones_root / safe_name(claim.id)
+    if definition is None or not directory.is_dir():
+        return []
+    started = len([run for run in runs if run.unit_key == definition.unit_key])
+    return sorted(
+        entry for entry in directory.iterdir() if entry.name.isdigit() and int(entry.name) < started
+    )
 
 
 def eval_targets(run: Run) -> list[Path]:

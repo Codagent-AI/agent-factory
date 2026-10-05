@@ -63,11 +63,13 @@ def test_idle_fix_claim_loses_clones_and_source_snapshots(tmp_path: Path) -> Non
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
     store.finish_run(run.id, execution_status="completed", result={})
     # Tools such as Go's module cache leave read-only trees behind.
-    (clones / "1" / "repo").chmod(stat.S_IRUSR | stat.S_IXUSR)
+    (clones / "0" / "repo").chmod(stat.S_IRUSR | stat.S_IXUSR)
 
     slimming.sweep(store, local, datetime.now(UTC))
 
-    assert not clones.exists()
+    assert not (clones / "0").exists()
+    # Attempt 1's clones may be cut for a run that is about to be reserved.
+    assert (clones / "1" / "skills" / "SKILL.md").exists()
     assert not (evidence / "attempt-1/audit-abc/snapshot/runner-source").exists()
     assert (evidence / "attempt-1/audit-abc/snapshot/manifest.json").exists()
     assert (evidence / "attempt-1/fix-outcome.json").exists()
@@ -137,13 +139,12 @@ def test_slimming_is_idempotent_and_picks_up_new_runs(tmp_path: Path) -> None:
     slimming.sweep(store, local, datetime.now(UTC))
     assert _get(store, claim.id).cleanup["slimmed"] == marked
 
-    _write(clones, "2/repo/README.md")
     _write(evidence, "attempt-2/audit-def/snapshot/runner-source/main.go")
     second = store.reserve_run(claim.id, "fix", reason="review", evidence_path=str(evidence))
     store.finish_run(second.id, execution_status="completed", result={})
     slimming.sweep(store, local, datetime.now(UTC))
 
-    assert not clones.exists()
+    assert list(clones.iterdir()) == []
     assert not (evidence / "attempt-2/audit-def/snapshot/runner-source").exists()
     record = _get(store, claim.id).cleanup["slimmed"]
     assert isinstance(record, dict)
