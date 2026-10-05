@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 
 from agent_factory.work_kinds.pull_request import launch
 from agent_factory.work_kinds.pull_request.kinds import FEATURE
@@ -124,6 +125,52 @@ def test_staged_gate_runs_directly(tmp_path: Path) -> None:
     result = gate(repo, tasks, artifacts, base, env, script=catalog / "task-compliance-gate.py")
     assert result.returncode == 0, result.stderr
     assert record(artifacts)["result"] == "passed"
+
+
+def test_staged_gate_reads_script_inputs_from_stdin(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    catalog = launch.stage_workflow_into(tmp_path / "workflows", "factory-feature/1", FEATURE)
+    workflow = yaml.safe_load((catalog / "factory-feature-v1.0.yaml").read_text())
+    steps = {step["id"]: step for step in workflow["steps"]}
+    review = next(
+        step
+        for step in steps["task-compliance-verified"]["steps"]
+        if step["id"] == "task-compliance-review"
+    )
+    for step in (review, steps["task-compliance-verified-final"]):
+        assert step["script"] == "task-compliance-gate.py"
+        assert "args" not in step
+        inputs = {
+            key: value.replace("{{artifact_dir}}", str(artifacts))
+            .replace("{{archived_dir}}/tasks.md", str(tasks))
+            .replace("{{target_head}}", base)
+            for key, value in step["script_inputs"].items()
+        }
+        result = subprocess.run(
+            [str(catalog / step["script"])],
+            cwd=repo,
+            env=env,
+            input=json.dumps(inputs),
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert record(artifacts)["result"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "stdin,problem", [("", "Expecting value"), ("[]", "expected JSON object payload")]
+)
+def test_gate_rejects_invalid_stdin_without_traceback(
+    tmp_path: Path, stdin: str, problem: str
+) -> None:
+    repo, _tasks, _artifacts, _base, env = setup(tmp_path)
+    result = subprocess.run(
+        [str(GATE)], cwd=repo, env=env, input=stdin, text=True, capture_output=True
+    )
+    assert result.returncode == 2
+    assert problem in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize(
