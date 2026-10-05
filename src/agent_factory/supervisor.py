@@ -211,7 +211,7 @@ def _launch_and_observe(
         return
     try:
         argv = (
-            _recording_exit_code(plan.argv, run.evidence_path)
+            _recording_exit_code(plan.argv, run.evidence_path, fresh_attempt=True)
             if backend.supports_attach
             else plan.argv
         )
@@ -383,13 +383,19 @@ def _supervise_fly(
     _observe_fly(store, run.id, plan, limits, identity, backend, launcher)
 
 
-def _recording_exit_code(argv: Sequence[str], evidence_path: str) -> list[str]:
+def _recording_exit_code(
+    argv: Sequence[str], evidence_path: str, *, fresh_attempt: bool = False
+) -> list[str]:
     """Wrap a launcher so its exit code outlives it, for fresh launch and attach alike."""
     status_file = Path(evidence_path) / ".factory" / "launcher-exit-code"
     status_file.parent.mkdir(parents=True, exist_ok=True)
     # The artifact directory is shared by a repetition's attempts; a code left by
     # an earlier launcher must never be read as this one's.
     status_file.unlink(missing_ok=True)
+    if fresh_attempt:
+        # A recovery attempt reuses this artifact directory. Only collection for
+        # this attempt may make its guest exit code trustworthy.
+        (Path(evidence_path) / "guest-exit-code").unlink(missing_ok=True)
     status_path = shlex.quote(str(status_file))
     return [
         "/bin/sh",

@@ -145,13 +145,20 @@ def test_int_005_launcher_exit_code_is_recorded_and_never_inherited(tmp_path: Pa
 
     artifact = tmp_path / "artifact"
     status = artifact / ".factory" / "launcher-exit-code"
+    guest_status = artifact / "guest-exit-code"
     status.parent.mkdir(parents=True)
     status.write_text("0\n")  # left behind by an earlier attempt's launcher
+    guest_status.write_text("0\n")  # left behind by an earlier attempt's guest
 
-    argv = _recording_exit_code(["sh", "-c", "exit 71"], str(artifact))
+    argv = _recording_exit_code(["sh", "-c", "exit 71"], str(artifact), fresh_attempt=True)
     assert not status.exists()
+    assert not guest_status.exists()
     assert subprocess.run(argv, check=False).returncode == 71
     assert _launcher_exit_code(_fly_plan(artifact), str(artifact)) == 71
+
+    guest_status.write_text("0\n")  # collected by this attempt before launcher reattachment
+    _recording_exit_code(["true"], str(artifact))
+    assert guest_status.read_text() == "0\n"
 
 
 def test_status_shows_each_stopped_quota_machine_of_a_claim(tmp_path: Path) -> None:

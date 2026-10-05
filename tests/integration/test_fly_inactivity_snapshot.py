@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from agent_factory.backends import Probe
 from agent_factory.controller import ExecutionPlan
 from agent_factory.fly.backend import FlyMachineBackend
@@ -17,6 +19,7 @@ from agent_factory.supervisor import (
     SupervisionLimits,
     _observe_fly,  # pyright: ignore[reportPrivateUsage]
     _process_identity,  # pyright: ignore[reportPrivateUsage]
+    _recording_exit_code,  # pyright: ignore[reportPrivateUsage]
 )
 
 IDENTITY = {"app": "app", "id": "machine-1", "token_file": "/tmp/fly-token"}
@@ -113,9 +116,14 @@ def _observe(
     cancel: bool,
     collected_result: Mapping[str, object] | None = None,
     guest_exit_code: int | None = None,
+    stale_result: Mapping[str, object] | None = None,
 ) -> tuple[FakeBackend, str, ClaimStore]:
     artifact = tmp_path / "artifact"
     (artifact / ".factory").mkdir(parents=True)
+    if stale_result is not None:
+        (artifact / "result.json").write_text(json.dumps(stale_result), encoding="utf-8")
+        (artifact / "guest-exit-code").write_text("0\n", encoding="utf-8")
+        _recording_exit_code(("true",), str(artifact), fresh_attempt=True)
     plan = ExecutionPlan(
         ("true",),
         str(artifact),
@@ -184,10 +192,13 @@ def test_inactivity_stop_uses_finished_guest_result(tmp_path: Path) -> None:
         store.close()
 
 
-def test_inactivity_stop_keeps_timeout_when_guest_was_killed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("guest_exit_code", [137, None])
+def test_inactivity_stop_keeps_timeout_without_successful_guest_exit(
+    tmp_path: Path, guest_exit_code: int | None
+) -> None:
     collected = {"evaluation_status": "pending-human-review", "delivery": "verified"}
     backend, run_id, store = _observe(
-        tmp_path, cancel=False, collected_result=collected, guest_exit_code=137
+        tmp_path, cancel=False, collected_result=collected, guest_exit_code=guest_exit_code
     )
     try:
         finished = store.get_run(run_id)
@@ -207,6 +218,18 @@ def test_inactivity_stop_uses_finished_guest_interruption(tmp_path: Path) -> Non
         finished = store.get_run(run_id)
         assert finished is not None and finished.status == "interrupted"
         assert finished.result == collected
+        assert backend.calls[:2] == ["snapshot", "terminate"]
+    finally:
+        store.close()
+
+
+def test_inactivity_stop_does_not_use_previous_attempt_result(tmp_path: Path) -> None:
+    stale = {"evaluation_status": "interrupted", "reason": "previous attempt"}
+    backend, run_id, store = _observe(tmp_path, cancel=False, stale_result=stale)
+    try:
+        finished = store.get_run(run_id)
+        assert finished is not None and finished.status == "timed_out"
+        assert finished.result == stale
         assert backend.calls[:2] == ["snapshot", "terminate"]
     finally:
         store.close()
