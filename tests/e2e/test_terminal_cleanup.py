@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from agent_factory.config import LocalConfig
 from agent_factory.operations import status
 from agent_factory.store import ClaimDraft, ClaimStore
 from tests.e2e.test_factory_cycle import (
@@ -125,6 +126,7 @@ def test_failed_eval_has_no_expiry_comment_but_is_released(tmp_path: Path) -> No
 
 def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) -> None:
     config, board, env, shared = _setup(tmp_path)
+    retention = LocalConfig.from_file(config).limits.evidence_retention_days
     _cli(config, env, "tick")
     store = ClaimStore(tmp_path / "factory/state.sqlite3")
     run = store.nonterminal_runs()[0]
@@ -161,7 +163,7 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
             claim.id,
             {
                 **saved.cleanup,
-                "done_observed_at": (datetime.now(UTC) - timedelta(days=13)).isoformat(),
+                "done_observed_at": (datetime.now(UTC) - timedelta(days=retention - 1)).isoformat(),
             },
         )
         _cli(config, env, "tick")
@@ -172,7 +174,9 @@ def test_done_eval_uses_done_observation_for_evidence_retention(tmp_path: Path) 
             claim.id,
             {
                 **saved.cleanup,
-                "done_observed_at": (datetime.now(UTC) - timedelta(days=14, minutes=1)).isoformat(),
+                "done_observed_at": (
+                    datetime.now(UTC) - timedelta(days=retention, minutes=1)
+                ).isoformat(),
             },
         )
         _cli(config, env, "tick")
