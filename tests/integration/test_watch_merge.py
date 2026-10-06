@@ -71,6 +71,7 @@ class Client:
 def setup(tmp_path: Path, level: str = "low") -> tuple[ClaimStore, dict[str, Any], SharedConfig]:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("o/r", 5, "I", "P", "fix", "fp", {}))
+    store.set_claim_lifecycle(claim.id, "settled", {})
     now = datetime.now(UTC).isoformat()
     watch_store.insert(
         store,
@@ -484,5 +485,79 @@ def test_each_unmergeable_state_has_its_own_reason(
         merge.step(store, client, shared)  # type: ignore[arg-type]
         saved = _merge_state(store, row)
         assert saved["state"] == "not-merged" and saved["reason"] == reason
+    finally:
+        store.close()
+
+
+def _set_claim(store: ClaimStore, row: dict[str, Any], lifecycle: str, **outcome: object) -> None:
+    store.set_claim_lifecycle(row["claim_id"], lifecycle, outcome)
+
+
+def test_writer_comment_after_checkpoint_waits_for_its_review_round(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    _set_claim(store, row, "settled", review_checkpoint="2026-10-01T00:00:00+00:00")
+    client = Client()
+    client.activity = ReviewActivity(
+        (IssueComment("r1", "please rename this", "writer", "2026-10-03T00:00:00Z", "COMMENTED"),),
+        (),
+        (),
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged"
+        assert saved["reason"] == "writer feedback awaits a review round"
+        assert not client.merges
+    finally:
+        store.close()
+
+
+def test_feedback_before_checkpoint_or_from_non_writers_does_not_block(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    _set_claim(store, row, "settled", review_checkpoint="2026-10-02T00:00:00+00:00")
+    client = Client()
+    client.permissions = {"bot": "none"}
+    client.activity = ReviewActivity(
+        (IssueComment("r1", "handled already", "writer", "2026-10-01T00:00:00Z", "COMMENTED"),),
+        (),
+        (IssueComment("c1", "summary", "bot", "2026-10-03T00:00:00Z"),),
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert client.merges == [("o/r", 70, HEAD)]
+    finally:
+        store.close()
+
+
+def test_unknown_commenter_permission_waits(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    _set_claim(store, row, "settled", review_checkpoint="2026-10-01T00:00:00+00:00")
+    client = Client()
+    client.permissions = {"someone": None}
+    client.activity = ReviewActivity(
+        (), (), (IssueComment("c1", "hm", "someone", "2026-10-03T00:00:00Z"),)
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "waiting"
+        assert saved["reason"] == "commenter permission unavailable"
+        assert not client.merges
+    finally:
+        store.close()
+
+
+def test_active_claim_waits_and_blocked_claim_never_merges(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+    client = Client()
+    try:
+        _set_claim(store, row, "active")
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        assert _merge_state(store, row)["state"] == "waiting"
+        _set_claim(store, row, "blocked")
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "not-merged" and saved["reason"] == "claim is blocked"
+        assert not client.merges
     finally:
         store.close()

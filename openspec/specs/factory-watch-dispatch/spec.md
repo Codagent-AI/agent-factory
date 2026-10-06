@@ -486,10 +486,12 @@ When a PR-READY check completes with a valid `low` rating, the factory itself, n
 - its head commit is the commit the session rated;
 - at least one check or commit status is reported on that head, and every one has completed successfully;
 - the repository's active rulesets require at least one status check on the base branch, and every required check has reported success on that head;
+- the claim is settled, so no run or review round is in progress;
 - it has no unresolved review thread;
+- no writer has left feedback since the claim's review checkpoint that would start a review round (a review, review-thread comment, or pull request comment with a body, from someone other than the factory bot). When such a commenter's permission cannot be read, the merge waits for it;
 - no writer's standing review requests changes. A reviewer's standing review is their latest review that approves, requests changes, or was dismissed; a later comment-only review does not change it. When a reviewer whose standing review requests changes cannot have their permission read, the merge waits for it.
 
-Before evaluating the gates, the factory SHALL check whether the pull request is already merged with the rated head; if it is, it SHALL record the merge as merged and SHALL NOT send another merge request, so a restart after a successful merge is never reported as not merged. The merge SHALL be a merge commit made as the factory bot and pinned to the rated head, so GitHub refuses it if the head moved. The factory SHALL NOT approve the pull request, bypass branch protection, or delete its branch. While checks are still running, no check or commit status has been reported yet, a required check has not reported yet, a reviewer's permission cannot be read, or the factory is paused, the merge SHALL wait and be re-evaluated each cycle until 60 minutes after the check completed; then it SHALL end not merged with that reason. A base branch with no required status checks SHALL end not merged at once, naming the branch. Each unmergeable state SHALL have its own reason: closed, draft, or conflicting. When any other gate fails, or GitHub rejects the merge, the merge SHALL end not merged with the gate or GitHub's reason, and SHALL NOT be retried for that dispatch. A `medium` or `high` rating SHALL end not merged with the rating as the reason. Each dispatch SHALL attempt at most one merge. When the outcome of a merge request is unknown, the factory SHALL read the pull request on later cycles without sending another request: merged with the rated head is merged, closed is not merged, and still open five minutes after the request is not merged with the reason that the merge request did not complete. After a merge, the existing post-merge sync SHALL update the working clone and close the issue.
+Before evaluating the gates, the factory SHALL check whether the pull request is already merged with the rated head; if it is, it SHALL record the merge as merged and SHALL NOT send another merge request, so a restart after a successful merge is never reported as not merged. The merge SHALL be a merge commit made as the factory bot and pinned to the rated head, so GitHub refuses it if the head moved. The factory SHALL NOT approve the pull request, bypass branch protection, or delete its branch. While checks are still running, no check or commit status has been reported yet, a required check has not reported yet, a reviewer's or commenter's permission cannot be read, the claim has a run in progress, or the factory is paused, the merge SHALL wait and be re-evaluated each cycle until 60 minutes after the check completed; then it SHALL end not merged with that reason. A base branch with no required status checks SHALL end not merged at once, naming the branch. Each unmergeable state SHALL have its own reason: closed, draft, or conflicting. When any other gate fails, or GitHub rejects the merge, the merge SHALL end not merged with the gate or GitHub's reason, and SHALL NOT be retried for that dispatch. A `medium` or `high` rating SHALL end not merged with the rating as the reason. Each dispatch SHALL attempt at most one merge. When the outcome of a merge request is unknown, the factory SHALL read the pull request on later cycles without sending another request: merged with the rated head is merged, closed is not merged, and still open five minutes after the request is not merged with the reason that the merge request did not complete. After a merge, the existing post-merge sync SHALL update the working clone and close the issue.
 
 #### Scenario: Merge a low-risk fix
 
@@ -550,6 +552,16 @@ Before evaluating the gates, the factory SHALL check whether the pull request is
 
 - **WHEN** the merge request's response is lost and the pull request is still open five minutes later
 - **THEN** the merge ends not merged with the reason that the merge request did not complete, and no second merge request is sent
+
+#### Scenario: A comment-only review asks for changes
+
+- **WHEN** a writer leaves a comment-only review asking for changes on a pull request rated `low`, before the review round it starts has run
+- **THEN** the factory does not merge it, names the feedback awaiting a review round, and the round's own `PR-READY` check rates the new head
+
+#### Scenario: The claim is blocked or a round is running
+
+- **WHEN** the claim of a `low`-rated pull request is blocked, or has a review round in progress
+- **THEN** a blocked claim ends not merged naming its state, and a round in progress makes the merge wait
 
 #### Scenario: A writer requested changes
 

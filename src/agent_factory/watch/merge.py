@@ -15,8 +15,8 @@ from agent_factory.watch import store as watch_store
 
 if TYPE_CHECKING:
     from agent_factory.config import SharedConfig
-    from agent_factory.github import GitHubClient
-    from agent_factory.store import ClaimStore
+    from agent_factory.github import GitHubClient, ReviewActivity
+    from agent_factory.store import Claim, ClaimStore
 
 logger = logging.getLogger(__name__)
 _PR_URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:/.*)?$")
@@ -61,6 +61,47 @@ def _wait_or_finish(
     elif merge.get("reason") != reason:
         merge["reason"] = reason
         watch_store.update(store, row["id"], merge_json=json.dumps(merge))
+
+
+def _waiting_feedback(
+    store: ClaimStore,
+    client: GitHubClient,
+    claim: Claim,
+    activity: ReviewActivity,
+    shared: SharedConfig,
+    now: datetime,
+) -> str | None:
+    """Return "pending" when writer feedback would start a review round, "unknown"
+    when a commenter's permission cannot be read, else None."""
+    from agent_factory.work_kinds.pull_request.review import (
+        eligible_review_activity,
+        has_eligible_review,
+        review_checkpoint,
+    )
+
+    cache: dict[str, str | None] = {}
+    unknown = False
+
+    def permission(login: str) -> str | None:
+        nonlocal unknown
+        if login not in cache:
+            try:
+                cache[login] = client.get_permission(claim.repository, login)
+            except Exception:
+                cache[login] = None
+        if cache[login] is None:
+            unknown = True
+        return cache[login]
+
+    eligible = eligible_review_activity(
+        activity,
+        since=review_checkpoint(store, claim, now),
+        bot_login=shared.bot_login,
+        permission=permission,
+    )
+    if has_eligible_review(eligible):
+        return "pending"
+    return "unknown" if unknown else None
 
 
 def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
@@ -116,6 +157,15 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
         if store.is_paused():
             _wait_or_finish(store, row, merge, "factory paused", now)
             continue
+        claim = store.get_claim(row["claim_id"])
+        if claim is None or claim.lifecycle in {"blocked", "cancelled", "superseded"}:
+            state = claim.lifecycle if claim else "missing"
+            _finish(store, row, merge, "not-merged", f"claim is {state}")
+            continue
+        if claim.lifecycle != "settled":
+            # A review round may be running; its push will move the rated head.
+            _wait_or_finish(store, row, merge, f"claim is {claim.lifecycle}", now)
+            continue
         match = _PR_URL.fullmatch(row["pr_url"] or "")
         if (
             not match
@@ -165,6 +215,11 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             )
         elif any(not thread.is_resolved for thread in activity.threads):
             _finish(store, row, merge, "not-merged", "unresolved review thread")
+        elif feedback := _waiting_feedback(store, client, claim, activity, shared, now):
+            if feedback == "unknown":
+                _wait_or_finish(store, row, merge, "commenter permission unavailable", now)
+            else:
+                _finish(store, row, merge, "not-merged", "writer feedback awaits a review round")
         else:
             latest: dict[str, Any] = {}
             for review in activity.reviews:
