@@ -564,7 +564,8 @@ class GitHubClient:
         except GitHubNotFoundError as error:
             raise GitHubMergeRejectedError(str(error)) from error
         except GitHubHttpError as error:
-            if 400 <= error.status_code < 500:
+            # 429 is a rate limit, not an answer: the merge outcome stays uncertain.
+            if 400 <= error.status_code < 500 and error.status_code != 429:
                 raise GitHubMergeRejectedError(str(error)) from error
             raise
         payload = _json_object(response)

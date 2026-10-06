@@ -561,3 +561,26 @@ def test_active_claim_waits_and_blocked_claim_never_merges(tmp_path: Path) -> No
         assert not client.merges
     finally:
         store.close()
+
+
+def test_reviewer_permission_lookup_error_waits(tmp_path: Path) -> None:
+    store, row, shared = setup(tmp_path)
+
+    class Failing(Client):
+        def get_permission(self, repository: str, login: str) -> str | None:
+            raise OSError("token mint failed")
+
+    client = Failing()
+    client.activity = ReviewActivity(
+        (IssueComment("r1", "", "someone", "2026-10-03T00:00:00Z", "CHANGES_REQUESTED"),),
+        (),
+        (),
+    )
+    try:
+        merge.step(store, client, shared)  # type: ignore[arg-type]
+        saved = _merge_state(store, row)
+        assert saved["state"] == "waiting"
+        assert saved["reason"] == "reviewer permission unavailable: someone"
+        assert not client.merges
+    finally:
+        store.close()

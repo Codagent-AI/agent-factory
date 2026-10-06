@@ -28,6 +28,13 @@ _DECISIVE = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 _UNCONFIRMED = timedelta(minutes=5)
 
 
+def _permission(client: GitHubClient, repository: str, login: str) -> str | None:
+    try:
+        return client.get_permission(repository, login)
+    except Exception:
+        return None
+
+
 def _when(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -238,9 +245,7 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             requesting = [
                 author for author, review in latest.items() if review.state == "CHANGES_REQUESTED"
             ]
-            permissions = {
-                author: client.get_permission(repository, author) for author in requesting
-            }
+            permissions = {author: _permission(client, repository, author) for author in requesting}
             if any(permission in _WRITERS for permission in permissions.values()):
                 _finish(store, row, merge, "not-merged", "writer requested changes")
                 continue

@@ -936,3 +936,16 @@ def test_merge_pull_request_distinguishes_definitive_rejection() -> None:
     client = GitHubClient(HttpFailure([]), lambda: "installation-token")
     with pytest.raises(GitHubMergeRejectedError, match="HTTP 405"):
         client.merge_pull_request("example/repository", 7, "a" * 40)
+
+
+def test_merge_pull_request_rate_limit_is_not_a_rejection() -> None:
+    class RateLimited(RecordingGh):
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubHttpError(429)
+
+    client = GitHubClient(RateLimited([]), lambda: "installation-token")
+    with pytest.raises(GitHubHttpError) as raised:
+        client.merge_pull_request("example/repository", 7, "a" * 40)
+    assert not isinstance(raised.value, GitHubMergeRejectedError)
