@@ -211,7 +211,7 @@ def _launch_and_observe(
         return
     try:
         argv = (
-            _recording_exit_code(plan.argv, run.evidence_path)
+            _recording_exit_code(plan.argv, run.evidence_path, fresh_attempt=True)
             if backend.supports_attach
             else plan.argv
         )
@@ -383,13 +383,19 @@ def _supervise_fly(
     _observe_fly(store, run.id, plan, limits, identity, backend, launcher)
 
 
-def _recording_exit_code(argv: Sequence[str], evidence_path: str) -> list[str]:
+def _recording_exit_code(
+    argv: Sequence[str], evidence_path: str, *, fresh_attempt: bool = False
+) -> list[str]:
     """Wrap a launcher so its exit code outlives it, for fresh launch and attach alike."""
     status_file = Path(evidence_path) / ".factory" / "launcher-exit-code"
     status_file.parent.mkdir(parents=True, exist_ok=True)
     # The artifact directory is shared by a repetition's attempts; a code left by
     # an earlier launcher must never be read as this one's.
     status_file.unlink(missing_ok=True)
+    if fresh_attempt:
+        # A recovery attempt reuses this artifact directory. Only collection for
+        # this attempt may make its guest exit code trustworthy.
+        (Path(evidence_path) / "guest-exit-code").unlink(missing_ok=True)
     status_path = shlex.quote(str(status_file))
     return [
         "/bin/sh",
@@ -442,6 +448,14 @@ def _fly_launcher_failure(artifact: Path, code: int | None) -> dict[str, object]
 
 def _launcher_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
     path = Path(_artifact_root(plan, evidence_path)) / ".factory" / "launcher-exit-code"
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _guest_exit_code(plan: ExecutionPlan, evidence_path: str) -> int | None:
+    path = Path(_artifact_root(plan, evidence_path)) / "guest-exit-code"
     try:
         return int(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -604,6 +618,7 @@ def _observe_fly(
             deadline = time.monotonic() + _collection_grace(plan)
             while _identity_status(launcher) == "alive" and time.monotonic() < deadline:
                 time.sleep(_POLL_SECONDS)
+            collected: dict[str, object] | None = None
             if _identity_status(launcher) == "alive":
                 _terminate(launcher)
                 result_value: dict[str, object] = {"collection": "failed", "reason": "machine lost"}
@@ -620,7 +635,12 @@ def _observe_fly(
                 machine_backend.dispose(identity, "destroy")
                 store.finish_run(run_id, execution_status="cancelled", result=result_value)
             else:
-                store.finish_run(run_id, execution_status="timed_out", result=result_value)
+                status = (
+                    _result_status(collected)
+                    if collected is not None and _guest_exit_code(plan, run.evidence_path) == 0
+                    else "timed_out"
+                )
+                store.finish_run(run_id, execution_status=status, result=result_value)
             return
         time.sleep(_POLL_SECONDS)
 
