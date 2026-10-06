@@ -192,12 +192,12 @@ def test_fly_settings_default_to_ewr_shared_4_cpus_8_gib_and_900_s_grace(site: S
     assert config.fly.collection_grace_seconds == 900
 
 
-def test_codagent_shared_defaults_select_sonnet_lead_and_luna_implementor_and_tester() -> None:
+def test_codagent_shared_defaults_select_sonnet_for_every_eval_role() -> None:
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
 
     assert shared.eval.defaults["lead"] == "claude:claude-sonnet-5-5:high"
-    assert shared.eval.defaults["implementor"] == "codex:gpt-6-luna:medium"
-    assert shared.eval.defaults["tester"] == "codex:gpt-6-luna:medium"
+    assert shared.eval.defaults["implementor"] == "claude:claude-sonnet-5-5:medium"
+    assert shared.eval.defaults["tester"] == "claude:claude-sonnet-5-5:medium"
 
 
 # -- doctor --------------------------------------------------------------------
