@@ -163,10 +163,14 @@ def test_replacement_watcher_continues_a_live_host_process(tmp_path: Path) -> No
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    # The result appears whole (write, then rename): a watcher polling mid-write would
+    # otherwise read a truncated file under load, which is not what this test is about.
     script = (
         "import json,pathlib,sys,time; "
         "time.sleep(.3); "
-        "(pathlib.Path(sys.argv[1])/'result.json').write_text(json.dumps({'evaluation_status':'completed'}))"
+        "root=pathlib.Path(sys.argv[1]); "
+        "(root/'result.tmp').write_text(json.dumps({'evaluation_status':'completed'})); "
+        "(root/'result.tmp').rename(root/'result.json')"
     )
     plan = ExecutionPlan(
         (sys.executable, "-c", script, str(evidence)),
@@ -180,7 +184,7 @@ def test_replacement_watcher_continues_a_live_host_process(tmp_path: Path) -> No
     store.configure_run(run.id, plan=plan_document(plan), limits=vars(SupervisionLimits()))
     child = subprocess.Popen(plan.argv, start_new_session=True)
     try:
-        deadline = time.monotonic() + 2
+        deadline = time.monotonic() + 30
         start = process_start_identity(child.pid)
         while start is None and time.monotonic() < deadline:
             time.sleep(0.01)
@@ -194,8 +198,8 @@ def test_replacement_watcher_continues_a_live_host_process(tmp_path: Path) -> No
         )
         watcher = threading.Thread(target=supervise, args=(state, run.id, run.launch_nonce))
         watcher.start()
-        child.wait(timeout=3)
-        watcher.join(timeout=3)
+        child.wait(timeout=30)
+        watcher.join(timeout=30)
         assert not watcher.is_alive()
         saved = store.get_run(run.id)
         assert saved is not None and saved.status == "completed", saved.result if saved else None
@@ -204,7 +208,7 @@ def test_replacement_watcher_continues_a_live_host_process(tmp_path: Path) -> No
     finally:
         if child.poll() is None:
             child.terminate()
-            child.wait(timeout=3)
+            child.wait(timeout=30)
 
 
 @pytest.mark.darwin
@@ -250,10 +254,14 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
     run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
     script = (
         "import pathlib,sys,time; "
-        "root=pathlib.Path(sys.argv[1]); (root/'ready').touch(); time.sleep(.6); "
+        "root=pathlib.Path(sys.argv[1]); (root/'ready').touch(); "
+        # The attempt outlives its first watcher: it finishes only once the test says so.
+        "deadline=time.monotonic()+30\n"
+        "while not (root/'go').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
         "(root/'fix-outcome.json').write_text("
         '\'{"contract":"factory-fix/1","outcome":"pull-request"}\') '
-        "if sys.argv[2]=='yes' else None"
+        "if sys.argv[2]=='yes' else None\n"
+        "(root/'done').touch()"
     )
     plan = ExecutionPlan(
         (sys.executable, "-c", script, str(attempt), "yes" if writes_outcome else "no"),
@@ -266,19 +274,25 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
     )
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(5, 5, 5))
     try:
-        deadline = time.monotonic() + 3
-        while not (attempt / "ready").exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert (attempt / "ready").exists()
+        # The child can start before the watcher records the run as running.
+        deadline = time.monotonic() + 30
         active = store.get_run(run.id)
+        while time.monotonic() < deadline and not (
+            (attempt / "ready").exists() and active is not None and active.status == "running"
+        ):
+            time.sleep(0.01)
+            active = store.get_run(run.id)
+        assert (attempt / "ready").exists()
         assert active is not None and active.status == "running"
         watcher.terminate()
-        watcher.wait(timeout=3)
-        time.sleep(0.7)
+        watcher.wait(timeout=30)
+        (attempt / "go").touch()
+        while not (attempt / "done").exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
 
         replacement = resume_supervisor(state, run.id)
         assert replacement is not None
-        replacement.wait(timeout=5)
+        replacement.wait(timeout=30)
 
         settled = store.get_run(run.id)
         assert settled is not None
@@ -306,7 +320,7 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
     finally:
         if watcher.poll() is None:
             watcher.terminate()
-            watcher.wait(timeout=3)
+            watcher.wait(timeout=30)
 
 
 @pytest.mark.darwin

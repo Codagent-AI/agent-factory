@@ -427,7 +427,8 @@ claim and, for sandbox attempts, run-specific images. It SHALL preserve results,
 SQLite history, candidate branches, PRs, and mirrors, subject to the evidence retention
 requirement. Worktrees and clones SHALL remain available while work is running, waiting, or
 blocked. They SHALL also remain available while a settled claim is in Review, until the
-terminal release below applies. When verified running work is dragged to Done,
+terminal release below applies. The per-attempt clones of a fix, feature, or task claim are
+the exception: they follow "Slim finished attempts" below. When verified running work is dragged to Done,
 reconciliation SHALL restore Running before cleanup is considered, and that edit SHALL NOT
 remove worktrees. Done cleanup SHALL also wait until all of the claim's reporting has been
 delivered, so that a human-review command is never published after its worktree has been
@@ -490,6 +491,11 @@ released.
 - **WHEN** a reviewed item moves from Review to Done and the factory next successfully polls GitHub
 - **THEN** its factory-owned worktrees or clones and any run-specific images are removed
 - **AND** results, logs, SQLite history, candidate branches, and PRs remain available
+
+#### Scenario: Closed settled claim reaches Done without routing
+
+- **WHEN** the poll observes that a settled factory-owned claim's issue is closed and its card is not Done
+- **THEN** the poll moves the card to Done
 
 #### Scenario: Release a Done claim with no Review observation
 
@@ -637,10 +643,57 @@ Credentials for the suite's candidate branch, the fix PR credential, the Fly dep
 - **WHEN** an operator sees a Claude authentication failure in a host fix or a Fly eval
 - **THEN** the documentation tells them where that login lives, which Keychain account applies, what the service environment must contain, and how to recover, without a manual Keychain-to-file copy step
 
+### Requirement: Slim finished attempts
+
+On every tick, once no run of a claim is non-terminal, the factory SHALL remove the bulk that
+the claim's finished attempts leave on disk and that a later attempt rebuilds. It SHALL NOT
+wait for release or retention to do this:
+
+- For a fix, feature, or task claim, it SHALL remove:
+  - the per-attempt clones under the local root of every attempt whose run was reserved;
+  - each attempt's Runner source snapshots (`attempt-*/audit-*/snapshot/runner-source`).
+
+  Every attempt and review round cuts fresh clones, so this SHALL apply whether the claim is
+  open, blocked, in Review, or terminal. Clones cut for an attempt whose run is not yet
+  reserved SHALL be kept.
+
+  Before it removes a clone, the factory SHALL copy into that attempt's artifact directory
+  what the clone holds that git cannot rebuild:
+  - the target clone's `validator_logs`;
+  - a `clone-state.patch` with the clone's status and uncommitted diff.
+
+  If the copy fails, the factory SHALL keep the clone. The retention rule SHALL cover both
+  copies.
+- For an eval claim whose lifecycle is `settled`, `cancelled`, or `superseded`, it SHALL remove
+  only the installed dependency directories (`node_modules`) at the top level of each
+  repetition's `.runtime/candidate-worktree` and one level below it. Everything else SHALL be
+  kept, because rescoring hashes the acceptance artifacts recorded in the checkout and the
+  Runner output, and human review serves `dist`. An eval claim that is still open SHALL keep
+  its dependencies, because a recovery attempt may resume a repetition from its checkpoint.
+
+Slimming SHALL NOT follow a link to remove anything outside the attempt's artifact directory
+or the claim's clone directory. It SHALL keep outcomes, results, provenance, diffs, logs,
+Runner output, and session state for the retention rule. It SHALL record in the claim's cleanup
+record the runs it slimmed and any failures, and it SHALL retry failures on later ticks. When a
+later run of the claim finishes, the factory SHALL slim it too.
+
+#### Scenario: Slim a blocked fix claim
+
+- **WHEN** a fix claim's attempt ends with `needs-input` and no other run of the claim is non-terminal
+- **THEN** the next tick copies the clone's validator logs and uncommitted state into the attempt's evidence
+- **AND** the next tick removes the claim's clones and the attempt's Runner source snapshots
+- **AND** its outcome, logs, and session state remain
+
+#### Scenario: Slim a settled eval
+
+- **WHEN** an eval claim settles as `pending-human-review`
+- **THEN** the next tick removes the installed dependencies from each repetition's candidate checkout
+- **AND** the human-review command can still serve the scored build, and the repetition can still be rescored
+
 ### Requirement: Retain evidence for a bounded period
 
 The factory SHALL prune the attempt evidence of terminal claims after configurable retention
-periods. The retention period is `[limits] evidence_retention_days`, default 14 days. The
+periods. The retention period is `[limits] evidence_retention_days`, default 3 days. The
 unreviewed retention period is `[limits] unreviewed_retention_days`, default 30 days. Both
 periods SHALL be local configuration.
 
@@ -668,7 +721,7 @@ card observed in any other state SHALL reset the recorded Done observation.
 
 Pruning SHALL remove logs, Runner session state, agent session state, and agent output under
 the attempt's artifact directory and, for a host attempt, its recorded Runner session
-directory. It SHALL remove only enumerated evidence paths and SHALL keep any file or
+directory, and an eval repetition's remaining candidate checkout. It SHALL remove only enumerated evidence paths and SHALL keep any file or
 directory it does not recognise. Pruning SHALL keep the fix or feature outcome, eval result
 and provenance records, and the attempt's issue input. It SHALL NOT touch candidate
 branches, PRs, mirrors, SQLite history, or the operator's working clones.
@@ -682,13 +735,13 @@ SHALL be kept.
 
 #### Scenario: Prune after the retention period
 
-- **WHEN** a claim's card was observed Done more than 14 days ago under the default retention and nothing still needs its evidence
+- **WHEN** a claim's card was observed Done more than 3 days ago under the default retention and nothing still needs its evidence
 - **THEN** the next tick removes its logs, session state, and agent output
 - **AND** its outcome or result records, issue input, candidate branches, and PRs remain
 
 #### Scenario: Prune a Done claim released without Review
 
-- **WHEN** a settled claim reached Done without a recorded Review observation, its terminal release completed, and 14 days have passed since its first durable Done observation
+- **WHEN** a settled claim reached Done without a recorded Review observation, its terminal release completed, and 3 days have passed since its first durable Done observation
 - **THEN** the next tick prunes its attempt evidence under the Done path
 
 #### Scenario: Skip a Done claim with a pending sync
@@ -698,7 +751,7 @@ SHALL be kept.
 
 #### Scenario: Prune a cancelled claim that recorded a PR
 
-- **WHEN** a cancelled fix claim recorded a PR and more than 14 days have passed since it was cancelled
+- **WHEN** a cancelled fix claim recorded a PR and more than 3 days have passed since it was cancelled
 - **THEN** its evidence is pruned whatever its card's status, without waiting on a post-merge sync, which only settled claims receive
 
 #### Scenario: Prune a superseded claim outside Done
@@ -708,8 +761,8 @@ SHALL be kept.
 
 #### Scenario: Keep a recently superseded claim whose runs finished long ago
 
-- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 3 days ago
-- **THEN** its evidence is kept until 14 days after it was superseded
+- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 1 day ago
+- **THEN** its evidence is kept until 3 days after it was superseded
 
 #### Scenario: Prune a settled claim left in Review
 
@@ -720,7 +773,7 @@ SHALL be kept.
 #### Scenario: Move a Review card to Done late
 
 - **WHEN** a settled claim's card moves from Review to Done 25 days after it settled
-- **THEN** the unreviewed path no longer applies and its evidence is kept until 14 days after that Done observation
+- **THEN** the unreviewed path no longer applies and its evidence is kept until 3 days after that Done observation
 
 #### Scenario: Reach Done after a long time
 

@@ -118,8 +118,14 @@ def test_timed_out_build_terminates_its_process_group(tmp_path: Path) -> None:
     assert reason is not None
     assert reason.startswith("cannot rebuild agent-runner:")
     child_pid = int((clone / "child.pid").read_text())
+    # The killed child lingers until its new parent reaps it, which a loaded host delays.
+    deadline = time.monotonic() + 30
     with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+        while True:
+            os.kill(child_pid, 0)
+            if time.monotonic() > deadline:
+                break
+            time.sleep(0.01)
 
 
 def test_build_does_not_hang_when_background_child_holds_output_open(tmp_path: Path) -> None:

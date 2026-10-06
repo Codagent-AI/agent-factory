@@ -12,10 +12,34 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX
+from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX, registered
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
+
+
+def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-implement-v1.0.yaml").read_text()
+    repair = text.split("  - id: repair-validation\n", 1)[1].split(
+        "  - id: recheck-validation\n", 1
+    )[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in repair, phrase
 
 
 def suitable_runner() -> bool:
@@ -199,6 +223,56 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
     assert "{{base_head}}" in text
 
 
+def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+
+    scripts = {
+        name
+        for workflow in PACKAGE.iterdir()
+        if workflow.name.endswith(".yaml")
+        for name in re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
+    }
+    assert scripts
+    assert "task-compliance-gate.py" in scripts
+    for name in scripts:
+        assert name in launch.STAGED_FILES
+        assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
+
+    contracts = [(kind.default_contract, kind) for kind in registered()]
+    contracts.append((launch.REVIEW_CONTRACT, FIX))
+    for index, (contract, kind) in enumerate(contracts):
+        catalog = launch.stage_workflow_into(tmp_path / str(index), contract, kind)
+        for name in scripts:
+            assert os.access(catalog / name, os.X_OK), (contract, name)
+
+
+def test_staged_catalog_modes_follow_shebang_not_extension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+
+    package = tmp_path / "package" / "workflow"
+    package.mkdir(parents=True)
+    (package / FIX.workflow_file).write_text(f"{launch.contract_marker(FIX.default_contract)}\n")
+    (package / "script-without-extension").write_bytes(b"#!/bin/sh\nexit 0\n")
+    (package / "not-a-script.sh").write_text("plain data\n")
+
+    def fake_files(_package: str) -> Path:
+        return package.parent
+
+    monkeypatch.setattr(launch, "files", fake_files)
+    monkeypatch.setattr(
+        launch,
+        "STAGED_FILES",
+        (FIX.workflow_file, "script-without-extension", "not-a-script.sh"),
+    )
+
+    catalog = launch.stage_workflow_into(tmp_path / "staged", FIX.default_contract, FIX)
+    assert (catalog / "script-without-extension").stat().st_mode & 0o777 == 0o755
+    assert (catalog / "not-a-script.sh").stat().st_mode & 0o777 == 0o644
+    assert (catalog / FIX.workflow_file).stat().st_mode & 0o777 == 0o644
+
+
 @pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
 def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     text = (PACKAGE / workflow).read_text()
@@ -221,3 +295,52 @@ def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     ):
         assert required in prompt
     assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")
+
+
+@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_human(
+    workflow: str,
+) -> None:
+    text = (PACKAGE / workflow).read_text()
+    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    for phrase in (
+        "either of these independent conditions",
+        "not caused by this branch's changes",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, (workflow, phrase)
+
+
+def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None:
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    prompt = text.split("      - id: task-compliance-repair\n", 1)[1].split(
+        "  - id: task-compliance-verified-final\n", 1
+    )[0]
+    for phrase in (
+        "For CHECK failures from agent-validator check",
+        "either of these independent conditions",
+        "same check fails with the same error at the merge base",
+        "origin/<target branch>",
+        "temporary worktree",
+        "lockfile entries",
+        "check's definition and configuration",
+        "If you cannot confirm it, treat the failure as caused by the branch",
+        "If the branch added or changed the check or its policy, the branch caused the failure",
+        "git, URL, or fork overrides or resolutions",
+        "even if the branch caused the failure",
+        "leave the check failing",
+        "Out-of-scope failures needing a human decision",
+        "what remedy a human would need to approve",
+    ):
+        assert phrase in prompt, phrase

@@ -158,7 +158,7 @@ class LimitsConfig:
     total_seconds: int
     codex_reset_fallback_seconds: int
     memory_reservation_gib: int = 3
-    evidence_retention_days: int = 14
+    evidence_retention_days: int = 3
     unreviewed_retention_days: int = 30
 
 
@@ -339,7 +339,7 @@ class LocalConfig:
                     limits, "memory_reservation_gib", "limits", 3
                 ),
                 evidence_retention_days=_optional_positive_int(
-                    limits, "evidence_retention_days", "limits", 14
+                    limits, "evidence_retention_days", "limits", 3
                 ),
                 unreviewed_retention_days=_optional_positive_int(
                     limits, "unreviewed_retention_days", "limits", 30

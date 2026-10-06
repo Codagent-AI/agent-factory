@@ -14,8 +14,8 @@ import shlex
 import stat
 import subprocess
 import tempfile
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -24,15 +24,15 @@ from urllib.parse import urlsplit
 from agent_factory.config import FlyLocalConfig
 from agent_factory.controller import AttemptResult, ExecutionPlan
 from agent_factory.store import ClaimStore
+from agent_factory.suites.and_scene import inputs
+from agent_factory.suites.and_scene.errors import ReadinessError, RecoveryStateError, WorktreeError
+from agent_factory.suites.and_scene.inputs import FIXTURE_REPOSITORY as FIXTURE_REPOSITORY
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 # The dry run only parses arguments; a harness that stalls must not stall readiness.
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
-_ACCEPTS_FIXTURE_REF = re.compile(r"^[ \t]*--fixture-ref\)", re.MULTILINE)
-_ACCEPTS_REPO = re.compile(r"^[ \t]*--repo\)", re.MULTILINE)
-FIXTURE_REPOSITORY = "https://github.com/Codagent-AI/and-scene.git"
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -52,18 +52,6 @@ _FACTORY_CREDENTIALS = frozenset(
 )
 
 
-class WorktreeError(RuntimeError):
-    """A pinned worktree could not be prepared or released safely."""
-
-
-class ReadinessError(RuntimeError):
-    """The selected pinned suite cannot run its approved contract."""
-
-
-class RecoveryStateError(RuntimeError):
-    """Saved suite evidence does not permit a safe recovery invocation."""
-
-
 @dataclass(frozen=True)
 class SourceRepositories:
     runner: Path
@@ -71,6 +59,13 @@ class SourceRepositories:
     evals: Path
     validator: Path | None = None
     fixture: Path | None = None
+    # Only tests fill `extra`; a production input still needs a named field above.
+    extra: Mapping[str, Path] = field(default_factory=lambda: cast(Mapping[str, Path], {}))
+
+    def checkout(self, name: str) -> Path | None:
+        if name != "extra" and name in {item.name for item in fields(self)}:
+            return getattr(self, name)
+        return self.extra.get(name)
 
 
 @dataclass(frozen=True)
@@ -106,12 +101,12 @@ class GitWorktreeManager:
         )
         created: list[tuple[Path, Path]] = []
         try:
-            for source, target, revision in (
-                (self._sources.runner, targets.runner, values["runner"]),
-                (self._sources.skills, targets.skills, values["skills"]),
-                (self._sources.evals, targets.evals, values["evals"]),
-            ):
-                self._ensure_worktree(source, target, revision)
+            for name in inputs.worktree_names():
+                source = self._sources.checkout(name)
+                if source is None:
+                    raise WorktreeError(f"no source checkout configured for {name}")
+                target = getattr(targets, name)
+                self._ensure_worktree(source, target, values[name])
                 created.append((source, target))
         except WorktreeError:
             for source, target in reversed(created):
@@ -122,13 +117,13 @@ class GitWorktreeManager:
     def remove(self, worktrees: PreparedWorktrees) -> dict[str, str]:
         """Release recorded worktrees, returning only failures that need retrying."""
         errors: dict[str, str] = {}
-        for name, source, target in (
-            ("runner", worktrees.source_repositories.runner, worktrees.runner),
-            ("skills", worktrees.source_repositories.skills, worktrees.skills),
-            ("evals", worktrees.source_repositories.evals, worktrees.evals),
-        ):
+        for name in inputs.worktree_names():
+            source = worktrees.source_repositories.checkout(name)
+            target = getattr(worktrees, name)
             try:
                 self._require_owned_target(worktrees.claim_id, name, target)
+                if source is None:
+                    raise WorktreeError(f"no source checkout recorded for {name}")
                 self._remove_one(source, target, suppress_errors=False)
             except WorktreeError as error:
                 errors[name] = str(error)
@@ -220,19 +215,24 @@ class AndSceneAdapter:
         return commands
 
     def readiness(
-        self, worktrees: PreparedWorktrees, *, fixture_pinned: bool = False
+        self, worktrees: PreparedWorktrees, *, pinned: Collection[str] = ()
     ) -> str | None:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
-        if fixture_pinned:
-            run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
-            script = run_script.read_text(encoding="utf-8")
-            if not (_ACCEPTS_FIXTURE_REF.search(script) and _ACCEPTS_REPO.search(script)):
+        for entry in inputs.EVAL_INPUTS:
+            if entry.name not in pinned or not entry.suite_flags:
+                continue
+            script = (worktrees.evals / _REQUIRED_EVAL_FILES[0]).read_text(encoding="utf-8")
+            flags = entry.suite_flags
+            if any(
+                not re.search(r"^[ \t]*" + re.escape(flag) + r"\)", script, re.MULTILINE)
+                for flag in flags
+            ):
                 harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
                 return (
                     f"selected and-scene harness {harness_commit[:12]} does not accept "
-                    "--fixture-ref and --repo, which this claim's frozen fixture revision needs"
+                    f"{' and '.join(flags)}, which this claim's frozen {entry.name} revision needs"
                 )
         if self._execution == "fly":
             if self._fly is None:
@@ -364,8 +364,19 @@ class AndSceneAdapter:
         run_id: str = "",
         unit_key: str = "",
     ) -> ExecutionPlan:
-        fixture = _fixture_revision(frozen)
-        readiness = self.readiness(worktrees, fixture_pinned=fixture is not None)
+        raw_revisions = frozen.get("revisions")
+        revisions: Mapping[str, object] = (
+            cast(Mapping[str, object], raw_revisions) if isinstance(raw_revisions, Mapping) else {}
+        )
+        arguments_by_input: list[str] = []
+        for entry in inputs.EVAL_INPUTS:
+            if entry.name not in revisions or entry.suite_arguments is None:
+                continue
+            revision = revisions[entry.name]
+            if not isinstance(revision, str) or not _SHA.fullmatch(revision):
+                raise ReadinessError(f"accepted {entry.name} revision is not a full commit SHA")
+            arguments_by_input.extend(entry.suite_arguments(revision))
+        readiness = self.readiness(worktrees, pinned=revisions.keys())
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
@@ -390,8 +401,7 @@ class AndSceneAdapter:
             arguments.extend(
                 (f"--{role}-cli", cli, f"--{role}-model", model, f"--{role}-effort", effort)
             )
-        if fixture is not None:
-            arguments.extend(("--fixture-ref", fixture, "--repo", FIXTURE_REPOSITORY))
+        arguments.extend(arguments_by_input)
         if settings.get("skip_validator") is True:
             arguments.append("--skip-validator")
         if resume:
@@ -597,12 +607,11 @@ class WorktreeCleanup:
 
     def record(self, claim_id: str, worktrees: PreparedWorktrees) -> None:
         paths = {
-            name: {"source": str(source), "path": str(path)}
-            for name, source, path in (
-                ("runner", worktrees.source_repositories.runner, worktrees.runner),
-                ("skills", worktrees.source_repositories.skills, worktrees.skills),
-                ("evals", worktrees.source_repositories.evals, worktrees.evals),
-            )
+            name: {
+                "source": str(worktrees.source_repositories.checkout(name)),
+                "path": str(getattr(worktrees, name)),
+            }
+            for name in inputs.worktree_names()
         }
         self._store.set_preparation(claim_id, {"worktrees": paths})
         self._store.set_cleanup(
@@ -682,23 +691,15 @@ def _safe_identity(value: str) -> str:
 
 def _revisions(value: Mapping[str, object]) -> dict[str, str]:
     result: dict[str, str] = {}
-    optional = ("validator",) if "validator" in value else ()
-    for name in ("runner", "skills", "evals", *optional):
+    for entry in inputs.EVAL_INPUTS:
+        if not entry.fly_commit or (not entry.required and entry.name not in value):
+            continue
+        name = entry.name
         revision = value.get(name)
         if not isinstance(revision, str) or not _SHA.fullmatch(revision):
             raise WorktreeError(f"accepted {name} revision is not a full commit SHA")
         result[name] = revision
     return result
-
-
-def _fixture_revision(frozen: Mapping[str, object]) -> str | None:
-    revisions = frozen.get("revisions")
-    if not isinstance(revisions, Mapping) or "fixture" not in revisions:
-        return None
-    fixture = cast(Mapping[str, object], revisions)["fixture"]
-    if not isinstance(fixture, str) or not _SHA.fullmatch(fixture):
-        raise ReadinessError("accepted fixture revision is not a full commit SHA")
-    return fixture
 
 
 def _fly_manifest(
@@ -728,22 +729,13 @@ def _fly_manifest(
             "collection_grace_seconds": fly.collection_grace_seconds,
         },
         "expect_checkpoint": expect_checkpoint,
-        "worktrees": {
-            "runner": str(worktrees.runner),
-            "skills": str(worktrees.skills),
-            "evals": str(worktrees.evals),
-        },
+        "worktrees": {name: str(getattr(worktrees, name)) for name in inputs.worktree_names()},
         "git_common_dirs": [
             _git_common_dir(worktrees.runner),
             _git_common_dir(worktrees.skills),
         ],
         "repositories": {
-            name: _remote_url(path)
-            for name, path in (
-                ("runner", worktrees.runner),
-                ("skills", worktrees.skills),
-                ("evals", worktrees.evals),
-            )
+            name: _remote_url(getattr(worktrees, name)) for name in inputs.worktree_names()
         },
         "commits": revisions,
         "image_repository": image_repository(fly.image),
@@ -873,7 +865,7 @@ def _recorded_worktrees(claim_id: str, cleanup: Mapping[str, object]) -> Prepare
         raise WorktreeError("claim has no recorded worktrees to clean up")
     paths = cast(Mapping[str, object], raw_paths)
     resolved: dict[str, tuple[Path, Path]] = {}
-    for name in ("runner", "skills", "evals"):
+    for name in inputs.worktree_names():
         raw = paths.get(name)
         if not isinstance(raw, Mapping):
             raise WorktreeError(f"claim has no recorded {name} worktree")

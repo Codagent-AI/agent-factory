@@ -484,7 +484,35 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image. Once a reviewed card reaches Done, Factory releases its
+per-run Docker image.
+
+**Slimming.** On every tick, the factory removes the bulk that finished
+attempts leave behind and that a later attempt rebuilds. It does not wait for
+release or retention.
+
+- **Fix, feature, and task claims.** Once no run of the claim is active, the
+  factory removes:
+  - `<root>/clones/<claim>/<N>` for every attempt whose run was reserved;
+  - each attempt's `attempt-*/audit-*/snapshot/runner-source`.
+
+  This applies even while the claim is blocked or in Review, because the next
+  attempt or review round clones afresh.
+
+  Before removing a clone, the factory copies the target clone's
+  `validator_logs` and a `clone-state.patch` (status and uncommitted diff)
+  into `attempt-<N+1>/`, where retention prunes them with the rest of the
+  evidence.
+- **Eval claims.** Once the claim is settled, cancelled, or superseded, the
+  factory removes only `node_modules` from each repetition's
+  `.runtime/candidate-worktree`, at the top level and one level down. The
+  rest of the checkout and `.runtime/agent-runner-projects` stay until
+  retention, because `run.sh --rescore-from` hashes the acceptance artifacts
+  they hold, and the human-review command serves `dist`.
+
+Slimming never follows a link out of the artifact or clone directory.
+`claim.cleanup.slimmed` records the slimmed runs and any failures.
+
+Once a reviewed card reaches Done, Factory releases its
 recorded owned worktrees, clones, images, and credential copies. Cancelled and
 superseded claims are released as soon as their runs stop and reporting is
 delivered. Settled claims still outside Done are released after `[limits]
@@ -498,7 +526,7 @@ Factory removes only its recorded owned worktrees, clones, and images;
 it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
 only prunes evidence under the rule below.
 
-**Evidence retention.** `[limits] evidence_retention_days` (default 14) starts
+**Evidence retention.** `[limits] evidence_retention_days` (default 3) starts
 from the first durable Done observation for a settled claim. Leaving Done
 resets that observation. For cancelled and superseded claims it starts from
 the recorded terminal transition, even if the card never reaches Done.
@@ -508,7 +536,7 @@ period has elapsed, release has completed, and no run, reporting, or merged
 PR sync is pending, the next tick prunes that
 claim's evidence: logs, Runner and agent session state, and agent output
 under each attempt's artifact directory (and, for a host attempt, its
-recorded Runner session directory). It keeps the fix outcome or eval result
+recorded Runner session directory), plus an eval's remaining candidate checkout. It keeps the fix outcome or eval result
 and provenance records, the attempt's issue input, and never touches
 candidate branches, PRs, mirrors, SQLite history, or the operator's working
 clones. Pruning is
@@ -570,3 +598,5 @@ Doctor includes a `watch` group when enabled. It checks the Runner, `git`, `gh`,
 `status` shows whether auto-merge is on, each rated PR and its merge state, the last detection time, today's session count and known cost, running and pending work, ended dispatches, undelivered comments, audits, and the factory issues each check or triage filed or updated (`watch factory issues:`). Each dispatch's evidence directory, `<storage_root>/artifacts/watch/<dispatch>/`, holds its brief, `watch-result.json`, Runner log, and session; its usage is in the `watch_dispatch` row. Run `agent-factory --config <local.toml> watch redispatch <id>` for an ended check or triage that needs another attempt. To stop auto-merging, commit `auto_merge = false`; waiting merges end on the next cycle with a risk-verdict comment. To stop new detection and launches, set `enabled = false` through a committed configuration change. Existing sessions are still supervised and comments are still delivered. No interactive watcher session is needed: for an on-demand summary, use the `factory-status` skill; to investigate or fix a failure by hand, use `factory-triage`; to review a factory PR, use `factory-pr-review`.
 
 A failed run can be missed when no cycle runs for seven days after its grace period. Timeouts are enforced at cycle granularity. A timeout can leave usage partial and audit missing. An unknown process identity keeps its concurrency slot until the probe resolves.
+
+Eval revision inputs are declared in `src/agent_factory/suites/and_scene/inputs.py`. An ordinary input is an optional request-settable ref resolved in a local checkout and passed to the suite through argv. Inputs that need Fly guest cloning, claim-image changes, a new `[repositories]` key, or a rollback guard still require explicit code.

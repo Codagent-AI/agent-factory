@@ -365,9 +365,11 @@ def test_frozen_cursor_claim_is_held_under_fly_without_mutating_its_inputs(
     )
     request = parse_request(site.github.body, docker_defaults)
     frozen = request.freeze(
-        runner_sha=site.revisions["runner"],
-        skills_sha=site.revisions["skills"],
-        harness_sha=site.revisions["evals"],
+        {
+            "runner": site.revisions["runner"],
+            "skills": site.revisions["skills"],
+            "evals": site.revisions["evals"],
+        },
         suite="and-scene",
     ).payload
     with site.store() as store:
@@ -499,12 +501,14 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
             ),
         )
         frozen = request.freeze(
-            runner_sha=site.revisions["runner"],
-            skills_sha=site.revisions["skills"],
-            harness_sha=site.revisions["evals"],
+            {
+                "runner": site.revisions["runner"],
+                "skills": site.revisions["skills"],
+                "evals": site.revisions["evals"],
+                "validator": revision,
+            },
             suite="and-scene",
-            validator_sha=revision,
-            validator_source="https://github.com/Codagent-AI/agent-validator.git",
+            sources={"validator": "https://github.com/Codagent-AI/agent-validator.git"},
         ).payload
         with site.store() as store:
             claim = store.create_claim(
@@ -524,6 +528,7 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
         )
         docker_local = LocalConfig.from_file(site.config_path)
         docker_handler = EvalHandler.from_config(site.shared, docker_local)
+        assert docker_handler.sources is not None and docker_handler.sources.validator is None
         with pytest.raises(ReadinessError, match="runs only under Fly execution"):
             docker_handler.prepare(claim)
         with site.store() as store:
@@ -532,11 +537,14 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
             site.config_path.read_text().replace('execution = "docker"', 'execution = "fly"')
         )
         fly_handler = EvalHandler.from_config(site.shared, LocalConfig.from_file(site.config_path))
+        assert fly_handler.sources is not None and fly_handler.sources.validator is not None
         assert fly_handler.next_unit(claim, []) == ("rep-1", "initial")
         legacy = request.freeze(
-            runner_sha=site.revisions["runner"],
-            skills_sha=site.revisions["skills"],
-            harness_sha=site.revisions["evals"],
+            {
+                "runner": site.revisions["runner"],
+                "skills": site.revisions["skills"],
+                "evals": site.revisions["evals"],
+            },
             suite="and-scene",
         ).payload
         with site.store() as store:

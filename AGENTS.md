@@ -85,7 +85,10 @@ pins (see its `AGENTS.md`), not from this repository.
 Apply any `packaging/launchd/` template change beyond the executable and `PATH`
 by hand before deploying. To run `tick` by hand from a shell, put
 `~/.agent-factory/releases/current/.venv/bin` first on `PATH`.
-`controller.log` is stale because `resident` does not write to it.
+The LaunchAgent sends the resident's stdout and stderr to
+`~/.agent-factory/logs/controller.log`. The resident logs nothing else there,
+but an uncaught exception's traceback lands in it, so read its tail first when
+the factory fails every cycle.
 
 ## Configuration pins
 
@@ -171,12 +174,21 @@ claims outside Done are released and pruned after `unreviewed_retention_days`.
 Done claims are cleaned after the Done observation and pruned after
 `evidence_retention_days` from that observation, including settled claims that
 reached Done without a recorded Review observation.
+Each tick also slims finished work without waiting for retention. An idle fix,
+feature, or task claim loses its clones and Runner source snapshots. A
+terminal eval loses its candidate `node_modules`. See
+`docs/operations.md` ("Slimming"). The default `evidence_retention_days` is 3.
 
 ## Shell on this Mac
 
 - There is no `timeout` command.
 - The shell is zsh: `set -- $var` does not split words. Pass arguments
   explicitly or use arrays.
+- In zsh, `$var:path` applies a history modifier to `$var`. Write
+  `"${var}:path"`.
+- `gh pr merge --delete-branch` reports an error after merging, because `main`
+  is checked out in Paul's checkout. Merge without it, then run
+  `git push origin --delete <branch>`.
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
@@ -190,3 +202,6 @@ issues until the factory stops progressing on them, use the `factory-watch`
 skill, which polls with a script and reports once. For an update on demand, use
 the `factory-status` skill. To investigate or fix a failure by hand, use
 `factory-triage`. To review a factory PR when Paul asks, use `factory-pr-review`.
+To take an issue from handoff to a reviewed PR (assign, watch, answer
+`needs-input`, restart after a fixed factory defect, review), use
+`factory-drive-ticket`.
