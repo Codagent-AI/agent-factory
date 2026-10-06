@@ -174,11 +174,11 @@ Commits that a task attempt creates before finalization SHALL use the `chore:` c
 
 ### Requirement: Apply task limits, window, and recovery
 
-Each task attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Task admission SHALL use its own configurable window, defaulting to always open. It SHALL honor pause, disk and memory admission checks, and provider quota holds for the providers the task roles use, and SHALL NOT be bound to the eval window. A task attempt that fails technically SHALL receive at most one automatic recovery retry, launched from fresh clones at the recorded commits after side-effect reconciliation. Exhausted recovery SHALL settle the claim with `infra-error`. Quota waits and unavailable prerequisites SHALL NOT consume the retry.
+Each task attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Task admission SHALL use its own configurable window, defaulting to always open. It SHALL honor pause, disk and memory admission checks, and provider quota holds for the providers the task roles use, and SHALL NOT be bound to the eval window. Time spent on the post-run audit after a durable outcome is written SHALL NOT count toward the execution limit, and an attempt stopped by a limit after writing its outcome SHALL finish with that outcome. A task attempt that fails technically SHALL receive at most one automatic recovery retry, launched from fresh clones at the recorded commits after side-effect reconciliation. Exhausted recovery SHALL settle the claim with `infra-error`. Quota waits and unavailable prerequisites SHALL NOT consume the retry.
 
 #### Scenario: Exceed a task limit
 
-- **WHEN** a task attempt exceeds its inactivity, execution, or total limit
+- **WHEN** a task attempt exceeds its inactivity, execution, or total limit without writing a durable outcome
 - **THEN** the factory stops verified owned execution, records which limit was exceeded, preserves evidence, and applies the recovery policy
 
 #### Scenario: Exhaust recovery

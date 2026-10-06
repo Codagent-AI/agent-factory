@@ -824,10 +824,35 @@ def _observe(
             else:
                 store.report_uncertainty(run_id, "cancellation ownership could not be verified")
             return
-        timeout = _timeout(now, started, last_progress, limits, paused_seconds=paused_seconds)
+        from agent_factory.work_kinds.pull_request.kinds import registered
+
+        outcome_recorded = (
+            run.kind in {definition.kind for definition in registered()}
+            and result_read.result is not None
+            and result_read.error is None
+        )
+        timeout = _timeout(
+            now,
+            started,
+            last_progress,
+            limits,
+            paused_seconds=paused_seconds,
+            outcome_recorded=outcome_recorded,
+        )
         if timeout is not None:
             if backend.terminate(execution_identity or {}):
-                store.finish_run(run_id, execution_status="timed_out", result={"timeout": timeout})
+                if outcome_recorded:
+                    assert result_read.result is not None
+                    store.finish_run(
+                        run_id,
+                        execution_status=result_read.execution_status
+                        or _result_status(result_read.result),
+                        result={**result_read.result, "timeout": timeout},
+                    )
+                else:
+                    store.finish_run(
+                        run_id, execution_status="timed_out", result={"timeout": timeout}
+                    )
             else:
                 store.report_uncertainty(
                     run_id, f"{timeout} timeout ownership could not be verified"
@@ -847,10 +872,11 @@ def _timeout(
     limits: SupervisionLimits,
     *,
     paused_seconds: float = 0,
+    outcome_recorded: bool = False,
 ) -> str | None:
     if now - started >= limits.total_seconds:
         return "total"
-    if now - started - paused_seconds >= limits.execution_seconds:
+    if not outcome_recorded and now - started - paused_seconds >= limits.execution_seconds:
         return "execution"
     if now - last_progress >= limits.inactivity_seconds:
         return "inactivity"

@@ -82,7 +82,7 @@ The fix workflow SHALL read the issue and its supplied comments and decide wheth
 
 ### Requirement: Apply fix-specific limits and window
 
-Each fix attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Fix admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the fix roles. Fix admission SHALL NOT be bound to the eval window.
+Each fix attempt SHALL have configurable limits with defaults of 15 minutes without progress, two hours of execution, and three hours of total elapsed time. Fix admission SHALL use its own configurable window, defaulting to always open, and SHALL honor pause, disk and memory admission checks, and provider quota holds for providers used by the fix roles. Fix admission SHALL NOT be bound to the eval window. Time spent on the post-run audit after a durable outcome is written SHALL NOT count toward the execution limit, and an attempt stopped by a limit after writing its outcome SHALL finish with that outcome.
 
 #### Scenario: Admit a fix outside the eval window
 
@@ -91,7 +91,7 @@ Each fix attempt SHALL have configurable limits with defaults of 15 minutes with
 
 #### Scenario: Exceed a fix limit
 
-- **WHEN** a fix attempt exceeds its inactivity, execution, or total limit
+- **WHEN** a fix attempt exceeds its inactivity, execution, or total limit without writing a durable outcome
 - **THEN** the factory stops verified owned execution, records which limit was exceeded, preserves evidence, and applies the recovery policy
 
 ### Requirement: Recover a fix attempt from a fresh clone
@@ -245,3 +245,4 @@ Validator repair SHALL be instructed not to remediate a CHECK failure when the s
 
 - **WHEN** the branch changes a function signature and a check fails in an untouched file with unchanged configuration and no such error at the merge base
 - **THEN** validator repair treats the failure as branch-caused and fixes it
+
