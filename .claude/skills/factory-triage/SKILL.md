@@ -165,7 +165,8 @@ When `auto_merge` is true, read the diff, description, and evidence as needed. R
 - it changes a database schema or migration;
 - it changes pinned versions or refs in committed configuration;
 - it changes a public CLI or API interface, such as flags, output formats, or result schemas;
-- it adds or upgrades a dependency.
+- it adds or upgrades a dependency;
+- it sends a new or changed request, payload, schema, or command to an external service or tool (for example a model provider, GitHub, Fly, or another CLI), and the pull request does not show the real service or tool accepting it. Tests against stubs, fakes, or recorded responses do not show that.
 
 A fix pull request MAY be rated `low` only when, in addition:
 

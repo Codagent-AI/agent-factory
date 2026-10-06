@@ -409,7 +409,8 @@ A fix, feature, or task pull request SHALL NOT be rated `low` when any of these 
 - it changes a database schema or migration;
 - it changes pinned versions or refs in committed configuration;
 - it changes a public CLI or API interface, such as flags, output formats, or result schemas;
-- it adds or upgrades a dependency.
+- it adds or upgrades a dependency;
+- it sends a new or changed request, payload, schema, or command to an external service or tool (for example a model provider, GitHub, Fly, or another CLI), and the pull request does not show the real service or tool accepting it. Tests against stubs, fakes, or recorded responses do not show that.
 
 A fix pull request MAY be rated `low` only when, in addition:
 
@@ -443,6 +444,11 @@ When the session cannot establish a criterion, it SHALL NOT rate the pull reques
 
 - **WHEN** an otherwise narrow, tested fix pull request also changes `scripts/deploy.sh`
 - **THEN** the session rates it `medium` or `high` and names the deploy-script change as the reason
+
+#### Scenario: A fix verified only against a stubbed provider
+
+- **WHEN** a fix pull request changes the schema it sends to a model provider, its tests pass against a stubbed provider, and its description says the schema was never sent to the real provider
+- **THEN** the session does not rate it `low`, and its reasons name the unverified external request
 
 #### Scenario: A red attention item
 
