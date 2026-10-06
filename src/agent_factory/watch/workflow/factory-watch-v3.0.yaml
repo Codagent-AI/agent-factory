@@ -1,4 +1,4 @@
-# factory-contract: factory-watch/2
+# factory-contract: factory-watch/3
 name: factory-watch
 description: "Check a ready PR for factory defects or triage a factory failure in a fresh headless session."
 hidden: true
@@ -16,7 +16,7 @@ steps:
   - id: check-contract
     script: check-contract.sh
     script_inputs:
-      expected_contract: factory-watch/2
+      expected_contract: factory-watch/3
       declared_contract: "{{contract_version}}"
   - id: watch
     session: watcher
@@ -25,8 +25,11 @@ steps:
       Read {{brief_file}} and follow its procedure without asking questions.
       For pr-check, follow .claude/skills/factory-triage/SKILL.md Headless PR-READY check.
       For triage, follow .claude/skills/factory-triage/SKILL.md Headless triage.
-      Look only for defects in the factory stack and file issues for them. Do not
-      review the pull request's code or comment on it, and do not fix anything:
+      Look only for defects in the factory stack and file issues for them.
+      When brief.auto_merge is true, rate the pull request's risk against the
+      factory-triage skill and return its risk object. Otherwise do not review
+      the pull request's code. Never comment on, approve, or merge the pull
+      request, and do not fix anything:
       no branches, commits, pushes, or pull requests. Do not deploy or merge.
       Write exactly one JSON object to {{artifact_dir}}/watch-result.json in the
       schema required by that headless procedure.

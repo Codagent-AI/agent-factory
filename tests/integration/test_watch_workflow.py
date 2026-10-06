@@ -21,15 +21,15 @@ def test_packaged_watch_workflow_validates(tmp_path: Path) -> None:
     if "--session-dir" not in help_text.stdout + help_text.stderr:
         pytest.skip("SKIP: installed Runner lacks --session-dir")
     source = Path(__file__).parents[2] / "src/agent_factory/watch/workflow"
-    workflow = source / "factory-watch-v2.0.yaml"
-    assert workflow.read_text().startswith("# factory-contract: factory-watch/2")
+    workflow = source / "factory-watch-v3.0.yaml"
+    assert workflow.read_text().startswith("# factory-contract: factory-watch/3")
     assert all(
         name in workflow.read_text()
         for name in ("brief_file", "artifact_dir", "contract_version", "watcher")
     )
     catalog = tmp_path / ".agent-runner" / "workflows"
     catalog.mkdir(parents=True)
-    for name in ("factory-watch-v2.0.yaml", "check-contract.sh", "check-result.sh"):
+    for name in ("factory-watch-v3.0.yaml", "check-contract.sh", "check-result.sh"):
         shutil.copyfile(source / name, catalog / name)
     (tmp_path / ".agent-runner" / "config.yaml").write_text(
         staged_config_text(None, {"watcher": ("claude", "model", "medium")}), encoding="utf-8"
@@ -59,7 +59,7 @@ def _section(text: str, heading: str) -> str:
 
 
 def test_headless_procedures_live_in_factory_triage_and_never_review_or_fix() -> None:
-    workflow = (_ROOT / "src/agent_factory/watch/workflow/factory-watch-v2.0.yaml").read_text()
+    workflow = (_ROOT / "src/agent_factory/watch/workflow/factory-watch-v3.0.yaml").read_text()
     assert "factory-pr-review" not in workflow
     assert "Headless PR-READY check" in workflow and "Headless triage" in workflow
     triage = (_ROOT / ".claude/skills/factory-triage/SKILL.md").read_text()
@@ -69,7 +69,7 @@ def test_headless_procedures_live_in_factory_triage_and_never_review_or_fix() ->
         assert "releases/current" not in section
         assert "commit, push, or open a pull request" in section
     check = _section(triage, "## Headless PR-READY check")
-    assert "Do not review the pull request's code" in check
+    assert "Otherwise do not review its code" in check
     assert '`procedure: "pr-check"`' in check
     assert '`procedure: "triage"`' in _section(triage, "## Headless triage")
     for path in (

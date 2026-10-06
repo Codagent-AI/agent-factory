@@ -125,6 +125,7 @@ tester = "claude:claude-sonnet-5:medium"
 
 [watch]
 enabled = true
+auto_merge = true
 repository = "Codagent-AI/agent-factory"
 agent = "claude:claude-sonnet-5-5:medium"
 

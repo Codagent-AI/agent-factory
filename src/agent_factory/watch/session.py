@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 import shutil
@@ -44,8 +45,8 @@ if TYPE_CHECKING:
     from agent_factory.store import ClaimStore
 
 WORKFLOW_DIR = Path(__file__).parent / "workflow"
-WORKFLOW_FILE = "factory-watch-v2.0.yaml"
-CONTRACT = "factory-watch/2"
+WORKFLOW_FILE = "factory-watch-v3.0.yaml"
+CONTRACT = "factory-watch/3"
 FILES = (WORKFLOW_FILE, "check-contract.sh", "check-result.sh")
 
 
@@ -162,13 +163,14 @@ def start(
             "scratch": str(evidence / "scratch"),
         },
         "fix_targets": [target.repository for target in shared.fix.targets],
+        "auto_merge": bool(json.loads(row["merge_json"] or "{}").get("auto_merge")),
         "result_file": str(evidence / RESULT_FILE),
         "procedure": kind,
         "forbidden": [
             "Do not fix anything: do not create branches, commit, push, or open pull requests; file issues instead",
             *(
                 [
-                    "Do not review the pull request's code, and do not post a review or comment on the pull request"
+                    "Do not post a review or comment on the pull request; rate risk only when auto_merge is on"
                 ]
                 if kind == "pr-check"
                 else []
