@@ -526,6 +526,7 @@ class GitHubClient:
     def required_checks(self, repository: str, branch: str) -> tuple[str, ...]:
         """Status check contexts that active rulesets require on the branch."""
         required: list[str] = []
+        encoded = urllib.parse.quote(branch, safe="")
         page = 1
         while True:
             rules = _list(
@@ -533,7 +534,7 @@ class GitHubClient:
                     self._request(
                         [
                             "api",
-                            f"repos/{repository}/rules/branches/{branch}?per_page=100&page={page}",
+                            f"repos/{repository}/rules/branches/{encoded}?per_page=100&page={page}",
                             "--method",
                             "GET",
                         ],

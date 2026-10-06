@@ -28,6 +28,13 @@ _DECISIVE = {"APPROVED", "CHANGES_REQUESTED", "DISMISSED"}
 _UNCONFIRMED = timedelta(minutes=5)
 
 
+def _when(value: str) -> datetime:
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
+
+
 def _finish(
     store: ClaimStore,
     row: dict[str, Any],
@@ -225,7 +232,7 @@ def step(store: ClaimStore, client: GitHubClient, shared: SharedConfig) -> None:
             for review in activity.reviews:
                 if review.state in _DECISIVE and (
                     review.author not in latest
-                    or review.created_at > latest[review.author].created_at
+                    or _when(review.created_at) > _when(latest[review.author].created_at)
                 ):
                     latest[review.author] = review
             requesting = [
