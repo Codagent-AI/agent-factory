@@ -1826,8 +1826,27 @@ REVIEW_GH_STUB = (
 )
 
 
+@pytest.mark.parametrize(
+    "implement_result, pushed",
+    [
+        pytest.param(
+            '{"validator":{"status":"passed"},"ci":{"status":"passed"}}', True, id="passed"
+        ),
+        pytest.param(
+            '{"validator":{"status":"passed"},"ci":{"status":"failed"}}', True, id="ci-failed"
+        ),
+        pytest.param('{"validator":{"status":"failed"}}', False, id="validator-failed"),
+        pytest.param(None, False, id="missing"),
+        pytest.param("unreadable", False, id="unreadable"),
+        pytest.param("{", False, id="malformed"),
+        pytest.param("[]", False, id="non-object"),
+        pytest.param('{"validator":null}', False, id="invalid-validator"),
+    ],
+)
 def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     tmp_path: Path,
+    implement_result: str | None,
+    pushed: bool,
 ) -> None:
     """A review round restores the factory's description over the agent's rewrite, but the
     restored description still shows what the round did: the round's commits and the
@@ -1913,11 +1932,16 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
                 "id": "c1",
                 "source": "comment",
                 "decision": "change",
-                "reply": "Fixed the audit-warning blocker\n(A1/L1).",
+                "reply": "I'll change the stubs. After the fix I'll run the full suite.",
                 "plan": "Configure the lead agent in the fixture.",
             },
             {"id": "c2", "source": "comment", "decision": "answer", "reply": "No change."},
-            {"id": "c3", "source": "comment", "decision": "change", "reply": "Kept </details>"},
+            {
+                "id": "c3",
+                "source": "comment </details>",
+                "decision": "change",
+                "reply": "Kept </details>",
+            },
         ],
     }
     stub = tmp_path / "bin" / "gh"
@@ -1946,6 +1970,16 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     describe("save")
     rewritten = "# Review follow-up\n\nA1/L1 fixed.\n\n" + saved
     body.write_text(rewritten)
+    if implement_result is not None:
+        result_path = tmp_path / "implement-result.json"
+        if implement_result == "unreadable":
+            result_path.mkdir()
+        else:
+            result_path.write_text(implement_result)
+        if pushed:
+            result = json.loads(implement_result)
+            result["head_sha"] = merge
+            result_path.write_text(json.dumps(result))
     describe("restore")
 
     restored = body.read_text()
@@ -1968,9 +2002,24 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     assert fixture[:7] in follow_up and "align smoke fixture with lead auditor" in follow_up
     assert f"- `{merge[:7]}` Merge main" in follow_up
     assert f"- `{round_start[:7]}`" not in follow_up and "main work" not in follow_up
-    assert "Fixed the audit-warning blocker (A1/L1)." in follow_up
-    assert "No change." not in follow_up
-    assert "Kept &lt;/details&gt;" in follow_up and "</details>" not in follow_up
+    for item in decision["items"]:
+        assert item["reply"] not in follow_up
+    assert "Kept &lt;/details&gt;" not in follow_up
+    assert "</details>" not in follow_up
+    if pushed:
+        assert "Feedback addressed (details in the replies on this pull request):" in follow_up
+        assert "- comment c1" in follow_up
+        assert "- comment &lt;/details&gt; c3" in follow_up
+        assert "- comment c2" not in follow_up
+        assert "were not pushed" not in follow_up
+    else:
+        assert "Feedback addressed" not in follow_up
+        assert "- comment c1" not in follow_up
+        assert "- comment &lt;/details&gt; c3" not in follow_up
+        assert (
+            "The changes requested in this round were not pushed; "
+            "see the replies on this pull request."
+        ) in follow_up
     assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
 
 
