@@ -161,7 +161,7 @@ When `auto_merge` is true, read the diff, description, and evidence as needed. R
 - the description has a red attention item;
 - it changes authentication, permissions, tokens, or credentials;
 - it changes CI configuration or deploy or release scripts;
-- it changes workflow definitions, such as Runner workflow YAML the factory ships;
+- it changes workflow definitions, such as Runner workflow YAML the factory ships or a script one of those workflows runs;
 - it changes a database schema or migration;
 - it changes pinned versions or refs in committed configuration;
 - it changes a public CLI or API interface, such as flags, output formats, or result schemas;
