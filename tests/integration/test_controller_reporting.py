@@ -7,6 +7,7 @@ from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import GitHubApiError, IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
+from agent_factory.work_kinds.eval.handler import Resolution
 
 
 def defaults() -> EvalDefaults:
@@ -61,12 +62,23 @@ def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path:
     controller.pause()
 
     invalid = snapshot("```eval\nrepetitions = 0\n```")
-    assert controller.accept(invalid, resolve=lambda _: ("a" * 40, "b" * 40)) is None
+    assert (
+        controller.accept(
+            invalid,
+            resolve=lambda _: Resolution(
+                {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+            ),
+        )
+        is None
+    )
     assert len(comments.posted) == 1
     assert store.claims_for_item("P1") == []
 
     claim = controller.accept(
-        snapshot("```eval\nrepetitions = 1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+        snapshot("```eval\nrepetitions = 1\n```"),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert claim is not None
     assert controller.reserve_next(claim.id, readiness=lambda: "Docker unavailable") is None
@@ -102,7 +114,12 @@ def test_controller_preserves_product_failure_and_stops_after_second_technical_f
         Comments(),
         {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     first = controller.reserve_next(claim.id, readiness=lambda: None)
     assert first is not None
@@ -142,7 +159,12 @@ def test_controller_does_not_trust_user_markers_and_records_delivery_failure(
     controller = Controller(
         store, FailingComments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
 
     controller.deliver_reports(claim.id)
@@ -161,7 +183,10 @@ def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> No
         {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
     )
     claim = controller.accept(
-        snapshot("```eval\nrepetitions = 1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+        snapshot("```eval\nrepetitions = 1\n```"),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert claim is not None
     first = controller.reserve_next(claim.id, readiness=lambda: None)
@@ -177,7 +202,12 @@ def test_delivery_diagnostics_move_to_history_after_acknowledgement(tmp_path: Pa
     controller = Controller(
         store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     store.record_delivery_failure(claim.id, "accepted", GitHubApiError("temporary outage"))
 
@@ -211,7 +241,12 @@ def test_nondefault_bot_recovers_a_lost_successful_comment_response(tmp_path: Pa
         {"eval": EvalHandler(defaults(), harness_ref="c" * 40)},
         factory_login="example-worker[bot]",
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     controller.deliver_reports(claim.id)
     controller.deliver_reports(claim.id)
@@ -227,7 +262,12 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
     controller = Controller(
         store, Comments(), {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    first = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    first = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert first is not None
     run = controller.reserve_next(first.id, readiness=lambda: None)
     assert run is not None
@@ -237,7 +277,9 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
     )
     second = controller.accept(
         replace(snapshot(), issue_id="I2", project_item_id="P2", issue_number=2),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert second is not None
     assert controller.reserve_next(second.id, readiness=lambda: None) is None
@@ -260,7 +302,12 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
         "```eval\nrepetitions = 1\n"
         "lead = 'cursor:m:high'\nimplementor = 'cursor:m:high'\ntester = 'cursor:m:high'\n```"
     )
-    codex_claim = controller.accept(snapshot(codex_body), resolve=lambda _: ("a" * 40, "b" * 40))
+    codex_claim = controller.accept(
+        snapshot(codex_body),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert codex_claim is not None
     run = controller.reserve_next(codex_claim.id, readiness=lambda: None)
     assert run is not None
@@ -276,14 +323,18 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
 
     another_codex_claim = controller.accept(
         replace(snapshot(codex_body), issue_id="I2", project_item_id="P2", issue_number=2),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert another_codex_claim is not None
     assert controller.reserve_next(another_codex_claim.id, readiness=lambda: None) is None
 
     cursor_claim = controller.accept(
         replace(snapshot(cursor_body), issue_id="I3", project_item_id="P3", issue_number=3),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert cursor_claim is not None
     cursor_run = controller.reserve_next(cursor_claim.id, readiness=lambda: None)
@@ -311,7 +362,10 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
         artifact_root=tmp_path / "artifacts",
     )
     claim = controller.accept(
-        snapshot("```eval\nrepetitions=1\n```"), resolve=lambda _: ("a" * 40, "b" * 40)
+        snapshot("```eval\nrepetitions=1\n```"),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
     )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
@@ -379,7 +433,12 @@ def test_real_suite_result_is_reported_concisely_with_delivery_and_usage(tmp_pat
     controller = Controller(
         store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
     assert run is not None
@@ -405,7 +464,12 @@ def test_technical_retry_and_exhaustion_report_failure_details(tmp_path: Path) -
     controller = Controller(
         store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     for _ in range(2):
         run = controller.reserve_next(claim.id, readiness=lambda: None)
@@ -438,7 +502,12 @@ def test_report_redacts_credentials_in_failure_diagnostics(tmp_path: Path) -> No
     controller = Controller(
         store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
     assert run is not None
@@ -478,7 +547,12 @@ def test_old_delivered_failure_marker_is_repaired_without_reposting(tmp_path: Pa
     controller = Controller(
         store, comments, {"eval": EvalHandler(defaults(), harness_ref="c" * 40)}
     )
-    claim = controller.accept(snapshot(), resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot(),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {}
+        ),
+    )
     assert claim is not None
     controller.deliver_reports(claim.id)
     posted = len(comments.posted)

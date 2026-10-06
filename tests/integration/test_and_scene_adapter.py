@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -14,6 +15,7 @@ from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
 from agent_factory.suites.and_scene import SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
+from agent_factory.work_kinds.eval.handler import Resolution
 
 
 def _git(path: Path, *arguments: str) -> str:
@@ -69,6 +71,45 @@ def _sources(tmp_path: Path) -> tuple[SourceRepositories, dict[str, str]]:
     }
 
 
+def test_readiness_checks_declared_flags_without_inspecting_argument_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, inputs
+
+    sources, _ = _sources(tmp_path)
+    script = sources.evals / "evals/agent-runner/and-scene/run.sh"
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\nesac\n")
+    fixture = inputs.by_name("fixture")
+    assert fixture is not None
+
+    def suite_arguments(_sha: str) -> tuple[str, ...]:
+        return ("--fixture-ref", "--value-is-not-a-flag", "--repo", "origin")
+
+    monkeypatch.setattr(
+        inputs,
+        "EVAL_INPUTS",
+        tuple(
+            replace(
+                entry,
+                suite_arguments=suite_arguments,
+            )
+            if entry is fixture
+            else entry
+            for entry in inputs.EVAL_INPUTS
+        ),
+    )
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n")
+    adapter = AndSceneAdapter(environment_file=environment)
+    worktrees = PreparedWorktrees("claim", sources.runner, sources.skills, sources.evals, sources)
+    assert adapter.readiness(worktrees, pinned={"fixture"}) is None
+
+    script.write_text("#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\nesac\n")
+    assert "does not accept --fixture-ref and --repo" in str(
+        adapter.readiness(worktrees, pinned={"fixture"})
+    )
+
+
 def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
     from agent_factory.suites.and_scene import (
         FIXTURE_REPOSITORY,
@@ -94,7 +135,7 @@ def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
         },
         "revisions": {**revisions, "fixture": "f" * 40},
     }
-    assert adapter.readiness(worktrees, fixture_pinned=True) is None
+    assert adapter.readiness(worktrees, pinned={"fixture"}) is None
     plan = adapter.plan(frozen, worktrees, tmp_path / "artifact", recovery=False)
     assert plan.argv.count("--fixture-ref") == 1
     assert plan.argv[plan.argv.index("--fixture-ref") + 1] == "f" * 40
@@ -114,7 +155,7 @@ def test_fixture_argv_and_harness_readiness(tmp_path: Path) -> None:
         )
     pinned_script = worktrees.evals / "evals/agent-runner/and-scene/run.sh"
     pinned_script.write_text("#!/bin/sh\n")
-    reason = adapter.readiness(worktrees, fixture_pinned=True)
+    reason = adapter.readiness(worktrees, pinned={"fixture"})
     assert reason is not None and revisions["evals"][:12] in reason
     assert adapter.readiness(worktrees) is None
 
@@ -236,6 +277,46 @@ def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_wo
             (sources.evals, first.evals),
         )
     )
+
+
+def test_prepare_reports_missing_source_checkout_and_rolls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import GitWorktreeManager, WorktreeError
+
+    sources, revisions = _sources(tmp_path)
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    original_checkout = SourceRepositories.checkout
+
+    def checkout(self: SourceRepositories, name: str) -> Path | None:
+        return None if name == "skills" else original_checkout(self, name)
+
+    monkeypatch.setattr(SourceRepositories, "checkout", checkout)
+    with pytest.raises(WorktreeError, match="no source checkout configured for skills"):
+        manager.prepare("claim", revisions)
+    assert not (tmp_path / "factory/worktrees/claim/runner").exists()
+
+
+def test_remove_records_missing_source_and_releases_later_worktrees(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.suites.and_scene import GitWorktreeManager
+
+    sources, revisions = _sources(tmp_path)
+    manager = GitWorktreeManager(tmp_path / "factory", sources)
+    worktrees = manager.prepare("claim", revisions)
+    original_checkout = SourceRepositories.checkout
+
+    def checkout(self: SourceRepositories, name: str) -> Path | None:
+        return None if name == "skills" else original_checkout(self, name)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(SourceRepositories, "checkout", checkout)
+        assert manager.remove(worktrees) == {"skills": "no source checkout recorded for skills"}
+    assert not worktrees.runner.exists()
+    assert worktrees.skills.exists()
+    assert not worktrees.evals.exists()
+    assert manager.remove(worktrees) == {}
 
 
 def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
@@ -402,7 +483,12 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         "```eval\nrepetitions = 1\n```",
         False,
     )
-    claim = controller.accept(snapshot, resolve=lambda _: ("a" * 40, "b" * 40))
+    claim = controller.accept(
+        snapshot,
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "e" * 40}, {}
+        ),
+    )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)
     assert run is not None
@@ -547,7 +633,9 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
             "```eval\nrepetitions = 1\n```",
             False,
         ),
-        resolve=lambda _: ("a" * 40, "b" * 40),
+        resolve=lambda _: Resolution(
+            {"runner": "a" * 40, "skills": "b" * 40, "evals": "e" * 40}, {}
+        ),
     )
     assert claim is not None
     run = controller.reserve_next(claim.id, readiness=lambda: None)

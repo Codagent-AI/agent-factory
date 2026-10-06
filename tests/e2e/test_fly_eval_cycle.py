@@ -585,9 +585,11 @@ def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -
     request = parse_request(str(issue["body"]), defaults)
     root = factory.config.parent
     frozen = request.freeze(
-        runner_sha=_git(root / "runner", "rev-parse", "HEAD"),
-        skills_sha=_git(root / "skills", "rev-parse", "HEAD"),
-        harness_sha=_git(root / "evals", "rev-parse", "HEAD"),
+        {
+            "runner": _git(root / "runner", "rev-parse", "HEAD"),
+            "skills": _git(root / "skills", "rev-parse", "HEAD"),
+            "evals": _git(root / "evals", "rev-parse", "HEAD"),
+        },
         suite="and-scene",
     ).payload
     claim = factory.store.create_claim(

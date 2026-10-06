@@ -48,7 +48,7 @@ def test_fixture_requires_a_published_origin_commit(tmp_path: Path) -> None:
     initial_head = git(checkout, "rev-parse", "HEAD")
     assert resolve_fixture(checkout, "eval/fixture-x") == branch
     assert resolve_fixture(checkout, branch[:8]) == branch
-    with patch("agent_factory.work_kinds.eval.handler.subprocess.run", wraps=subprocess.run) as run:
+    with patch("agent_factory.suites.and_scene.inputs.subprocess.run", wraps=subprocess.run) as run:
         assert resolve_fixture(checkout, tagged) == tagged
     assert run.call_count < 10
     assert git(checkout, "rev-parse", "HEAD") == initial_head
