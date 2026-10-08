@@ -105,7 +105,6 @@ class RoutingConfig:
     bug_type: str = "Bug"
     feature_type: str = "Feature"
     task_type: str = "Task"
-    hold_label: str = "factory-hold"
 
 
 @dataclass(frozen=True)
@@ -586,7 +585,6 @@ class SharedConfig:
                 bug_type=_optional_string(routing, "bug_type", "routing", "Bug"),
                 feature_type=_optional_string(routing, "feature_type", "routing", "Feature"),
                 task_type=_optional_string(routing, "task_type", "routing", "Task"),
-                hold_label=_optional_string(routing, "hold_label", "routing", "factory-hold"),
             ),
             eval=EvalConfig(
                 harness_ref=harness_ref,

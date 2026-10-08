@@ -341,8 +341,10 @@ claims: older releases cannot supervise, report, or sync them.
 
 ## The fix work kind
 
-A writer files a Bug-typed issue, or drags a tracked Bug to `Status=Ready` in a
-configured source repository; the next factory poll sets `Owner=factory`.
+Filing a Bug-typed issue only adds it to Backlog. A writer hands it to the
+factory by moving its card to `Status=Ready` (or with the `factory-assign`
+skill) in a configured source repository; the next factory poll sets
+`Owner=factory`.
 Factory admits it in board order, comments
 the admission notice with `Refs` recording the frozen target/Runner/Skills
 commits, and runs the factory's packaged fix workflow in the same Docker sandbox used
@@ -382,7 +384,7 @@ yolo as the operator's user with no filesystem boundary. Neither the recorded
 Runner commit nor the recorded Skills commit executes in host mode; the
 installed `agent-runner` binary runs instead, and its resolved path and
 `-version` output are recorded on the attempt. The enforceable controls are
-trusted-writer admission (only writers can route a bug to the factory) and
+trusted-writer admission (the factory admits only writers' bugs) and
 human merge (the factory never merges its own fix PRs). See
 [installation](installation.md#host-execution-for-fixes) for the doctor checks
 host mode requires.

@@ -349,8 +349,7 @@ Routing callers are deployed in **agent-evals, agent-runner, agent-skills, agent
 | Situation | Current behavior |
 |---|---|
 | Ordinary source issue/PR event | Add missing Project membership and initialize Backlog. Native classification remains on the issue; router does not infer Bug/Feature/Task from prose. |
-| Bug-typed issue by a maintain/admin author, without `factory-hold` at creation | Initialize Owner=factory and Status=Ready: the factory starts a fix. Include `factory-hold` in the create request (or use the `bug-tracking-only` template) for a tracking-only Bug; it lands in Backlog with Owner=human. A write-only author's Bug enters Backlog. |
-| Feature or Task | Not routed to the factory. Moving the card to Ready (or `factory-assign`) hands it over. |
+| Bug, Feature, or Task | Not routed to the factory, whatever the author's role: it enters Backlog like any ordinary issue, and creating it starts no factory work. Moving the card to Ready (or `factory-assign`) hands it over. |
 | `agent-evals` issue with `eval-request` label, authored by someone with write/maintain/admin permission | Initialize Owner=factory and Status=Ready. Native Eval type alone is not this routing trigger. |
 | Unknown/insufficient author permission | Backlog without new factory ownership. |
 | Routing retry | A one-time receipt comment preserves later human field changes. This is initialization, not continuous forced reassignment. |

@@ -23,10 +23,6 @@ def _permissions() -> dict[tuple[str, str], str | None]:
     return {}
 
 
-def _roles() -> dict[tuple[str, str], str | None]:
-    return {}
-
-
 def _comments() -> dict[str, list[IssueComment]]:
     return {}
 
@@ -85,7 +81,6 @@ general_sources = ["example/evals", "example/work"]
 eval_label = "run-eval"
 eval_type = "Eval"
 bug_type = "Bug"
-hold_label = "factory-hold"
 
 [eval]
 harness_ref = "{harness_ref}"
@@ -99,7 +94,6 @@ repetitions = 3
 class MemoryGitHub:
     items: dict[str, ProjectItem] = field(default_factory=_items)
     permissions: dict[tuple[str, str], str | None] = field(default_factory=_permissions)
-    roles: dict[tuple[str, str], str | None] = field(default_factory=_roles)
     comments: dict[str, list[IssueComment]] = field(default_factory=_comments)
     issue_types: dict[str, str] = field(default_factory=_issue_types)
     issue_select: dict[str, dict[str, str]] = field(default_factory=_issue_select)
@@ -107,9 +101,6 @@ class MemoryGitHub:
 
     def get_permission(self, repository: str, login: str) -> str | None:
         return self.permissions.get((repository, login))
-
-    def get_role(self, repository: str, login: str) -> str | None:
-        return self.roles.get((repository, login))
 
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None:
         self.issue_types[f"{repository}#{number}"] = issue_type
@@ -333,67 +324,88 @@ def test_eval_source_must_be_an_explicit_configured_source() -> None:
         SharedConfig.from_toml(text)
 
 
-@pytest.mark.parametrize("role", ["maintain", "admin"])
-def test_maintainer_or_admin_bug_routes_to_ready_with_factory_owner_and_writes_receipt(
-    role: str,
-) -> None:
+@pytest.mark.parametrize("permission", ["write", "maintain", "admin"])
+@pytest.mark.parametrize("labels", [set[str](), {"factory-hold"}])
+def test_writer_bug_routes_to_backlog_like_general_work(permission: str, labels: set[str]) -> None:
+    """A Bug reaches the factory only when a writer moves its card to Ready."""
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(
-        permissions={("example/work", "writer"): "write"}, roles={("example/work", "writer"): role}
-    )
+    github = MemoryGitHub(permissions={("example/work", "writer"): permission})
 
-    result = Router(config, github).route(RouteEvent(bug_item()))
+    result = Router(config, github).route(RouteEvent(bug_item(labels=labels)))
 
-    assert result.destination == "ready"
-    assert github.items["ISSUE-BUG-1"].fields == {
-        "owner-field": "factory-option",
-        "status-field": "ready-option",
-    }
+    assert result.destination == "backlog"
+    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
     assert github.comments["example/work#99"]
 
 
-def test_write_role_bug_enters_backlog_without_ownership() -> None:
+def test_bug_typed_after_creation_stays_in_backlog() -> None:
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(
-        permissions={("example/work", "writer"): "write"},
-        roles={("example/work", "writer"): "write"},
-    )
+    github = MemoryGitHub(permissions={("example/work", "writer"): "admin"})
+    router = Router(config, github)
+    router.route(RouteEvent(bug_item(issue_type=None)))
 
-    result = Router(config, github).route(RouteEvent(bug_item()))
+    result = router.route(RouteEvent(bug_item()))
 
     assert result.destination == "backlog"
     assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
 
 
-def test_bug_typed_after_creation_routes_to_factory_on_the_type_event() -> None:
+def test_writer_move_of_a_bug_to_ready_survives_re_delivery() -> None:
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
+    github = MemoryGitHub(permissions={("example/work", "writer"): "admin"})
     router = Router(config, github)
-    router.route(RouteEvent(bug_item(issue_type=None)))
+    router.route(RouteEvent(bug_item()))
+    github.items["ISSUE-BUG-1"].fields["owner-field"] = "factory-option"
+    github.items["ISSUE-BUG-1"].fields["status-field"] = "ready-option"
 
-    result = router.route(RouteEvent(bug_item()))
+    router.route(RouteEvent(bug_item()))
 
-    assert result.destination == "ready"
     assert github.items["ISSUE-BUG-1"].fields == {
         "owner-field": "factory-option",
         "status-field": "ready-option",
     }
 
 
-def test_owner_edit_before_the_type_event_keeps_the_bug_out_of_ready() -> None:
+def test_legacy_hold_bypass_receipt_does_not_change_bug_routing() -> None:
+    """A receipt written by the retired hold rule still routes the Bug to Backlog."""
+    from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
+
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
-    router = Router(config, github)
-    router.route(RouteEvent(bug_item(issue_type=None)))
-    github.items["ISSUE-BUG-1"].fields["owner-field"] = "human-option"
+    github = MemoryGitHub(permissions={("example/work", "writer"): "admin"})
+    legacy = {
+        "project": "PVT_example",
+        "item": "item-ISSUE-BUG-1",
+        "values": {"owner-field": "human-option", "status-field": "backlog-option"},
+        "complete": True,
+        "hold_bypassed": True,
+    }
+    github.items["ISSUE-BUG-1"] = ProjectItem(
+        "item-ISSUE-BUG-1",
+        "ISSUE-BUG-1",
+        {"owner-field": "human-option", "status-field": "backlog-option"},
+    )
+    github.add_comment(
+        "example/work", 99, f"{_RECEIPT_PREFIX}{json.dumps(legacy)} -->", author=BOT_LOGIN
+    )
 
-    result = router.route(RouteEvent(bug_item()))
+    result = Router(config, github).route(RouteEvent(bug_item()))
 
-    assert result.destination == "preserved"
+    assert result.destination == "backlog"
     assert github.items["ISSUE-BUG-1"].fields == {
         "owner-field": "human-option",
         "status-field": "backlog-option",
     }
+
+
+def test_shared_config_ignores_a_retired_hold_label_key() -> None:
+    text = config_text().replace(
+        'bug_type = "Bug"\n', 'bug_type = "Bug"\nhold_label = "factory-hold"\n'
+    )
+    assert "hold_label" in text
+
+    config = SharedConfig.from_toml(text)
+
+    assert config.routing.bug_type == "Bug"
 
 
 def test_non_writer_bug_enters_backlog_without_ownership() -> None:
@@ -406,98 +418,7 @@ def test_non_writer_bug_enters_backlog_without_ownership() -> None:
     assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
 
 
-def test_failed_permission_lookup_routes_bug_to_backlog_without_ownership() -> None:
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub()
-
-    result = Router(config, github).route(RouteEvent(bug_item()))
-
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
-
-
-def test_hold_label_routes_bug_to_backlog_with_human_owner() -> None:
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
-
-    result = Router(config, github).route(RouteEvent(bug_item(labels={"factory-hold"})))
-
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {
-        "owner-field": "human-option",
-        "status-field": "backlog-option",
-    }
-
-
-def test_hold_bypass_is_sticky_after_the_label_is_removed() -> None:
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
-    router = Router(config, github)
-    router.route(RouteEvent(bug_item(labels={"factory-hold"})))
-
-    result = router.route(RouteEvent(bug_item(labels=set())))
-
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {
-        "owner-field": "human-option",
-        "status-field": "backlog-option",
-    }
-
-
-def test_hold_bypass_remains_sticky_across_a_second_post_hold_event() -> None:
-    """The backlog-fallback receipt write after a hold must not drop the sticky flag."""
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
-    router = Router(config, github)
-    router.route(RouteEvent(bug_item(labels={"factory-hold"})))
-    router.route(RouteEvent(bug_item(labels=set())))
-
-    result = router.route(RouteEvent(bug_item(labels=set())))
-
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {
-        "owner-field": "human-option",
-        "status-field": "backlog-option",
-    }
-
-
-def test_hold_bypass_survives_a_receipt_write_that_actually_changes_fields() -> None:
-    """A generic-fallback receipt write (forced by a stale receipt) must preserve the flag.
-
-    Reproduces the reported gap directly: seed a hold_bypassed receipt whose recorded
-    status does not match the generic fallback's desired backlog value, so `_initialize`
-    cannot early-return and must actually call `_write_receipt`. Before the fix, that
-    write dropped `hold_bypassed`, letting the very next event auto-admit the bug.
-    """
-    from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
-
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
-    stale_receipt = {
-        "project": "PVT_example",
-        "item": "item-ISSUE-BUG-1",
-        "values": {"status-field": "ready-option"},
-        "complete": True,
-        "hold_bypassed": True,
-    }
-    github.items["ISSUE-BUG-1"] = ProjectItem(
-        "item-ISSUE-BUG-1",
-        "ISSUE-BUG-1",
-        {"owner-field": "human-option", "status-field": "ready-option"},
-    )
-    github.add_comment(
-        "example/work", 99, f"{_RECEIPT_PREFIX}{json.dumps(stale_receipt)} -->", author=BOT_LOGIN
-    )
-    router = Router(config, github)
-    router.route(RouteEvent(bug_item(labels=set())))
-
-    result = router.route(RouteEvent(bug_item(labels=set())))
-
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields["owner-field"] == "human-option"
-
-
-def test_pull_request_typed_bug_is_not_routed_as_a_bug() -> None:
+def test_pull_request_typed_bug_enters_backlog() -> None:
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/work", "writer"): "write"})
 
@@ -508,7 +429,7 @@ def test_pull_request_typed_bug_is_not_routed_as_a_bug() -> None:
     assert github.issue_types == {}
 
 
-def test_eval_labelled_bug_in_eval_source_applies_eval_rule_not_bug_rule() -> None:
+def test_eval_labelled_bug_in_eval_source_applies_the_eval_rule() -> None:
     config = SharedConfig.from_toml(config_text())
     github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
 
@@ -532,47 +453,30 @@ def test_eval_labelled_bug_in_eval_source_applies_eval_rule_not_bug_rule() -> No
     assert github.issue_types == {"example/evals#7": "Eval"}
 
 
-def test_human_hold_on_a_routed_bug_survives_re_delivery() -> None:
-    config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
-    router = Router(config, github)
-    router.route(RouteEvent(bug_item()))
-    github.items["ISSUE-BUG-1"].fields["owner-field"] = "human-option"
-    github.items["ISSUE-BUG-1"].fields["status-field"] = "backlog-option"
-
-    router.route(RouteEvent(bug_item()))
-
-    assert github.items["ISSUE-BUG-1"].fields == {
-        "owner-field": "human-option",
-        "status-field": "backlog-option",
-    }
-
-
 def test_forged_receipt_from_another_author_is_ignored() -> None:
     """A receipt-shaped comment from anyone but the factory bot must not steer routing."""
     from agent_factory.routing import _RECEIPT_PREFIX  # pyright: ignore[reportPrivateUsage]
 
     config = SharedConfig.from_toml(config_text())
-    github = MemoryGitHub(roles={("example/work", "writer"): "admin"})
+    github = MemoryGitHub(permissions={("example/evals", "writer"): "write"})
     forged = {
         "project": "PVT_example",
-        "item": "item-ISSUE-BUG-1",
+        "item": "item-ISSUE-1",
         "values": {"owner-field": "human-option", "status-field": "backlog-option"},
         "complete": True,
-        "hold_bypassed": True,
     }
     github.add_comment(
-        "example/work", 99, f"{_RECEIPT_PREFIX}{json.dumps(forged)} -->", author="outsider"
+        "example/evals", 42, f"{_RECEIPT_PREFIX}{json.dumps(forged)} -->", author="outsider"
     )
 
-    result = Router(config, github).route(RouteEvent(bug_item()))
+    result = Router(config, github).route(RouteEvent(item()))
 
     assert result.destination == "ready"
-    assert github.items["ISSUE-BUG-1"].fields == {
+    assert github.items["ISSUE-1"].fields == {
         "owner-field": "factory-option",
         "status-field": "ready-option",
     }
-    receipts = [c for c in github.comments["example/work#99"] if c.author == BOT_LOGIN]
+    receipts = [c for c in github.comments["example/evals#42"] if c.author == BOT_LOGIN]
     assert len(receipts) == 1
 
 

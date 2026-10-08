@@ -53,8 +53,6 @@ class RouteResult:
 class GitHubRoutingClient(Protocol):
     def get_permission(self, repository: str, login: str) -> str | None: ...
 
-    def get_role(self, repository: str, login: str) -> str | None: ...
-
     def set_issue_type(self, repository: str, number: int, issue_type: str) -> None: ...
 
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None: ...
@@ -98,27 +96,6 @@ class Router:
                     project_item, source, (("owner", "factory"), ("status", "ready"))
                 )
                 return RouteResult("ready" if applied else "preserved", project_item.id)
-        elif self._is_bug(source):
-            receipt = self._receipt(source)
-            hold_bypassed = bool(receipt and receipt.get("hold_bypassed"))
-            if self._config.routing.hold_label in source.labels:
-                applied = self._initialize(
-                    project_item,
-                    source,
-                    (("owner", "human"), ("status", "backlog")),
-                    hold_bypassed=True,
-                )
-                return RouteResult("backlog" if applied else "preserved", project_item.id)
-            if not hold_bypassed:
-                # Bugs are admitted without review of a request block, so only maintainers
-                # and admins hand them to the factory automatically.
-                role = self._github.get_role(source.repository, source.author)
-                if role in {"maintain", "admin"}:
-                    applied = self._initialize(
-                        project_item, source, (("owner", "factory"), ("status", "ready"))
-                    )
-                    return RouteResult("ready" if applied else "preserved", project_item.id)
-
         applied = self._initialize(project_item, source, (("status", "backlog"),))
         return RouteResult("backlog" if applied else "preserved", project_item.id)
 
@@ -137,13 +114,6 @@ class Router:
             and self._config.routing.eval_label in source.labels
         )
 
-    def _is_bug(self, source: SourceItem) -> bool:
-        return (
-            not source.pull_request
-            and source.repository in self._config.routing.general_sources
-            and source.issue_type == self._config.routing.bug_type
-        )
-
     def _set_eval_type_if_needed(self, source: SourceItem) -> None:
         if source.issue_type != self._config.routing.eval_type:
             self._github.set_issue_type(
@@ -155,8 +125,6 @@ class Router:
         item: ProjectItem,
         source: SourceItem,
         values: tuple[tuple[str, str], ...],
-        *,
-        hold_bypassed: bool = False,
     ) -> bool:
         """Apply routing's initial fields; False when a human edit since routing is preserved."""
         receipt = self._receipt(source)
@@ -182,7 +150,7 @@ class Router:
             != (receipt_values.get(field_id) if receipt_values is not None else None)
             for field_id in desired
         ):
-            # A later rule (authorization, a Bug type) re-initializes only an untouched card;
+            # A later rule (an authorized eval request) re-initializes only an untouched card;
             # applying part of it over a human edit would mix human and routing values.
             return False
         for field_id, option in desired.items():
@@ -194,11 +162,7 @@ class Router:
                     self._config.project.id, item.id, field_id, option
                 )
                 item.fields[field_id] = option
-        # Once observed, the hold bypass is sticky: a later receipt write (for example the
-        # generic backlog fallback after the label is removed) must not drop the flag, or a
-        # subsequent event could auto-admit the bug the hold was meant to keep out.
-        effective_hold_bypassed = hold_bypassed or bool(receipt and receipt.get("hold_bypassed"))
-        self._write_receipt(source, item, desired, hold_bypassed=effective_hold_bypassed)
+        self._write_receipt(source, item, desired)
         return True
 
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
@@ -216,7 +180,7 @@ class Router:
 
     def _receipt(self, source: SourceItem) -> dict[str, object] | None:
         # Only the factory's own comments are receipts; anyone can comment on a public issue,
-        # so a body from another author must never set hold_bypassed, complete, or values.
+        # so a body from another author must never set complete or values.
         records = self._github.list_comment_records(source.repository, source.number)
         bot_login = self._config.bot_login.casefold()
         for comment in reversed(records):
@@ -238,8 +202,6 @@ class Router:
         source: SourceItem,
         item: ProjectItem,
         initialized: dict[str, str],
-        *,
-        hold_bypassed: bool = False,
     ) -> None:
         payload: dict[str, object] = {
             "project": self._config.project.id,
@@ -247,8 +209,6 @@ class Router:
             "values": initialized,
             "complete": True,
         }
-        if hold_bypassed:
-            payload["hold_bypassed"] = True
         self._github.create_comment(
             source.repository,
             source.number,
