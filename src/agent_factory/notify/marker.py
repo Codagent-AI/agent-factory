@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
-PATTERN = re.compile(r"<!--\s*codagent-session:\s*(\{.*?\})\s*-->", re.DOTALL)
+# The JSON may not span a comment end, so a malformed comment cannot swallow a later marker.
+PATTERN = re.compile(r"<!--\s*codagent-session:\s*(\{(?:(?!-->).)*?\})\s*-->", re.DOTALL)
 
 
 def parse(body: str) -> dict[str, str] | None:
@@ -47,9 +48,12 @@ def render(session_id: str, name: str | None = None, now: datetime | None = None
 
 
 def _append(body: str, marker: str) -> str:
-    matches = list(PATTERN.finditer(body))
+    # Only valid markers are replaced; a malformed marker-like comment is ordinary body text.
+    matches = [match for match in PATTERN.finditer(body) if parse(match.group())]
     if not matches:
-        separator = "" if body.endswith("\n\n") else "\n" if body.endswith("\n") else "\n\n"
+        separator = (
+            "" if not body or body.endswith("\n\n") else "\n" if body.endswith("\n") else "\n\n"
+        )
         return body + separator + marker + "\n"
     # Replace the last marker where it stands and drop any earlier ones, so every other byte
     # of the body is kept. An earlier marker on its own line takes its line break with it.

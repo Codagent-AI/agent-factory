@@ -152,6 +152,7 @@ def start(evidence: Path, profile: str, target: str, message: str) -> dict[str, 
         cwd=workspace,
         env=inherited_environment(),
         start_new_session=True,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )

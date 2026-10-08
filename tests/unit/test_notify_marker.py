@@ -59,6 +59,28 @@ def test_replacing_a_marker_keeps_every_other_byte() -> None:
         assert marker.carry(new, before) == after
 
 
+def test_malformed_marker_comments_are_left_untouched() -> None:
+    """Stamping changes only valid markers; malformed marker-like comments stay as written."""
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    old = marker.render(FIRST, "first", now)
+    new = marker.render(SECOND, "second", now)
+    bad = '<!-- codagent-session: {"session_id":"not-a-uuid"} -->'
+    unclosed = '<!-- codagent-session: {"session_id":'
+    for before, after in (
+        ("Alpha\n" + bad + "\n", "Alpha\n" + bad + "\n\n" + new + "\n"),
+        (old + "\n" + bad + "\nend\n", new + "\n" + bad + "\nend\n"),
+        (bad + "\n" + old + "\n", bad + "\n" + new + "\n"),
+        (unclosed + " -->\n" + old + "\n", unclosed + " -->\n" + new + "\n"),
+    ):
+        assert marker.stamp(before, SECOND, "second", now) == after
+    assert marker.parse(unclosed + " -->\n" + old)["session_id"] == FIRST  # type: ignore[index]
+
+
+def test_stamping_an_empty_body_adds_only_the_marker() -> None:
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    assert marker.stamp("", FIRST, "s", now) == marker.render(FIRST, "s", now) + "\n"
+
+
 def test_each_message_phrase_has_only_required_links() -> None:
     claim = Claim("claim", "o/r", 12, "I", "P", "fix", "fp", {}, "settled", {}, {}, {}, {})
     for kind, phrase in PHRASES.items():
