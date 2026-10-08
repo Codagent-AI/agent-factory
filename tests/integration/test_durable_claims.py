@@ -29,10 +29,7 @@ def frozen_spec() -> dict[str, object]:
         defaults(),
     )
     return request.freeze(
-        runner_sha="a" * 40,
-        skills_sha="b" * 40,
-        harness_sha="c" * 40,
-        suite="and-scene",
+        {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, suite="and-scene"
     ).payload
 
 

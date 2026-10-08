@@ -1,0 +1,5 @@
+- [x] Implement the change described by these files:
+  - [proposal.md](proposal.md)
+  - [specs/factory-watch-dispatch/spec.md](specs/factory-watch-dispatch/spec.md)
+  - [specs/factory-operations/spec.md](specs/factory-operations/spec.md)
+  - [design.md](design.md)

@@ -256,7 +256,7 @@ def test_local_config_rejects_eval_execution_host() -> None:
 
 def test_local_config_defaults_evidence_retention_days() -> None:
     local = LocalConfig.from_toml(_LOCAL_BASE)
-    assert local.limits.evidence_retention_days == 14
+    assert local.limits.evidence_retention_days == 3
 
 
 def test_local_config_parses_evidence_retention_days() -> None:

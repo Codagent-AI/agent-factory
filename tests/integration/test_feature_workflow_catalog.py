@@ -226,24 +226,78 @@ def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
 def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
     from agent_factory.work_kinds.pull_request import launch
 
-    scripts = {
-        name
+    workflows = {
+        workflow.name: workflow.read_text()
         for workflow in PACKAGE.iterdir()
         if workflow.name.endswith(".yaml")
-        for name in re.findall(r"^\s*script:\s*(\S+)\s*$", workflow.read_text(), re.MULTILINE)
     }
+    workflow_scripts = {
+        name: set(re.findall(r"^\s*script:\s*(\S+)\s*$", text, re.MULTILINE))
+        for name, text in workflows.items()
+    }
+    workflow_calls = {
+        name: {
+            target
+            for target in re.findall(r"^\s*workflow:\s*(\S+)\s*$", text, re.MULTILINE)
+            if not target.startswith("builtin:")
+        }
+        for name, text in workflows.items()
+    }
+    scripts = {name for names in workflow_scripts.values() for name in names}
     assert scripts
     assert "task-compliance-gate.py" in scripts
     for name in scripts:
         assert name in launch.STAGED_FILES
         assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
 
-    contracts = [(kind.default_contract, kind) for kind in registered()]
-    contracts.append((launch.REVIEW_CONTRACT, FIX))
-    for index, (contract, kind) in enumerate(contracts):
+    review_staged_files = {
+        launch.REVIEW_WORKFLOW_FILE,
+        launch.IMPLEMENT_WORKFLOW_FILE,
+        *launch.REVIEW_WORKFLOW_SCRIPTS,
+    }
+    # The task guard is shared with review and copied by the global staged catalog.
+    task_guard = "factory-task-guard-v1.0.yaml"
+    shared_guard_files = {task_guard} | workflow_scripts[task_guard]
+    assert shared_guard_files <= review_staged_files
+    contracts = [
+        (
+            kind.default_contract,
+            kind,
+            kind.workflow_file,
+            set(kind.staged_files) | (shared_guard_files if kind.kind == "task" else set[str]()),
+        )
+        for kind in registered()
+    ]
+    contracts.append(
+        (
+            launch.REVIEW_CONTRACT,
+            FIX,
+            launch.REVIEW_WORKFLOW_FILE,
+            review_staged_files,
+        )
+    )
+    covered_workflows: set[str] = set()
+    for index, (contract, kind, root, staged_files) in enumerate(contracts):
         catalog = launch.stage_workflow_into(tmp_path / str(index), contract, kind)
-        for name in scripts:
+        pending = [root]
+        seen: set[str] = set()
+        referenced_scripts: set[str] = set()
+        while pending:
+            workflow = pending.pop()
+            assert workflow in workflow_scripts, (contract, workflow)
+            if workflow in seen:
+                continue
+            seen.add(workflow)
+            assert workflow in staged_files, (contract, workflow)
+            assert (catalog / workflow).is_file(), (contract, workflow)
+            for name in workflow_scripts[workflow]:
+                assert name in staged_files, (contract, workflow, name)
+            referenced_scripts.update(workflow_scripts[workflow])
+            pending.extend(workflow_calls[workflow])
+        covered_workflows.update(seen)
+        for name in referenced_scripts:
             assert os.access(catalog / name, os.X_OK), (contract, name)
+    assert set(workflow_scripts) == covered_workflows
 
 
 def test_staged_catalog_modes_follow_shebang_not_extension(

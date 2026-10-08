@@ -308,3 +308,13 @@ A request that does not supply `fixture_ref` SHALL NOT consult the and-scene che
 - **WHEN** an unfinished claim recorded before this change, without a fixture revision, launches its next repetition
 - **THEN** the claim is not rejected, its frozen inputs are not changed, and the suite uses the fixture its pinned harness selects
 
+### Requirement: Keep frozen evaluation inputs stable across deploys
+
+A deploy or rollback SHALL NOT change a claim's frozen inputs or the reports rendered from them.
+
+#### Scenario: Continue a claim across a deploy or rollback
+
+- **WHEN** a claim with unfinished repetitions is continued after the factory is deployed or
+  rolled back
+- **THEN** its recorded settings, revisions, sources, and request fingerprint are unchanged, and
+  its `Refs` field, frozen-inputs comment, and repetition reports are the same as before

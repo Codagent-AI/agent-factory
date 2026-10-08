@@ -62,7 +62,7 @@ class PullRequestCleanup:
         if self._claim_directory is not None:
             directory = self._claim_directory(claim_id)
             try:
-                _remove_tree(str(directory))
+                remove_tree(str(directory))
             except FileNotFoundError:
                 pass
             except OSError as error:
@@ -73,7 +73,7 @@ class PullRequestCleanup:
                 if not isinstance(path, str):
                     continue
                 try:
-                    _remove_tree(path)
+                    remove_tree(path)
                 except FileNotFoundError:
                     pass
                 except OSError as error:
@@ -115,7 +115,7 @@ class PullRequestCleanup:
         return errors
 
 
-def _remove_tree(path: str) -> None:
+def remove_tree(path: str) -> None:
     """Remove a clone even where tools left it read-only, as Go's module cache does."""
 
     def restore_write(function: Callable[..., object], target: str, error: BaseException) -> None:

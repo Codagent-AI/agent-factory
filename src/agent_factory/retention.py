@@ -22,6 +22,9 @@ _FIX_ATTEMPT_REMOVE = (
     "agent-runner",
     "agent-runner-session",
     ".runtime",
+    # Copied out of the attempt's clone before slimming removes it.
+    "validator_logs",
+    "clone-state.patch",
 )
 _EVAL_REP_REMOVE = (
     "logs",
@@ -30,6 +33,7 @@ _EVAL_REP_REMOVE = (
     ".runtime/agent-session-state",
     ".runtime/judge-workspace",
     ".runtime/judge",
+    ".runtime/candidate-worktree",
 )
 
 

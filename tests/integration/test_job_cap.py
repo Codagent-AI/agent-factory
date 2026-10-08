@@ -21,6 +21,7 @@ from agent_factory.store import ClaimDraft, ClaimStore, JobCapReached
 from agent_factory.suites.and_scene import ReadinessError
 from agent_factory.work_kinds.base import Preparation
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
+from agent_factory.work_kinds.eval.handler import Resolution
 from agent_factory.work_kinds.pull_request.blocked import process_blocked_claim
 from agent_factory.work_kinds.pull_request.review import process_review_claim
 
@@ -240,17 +241,18 @@ def test_preflight_reuses_claim_and_cap_holds_next_eval_repetition(tmp_path: Pat
             store, comments, {"eval": EvalHandler(defaults, harness_ref="c" * 40)}
         )
 
-        def resolve(_: object) -> tuple[str, str]:
-            return "a" * 40, "b" * 40
+        def resolve(_: object) -> Resolution:
+            return Resolution({"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, {})
 
         draft = controller.preflight(snapshot, resolve=resolve)
         assert draft is not None
+        assert draft.frozen_spec["revisions"] == resolve(None).revisions
         assert store.claims_for_item("P") == []
         invalid = replace(snapshot, body="```eval\nrepetitions = 0\n```")
         assert controller.preflight(invalid, resolve=resolve) is None
         assert store.claims_for_item("P") == []
 
-        def unresolvable(_: object) -> tuple[str, str]:
+        def unresolvable(_: object) -> Resolution:
             raise ReadinessError("revision unavailable")
 
         with pytest.raises(ReadinessError, match="revision unavailable"):

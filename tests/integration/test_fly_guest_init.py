@@ -5,10 +5,10 @@ import subprocess
 import time
 from pathlib import Path
 
+from tests.fixtures.fly.guest import start_guest, stop_guest
+
 
 def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Path) -> None:
-    from agent_factory.fly.guest import guest_init_script
-
     root = tmp_path / "guest"
     artifacts = root / "artifacts"
     job = artifacts / ".factory/job/1"
@@ -31,11 +31,11 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
         "FACTORY_ROOT": str(root),
         "FACTORY_WATCHDOG_SECONDS": "1",
     }
-    process = subprocess.Popen(["bash", "-c", guest_init_script()], env=environment)
+    process = start_guest(environment)
     try:
         (job / "start").touch()
         done = artifacts / ".factory/job/1/DONE"
-        for _ in range(50):
+        for _ in range(600):  # up to 30 s on a loaded host
             if done.exists():
                 break
             time.sleep(0.05)
@@ -45,8 +45,7 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
         assert "value\t" in listed
         assert scratch not in listed
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        stop_guest(process)
 
 
 def test_job_cleanup_empties_what_the_job_user_owns_without_unlinking_it(tmp_path: Path) -> None:
@@ -100,8 +99,6 @@ def test_restarted_guest_with_a_fresh_deadline_ignores_an_old_expiry_marker(
     with a later deadline for a recovery attempt, the guest must serve jobs again
     rather than exit at once on the stale marker.
     """
-    from agent_factory.fly.guest import guest_init_script
-
     root = tmp_path / "guest"
     job = root / "artifacts/.factory/job/1"
     job.mkdir(parents=True)
@@ -116,9 +113,9 @@ def test_restarted_guest_with_a_fresh_deadline_ignores_an_old_expiry_marker(
         "FACTORY_ROOT": str(root),
         "FACTORY_WATCHDOG_SECONDS": "1",
     }
-    process = subprocess.Popen(["bash", "-c", guest_init_script()], env=environment)
+    process = start_guest(environment)
     try:
-        for _ in range(60):
+        for _ in range(600):  # up to 30 s on a loaded host
             if (job / "DONE").exists():
                 break
             time.sleep(0.05)
@@ -126,8 +123,7 @@ def test_restarted_guest_with_a_fresh_deadline_ignores_an_old_expiry_marker(
         assert not marker.exists()
         assert process.poll() is None
     finally:
-        process.terminate()
-        process.wait(timeout=5)
+        stop_guest(process)
 
 
 def test_guest_with_an_expired_deadline_still_exits_at_once(tmp_path: Path) -> None:

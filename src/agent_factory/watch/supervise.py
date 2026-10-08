@@ -115,7 +115,13 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path) -> None:
         if status == "alive":
             if datetime.now(UTC) > datetime.fromisoformat(row["deadline_at"]):
                 try:
-                    validated = result.read(evidence / result.RESULT_FILE, result.procedure(row))
+                    validated = result.read(
+                        evidence / result.RESULT_FILE,
+                        result.procedure(row),
+                        auto_merge=bool(
+                            watch_store.json_field(row, "merge_json").get("auto_merge")
+                        ),
+                    )
                 except (OSError, ValueError):
                     validated = None
                 terminate_owned_process(identity)
@@ -142,7 +148,11 @@ def supervise(store: ClaimStore, local: LocalConfig, config_path: Path) -> None:
         else:
             exit_detail = ""
         try:
-            validated = result.read(evidence / result.RESULT_FILE, result.procedure(row))
+            validated = result.read(
+                evidence / result.RESULT_FILE,
+                result.procedure(row),
+                auto_merge=bool(watch_store.json_field(row, "merge_json").get("auto_merge")),
+            )
         except (OSError, ValueError) as error:
             detail = exit_detail or f"invalid result: {error}"
             _finish(store, row, local, config_path, "interrupted", detail)
