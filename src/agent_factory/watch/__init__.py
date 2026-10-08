@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from agent_factory.watch import deliver as delivery
-from agent_factory.watch import detect, dispatch, supervise
+from agent_factory.watch import detect, dispatch, merge, supervise
 from agent_factory.watch import store as watch_store
 
 if TYPE_CHECKING:
@@ -46,6 +46,7 @@ def step(
     token_provider: InstallationTokenProvider,
 ) -> None:
     _safe("supervise", lambda: supervise.supervise(store, local, config_path))
+    _safe("merge", lambda: merge.step(store, client, shared))
     if shared.watch.enabled:
         _safe("detect", lambda: detect.detect(store, shared.watch.grace_minutes))
         _safe(

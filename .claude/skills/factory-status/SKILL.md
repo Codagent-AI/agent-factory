@@ -49,12 +49,12 @@ A dispatch's evidence directory holds `watch-result.json`: for a PR-READY check,
 Lead with what needs Paul, then the rest. Keep each item to one line with a link. Omit empty sections.
 
 1. **Waiting on you**
-   - PRs ready to merge: Review cards whose PR is open, not draft, and mergeable. Note any conflict or failing check. The service does not review PRs; offer `factory-pr-review` when Paul wants one.
+   - PRs ready to merge: Review cards whose PR is open, not draft, and mergeable. Note any conflict or failing check. The service may auto-merge low-risk PRs; report its risk and merge status. Offer `factory-pr-review` when Paul wants one.
    - Triage next steps that need Paul (from each triage result's `next_step`).
    - Blocked (`needs-input`) claims: the question in one line.
    - Finished evals awaiting a verdict: the score and failed gates.
 2. **Running**: each eval, fix, feature, and task slot's claim, and how long it has run. Include blocked task claims and task PRs waiting for review under **Waiting on you**.
-3. **Since last time**: finished claims, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
+3. **Since last time**: finished claims, factory PRs merged automatically, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
 4. **Health**, only when something is off:
    - paused, a readiness failure, or a closed admission window;
    - a reached factory job cap (report the earliest clear time and reset command), undelivered comments, or missing audits for recent sessions;

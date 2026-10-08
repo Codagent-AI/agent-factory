@@ -33,6 +33,18 @@ class GitHubNotFoundError(GitHubApiError):
     """The requested resource does not exist (HTTP 404), distinct from a lookup failure."""
 
 
+class GitHubHttpError(GitHubApiError):
+    """GitHub returned an HTTP error response to a request."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
+        super().__init__(f"gh api request failed (HTTP {status_code})")
+
+
+class GitHubMergeRejectedError(GitHubApiError):
+    """GitHub responded to a merge request with a definitive rejection."""
+
+
 @dataclass(frozen=True)
 class BranchInfo:
     name: str
@@ -68,6 +80,7 @@ class IssueComment:
     body: str
     author: str
     created_at: str = ""
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +107,19 @@ class ReviewActivity:
 class PullRequestState:
     state: str
     merged_at: str | None
+    draft: bool = False
+    mergeable: bool | None = None
+    base_ref: str = ""
+    head_sha: str = ""
+    merge_commit_sha: str | None = None
+
+
+@dataclass(frozen=True)
+class CommitChecks:
+    reported: bool
+    pending: tuple[str, ...]
+    failed: tuple[str, ...]
+    successful: tuple[str, ...] = ()
 
 
 class GhRunner(Protocol):
@@ -123,6 +149,8 @@ class SubprocessGhRunner:
         if completed.returncode != 0:
             if "HTTP 404" in completed.stderr:
                 raise GitHubNotFoundError("gh api request failed: not found")
+            if match := re.search(r"\bHTTP (\d{3})\b", completed.stderr):
+                raise GitHubHttpError(int(match[1]))
             raise GitHubApiError("gh api request failed")
         return completed.stdout
 
@@ -400,6 +428,152 @@ class GitHubClient:
             state=_required_string(payload, "state"),
             merged_at=merged_at if isinstance(merged_at, str) else None,
         )
+
+    def get_pull_request_details(self, repository: str, number: int) -> PullRequestState:
+        response = self._request(
+            ["api", f"repos/{repository}/pulls/{number}", "--method", "GET"], None
+        )
+        payload = _json_object(response)
+        merged_at = payload.get("merged_at")
+        mergeable = payload.get("mergeable")
+        merge_commit_sha = payload.get("merge_commit_sha")
+        return PullRequestState(
+            state=_required_string(payload, "state").upper() if not merged_at else "MERGED",
+            merged_at=merged_at if isinstance(merged_at, str) else None,
+            draft=payload.get("draft") is True,
+            mergeable=mergeable if isinstance(mergeable, bool) else None,
+            base_ref=str(_object(payload.get("base") or {}).get("ref") or ""),
+            head_sha=str(_object(payload.get("head") or {}).get("sha") or ""),
+            merge_commit_sha=merge_commit_sha if isinstance(merge_commit_sha, str) else None,
+        )
+
+    def merge_has_parent(self, repository: str, merge_sha: str, head_sha: str) -> bool:
+        payload = _json_object(
+            self._request(
+                ["api", f"repos/{repository}/commits/{merge_sha}", "--method", "GET"], None
+            )
+        )
+        return any(
+            _object(parent).get("sha") == head_sha for parent in _list(payload.get("parents"))
+        )
+
+    def commit_checks(self, repository: str, sha: str) -> CommitChecks:
+        pending: list[str] = []
+        failed: list[str] = []
+        successful: list[str] = []
+        reported = False
+        page = 1
+        while True:
+            payload = _json_object(
+                self._request(
+                    [
+                        "api",
+                        f"repos/{repository}/commits/{sha}/check-runs?per_page=100&page={page}",
+                        "--method",
+                        "GET",
+                    ],
+                    None,
+                )
+            )
+            runs = _list(payload.get("check_runs"))
+            reported |= bool(runs)
+            for raw in runs:
+                run = _object(raw)
+                name = str(run.get("name") or "check")
+                if run.get("status") != "completed":
+                    pending.append(name)
+                elif run.get("conclusion") == "success":
+                    successful.append(name)
+                elif run.get("conclusion") not in {"success", "neutral", "skipped"}:
+                    failed.append(name)
+            if len(runs) < 100:
+                break
+            page += 1
+        page = 1
+        latest: dict[str, str] = {}
+        while True:
+            statuses = _list(
+                json.loads(
+                    self._request(
+                        [
+                            "api",
+                            f"repos/{repository}/commits/{sha}/statuses?per_page=100&page={page}",
+                            "--method",
+                            "GET",
+                        ],
+                        None,
+                    )
+                )
+            )
+            for raw in statuses:
+                status = _object(raw)
+                context = status.get("context")
+                if isinstance(context, str) and context not in latest:
+                    latest[context] = str(status.get("state") or "pending")
+            reported |= bool(statuses)
+            if len(statuses) < 100:
+                break
+            page += 1
+        for name, state in latest.items():
+            if state == "pending":
+                pending.append(name)
+            elif state == "success":
+                successful.append(name)
+            else:
+                failed.append(name)
+        return CommitChecks(reported, tuple(pending), tuple(failed), tuple(successful))
+
+    def required_checks(self, repository: str, branch: str) -> tuple[str, ...]:
+        """Status check contexts that active rulesets require on the branch."""
+        required: list[str] = []
+        encoded = urllib.parse.quote(branch, safe="")
+        page = 1
+        while True:
+            rules = _list(
+                json.loads(
+                    self._request(
+                        [
+                            "api",
+                            f"repos/{repository}/rules/branches/{encoded}?per_page=100&page={page}",
+                            "--method",
+                            "GET",
+                        ],
+                        None,
+                    )
+                )
+            )
+            for raw in rules:
+                rule = _object(raw)
+                if rule.get("type") != "required_status_checks":
+                    continue
+                parameters = _object(rule.get("parameters"))
+                for check in _list(parameters.get("required_status_checks")):
+                    context = _object(check).get("context")
+                    if isinstance(context, str) and context and context not in required:
+                        required.append(context)
+            if len(rules) < 100:
+                return tuple(required)
+            page += 1
+
+    def merge_pull_request(self, repository: str, number: int, sha: str) -> str:
+        try:
+            response = self._request(
+                _write(f"repos/{repository}/pulls/{number}/merge", "PUT"),
+                {"merge_method": "merge", "sha": sha},
+            )
+        except GitHubNotFoundError as error:
+            raise GitHubMergeRejectedError(str(error)) from error
+        except GitHubHttpError as error:
+            # 429 is a rate limit, not an answer: the merge outcome stays uncertain.
+            if 400 <= error.status_code < 500 and error.status_code != 429:
+                raise GitHubMergeRejectedError(str(error)) from error
+            raise
+        payload = _json_object(response)
+        if payload.get("merged") is not True:
+            raise GitHubMergeRejectedError(
+                str(payload.get("message") or "GitHub did not merge the pull request")
+            )
+        return _required_string(payload, "sha")
 
     def close_issue(self, repository: str, number: int) -> None:
         self._request(
@@ -741,7 +915,7 @@ class GitHubClient:
                 "$reviews: String, $threads: String) { "
                 "repository(owner: $owner, name: $name) { pullRequest(number: $number) { "
                 "reviews(first: 100, after: $reviews) { "
-                "nodes { id body submittedAt author { login } } "
+                "nodes { id body submittedAt state author { login } } "
                 "pageInfo { hasNextPage endCursor } } "
                 "reviewThreads(first: 100, after: $threads) { "
                 "nodes { id isResolved path line comments(first: 100) "
@@ -758,7 +932,15 @@ class GitHubClient:
             if "reviews" in pending:
                 for raw in _list(connections["reviews"].get("nodes")):
                     if (entry := comment(_object(raw), "submittedAt")) is not None:
-                        reviews.append(entry)
+                        reviews.append(
+                            IssueComment(
+                                entry.id,
+                                entry.body,
+                                entry.author,
+                                entry.created_at,
+                                str(_object(raw).get("state") or ""),
+                            )
+                        )
             if "threads" in pending:
                 for raw in _list(connections["threads"].get("nodes")):
                     thread = _object(raw)

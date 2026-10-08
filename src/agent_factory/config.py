@@ -406,6 +406,7 @@ class WatchConfig:
     max_sessions: int = 2
     grace_minutes: int = 7
     timeout_minutes: int = 90
+    auto_merge: bool = False
 
 
 @dataclass(frozen=True)
@@ -435,6 +436,9 @@ def _watch_config(raw: object) -> WatchConfig:
         raise ConfigurationError("watch.enabled must be a boolean")
     if not enabled:
         return WatchConfig()
+    auto_merge = table.get("auto_merge", False)
+    if not isinstance(auto_merge, bool):
+        raise ConfigurationError("watch.auto_merge must be a boolean")
     repository = _string(table, "repository", "watch")
     if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) is None:
         raise ConfigurationError("watch.repository must be owner/name")
@@ -458,6 +462,7 @@ def _watch_config(raw: object) -> WatchConfig:
         limits[key] = value
     return WatchConfig(
         enabled=enabled,
+        auto_merge=auto_merge,
         repository=repository,
         agent=agent,
         agents=dict(agents),

@@ -956,3 +956,78 @@ def test_fly_attach_failure_is_presuite_only_before_setup_marker(
         assert not stage_file.exists()
     else:
         assert json.loads(stage_file.read_text())["failure_stage"] == "pre-suite"
+
+
+def test_fly_observation_retries_when_machine_lookup_fails(tmp_path: Path) -> None:
+    from agent_factory.fly.api import FlyApiError
+    from agent_factory.fly.transport import FlyTransportError, Lifecycle
+
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    (factory / "machine.json").write_text('{"id": "machine", "job": 1}')
+    manifest = {
+        "run_id": "r",
+        "claim_id": "c",
+        "unit_key": "rep-1",
+        "nonce": "n",
+        "fly": {"app": "app", "token_file": str(tmp_path / "token")},
+    }
+    lifecycle = Lifecycle(manifest, factory)
+    lookup_error = FlyApiError(
+        "/v1/apps/app/machines/machine", detail="request could not be completed"
+    )
+    with (
+        patch.object(lifecycle, "_get", side_effect=[{}, lookup_error]),
+        patch("agent_factory.fly.transport._owned", return_value=True),
+        patch.object(lifecycle, "_next_job", return_value=(1, True)),
+        patch.object(
+            lifecycle.transport,
+            "command",
+            side_effect=[
+                FlyTransportError("ssh disconnected"),
+                b"1\n0\n1\n\n---FACTORY-LOG---\n",
+            ],
+        ),
+        patch.object(lifecycle, "sleep") as sleep,
+        patch.object(lifecycle, "_collect", return_value=0),
+    ):
+        assert lifecycle.attach(tmp_path) == 0
+    sleep.assert_called_once()
+    log = (factory / "launcher.log").read_text()
+    assert "observation failed (1): ssh disconnected" in log
+    assert "machine lookup failed (1):" in log
+    assert "request could not be completed" in log
+
+
+def test_fly_observation_reports_machine_lost_after_404(tmp_path: Path) -> None:
+    from agent_factory.fly.api import FlyApiError
+    from agent_factory.fly.transport import FlyTransportError, Lifecycle
+
+    factory = tmp_path / ".factory"
+    factory.mkdir()
+    (factory / "machine.json").write_text('{"id": "machine", "job": 1}')
+    manifest = {
+        "run_id": "r",
+        "claim_id": "c",
+        "unit_key": "rep-1",
+        "nonce": "n",
+        "fly": {"app": "app", "token_file": str(tmp_path / "token")},
+    }
+    lifecycle = Lifecycle(manifest, factory)
+    with (
+        patch.object(
+            lifecycle.client,
+            "get_machine",
+            side_effect=[{}, FlyApiError("/v1/apps/app/machines/machine", 404, "HTTP 404")],
+        ),
+        patch("agent_factory.fly.transport._owned", return_value=True),
+        patch.object(lifecycle, "_next_job", return_value=(1, True)),
+        patch.object(lifecycle.transport, "command", side_effect=FlyTransportError("ssh down")),
+        patch.object(lifecycle, "sleep") as sleep,
+    ):
+        assert lifecycle.attach(tmp_path) == 71
+    sleep.assert_not_called()
+    assert (
+        "machine lost: Machine disappeared during observation"
+        in (factory / "launcher.log").read_text()
+    )
