@@ -1976,10 +1976,6 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
             result_path.mkdir()
         else:
             result_path.write_text(implement_result)
-        if pushed:
-            result = json.loads(implement_result)
-            result["head_sha"] = merge
-            result_path.write_text(json.dumps(result))
     describe("restore")
 
     restored = body.read_text()
@@ -2017,9 +2013,8 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
         assert "- comment c1" not in follow_up
         assert "- comment &lt;/details&gt; c3" not in follow_up
         assert (
-            "The changes requested in this round were not pushed; "
-            "see the replies on this pull request."
-        ) in follow_up
+            "The commits above were not pushed; see the replies on this pull request." in follow_up
+        )
     assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
 
 

@@ -4,11 +4,11 @@ set -eu
 # Keeps a feature pull request's factory-owned description across a review round, and
 # brings it up to date with the round. "save" records the description before the round.
 # "restore" rebuilds it from that saved description: it adds a section naming the round's
-# commits and feedback ids, reported only when the round's changes were pushed. It refreshes
-# the commits after acceptance and marks items those commits may have fixed
-# (mark-later-commits.py). Anything finalization
-# or an agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix
-# pull request's description is left as it is.
+# commits and, once validation passed and the round pushed, the feedback ids they addressed
+# (the posted replies hold the detail). It refreshes the commits after acceptance and marks
+# items those commits may have fixed (mark-later-commits.py). Anything finalization or an
+# agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix pull
+# request's description is left as it is.
 
 payload=$(cat)
 MARKER="$(dirname "$0")/mark-later-commits.py" PAYLOAD="$payload" python3 - <<'PY'
@@ -79,7 +79,7 @@ def round_section(eol: str) -> list[str]:
         pushed = False
     if not pushed:
         lines += [
-            "The changes requested in this round were not pushed; see the replies on this pull request.",
+            "The commits above were not pushed; see the replies on this pull request.",
             "",
         ]
     elif items:
