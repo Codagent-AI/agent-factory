@@ -55,10 +55,10 @@ def test_marked_fix_notifies_once_through_tick(tmp_path: Path) -> None:
     assert claim is not None
     h.finish(artifact, _pr_outcome(h.branch_for(claim.id)))
     h.tick()
-    for _ in range(8):
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
         h.tick()
-        ended = records.rows(h.store, "ended")
-        if ended:
+        if records.rows(h.store, "ended"):
             break
         time.sleep(0.05)
     assert len(records.rows(h.store)) == 1

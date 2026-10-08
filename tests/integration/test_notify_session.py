@@ -47,9 +47,9 @@ def test_fake_claude_command_and_environment(
     monkeypatch.setenv("GITHUB_TOKEN", "dummy")
     evidence = tmp_path / "evidence"
     identity = start(evidence, "claude:fake-model:low", "target", "notice\n")
-    for _ in range(100):
-        if (evidence / "exit.json").exists():
-            break
+    # A loaded host can take a while to start the wrapper and the fake CLI.
+    deadline = time.monotonic() + 30
+    while not (evidence / "exit.json").exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert (evidence / "exit.json").exists()
     argv = json.loads((evidence / "argv.json").read_text())

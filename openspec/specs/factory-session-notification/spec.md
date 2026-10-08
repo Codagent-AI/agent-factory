@@ -58,7 +58,7 @@ When notifications are enabled, every factory cycle, whether started by the resi
 
 - no run of its latest claim is unfinished;
 - the claim is `settled`, `blocked`, `cancelled`, or `superseded`. Otherwise its card is closed, its Owner is not `factory`, or it is no longer on the Project;
-- no human review round is pending: nobody other than a bot has reviewed or commented on the claim's pull request since its latest run finished;
+- no review round is pending: no repository writer other than the factory has reviewed or commented on the claim's pull request since its latest run finished. Activity that does not start a review round, such as a non-writer comment, does not hold a stop;
 - the card is not queued again: it is not open with `Owner=factory`, `Status=Ready`, and no `needs-input` label;
 - the watch gate below is clear.
 
