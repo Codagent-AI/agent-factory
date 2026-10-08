@@ -152,18 +152,16 @@ def detect(
                     if row["state"] == "settling":
                         records.update(store, row["id"], "settling", restart_settle=1)
                 continue
-        bodies[key] = card.source.body if isinstance(card, ProjectQueueItem) else card.body
         kind = classify(claim, run, card, shared)
-        if kind is None:
-            for row in previous:
-                if row["state"] == "settling":
-                    store._connection.execute("DELETE FROM notify_stop WHERE id=?", (row["id"],))
-            continue
-        if any(r["stop_kind"] == kind and r["state"] in {"launched", "ended"} for r in previous):
-            continue
+        # A settling row whose cause no longer holds is dropped, so only the current stop
+        # can reach delivery.
         for row in previous:
             if row["state"] == "settling" and row["stop_kind"] != kind:
                 store._connection.execute("DELETE FROM notify_stop WHERE id=?", (row["id"],))
+        if kind is None:
+            continue
+        if any(r["stop_kind"] == kind and r["state"] in {"launched", "ended"} for r in previous):
+            continue
         pr_url = _nested_url(run.result) or _nested_url(claim.outcome)
         records.insert(
             store,
@@ -191,5 +189,5 @@ def detect(
             seconds=shared.notify.settle_seconds
         ):
             records.update(store, row["id"], "settling", watch_note=note)
-        else:
-            bodies.pop(key, None)
+            # Only a settled stop gets a body; delivery skips every row without one.
+            bodies[key] = card.source.body if isinstance(card, ProjectQueueItem) else card.body
