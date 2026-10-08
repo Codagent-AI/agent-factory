@@ -4,10 +4,11 @@ set -eu
 # Keeps a feature pull request's factory-owned description across a review round, and
 # brings it up to date with the round. "save" records the description before the round.
 # "restore" rebuilds it from that saved description: it adds a section naming the round's
-# commits and the feedback they addressed, then refreshes the commits after acceptance and
-# marks items those commits may have fixed (mark-later-commits.py). Anything finalization
-# or an agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix
-# pull request's description is left as it is.
+# commits and, once validation passed and the round pushed, the feedback ids they addressed
+# (the posted replies hold the detail). It refreshes the commits after acceptance and marks
+# items those commits may have fixed (mark-later-commits.py). Anything finalization or an
+# agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix pull
+# request's description is left as it is.
 
 payload=$(cat)
 MARKER="$(dirname "$0")/mark-later-commits.py" PAYLOAD="$payload" python3 - <<'PY'
@@ -70,9 +71,23 @@ def round_section(eol: str) -> list[str]:
         *(f"- `{sha[:7]}` {one_line(subject)}" for sha, subject in commits),
         "",
     ]
-    replies = [one_line(item.get("reply", "")) for item in items if isinstance(item, dict)]
-    if any(replies):
-        lines += ["Feedback addressed:", *(f"- {reply}" for reply in replies if reply), ""]
+    try:
+        result = json.loads((artifacts / "implement-result.json").read_text())
+        validator = result.get("validator") if isinstance(result, dict) else None
+        pushed = isinstance(validator, dict) and validator.get("status") == "passed"
+    except (OSError, ValueError):
+        pushed = False
+    if not pushed:
+        lines += [
+            "The commits above were not pushed; see the replies on this pull request.",
+            "",
+        ]
+    elif items:
+        lines += [
+            "Feedback addressed (details in the replies on this pull request):",
+            *(f"- {one_line(item.get('source', ''))} {one_line(item.get('id', ''))}" for item in items),
+            "",
+        ]
     return lines
 
 
