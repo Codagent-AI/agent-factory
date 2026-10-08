@@ -104,6 +104,10 @@ def test_continuation_closes_prior_draft_pr_once_and_preserves_handoff(
     assert "https://example.test/pr/114" in comments[0][1]
     assert current_branch in comments[0][1]
     assert "Please review the new pull request instead." in comments[0][1]
+    pending = {event.key for event in store.pending_events(claim.id)}
+    # The pull request comment is not repeated on the issue.
+    assert "superseded-pr-comment:105" not in pending
+    assert ("superseded-pr:105" in pending) is not close_error
     if close_error:
         assert any(
             event.key == "superseded-pr-error:105"
@@ -150,3 +154,50 @@ def test_new_feature_or_review_round_does_not_close_any_pr(
     )
     result = handler.settle(claim, store.runs_for_claim(claim.id))
     assert result is not None and result.verdict == "pending-human-review"
+
+
+def test_recovered_continuation_closes_prior_pr_when_reconcile_finds_its_own_pr(
+    tmp_path: Path,
+) -> None:
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    prior = store.create_claim(ClaimDraft("example/work", 103, "I103", "P103", "feature", "fp", {}))
+    store.set_claim_lifecycle(prior.id, "settled", {"verdict": "infra-error"})
+    claim = store.create_claim(ClaimDraft("example/work", 103, "I103", "P103", "feature", "fp", {}))
+    handler = PullRequestHandler(
+        FEATURE,
+        SharedConfig.from_file(Path("config/codagent.toml")),
+        LocalConfig.from_file(Path("config/local.example.toml")),
+    )
+    handler.attach_store(store)
+    prior_branch = handler.branch_name(prior)
+    own_branch = handler.branch_name(claim)
+    store.set_preparation(claim.id, {"continuation_head": "a" * 40, "prior_branch": prior_branch})
+    own = PullRequestInfo("https://example.test/pr/114", 114, "b" * 40, False, own_branch)
+    stale = PullRequestInfo("https://example.test/pr/105", 105, "a" * 40, True, prior_branch)
+    closed: list[int] = []
+
+    class GitHub:
+        def get_branch(self, repository: str, name: str) -> None:
+            return None
+
+        def list_open_pull_requests_for_head(
+            self, repository: str, branch: str
+        ) -> list[PullRequestInfo]:
+            return {own_branch: [own], prior_branch: [stale]}[branch]
+
+        def list_open_factory_pull_requests_for_issue(
+            self, repository: str, number: int
+        ) -> list[PullRequestInfo]:
+            return [own]
+
+        def create_comment(self, repository: str, number: int, body: str) -> str:
+            return "1"
+
+        def close_pull_request(self, repository: str, number: int) -> None:
+            closed.append(number)
+
+    handler.attach_github(GitHub())  # type: ignore[arg-type]
+    current = store.get_claim(claim.id)
+    assert current is not None
+    assert handler.reconcile(current) == own
+    assert closed == [105]

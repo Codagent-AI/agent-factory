@@ -505,6 +505,7 @@ class PullRequestHandler:
             raise ReadinessError(
                 f"cannot establish whether an earlier attempt pushed {branch}: {error}"
             ) from error
+        own_numbers = {pull.number for pull in pulls}
         if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
             if len(pulls) > 1:
                 raise ReadinessError(f"ambiguous open pull requests for {branch}")
@@ -545,6 +546,13 @@ class PullRequestHandler:
                     },
                 },
             )
+            if (
+                self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH
+                and pull.number in own_numbers
+            ):
+                self._close_superseded_pull_requests(
+                    claim, {"pr": {"number": pull.number, "url": pull.url}}
+                )
             self._store.record_event(
                 claim.id,
                 "handoff",
@@ -1119,8 +1127,15 @@ class PullRequestHandler:
                             f"branch on `{self.branch_name(claim)}`. "
                             "Please review the new pull request instead."
                         )
-                        self._github.create_comment(claim.repository, pull.number, body)
+                        comment_id = self._github.create_comment(
+                            claim.repository, pull.number, body
+                        )
+                        # The comment went to the superseded pull request; acknowledge the
+                        # event so report delivery does not repeat it on the issue.
                         self._store.record_event(claim.id, comment_key, body)
+                        self._store.acknowledge_event(
+                            claim.id, comment_key, comment_id or "acknowledged"
+                        )
                         events.add(comment_key)
                     self._github.close_pull_request(claim.repository, pull.number)
                     self._store.record_event(
