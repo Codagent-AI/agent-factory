@@ -409,21 +409,26 @@ class ClaimStore:
                     "cleanup_json = CASE WHEN lifecycle = ? AND "
                     "json_extract(cleanup_json, '$.terminal_at') IS NOT NULL "
                     "THEN cleanup_json ELSE "
-                    "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ?",
-                    (lifecycle, _dump(outcome), now, lifecycle, now, claim_id),
+                    "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ? "
+                    "AND (lifecycle IS NOT ? OR outcome_json IS NOT ? "
+                    "OR json_extract(cleanup_json, '$.terminal_at') IS NULL)",
+                    (lifecycle, _dump(outcome), now, lifecycle, now, claim_id)
+                    + (lifecycle, _dump(outcome)),
                 )
             else:
                 self._connection.execute(
-                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
-                    (lifecycle, _dump(outcome), now, claim_id),
+                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ? "
+                    "AND (lifecycle IS NOT ? OR outcome_json IS NOT ?)",
+                    (lifecycle, _dump(outcome), now, claim_id, lifecycle, _dump(outcome)),
                 )
 
     def set_preparation(self, claim_id: str, preparation: Mapping[str, object]) -> None:
         """Persist owned preparation references before external work begins."""
         with self._transaction():
             self._connection.execute(
-                "UPDATE claim SET preparation_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(preparation), _now(), claim_id),
+                "UPDATE claim SET preparation_json = ?, updated_at = ? "
+                "WHERE id = ? AND preparation_json IS NOT ?",
+                (_dump(preparation), _now(), claim_id, _dump(preparation)),
             )
 
     def set_cleanup(self, claim_id: str, cleanup: Mapping[str, object]) -> None:
@@ -438,8 +443,9 @@ class ClaimStore:
                 if terminal_at is not None and "terminal_at" not in saved:
                     saved["terminal_at"] = terminal_at
             self._connection.execute(
-                "UPDATE claim SET cleanup_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(saved), _now(), claim_id),
+                "UPDATE claim SET cleanup_json = ?, updated_at = ? "
+                "WHERE id = ? AND cleanup_json IS NOT ?",
+                (_dump(saved), _now(), claim_id, _dump(saved)),
             )
 
     def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
@@ -911,8 +917,9 @@ class ClaimStore:
     def _set_reporting(self, claim_id: str, reporting: Mapping[str, object]) -> None:
         with self._transaction():
             self._connection.execute(
-                "UPDATE claim SET reporting_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(reporting), _now(), claim_id),
+                "UPDATE claim SET reporting_json = ?, updated_at = ? "
+                "WHERE id = ? AND reporting_json IS NOT ?",
+                (_dump(reporting), _now(), claim_id, _dump(reporting)),
             )
 
     def _require_run_transition(

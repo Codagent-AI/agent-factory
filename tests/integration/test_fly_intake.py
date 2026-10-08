@@ -118,6 +118,7 @@ class FakeGitHub:
     def __init__(self, shared: SharedConfig, body: str) -> None:
         self.shared = shared
         self.body = body
+        self.state = "OPEN"
         self.labels: set[str] = set()
         self.comments: list[dict[str, object]] = []
         self.fields: dict[str, str] = {
@@ -190,7 +191,7 @@ class FakeGitHub:
                     "id": "I1",
                     "number": 1,
                     "body": self.body,
-                    "state": "OPEN",
+                    "state": self.state,
                     "author": {"login": "writer"},
                     "repository": {"nameWithOwner": shared.routing.eval_source},
                     "labels": {"nodes": [{"name": shared.routing.eval_label}]},
