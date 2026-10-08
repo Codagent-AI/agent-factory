@@ -75,6 +75,14 @@ class ProjectQueueItem:
 
 
 @dataclass(frozen=True)
+class IssuePresence:
+    state: str
+    labels: frozenset[str]
+    body: str
+    on_project: bool
+
+
+@dataclass(frozen=True)
 class IssueComment:
     id: str
     body: str
@@ -621,6 +629,39 @@ class GitHubClient:
             pull_request="pull_request" in payload,
             title=_optional_string(payload, "title"),
             created_at=_optional_string(payload, "created_at"),
+        )
+
+    def get_issue_presence(
+        self, repository: str, number: int, project_id: str
+    ) -> IssuePresence | None:
+        owner, name = repository.split("/", 1)
+        data = self._graphql(
+            "query Presence($owner:String!,$name:String!,$number:Int!,$cursor:String) { "
+            "repository(owner:$owner,name:$name) { issue(number:$number) { state body "
+            "labels(first:100) { nodes { name } } "
+            "projectItems(first:100,after:$cursor) { nodes { project { id } } "
+            "pageInfo { hasNextPage endCursor } } } } }",
+            {"owner": owner, "name": name, "number": number, "cursor": None},
+        )
+        issue = _object(_object(data.get("repository")).get("issue"))
+        if not issue:
+            return None
+        projects = _object(issue.get("projectItems"))
+        # More than one page makes membership indeterminate rather than declaring absence.
+        if _object(projects.get("pageInfo")).get("hasNextPage") is True:
+            raise GitHubApiError("issue Project membership is incomplete")
+        return IssuePresence(
+            state=_required_string(issue, "state"),
+            labels=frozenset(
+                label
+                for node in _list(_object(issue.get("labels")).get("nodes"))
+                if isinstance((label := _object(node).get("name")), str)
+            ),
+            body=_optional_string(issue, "body"),
+            on_project=any(
+                _object(_object(node).get("project")).get("id") == project_id
+                for node in _list(projects.get("nodes"))
+            ),
         )
 
     def list_project_items(

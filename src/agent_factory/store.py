@@ -155,6 +155,7 @@ class ClaimStore:
         self._connection.execute("PRAGMA busy_timeout = 5000")
         self._migrate()
         self._ensure_watch_schema()
+        self._ensure_notify_schema()
         self._connection.execute("CREATE INDEX IF NOT EXISTS run_created_at ON run(created_at)")
 
     def job_cap_state(self, now: datetime, cap: JobCapConfig | None = None) -> JobCapState:
@@ -185,6 +186,30 @@ class ClaimStore:
             reached,
             started[count - cap.attempts] + timedelta(hours=cap.window_hours) if reached else None,
         )
+
+    def _ensure_notify_schema(self) -> None:
+        """Add notification state without changing the rollback-compatible user_version."""
+        self._connection.executescript("""
+            CREATE TABLE IF NOT EXISTS notify_stop (
+              id TEXT PRIMARY KEY,
+              claim_id TEXT NOT NULL REFERENCES claim(id), run_id TEXT NOT NULL,
+              repository TEXT NOT NULL, issue_number INTEGER NOT NULL, claim_kind TEXT NOT NULL,
+              stop_kind TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT,
+              detail TEXT NOT NULL DEFAULT '', watch_note TEXT NOT NULL DEFAULT '',
+              session_id TEXT, session_name TEXT, pr_url TEXT, message TEXT,
+              stopped_since TEXT NOT NULL, restart_settle INTEGER NOT NULL DEFAULT 0,
+              launched_at TEXT, deadline_at TEXT, finished_at TEXT,
+              profile TEXT, evidence_path TEXT, process_json TEXT NOT NULL DEFAULT '{}',
+              cost_usd REAL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+              UNIQUE(claim_id, run_id, stop_kind)
+            );
+            CREATE INDEX IF NOT EXISTS notify_stop_state ON notify_stop(state);
+        """)
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(notify_stop)")}
+        if "restart_settle" not in columns:
+            self._connection.execute(
+                "ALTER TABLE notify_stop ADD COLUMN restart_settle INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _ensure_watch_schema(self) -> None:
         """Create the watch tables and indexes idempotently, outside the versioned schema.
@@ -409,21 +434,26 @@ class ClaimStore:
                     "cleanup_json = CASE WHEN lifecycle = ? AND "
                     "json_extract(cleanup_json, '$.terminal_at') IS NOT NULL "
                     "THEN cleanup_json ELSE "
-                    "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ?",
-                    (lifecycle, _dump(outcome), now, lifecycle, now, claim_id),
+                    "json_set(cleanup_json, '$.terminal_at', ?) END WHERE id = ? "
+                    "AND (lifecycle IS NOT ? OR outcome_json IS NOT ? "
+                    "OR json_extract(cleanup_json, '$.terminal_at') IS NULL)",
+                    (lifecycle, _dump(outcome), now, lifecycle, now, claim_id)
+                    + (lifecycle, _dump(outcome)),
                 )
             else:
                 self._connection.execute(
-                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ?",
-                    (lifecycle, _dump(outcome), now, claim_id),
+                    "UPDATE claim SET lifecycle = ?, outcome_json = ?, updated_at = ? WHERE id = ? "
+                    "AND (lifecycle IS NOT ? OR outcome_json IS NOT ?)",
+                    (lifecycle, _dump(outcome), now, claim_id, lifecycle, _dump(outcome)),
                 )
 
     def set_preparation(self, claim_id: str, preparation: Mapping[str, object]) -> None:
         """Persist owned preparation references before external work begins."""
         with self._transaction():
             self._connection.execute(
-                "UPDATE claim SET preparation_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(preparation), _now(), claim_id),
+                "UPDATE claim SET preparation_json = ?, updated_at = ? "
+                "WHERE id = ? AND preparation_json IS NOT ?",
+                (_dump(preparation), _now(), claim_id, _dump(preparation)),
             )
 
     def set_cleanup(self, claim_id: str, cleanup: Mapping[str, object]) -> None:
@@ -438,8 +468,9 @@ class ClaimStore:
                 if terminal_at is not None and "terminal_at" not in saved:
                     saved["terminal_at"] = terminal_at
             self._connection.execute(
-                "UPDATE claim SET cleanup_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(saved), _now(), claim_id),
+                "UPDATE claim SET cleanup_json = ?, updated_at = ? "
+                "WHERE id = ? AND cleanup_json IS NOT ?",
+                (_dump(saved), _now(), claim_id, _dump(saved)),
             )
 
     def supersede_and_create(self, claim_id: str, draft: ClaimDraft) -> Claim:
@@ -911,8 +942,9 @@ class ClaimStore:
     def _set_reporting(self, claim_id: str, reporting: Mapping[str, object]) -> None:
         with self._transaction():
             self._connection.execute(
-                "UPDATE claim SET reporting_json = ?, updated_at = ? WHERE id = ?",
-                (_dump(reporting), _now(), claim_id),
+                "UPDATE claim SET reporting_json = ?, updated_at = ? "
+                "WHERE id = ? AND reporting_json IS NOT ?",
+                (_dump(reporting), _now(), claim_id, _dump(reporting)),
             )
 
     def _require_run_transition(

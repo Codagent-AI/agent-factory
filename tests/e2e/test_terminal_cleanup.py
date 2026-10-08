@@ -208,8 +208,14 @@ GitHubClient.create_comment = fail_command
         _cli(config, env, "tick", before_cli=failure)
         claim = store.get_claim(run.claim_id)
         assert claim is not None and claim.lifecycle == "settled"
+        assert any(
+            event.key.endswith(":review-command") for event in store.pending_events(claim.id)
+        )
         _status(board, shared, "done")
         _cli(config, env, "tick", before_cli=failure)
+        assert any(
+            event.key.endswith(":review-command") for event in store.pending_events(claim.id)
+        )
         root = tmp_path / "factory/worktrees" / claim.id
         assert (root / "runner").exists()
         _cli(config, env, "tick")

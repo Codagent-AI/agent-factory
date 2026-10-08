@@ -53,6 +53,7 @@ Repository code, Project schema, and live GitHub state override cached IDs or da
    If the type is genuinely ambiguous (for example Task vs Feature) and it decides what the factory would do, ask Paul.
 4. Write the issue at the same level of detail Paul provided. Preserve his wording, scope, uncertainty, and identifiers; add only relevant factual context already known.
 5. Create or update the repository issue. Native type is issue metadata, not a label; do not recreate redundant `enhancement` labels.
+   Before `gh issue create --body-file F`, run `~/.agent-factory/releases/current/.venv/bin/python -m agent_factory.notify.marker stamp F` to record this Claude session. Before every `gh issue edit --body-file F`, save the current issue body in `OLD` and run `~/.agent-factory/releases/current/.venv/bin/python -m agent_factory.notify.marker carry OLD F`. If the marker command fails, note it in one line and continue without a marker. One session is tracked per issue; `factory-assign` replaces this marker when it hands the issue off.
 6. Confirm Project membership. Routing handles configured repositories; add other issues manually.
 7. Set status and ownership deliberately (see Factory handoff below):
    - Default for new issues: Backlog with Owner human or unset.
