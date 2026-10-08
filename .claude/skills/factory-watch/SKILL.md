@@ -9,6 +9,8 @@ This skill is also linked into `~/.claude/skills`, so it can start from another 
 
 Follow specific issues through the factory, and report once the factory stops moving them. Read `AGENTS.md` first.
 
+Marked issues notify their recorded Claude session on their own when the factory stops progressing. Start `factory-watch` for an issue without a session marker, or when following it from another session.
+
 This is not the general watcher. The resident already detects PR-READY and FAILURE events and dispatches its own headless sessions (`AGENTS.md`, "Service-driven watcher"). This skill only waits on the issues Paul names. It costs no model session while it waits, because `watch.py` polls with sqlite and `gh` reads.
 
 Never print tokens, credential files, or anything under `~/.agent-factory/private/`. Filter output before showing it. The skill is read-only: it never changes cards, labels, claims, or the factory.
