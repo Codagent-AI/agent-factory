@@ -228,10 +228,16 @@ def save(path: Path, record: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    raw_payload: object = json.loads(sys.argv[2] if sys.argv[1] == "--json" else sys.stdin.read())
-    payload = cast(dict[str, Any], raw_payload) if isinstance(raw_payload, dict) else {}
-    if sys.argv[1] != "--json" or len(sys.argv) != 3:
-        raise ValueError("expected review --json <payload>")
+    args = sys.argv[1:]
+    if not args:
+        raw_payload: object = json.loads(sys.stdin.read())
+    elif len(args) == 2 and args[0] == "--json":
+        raw_payload = json.loads(args[1])
+    else:
+        raise ValueError("expected --json <payload> or a JSON payload on stdin")
+    if not isinstance(raw_payload, dict):
+        raise ValueError("expected JSON object payload")
+    payload = cast(dict[str, Any], raw_payload)
     phase = str(payload["phase"])
     if phase != "verified":
         raise ValueError("invalid phase")

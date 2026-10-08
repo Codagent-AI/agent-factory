@@ -69,6 +69,15 @@ def eligible_review_activity(
     }
 
 
+def review_checkpoint(store: ClaimStore, claim: Claim, now: datetime) -> str:
+    """Writer feedback after this time starts the claim's next review round."""
+    checkpoint = claim.outcome.get("review_checkpoint")
+    if isinstance(checkpoint, str):
+        return checkpoint
+    finished = [r.finished_at for r in store.runs_for_claim(claim.id) if r.finished_at]
+    return max(finished) if finished else now.isoformat()
+
+
 def has_eligible_review(activity: dict[str, list[dict[str, object]]]) -> bool:
     return any(activity.values())
 
@@ -119,12 +128,11 @@ def process_review_claim(
         activity = client.list_review_activity(claim.repository, number)
     except (GitHubApiError, OSError):
         return None
-    checkpoint = claim.outcome.get("review_checkpoint")
-    if not isinstance(checkpoint, str):
-        finished = [r.finished_at for r in store.runs_for_claim(claim.id) if r.finished_at]
-        checkpoint = max(finished) if finished else now.isoformat()
     eligible = eligible_review_activity(
-        activity, since=checkpoint, bot_login=bot_login, permission=permission
+        activity,
+        since=review_checkpoint(store, claim, now),
+        bot_login=bot_login,
+        permission=permission,
     )
     if not has_eligible_review(eligible):
         return None

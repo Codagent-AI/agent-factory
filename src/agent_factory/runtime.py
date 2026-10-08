@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import cast
 
-from agent_factory import audit, job_cap, notify, retention, terminal, watch, work_kinds
+from agent_factory import audit, job_cap, notify, retention, slimming, terminal, watch, work_kinds
 from agent_factory.backends.resolve import backend_for
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import (
@@ -271,6 +271,7 @@ def cycle(state: Path, config_path: Path) -> None:
                 ):
                     handler.cleanup(claim, board_status=card_status(shared, card))
         terminal.sweep(store, controller, client, registered, local, seen, now, sync_cache)
+        slimming.sweep(store, local, now)
         paused = store.is_paused()
         quota_holds = store.get_settings_by_prefix("admission", "quota:")
         quota_error = _quota_hold_error(quota_holds)
@@ -836,7 +837,11 @@ def _report(
     active = any(r.status in NONTERMINAL_RUN_STATUSES for r in runs)
     current = card_status(shared, card)
     desired = controller.presentation(claim_id)
-    status = desired.status
+    status = (
+        "Done"
+        if claim.lifecycle == "settled" and card.source.state.lower() == "closed"
+        else desired.status
+    )
     # A reviewed Done card releases worktrees; never bounce it back to Review.
     if not (current == "Done" and claim.lifecycle == "settled"):
         option = shared.project.status.option(status.lower())

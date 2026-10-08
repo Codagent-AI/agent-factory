@@ -243,6 +243,7 @@ class ClaimStore:
                 launched_at TEXT, deadline_at TEXT, finished_at TEXT,
                 result_json TEXT NOT NULL DEFAULT '{}', usage_json TEXT NOT NULL DEFAULT '{}',
                 audit_json TEXT NOT NULL DEFAULT '{}', deliveries_json TEXT NOT NULL DEFAULT '{}',
+                merge_json TEXT,
                 delivery_pending INTEGER NOT NULL DEFAULT 0,
                 redispatch_of TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 UNIQUE(event_key, attempt)
@@ -256,6 +257,8 @@ class ClaimStore:
             for row in self._connection.execute("PRAGMA table_info(watch_dispatch)")
         }
         with self._transaction():
+            if "merge_json" not in columns:
+                self._connection.execute("ALTER TABLE watch_dispatch ADD COLUMN merge_json TEXT")
             if "delivery_pending" not in columns:
                 self._connection.execute(
                     "ALTER TABLE watch_dispatch ADD COLUMN delivery_pending "

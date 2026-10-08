@@ -128,7 +128,6 @@ def _kept_paths(evidence: Path, *, kind: str) -> list[Path]:
         evidence / "evidence" / "e.json",
         evidence / "neutral" / "n.json",
         evidence / "report.html",
-        evidence / ".runtime" / "candidate-worktree" / "HEAD",
         evidence / "future.json",
     ]
 
@@ -150,6 +149,7 @@ def _removed_paths(evidence: Path, *, kind: str) -> list[Path]:
         evidence / ".runtime" / "agent-session-state",
         evidence / ".runtime" / "judge-workspace",
         evidence / ".runtime" / "judge",
+        evidence / ".runtime" / "candidate-worktree",
     ]
 
 

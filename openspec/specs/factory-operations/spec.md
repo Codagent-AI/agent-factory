@@ -427,7 +427,8 @@ claim and, for sandbox attempts, run-specific images. It SHALL preserve results,
 SQLite history, candidate branches, PRs, and mirrors, subject to the evidence retention
 requirement. Worktrees and clones SHALL remain available while work is running, waiting, or
 blocked. They SHALL also remain available while a settled claim is in Review, until the
-terminal release below applies. When verified running work is dragged to Done,
+terminal release below applies. The per-attempt clones of a fix, feature, or task claim are
+the exception: they follow "Slim finished attempts" below. When verified running work is dragged to Done,
 reconciliation SHALL restore Running before cleanup is considered, and that edit SHALL NOT
 remove worktrees. Done cleanup SHALL also wait until all of the claim's reporting has been
 delivered, so that a human-review command is never published after its worktree has been
@@ -490,6 +491,11 @@ released.
 - **WHEN** a reviewed item moves from Review to Done and the factory next successfully polls GitHub
 - **THEN** its factory-owned worktrees or clones and any run-specific images are removed
 - **AND** results, logs, SQLite history, candidate branches, and PRs remain available
+
+#### Scenario: Closed settled claim reaches Done without routing
+
+- **WHEN** the poll observes that a settled factory-owned claim's issue is closed and its card is not Done
+- **THEN** the poll moves the card to Done
 
 #### Scenario: Release a Done claim with no Review observation
 
@@ -637,10 +643,57 @@ Credentials for the suite's candidate branch, the fix PR credential, the Fly dep
 - **WHEN** an operator sees a Claude authentication failure in a host fix or a Fly eval
 - **THEN** the documentation tells them where that login lives, which Keychain account applies, what the service environment must contain, and how to recover, without a manual Keychain-to-file copy step
 
+### Requirement: Slim finished attempts
+
+On every tick, once no run of a claim is non-terminal, the factory SHALL remove the bulk that
+the claim's finished attempts leave on disk and that a later attempt rebuilds. It SHALL NOT
+wait for release or retention to do this:
+
+- For a fix, feature, or task claim, it SHALL remove:
+  - the per-attempt clones under the local root of every attempt whose run was reserved;
+  - each attempt's Runner source snapshots (`attempt-*/audit-*/snapshot/runner-source`).
+
+  Every attempt and review round cuts fresh clones, so this SHALL apply whether the claim is
+  open, blocked, in Review, or terminal. Clones cut for an attempt whose run is not yet
+  reserved SHALL be kept.
+
+  Before it removes a clone, the factory SHALL copy into that attempt's artifact directory
+  what the clone holds that git cannot rebuild:
+  - the target clone's `validator_logs`;
+  - a `clone-state.patch` with the clone's status and uncommitted diff.
+
+  If the copy fails, the factory SHALL keep the clone. The retention rule SHALL cover both
+  copies.
+- For an eval claim whose lifecycle is `settled`, `cancelled`, or `superseded`, it SHALL remove
+  only the installed dependency directories (`node_modules`) at the top level of each
+  repetition's `.runtime/candidate-worktree` and one level below it. Everything else SHALL be
+  kept, because rescoring hashes the acceptance artifacts recorded in the checkout and the
+  Runner output, and human review serves `dist`. An eval claim that is still open SHALL keep
+  its dependencies, because a recovery attempt may resume a repetition from its checkpoint.
+
+Slimming SHALL NOT follow a link to remove anything outside the attempt's artifact directory
+or the claim's clone directory. It SHALL keep outcomes, results, provenance, diffs, logs,
+Runner output, and session state for the retention rule. It SHALL record in the claim's cleanup
+record the runs it slimmed and any failures, and it SHALL retry failures on later ticks. When a
+later run of the claim finishes, the factory SHALL slim it too.
+
+#### Scenario: Slim a blocked fix claim
+
+- **WHEN** a fix claim's attempt ends with `needs-input` and no other run of the claim is non-terminal
+- **THEN** the next tick copies the clone's validator logs and uncommitted state into the attempt's evidence
+- **AND** the next tick removes the claim's clones and the attempt's Runner source snapshots
+- **AND** its outcome, logs, and session state remain
+
+#### Scenario: Slim a settled eval
+
+- **WHEN** an eval claim settles as `pending-human-review`
+- **THEN** the next tick removes the installed dependencies from each repetition's candidate checkout
+- **AND** the human-review command can still serve the scored build, and the repetition can still be rescored
+
 ### Requirement: Retain evidence for a bounded period
 
 The factory SHALL prune the attempt evidence of terminal claims after configurable retention
-periods. The retention period is `[limits] evidence_retention_days`, default 14 days. The
+periods. The retention period is `[limits] evidence_retention_days`, default 3 days. The
 unreviewed retention period is `[limits] unreviewed_retention_days`, default 30 days. Both
 periods SHALL be local configuration.
 
@@ -668,7 +721,7 @@ card observed in any other state SHALL reset the recorded Done observation.
 
 Pruning SHALL remove logs, Runner session state, agent session state, and agent output under
 the attempt's artifact directory and, for a host attempt, its recorded Runner session
-directory. It SHALL remove only enumerated evidence paths and SHALL keep any file or
+directory, and an eval repetition's remaining candidate checkout. It SHALL remove only enumerated evidence paths and SHALL keep any file or
 directory it does not recognise. Pruning SHALL keep the fix or feature outcome, eval result
 and provenance records, and the attempt's issue input. It SHALL NOT touch candidate
 branches, PRs, mirrors, SQLite history, or the operator's working clones.
@@ -682,13 +735,13 @@ SHALL be kept.
 
 #### Scenario: Prune after the retention period
 
-- **WHEN** a claim's card was observed Done more than 14 days ago under the default retention and nothing still needs its evidence
+- **WHEN** a claim's card was observed Done more than 3 days ago under the default retention and nothing still needs its evidence
 - **THEN** the next tick removes its logs, session state, and agent output
 - **AND** its outcome or result records, issue input, candidate branches, and PRs remain
 
 #### Scenario: Prune a Done claim released without Review
 
-- **WHEN** a settled claim reached Done without a recorded Review observation, its terminal release completed, and 14 days have passed since its first durable Done observation
+- **WHEN** a settled claim reached Done without a recorded Review observation, its terminal release completed, and 3 days have passed since its first durable Done observation
 - **THEN** the next tick prunes its attempt evidence under the Done path
 
 #### Scenario: Skip a Done claim with a pending sync
@@ -698,7 +751,7 @@ SHALL be kept.
 
 #### Scenario: Prune a cancelled claim that recorded a PR
 
-- **WHEN** a cancelled fix claim recorded a PR and more than 14 days have passed since it was cancelled
+- **WHEN** a cancelled fix claim recorded a PR and more than 3 days have passed since it was cancelled
 - **THEN** its evidence is pruned whatever its card's status, without waiting on a post-merge sync, which only settled claims receive
 
 #### Scenario: Prune a superseded claim outside Done
@@ -708,8 +761,8 @@ SHALL be kept.
 
 #### Scenario: Keep a recently superseded claim whose runs finished long ago
 
-- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 3 days ago
-- **THEN** its evidence is kept until 14 days after it was superseded
+- **WHEN** a claim's last run finished 40 days ago and the claim was superseded 1 day ago
+- **THEN** its evidence is kept until 3 days after it was superseded
 
 #### Scenario: Prune a settled claim left in Review
 
@@ -720,7 +773,7 @@ SHALL be kept.
 #### Scenario: Move a Review card to Done late
 
 - **WHEN** a settled claim's card moves from Review to Done 25 days after it settled
-- **THEN** the unreviewed path no longer applies and its evidence is kept until 14 days after that Done observation
+- **THEN** the unreviewed path no longer applies and its evidence is kept until 3 days after that Done observation
 
 #### Scenario: Reach Done after a long time
 
@@ -884,9 +937,10 @@ The shared configuration SHALL accept an optional `[watch]` section with these s
 - optional per-event profiles for `PR-READY` and `FAILURE`;
 - the concurrency cap (default 2, at least 1);
 - the failure grace period in minutes (default 7, zero or more);
-- the session timeout in minutes (default 90, at least 1).
+- the session timeout in minutes (default 90, at least 1);
+- `auto_merge`, a boolean (default false) that turns on risk rating and auto-merge of low-risk pull requests.
 
-When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, or a value out of range, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, concurrency cap, grace period, or timeout applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout.
+When watching is enabled, configuration loading SHALL fail on a missing repository or default profile, a profile that is not in `cli:model:effort` form, an unknown event name, a value out of range, or an `auto_merge` that is not a boolean, and the failure SHALL name the setting. A missing section, or `enabled = false`, SHALL keep today's behavior, with auto-merge off. The Codagent example configuration SHALL enable watching with the default profile `claude:claude-sonnet-5-5:medium` and `auto_merge = true`. Each cycle SHALL read the watch settings from the configuration it loads, so a changed profile, concurrency cap, grace period, timeout, or `auto_merge` applies to dispatches that start after the change. A session that is already running SHALL keep its profile and timeout. A merge that is waiting SHALL use the `auto_merge` value of the cycle that evaluates it, so turning it off stops every waiting merge. The checks a merge requires SHALL come from each repository's GitHub rulesets, not from this configuration.
 
 The section SHALL have no per-day session budget. A `daily_sessions` key left in the section SHALL NOT fail configuration loading and SHALL have no effect.
 
@@ -910,11 +964,21 @@ The section SHALL have no per-day session budget. A `daily_sessions` key left in
 - **WHEN** the shared configuration has no `[watch]` section
 - **THEN** the factory detects no watch event, starts no session, and shows watching as disabled in status
 
+#### Scenario: Reject a non-boolean auto-merge
+
+- **WHEN** watching is enabled with `auto_merge = "yes"`
+- **THEN** configuration loading fails and names the `[watch]` auto_merge setting
+
+#### Scenario: Turn auto-merge off while a merge waits
+
+- **WHEN** a `low`-rated pull request waits for a running check and `auto_merge` is changed to false before the next cycle
+- **THEN** the next cycle does not merge it and ends its merge with the reason that auto-merge is off
+
 ### Requirement: Report watch dispatches in status
 
 When watching is enabled, `agent-factory status` SHALL show a watch section with:
 
-- whether watching is enabled;
+- whether watching is enabled, and whether auto-merge is on;
 - the time of the last detection pass;
 - each `launched` dispatch with its event, claim, pull request when there is one, model profile, and elapsed time;
 - the number of `pending` dispatches, and why they wait: the concurrency cap, a failing watch doctor group, or a running check of the same pull request;
@@ -922,9 +986,10 @@ When watching is enabled, `agent-factory status` SHALL show a watch section with
 - the number of sessions started today and today's known estimated cost, with no budget;
 - every dispatch recorded `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted` whose claim is not yet observed Done, cancelled, or superseded;
 - each undelivered dispatch comment with its last failure reason;
-- for each completed dispatch whose claim is not yet observed Done, cancelled, or superseded, the factory issues its session filed or updated, with the pull request, or the claim's issue for a triage.
+- for each completed dispatch whose claim is not yet observed Done, cancelled, or superseded, the factory issues its session filed or updated, with the pull request, or the claim's issue for a triage;
+- for each completed PR-READY check with a rating whose claim is not yet observed Done, cancelled, or superseded, the pull request, its rating, and its merge state: waiting with what it waits for, merged, or not merged with the reason.
 
-When watching is disabled, status SHALL show one line saying so, and it SHALL still list `launched` and `pending` dispatches. Status SHALL NOT start or change any dispatch.
+When watching is disabled, status SHALL show one line saying so, and it SHALL still list `launched` and `pending` dispatches. Status SHALL NOT start or change any dispatch, and SHALL NOT merge.
 
 #### Scenario: Inspect a running triage
 
@@ -951,6 +1016,16 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 - **WHEN** a PR-READY check completed and filed one factory issue for a claim still in Review
 - **THEN** status shows the pull request and the filed issue's URL on one line
 
+#### Scenario: Inspect a merge that waits
+
+- **WHEN** a pull request rated `low` waits for a running check
+- **THEN** status shows the pull request, `low`, and that the merge waits for checks
+
+#### Scenario: Inspect a pull request left for review
+
+- **WHEN** a pull request was rated `medium` for a claim still in Review
+- **THEN** status shows the pull request, `medium`, and not merged because of the rating
+
 ### Requirement: Redispatch a watch event
 
 `agent-factory watch redispatch <dispatch>` SHALL queue a new `pending` attempt for the same event as the named dispatch, under a new attempt key. It SHALL accept only a `PR-READY` or `FAILURE` dispatch whose state is `completed`, `interrupted`, `timed-out`, `launch-failed`, or `budget-exhausted`. It SHALL refuse any other dispatch, naming its state, and change nothing. The new attempt SHALL be processed like any `pending` dispatch, under the concurrency cap, the watch readiness checks, and one session per pull request at a time. The command SHALL print the new dispatch's id. When watching is disabled, it SHALL say that the attempt waits until watching is enabled. The command SHALL NOT start the session itself.
@@ -972,34 +1047,46 @@ When watching is disabled, status SHALL show one line saying so, and it SHALL st
 
 ### Requirement: Document the service-driven watcher
 
-The operations documentation SHALL describe service-driven watching as the normal mode, and SHALL state that the watcher's job is to make sure the factory itself works, not to review the code the factory builds:
+The operations documentation SHALL describe service-driven watching as the normal mode, and SHALL state that the watcher's job is to make sure the factory itself works, and, when auto-merge is on, to merge the factory's low-risk pull requests:
 
 - the two events and what each one does;
 - the `[watch]` settings and their defaults, and how to escalate a failure to a stronger model;
 - the concurrency behavior; that no event is skipped because of session volume, which the factory job cap bounds instead; and that `budget-exhausted` dispatches from earlier releases remain in history and can be redispatched;
-- the actions a dispatched session may and may not take, including that it files issues for factory defects and never fixes anything;
+- the actions a dispatched session may and may not take, including that it files issues for factory defects and never fixes or merges anything;
+- auto-merge: the risk bars for fixes, tasks, and features, the gates the factory checks before it merges, the risk-verdict comment on the pull request, the 60-minute wait, and how to turn it off;
+- that auto-merge requires a GitHub ruleset requiring status checks on each fix target's base branch, that a repository without one never auto-merges, and that branch protection requiring an approving review blocks auto-merge in that repository;
 - that triage runs after a failed claim's automatic retry and does not hold it;
 - the watch doctor group, including the `gh` login that files issues;
 - the watch section of status;
 - `watch redispatch`;
 - how to find a dispatch's evidence and usage.
 
-They SHALL state that no interactive watcher session is used. An on-demand `factory-status` skill SHALL report the factory's state once when asked, without watching or polling. A `factory-triage` skill SHALL hold the failure-handling procedure and both headless procedures that the watch workflow's sessions follow: the PR-READY check and the failure triage. The factory PR review skill and its reviewer agent SHALL have no headless mode; they review a pull request only when the operator asks.
+They SHALL state that no interactive watcher session is used. An on-demand `factory-status` skill SHALL report the factory's state once when asked, without watching or polling, including pull requests the factory merged automatically. A `factory-triage` skill SHALL hold the failure-handling procedure and both headless procedures that the watch workflow's sessions follow: the PR-READY check, including the risk rating, and the failure triage. Its standing rules SHALL allow the resident's auto-merge while still forbidding an agent session to merge. The factory PR review skill and its reviewer agent SHALL have no headless mode; they review a pull request only when the operator asks.
 
 #### Scenario: Operate the service watcher
 
 - **WHEN** an operator follows the documentation to enable watching
 - **THEN** they can set the profile and concurrency cap, pass the watch doctor group, find running and failed dispatches and the issues they filed in status, and redispatch a failed one
 
+#### Scenario: Turn off auto-merge
+
+- **WHEN** an operator follows the documentation to stop auto-merging
+- **THEN** they set `[watch] auto_merge = false` in committed configuration; sessions launched after the change do not rate risk, no pull request is merged after the change, and a rating from a session already running gets a risk-verdict comment saying it was not merged because auto-merge is off
+
+#### Scenario: Enable auto-merge for a repository
+
+- **WHEN** an operator follows the documentation to let a fix target auto-merge
+- **THEN** they add a ruleset on its base branch that requires its CI status checks, and the factory then merges `low`-rated pull requests there once those checks pass
+
 #### Scenario: Ask for a factory update
 
 - **WHEN** the operator asks an agent for a factory update
-- **THEN** the agent follows `factory-status`, reports once what waits on the operator, what is running, and what failed, and starts no watcher
+- **THEN** the agent follows `factory-status`, reports once what waits on the operator, what is running, what failed, and what merged automatically, and starts no watcher
 
 #### Scenario: Ask for a PR review
 
 - **WHEN** the operator asks an agent to review a factory pull request
-- **THEN** the agent follows `factory-pr-review` interactively; no watch session reviews it
+- **THEN** the agent follows `factory-pr-review` interactively; no watch session reviews it for the operator
 
 ### Requirement: Document the task kind
 

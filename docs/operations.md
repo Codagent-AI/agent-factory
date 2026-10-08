@@ -484,7 +484,35 @@ worktrees and clones, mirrors, and artifacts. Inspect disk use with
 Suite evidence, candidate outputs, and factory logs are separate and retained
 through human review. Fix attempts add growth beyond evals: a fresh clone of
 the target repository, Runner, and Skills per attempt, plus that attempt's
-per-run Docker image. Once a reviewed card reaches Done, Factory releases its
+per-run Docker image.
+
+**Slimming.** On every tick, the factory removes the bulk that finished
+attempts leave behind and that a later attempt rebuilds. It does not wait for
+release or retention.
+
+- **Fix, feature, and task claims.** Once no run of the claim is active, the
+  factory removes:
+  - `<root>/clones/<claim>/<N>` for every attempt whose run was reserved;
+  - each attempt's `attempt-*/audit-*/snapshot/runner-source`.
+
+  This applies even while the claim is blocked or in Review, because the next
+  attempt or review round clones afresh.
+
+  Before removing a clone, the factory copies the target clone's
+  `validator_logs` and a `clone-state.patch` (status and uncommitted diff)
+  into `attempt-<N+1>/`, where retention prunes them with the rest of the
+  evidence.
+- **Eval claims.** Once the claim is settled, cancelled, or superseded, the
+  factory removes only `node_modules` from each repetition's
+  `.runtime/candidate-worktree`, at the top level and one level down. The
+  rest of the checkout and `.runtime/agent-runner-projects` stay until
+  retention, because `run.sh --rescore-from` hashes the acceptance artifacts
+  they hold, and the human-review command serves `dist`.
+
+Slimming never follows a link out of the artifact or clone directory.
+`claim.cleanup.slimmed` records the slimmed runs and any failures.
+
+Once a reviewed card reaches Done, Factory releases its
 recorded owned worktrees, clones, images, and credential copies. Cancelled and
 superseded claims are released as soon as their runs stop and reporting is
 delivered. Settled claims still outside Done are released after `[limits]
@@ -498,7 +526,7 @@ Factory removes only its recorded owned worktrees, clones, and images;
 it never deletes candidate branches, PRs, mirrors, or shared checkouts, and it
 only prunes evidence under the rule below.
 
-**Evidence retention.** `[limits] evidence_retention_days` (default 14) starts
+**Evidence retention.** `[limits] evidence_retention_days` (default 3) starts
 from the first durable Done observation for a settled claim. Leaving Done
 resets that observation. For cancelled and superseded claims it starts from
 the recorded terminal transition, even if the card never reaches Done.
@@ -508,7 +536,7 @@ period has elapsed, release has completed, and no run, reporting, or merged
 PR sync is pending, the next tick prunes that
 claim's evidence: logs, Runner and agent session state, and agent output
 under each attempt's artifact directory (and, for a host attempt, its
-recorded Runner session directory). It keeps the fix outcome or eval result
+recorded Runner session directory), plus an eval's remaining candidate checkout. It keeps the fix outcome or eval result
 and provenance records, the attempt's issue input, and never touches
 candidate branches, PRs, mirrors, SQLite history, or the operator's working
 clones. Pruning is
@@ -535,14 +563,29 @@ claim that a static plist proves live launchd acceptance.
 
 ## Service-driven watch dispatch
 
-The watcher makes sure the factory itself works. It does not review the code the factory builds. The resident runs the watch step once per cycle, including while admissions are paused or the main cycle fails, and dispatches one fresh headless session (the packaged `factory-watch` workflow, contract `factory-watch/2`, in a throwaway checkout of `[watch] repository`) for each of two events:
+The watcher makes sure the factory itself works. It does not review the code the factory builds. The resident runs the watch step once per cycle, including while admissions are paused or the main cycle fails, and dispatches one fresh headless session (the packaged `factory-watch` workflow, contract `factory-watch/3`, in a throwaway checkout of `[watch] repository`) for each of two events:
 
-- `PR-READY`: a fix, feature, or task run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). It posts nothing on the pull request and does not review its code.
+- `PR-READY`: a fix, feature, or task run completed with a pull request (initial, recovery, or review round). The session mines the PR description's red and orange attention items, and the run's evidence as needed, for defects in the factory stack: Agent Factory, the Runner workflows, Agent Skills, and Agent Validator as the factory uses it. For each one it searches open issues, adds evidence to a matching issue or files a Bug in the owning repository, and assigns new issues in `[fix] targets` repositories to the factory (Owner=factory, Status=Ready, Priority Low unless the defect blocks work). When `auto_merge` is on, it also rates risk from the diff and description. The session posts nothing on the pull request; the resident posts a risk verdict after its merge decision.
 - `FAILURE`: an attempt stayed `failed`, `interrupted`, `cancelled`, or `timed_out`, or a fix, feature, or task attempt completed with outcome `failed`. In either case, its result was consumed and `grace_minutes` has passed. `needs-input` outcomes are not triaged. Triage runs after the claim's own automatic retry has had its chance and never holds that retry. The session diagnoses the cause, may pause or resume the factory for containment, and files or updates an issue for a factory defect. The factory posts its cause, evidence, owner, actions, issues, pause state, and next step as one factory-bot comment on the claim's issue. For a transient or environment cause it files no issue unless there is a real defect, and says what the operator must do.
 
 Neither session fixes anything: no branches, commits, pushes, or pull requests. Neither deploys, merges, touches a release, the service clone, or the operator's checkout, or fetches into the factory's mirrors. Both follow the `factory-triage` skill ("Headless PR-READY check", "Headless triage").
 
-Configure `[watch]` in shared TOML with `enabled`, `repository`, `agent`, optional `agents.PR-READY` and `agents.FAILURE` (for example, set `agents.FAILURE` to an Opus profile to escalate triage), `max_sessions` (default 2), `grace_minutes` (default 7), and `timeout_minutes` (default 90). The profile syntax is `cli:model:effort`. At most `max_sessions` sessions run at once, and one at a time per pull request. Every eligible event can get a session. Older `budget-exhausted` dispatches remain visible and can be redispatched. A session that ends without a valid result is alerted on the claim's issue.
+Configure `[watch]` in shared TOML with `enabled`, `repository`, `agent`, optional `agents.PR-READY` and `agents.FAILURE` (for example, set `agents.FAILURE` to an Opus profile to escalate triage), `max_sessions` (default 2), `grace_minutes` (default 7), `timeout_minutes` (default 90), and `auto_merge` (default false). The profile syntax is `cli:model:effort`. At most `max_sessions` sessions run at once, and one at a time per pull request. Every eligible event can get a session. Older `budget-exhausted` dispatches remain visible and can be redispatched. A session that ends without a valid result is alerted on the claim's issue.
+
+### Auto-merge
+
+With `auto_merge = true`, each PR-READY session also rates the pull request `low`, `medium`, or `high`, and the resident merges `low` ones itself; the session never merges. The bars, in the `factory-triage` skill's "Headless PR-READY check":
+
+- Any kind: a red item, or a change to auth or credentials, CI or deploy and release scripts, workflow definitions, database schema or migrations, pinned refs in committed configuration, a public CLI or API interface, or dependencies, prevents `low`.
+- Fix: every change serves the reported defect, a test fails without the fix and passes with it, at most 300 changed non-test lines (added plus deleted, excluding generated lockfiles), and each orange item judged harmless.
+- Task: every change serves the task, every behavior change is covered by an added or updated test (documentation-only changes need none), at most 300 changed non-test lines, and each orange item judged harmless.
+- Feature: the specification delta only adds requirements and existing behavior is unchanged, at most 150 changed non-test lines, no orange items, and every added scenario tested.
+
+The resident merges a `low` pull request with a merge commit pinned to the rated head when the factory is unpaused; the repository is a `[fix] targets` entry and the base is its branch; the URL matches the dispatch; the pull request is open, not a draft, and conflict-free; the head is unchanged; every reported check and status passed; every status check that the repository's GitHub rulesets require on the base branch reported success; no review thread is unresolved; and no writer's standing review (their latest approve, request-changes, or dismissed review; comment-only reviews do not count) requests changes. It waits up to 60 minutes for running checks, required checks to report, mergeability, a reviewer's permission lookup, or a pause to clear. After an uncertain merge response it reads GitHub on later cycles without sending another request, and ends not merged if the pull request is still open five minutes after the request.
+
+A repository auto-merges only when a ruleset on its base branch requires status checks (Settings, Rules, Rulesets, "Require status checks to pass"); without one, every `low` pull request there ends "no required checks on main". The required checks gate human merges too. Branch protection that requires an approving review makes GitHub reject the merge; the rejection appears in the verdict. Agent Factory's own checks come from `.github/workflows/ci.yml`.
+
+The factory bot posts one risk-verdict comment on the pull request with the rating, reasons, head, and either "merged automatically" or the gate that stopped it; `status` shows the same. To stop auto-merging, set `auto_merge = false` in committed configuration: sessions launched afterwards do not rate, and waiting merges end "auto-merge off".
 
 ## Factory job cap
 
@@ -552,9 +595,11 @@ When the rolling count reaches the cap, new work waits without consuming a retry
 
 Doctor includes a `watch` group when enabled. It checks the Runner, `git`, `gh`, each profile's CLI, the packaged workflow's contract, the watch repository mirror, and the `gh` login sessions file issues with. That login must differ from the factory bot and have write access, because the factory admits only issues written by writers.
 
-`status` shows the last detection time, today's session count and known cost, running and pending work, ended dispatches, undelivered comments, audits, and the factory issues each check or triage filed or updated (`watch factory issues:`). Each dispatch's evidence directory, `<storage_root>/artifacts/watch/<dispatch>/`, holds its brief, `watch-result.json`, Runner log, and session; its usage is in the `watch_dispatch` row. Run `agent-factory --config <local.toml> watch redispatch <id>` for an ended check or triage that needs another attempt. To stop new detection and launches, set `enabled = false` through a committed configuration change. Existing sessions are still supervised and comments are still delivered. No interactive watcher session is needed: for an on-demand summary, use the `factory-status` skill; to investigate or fix a failure by hand, use `factory-triage`; to review a factory PR, use `factory-pr-review`.
+`status` shows whether auto-merge is on, each rated PR and its merge state, the last detection time, today's session count and known cost, running and pending work, ended dispatches, undelivered comments, audits, and the factory issues each check or triage filed or updated (`watch factory issues:`). Each dispatch's evidence directory, `<storage_root>/artifacts/watch/<dispatch>/`, holds its brief, `watch-result.json`, Runner log, and session; its usage is in the `watch_dispatch` row. Run `agent-factory --config <local.toml> watch redispatch <id>` for an ended check or triage that needs another attempt. To stop auto-merging, commit `auto_merge = false`; waiting merges end on the next cycle with a risk-verdict comment. To stop new detection and launches, set `enabled = false` through a committed configuration change. Existing sessions are still supervised and comments are still delivered. No interactive watcher session is needed: for an on-demand summary, use the `factory-status` skill; to investigate or fix a failure by hand, use `factory-triage`; to review a factory PR, use `factory-pr-review`.
 
 A failed run can be missed when no cycle runs for seven days after its grace period. Timeouts are enforced at cycle granularity. A timeout can leave usage partial and audit missing. An unknown process identity keeps its concurrency slot until the probe resolves.
+
+Eval revision inputs are declared in `src/agent_factory/suites/and_scene/inputs.py`. An ordinary input is an optional request-settable ref resolved in a local checkout and passed to the suite through argv. Inputs that need Fly guest cloning, claim-image changes, a new `[repositories]` key, or a rollback guard still require explicit code.
 
 ## Session notifications
 

@@ -28,3 +28,10 @@ def test_enabled_watch_names_invalid_profile_setting() -> None:
     text = Path("config/codagent.toml").read_text() + '\n[watch.agents]\nFAILURE = "invalid"\n'
     with pytest.raises(ConfigurationError, match="watch.agents.FAILURE"):
         SharedConfig.from_toml(text)
+
+
+def test_auto_merge_is_committed_on_and_must_be_boolean() -> None:
+    text = Path("config/codagent.toml").read_text()
+    assert SharedConfig.from_toml(text).watch.auto_merge
+    with pytest.raises(ConfigurationError, match="watch.auto_merge"):
+        SharedConfig.from_toml(text.replace("auto_merge = true", 'auto_merge = "yes"'))

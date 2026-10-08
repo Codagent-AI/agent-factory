@@ -9,6 +9,8 @@ from graphql import parse
 from agent_factory.github import (
     GitHubApiError,
     GitHubClient,
+    GitHubHttpError,
+    GitHubMergeRejectedError,
     GitHubNotFoundError,
     ProjectQueueItem,
     _single_select_fields,  # pyright: ignore[reportPrivateUsage]
@@ -804,3 +806,146 @@ def test_commit_files_skips_the_commit_when_the_tree_is_unchanged() -> None:
 
     assert client.commit_files("org/evals", "main", {"a": b"a"}, "message") is None
     assert len(gh.calls) == 4
+
+
+def test_commit_checks_combine_runs_and_latest_commit_statuses() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "check_runs": [
+                        {"name": "build", "status": "completed", "conclusion": "success"},
+                        {"name": "test", "status": "in_progress", "conclusion": None},
+                    ]
+                }
+            ),
+            json.dumps(
+                [
+                    {"context": "lint", "state": "success"},
+                    {"context": "lint", "state": "failure"},
+                    {"context": "deploy", "state": "failure"},
+                ]
+            ),
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    checks = client.commit_checks("example/repository", "a" * 40)
+
+    assert checks.reported
+    assert checks.pending == ("test",)
+    assert checks.failed == ("deploy",)
+    assert checks.successful == ("build", "lint")
+    assert "check-runs" in gh.calls[0].arguments[1]
+    assert "statuses" in gh.calls[1].arguments[1]
+
+
+def test_required_checks_read_ruleset_status_checks_for_the_branch() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                [
+                    {"type": "deletion"},
+                    {
+                        "type": "required_status_checks",
+                        "parameters": {
+                            "required_status_checks": [{"context": "test"}, {"context": "lint"}]
+                        },
+                    },
+                    {
+                        "type": "required_status_checks",
+                        "parameters": {"required_status_checks": [{"context": "test"}]},
+                    },
+                ]
+            )
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.required_checks("example/repository", "main") == ("test", "lint")
+    assert gh.calls[0].arguments[1].startswith("repos/example/repository/rules/branches/main?")
+
+
+def test_required_checks_are_empty_without_rulesets() -> None:
+    gh = RecordingGh([json.dumps([])])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.required_checks("example/repository", "main") == ()
+
+
+def test_merge_pull_request_pins_head_and_uses_merge_commit() -> None:
+    gh = RecordingGh([json.dumps({"merged": True, "sha": "b" * 40})])
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    assert client.merge_pull_request("example/repository", 7, "a" * 40) == "b" * 40
+    assert gh.calls[0].arguments == [
+        "api",
+        "repos/example/repository/pulls/7/merge",
+        "--method",
+        "PUT",
+        "--input",
+        "-",
+    ]
+    assert gh.calls[0].body == {"merge_method": "merge", "sha": "a" * 40}
+
+
+def test_get_pull_request_details_reads_merge_gates() -> None:
+    gh = RecordingGh(
+        [
+            json.dumps(
+                {
+                    "state": "open",
+                    "merged_at": None,
+                    "draft": False,
+                    "mergeable": True,
+                    "base": {"ref": "main"},
+                    "head": {"sha": "a" * 40},
+                    "merge_commit_sha": None,
+                }
+            )
+        ]
+    )
+    client = GitHubClient(gh, lambda: "installation-token")
+
+    pull = client.get_pull_request_details("example/repository", 7)
+
+    assert pull.state == "OPEN"
+    assert pull.base_ref == "main" and pull.head_sha == "a" * 40
+    assert pull.mergeable is True and not pull.draft
+    assert gh.calls[0].arguments == ["api", "repos/example/repository/pulls/7", "--method", "GET"]
+
+
+def test_merge_has_parent_checks_rated_head() -> None:
+    gh = RecordingGh([json.dumps({"parents": [{"sha": "a" * 40}, {"sha": "b" * 40}]})])
+    client = GitHubClient(gh, lambda: "installation-token")
+    assert client.merge_has_parent("example/repository", "c" * 40, "b" * 40)
+
+
+def test_merge_pull_request_distinguishes_definitive_rejection() -> None:
+    gh = RecordingGh([json.dumps({"merged": False, "message": "approval required"})])
+    client = GitHubClient(gh, lambda: "installation-token")
+    with pytest.raises(GitHubMergeRejectedError, match="approval required"):
+        client.merge_pull_request("example/repository", 7, "a" * 40)
+
+    class HttpFailure(RecordingGh):
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubHttpError(405)
+
+    client = GitHubClient(HttpFailure([]), lambda: "installation-token")
+    with pytest.raises(GitHubMergeRejectedError, match="HTTP 405"):
+        client.merge_pull_request("example/repository", 7, "a" * 40)
+
+
+def test_merge_pull_request_rate_limit_is_not_a_rejection() -> None:
+    class RateLimited(RecordingGh):
+        def run(
+            self, arguments: list[str], body: dict[str, object] | None, environment: dict[str, str]
+        ) -> str:
+            raise GitHubHttpError(429)
+
+    client = GitHubClient(RateLimited([]), lambda: "installation-token")
+    with pytest.raises(GitHubHttpError) as raised:
+        client.merge_pull_request("example/repository", 7, "a" * 40)
+    assert not isinstance(raised.value, GitHubMergeRejectedError)

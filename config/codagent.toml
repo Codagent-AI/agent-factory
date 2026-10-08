@@ -69,8 +69,8 @@ results_branch = "main"
 agent_runner_ref = "main"
 agent_validator_ref = "main"
 lead = "claude:claude-sonnet-5-5:high"
-implementor = "codex:gpt-6-luna:medium"
-tester = "codex:gpt-6-luna:medium"
+implementor = "claude:claude-sonnet-5-5:medium"
+tester = "claude:claude-sonnet-5-5:medium"
 skip_validator = false
 
 [fix]
@@ -103,7 +103,7 @@ repository = "Codagent-AI/and-scene"
 
 [fix.defaults]
 lead = "claude:claude-opus-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "claude:claude-opus-5-5:medium"
 tester = "claude:claude-sonnet-5:medium"
 
 [feature]
@@ -111,16 +111,16 @@ contract = "factory-feature/1"
 
 [feature.defaults]
 lead = "claude:claude-opus-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "claude:claude-opus-5-5:medium"
 tester = "claude:claude-sonnet-5:medium"
-crosscheck = "codex:gpt-6-sol:high"
+crosscheck = "claude:claude-opus-5-5:high"
 
 [task]
 contract = "factory-task/1"
 
 [task.defaults]
 lead = "claude:claude-sonnet-5-5:high"
-implementor = "codex:gpt-6-sol:medium"
+implementor = "claude:claude-opus-5-5:medium"
 tester = "claude:claude-sonnet-5:medium"
 
 [notify]
@@ -129,6 +129,7 @@ agent = "claude:claude-haiku-4-5-20251001:low"
 
 [watch]
 enabled = true
+auto_merge = true
 repository = "Codagent-AI/agent-factory"
 agent = "claude:claude-sonnet-5-5:medium"
 

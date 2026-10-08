@@ -23,6 +23,8 @@ dev = [
   "graphql-core>=3.2,<3.3",
   "pyright>=1.1.405",
   "pytest>=8.4.2",
+  "pytest-xdist>=3.8",
+  "pyyaml>=6.0.3",
   "ruff>=0.12.12",
 ]
 
@@ -41,7 +43,7 @@ venv = ".venv"
 # Docker-dependent tests are deselected by default: this project runs its fixes on the host,
 # and a machine without a responsive daemon would otherwise stall on every Docker call.
 # Run them with `pytest -m docker` on a Docker-enabled host.
-addopts = "--strict-config --strict-markers -m 'not docker'"
+addopts = "--strict-config --strict-markers -m 'not docker' -n auto --dist worksteal"
 testpaths = ["tests"]
 # Shared doubles are imported as `tests.fixtures...`.
 pythonpath = ["."]

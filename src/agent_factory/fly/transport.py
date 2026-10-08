@@ -944,8 +944,16 @@ class Lifecycle:
                 failures += 1
                 _log(self.factory, f"observation failed ({failures}): {error}")
                 machine_id = self.transport.machine_id
-                if machine_id and self._get(machine_id) is None:
-                    raise MachineLostError("Machine disappeared during observation") from error
+                if machine_id:
+                    try:
+                        machine = self._get(machine_id)
+                    except (FlyApiError, FlyTransportError) as lookup_error:
+                        _log(self.factory, f"machine lookup failed ({failures}): {lookup_error}")
+                    else:
+                        if machine is None:
+                            raise MachineLostError(
+                                "Machine disappeared during observation"
+                            ) from error
                 self.sleep(min(interval * failures, 120))
                 continue
             head, _, log = raw.partition(_LOG_MARKER)

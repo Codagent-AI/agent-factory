@@ -150,7 +150,7 @@ def _plan(tmp_path: Path, marker: Path, *, evaluation_status: str = "completed")
 
 
 def _wait_for(path: Path) -> None:
-    end = time.monotonic() + 5
+    end = time.monotonic() + 30
     while not path.exists() and time.monotonic() < end:
         time.sleep(0.02)
     assert path.exists()
@@ -174,12 +174,17 @@ def test_e2e_002_supervisor_survives_launcher_and_recovers_completion(tmp_path: 
     # The independently sessioned supervisor is not tied to this test's controller/store object.
     store.close()
     restarted = ClaimStore(state)
+    # A child can start before its supervisor records the run as running.
+    deadline = time.monotonic() + 30
     active = restarted.get_run(run.id)
+    while time.monotonic() < deadline and (active is None or active.status != "running"):
+        time.sleep(0.02)
+        active = restarted.get_run(run.id)
     assert active is not None and active.status == "running"
     assert active.process.get("pid") == int(marker.read_text(encoding="utf-8"))
 
     marker.with_suffix(".done").touch()
-    supervisor.wait(timeout=5)
+    supervisor.wait(timeout=30)
     finished = restarted.get_run(run.id)
     assert finished is not None and finished.status == "completed"
     assert finished.result["product_verdict"] == "ready-for-human-review"
@@ -201,14 +206,14 @@ def test_timeout_and_cancellation_only_signal_verified_owned_child(tmp_path: Pat
     decoy = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
     try:
         _wait_for(marker)
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=30)
         finished = store.get_run(run.id)
         assert finished is not None and finished.status == "timed_out"
         assert finished.result["timeout"] == "inactivity"
         assert decoy.poll() is None
     finally:
         decoy.terminate()
-        decoy.wait(timeout=5)
+        decoy.wait(timeout=30)
 
 
 def test_cancellation_request_is_observed_without_touching_a_decoy(tmp_path: Path) -> None:
@@ -228,13 +233,13 @@ def test_cancellation_request_is_observed_without_touching_a_decoy(tmp_path: Pat
     try:
         _wait_for(marker)
         store.request_cancellation(run.id)
-        supervisor.wait(timeout=5)
+        supervisor.wait(timeout=30)
         finished = store.get_run(run.id)
         assert finished is not None and finished.status == "cancelled"
         assert decoy.poll() is None
     finally:
         decoy.terminate()
-        decoy.wait(timeout=5)
+        decoy.wait(timeout=30)
 
 
 def test_suite_reported_technical_failure_is_not_recorded_as_product_completion(
@@ -254,7 +259,7 @@ def test_suite_reported_technical_failure_is_not_recorded_as_product_completion(
     )
     _wait_for(marker)
     marker.with_suffix(".done").touch()
-    supervisor.wait(timeout=5)
+    supervisor.wait(timeout=30)
     finished = store.get_run(run.id)
     assert finished is not None and finished.status == "failed"
 
@@ -322,7 +327,7 @@ def test_bounded_claude_wait_does_not_consume_execution_or_idle_budget(
         if restart:
             time.sleep(0.5)
             watcher.kill()
-            watcher.wait(timeout=5)
+            watcher.wait(timeout=30)
             replacement = resume_supervisor(state, run.id)
             assert replacement is not None
             watcher = replacement
@@ -371,6 +376,12 @@ def test_e2e_003_two_slots_survive_a_controller_restart_and_refuse_seconds(tmp_p
     fix_supervisor = launch_supervisor(state, fix_run.id, _plan(fix_dir, fix_marker), limits)
     _wait_for(eval_marker)
     _wait_for(fix_marker)
+    # A child can start before its supervisor records the run as running.
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline and any(
+        run.status != "running" for run in store.nonterminal_runs()
+    ):
+        time.sleep(0.02)
     active = store.nonterminal_runs()
     assert {run.kind for run in active} == {"eval", "fix"}
     assert len({run.supervisor.get("pid") for run in active}) == 2
@@ -384,8 +395,8 @@ def test_e2e_003_two_slots_survive_a_controller_restart_and_refuse_seconds(tmp_p
         assert observed.process.get("pid") == int(marker.read_text(encoding="utf-8"))
     eval_marker.with_suffix(".done").touch()
     fix_marker.with_suffix(".done").touch()
-    eval_supervisor.wait(timeout=5)
-    fix_supervisor.wait(timeout=5)
+    eval_supervisor.wait(timeout=30)
+    fix_supervisor.wait(timeout=30)
     for run_id, claim_id in ((eval_run.id, eval_claim), (fix_run.id, fix_claim)):
         finished = restarted.get_run(run_id)
         assert finished is not None and finished.status == "completed"
