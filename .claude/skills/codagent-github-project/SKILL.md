@@ -24,7 +24,7 @@ Use this skill whenever Paul asks to create or update a Codagent issue, even if 
 - add or remove an issue dependency;
 - review the Codagent backlog across repositories.
 
-When Paul asks to **assign an issue to the factory**, have the factory fix, build, or run it, or queue it for the factory, use the `factory-assign` skill (`agent-factory/.claude/skills/factory-assign`, linked into `~/.claude/skills`). It sets what admission needs, runs a tick, and confirms the claim. Do not set Owner=factory and Ready by hand for that purpose. If Paul asks to create an issue *and* give it to the factory, create it here (with `factory-hold` for a Bug, see below), then run `factory-assign`.
+When Paul asks to **assign an issue to the factory**, have the factory fix, build, or run it, or queue it for the factory, use the `factory-assign` skill (`agent-factory/.claude/skills/factory-assign`, linked into `~/.claude/skills`). It sets what admission needs, runs a tick, and confirms the claim. Do not set Owner=factory and Ready by hand for that purpose. If Paul asks to create an issue *and* give it to the factory, create it here, then run `factory-assign`.
 
 Do not use it for generic GitHub work outside the `Codagent-AI` organization. Do not turn newsletter, speaking, career, or other non-product planning into GitHub issues unless Paul explicitly asks.
 
@@ -82,8 +82,7 @@ An executable Factory Eval may require its supported request template, but fill 
 
 The board drives the live Agent Factory. Know what reaches it:
 
-- **Bug auto-routing.** In a routed source repository (agent-evals, agent-runner, agent-skills, agent-validator, agent-plugin, agent-factory), a Bug created by a maintain or admin author is routed straight to Owner=factory and Ready, so the factory starts a fix. Paul is an admin. To file a Bug for tracking only, include the `factory-hold` label **in the create request** (or use the repository's `bug-tracking-only` template). Adding it afterwards is too late: routing reads labels at delivery of the creation event. A held Bug lands in Backlog with Owner=human; hand it over later with `factory-assign`. Ask Paul which he wants when he did not say.
-- **Feature and Task** are not auto-routed. They reach the factory only when their card moves to Ready (or via `factory-assign`).
+- **Bug, Feature, and Task** are not auto-routed. Creating one, whoever the author, lands it in Backlog and does not start factory work. It reaches the factory only when its card moves to Ready (or via `factory-assign`).
 - **Eval** reaches the factory through `eval-request` routing (see Eval rules).
 - `needs-input` on an issue blocks admission; the factory adds it when it needs Paul's answer. Do not remove it unless Paul asks.
 - `blocked` and GitHub blocked-by relationships do **not** stop admission. Keep dependent work in Backlog until its prerequisite lands.
@@ -166,7 +165,7 @@ Return the issue URL and a concise summary of verified board state. If authentic
 - Assignee and the Project's Owner field are separate.
 - Project views are not separate projects or issue types.
 - Native Eval type alone does not trigger Factory routing.
-- A Bug created without `factory-hold` in a routed repository starts a factory fix.
+- Creating a Bug does not start a factory fix; only Ready or `factory-assign` hands it over.
 - Ready on a Bug, Feature, or Task in a factory target hands it to the factory regardless of Owner.
 - Never change an existing issue's type between Task, Bug, and Feature without Paul's confirmation; the type selects the factory work kind.
 - `eval-request` can route an authorized `agent-evals` issue to Owner=factory and Ready.
