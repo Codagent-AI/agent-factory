@@ -95,6 +95,8 @@ class PullRequestGitHub(Protocol):
 
     def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
+    def close_pull_request(self, repository: str, number: int) -> None: ...
+
 
 class PullRequestHandler:
     """Owns every pull-request kind decision: admission, launch, and outcome mapping."""
@@ -503,6 +505,7 @@ class PullRequestHandler:
             raise ReadinessError(
                 f"cannot establish whether an earlier attempt pushed {branch}: {error}"
             ) from error
+        own_numbers = {pull.number for pull in pulls}
         if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
             if len(pulls) > 1:
                 raise ReadinessError(f"ambiguous open pull requests for {branch}")
@@ -543,6 +546,13 @@ class PullRequestHandler:
                     },
                 },
             )
+            if (
+                self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH
+                and pull.number in own_numbers
+            ):
+                self._close_superseded_pull_requests(
+                    claim, {"pr": {"number": pull.number, "url": pull.url}}
+                )
             self._store.record_event(
                 claim.id,
                 "handoff",
@@ -1054,6 +1064,8 @@ class PullRequestHandler:
                     f"review-complete:{latest.id}",
                     _with_host_note(body, latest.result),
                 )
+            if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
+                self._close_superseded_pull_requests(claim, latest.result)
             return Outcome("pending-human-review", event_body=_pr_message(latest.result))
         if outcome == "failed":
             result = latest.result
@@ -1067,6 +1079,75 @@ class PullRequestHandler:
                 event_body=_failed_message(result, self.definition.noun, claim.repository),
             )
         return None
+
+    def _close_superseded_pull_requests(self, claim: Claim, result: Mapping[str, object]) -> None:
+        if self._store is None or self._github is None:
+            return
+        current = self._store.get_claim(claim.id)
+        if current is None or not current.preparation.get("continuation_head"):
+            return
+        new_pr = mapping(result.get("pr"))
+        new_number, new_url = new_pr.get("number"), new_pr.get("url")
+        if not isinstance(new_number, int) or not isinstance(new_url, str):
+            return
+        prior_claims = self._store.claims_for_item(claim.project_item_id)
+        earlier = prior_claims[
+            : next((i for i, item in enumerate(prior_claims) if item.id == claim.id), 0)
+        ]
+        events = set(mapping(current.reporting.get("events")))
+        for prior in earlier:
+            if (
+                prior.kind != claim.kind
+                or prior.repository != claim.repository
+                or prior.issue_number != claim.issue_number
+            ):
+                continue
+            try:
+                pulls = self._github.list_open_pull_requests_for_head(
+                    claim.repository, self.branch_name(prior)
+                )
+            except (GitHubApiError, OSError) as error:
+                self._store.record_event(
+                    claim.id,
+                    f"superseded-pr-lookup-error:{prior.id}",
+                    f"Could not check prior pull requests on {self.branch_name(prior)}: {error}",
+                )
+                continue
+            for pull in pulls:
+                if pull.number == new_number:
+                    continue
+                comment_key = f"superseded-pr-comment:{pull.number}"
+                closed_key = f"superseded-pr:{pull.number}"
+                if closed_key in events:
+                    continue
+                try:
+                    if comment_key not in events:
+                        body = (
+                            f"Superseded by {new_url}: claim {claim.id[:8]} continued this "
+                            f"branch on `{self.branch_name(claim)}`. "
+                            "Please review the new pull request instead."
+                        )
+                        comment_id = self._github.create_comment(
+                            claim.repository, pull.number, body
+                        )
+                        # The comment went to the superseded pull request; acknowledge the
+                        # event so report delivery does not repeat it on the issue.
+                        self._store.record_event(claim.id, comment_key, body)
+                        self._store.acknowledge_event(
+                            claim.id, comment_key, comment_id or "acknowledged"
+                        )
+                        events.add(comment_key)
+                    self._github.close_pull_request(claim.repository, pull.number)
+                    self._store.record_event(
+                        claim.id, closed_key, f"Closed {pull.url}; superseded by {new_url}."
+                    )
+                    events.add(closed_key)
+                except (GitHubApiError, OSError) as error:
+                    self._store.record_event(
+                        claim.id,
+                        f"superseded-pr-error:{pull.number}",
+                        f"Could not close superseded pull request {pull.url}: {error}",
+                    )
 
     def presentation(self, claim: Claim) -> ClaimPresentation:
         # Cancelled claims are presented by the controller before dispatching here.
