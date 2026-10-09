@@ -393,7 +393,7 @@ When the target's Agent Validator configuration declares a review named `task-co
 
 The target branch head in the base SHALL be the one the claim's branch actually contains: on a resume or continuation, the target head that the resume merged, or found already contained; on a fresh start, the target head the branch was created from. A validator result of `Trusted`, `no_applicable_gates`, `no_changes`, a skipped prior pass, an error, or a run whose base, scope, or task context cannot be shown SHALL NOT be a verdict. Evidence that a review was dispatched and passed SHALL be accepted even when the validator has cleaned or rotated its logs after the pass. A review that passed for some changed paths but did not see others SHALL be `not-run`, naming the paths it did not see.
 
-The workflow SHALL apply this gate once after verification, which includes simplify, acceptance, and any acceptance repair, and before classification. No earlier verdict exists in the attempt, so it SHALL run regardless of the implementation step's validator status or trust history. It SHALL review the base-to-head diff with `tasks.md` from the archived change directory as context and refuse a verdict whose task content differs from the archived tasks. The implementation step's own task-compliance run remains an early repair opportunity but SHALL NOT count as the attempt's verdict. Violations SHALL be repaired and reviewed again within the bounded repair. These repairs are commits added after acceptance. Commits added after the last verdict, including those finalization adds, SHALL NOT be reviewed again in the attempt.
+The workflow SHALL apply this gate once after verification, which includes simplify, acceptance, and any acceptance repair, and before classification. No earlier verdict exists in the attempt, so it SHALL run regardless of the implementation step's validator status or trust history. It SHALL review the base-to-head diff with the change's `tasks.md` from wherever the change lives in the reviewed head: the archive directory, or the active change directory if a repair moved it. It SHALL resolve that path at gate time and refuse a verdict whose task content differs from the resolved tasks. A missing tasks file SHALL be recorded as `not-run`, naming both checked paths, and SHALL receive another repair within the bounded repair. The implementation step's own task-compliance run remains an early repair opportunity but SHALL NOT count as the attempt's verdict. Violations SHALL be repaired and reviewed again within the bounded repair. These repairs are commits added after acceptance. Commits added after the last verdict, including those finalization adds, SHALL NOT be reviewed again in the attempt.
 
 The workflow SHALL record one task-compliance result for the attempt in its evidence: `passed`, `failed` when violations remain after the bounded repair, `not-run` with the validator status or error that prevented a verdict, or `not-declared` when the target declares no task-compliance review. The record SHALL name the base, the reviewed head, the tasks hash, and the validator output it relied on. When the target does not declare task-compliance, the workflow SHALL run no task-compliance review and SHALL record `not-declared`. A `failed` or `not-run` result SHALL NOT stop the workflow, push a different outcome, or withhold the pull request.
 
@@ -424,6 +424,17 @@ Each task-compliance review the workflow runs SHALL be unaffected by the claim c
 
 - **WHEN** the workflow's task-compliance review reports a violation before classification
 - **THEN** the violation is repaired and the review runs again within the gate's bounded repair before classification
+
+#### Scenario: A repair moves the change
+
+- **WHEN** a task-compliance repair moves the change from its archive directory to its active change directory and commits it
+- **THEN** the next gate resolves the active `tasks.md` and runs a fresh review of the new head with that file as context
+- **AND** the task-compliance record names the new reviewed head and the resolved active tasks path
+
+#### Scenario: A repair removes the tasks file
+
+- **WHEN** a repair leaves no `tasks.md` in either the change's archive directory or active change directory
+- **THEN** the gate records `not-run` with a reason naming both checked paths and requests another bounded repair to restore the archived tasks file
 
 #### Scenario: Task-compliance stays red
 

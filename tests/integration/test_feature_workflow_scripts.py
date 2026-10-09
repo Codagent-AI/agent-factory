@@ -2029,7 +2029,7 @@ def test_task_compliance_workflow_structure() -> None:
         < workflow.index("  - id: classify\n")
     )
     assert "  - name: implementor-agent\n    agent: implementor" in workflow
-    for phase, tasks in (("verified", '"{{archived_dir}}/tasks.md"'),):
+    for phase in ("verified",):
         block = workflow.split(f"  - id: task-compliance-{phase}\n", 1)[1].split(
             f"  - id: task-compliance-{phase}-final\n", 1
         )[0]
@@ -2038,12 +2038,13 @@ def test_task_compliance_workflow_structure() -> None:
         assert "session: implementor-agent" in block
         assert "skip_if: previous_success" in block
         assert "continue_on_failure: true" in block
-        assert f"tasks_file: {tasks}" in block
+        assert 'change_name: "{{change_name}}"' in block
         assert "capture: validator_status" not in block
         final = workflow.split(f"  - id: task-compliance-{phase}-final\n", 1)[1].split(
             "  - id:", 1
         )[0]
         assert "skip_if: previous_success" in final
+        assert 'change_name: "{{change_name}}"' in final
     assert 'task_compliance: "{{artifact_dir}}/task-compliance.json"' in workflow
     assert "task-compliance-gate.py" in FEATURE_STAGED_FILES
 
