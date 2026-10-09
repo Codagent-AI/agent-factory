@@ -2527,7 +2527,7 @@ def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
     annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
     skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
     assert 'test "{{validator_status}}" != passed' in skip
-    assert "test ! -s {{artifact_dir}}/review-attention.json" in skip
+    assert "review-attention.json" not in skip
     assert 'verify_failure: "{{artifact_dir}}/verify-failure.json"' in workflow
     assert (
         workflow.index("  - id: mark-verify-failed\n")
@@ -2537,6 +2537,21 @@ def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
     record = workflow.split("  - id: record-verify-failure\n")[1].split("  - id: ")[0]
     assert "skip_if: 'sh: test \"{{validator_status}}\" != failed'" in record
     assert "verify-failure.py" in FEATURE_STAGED_FILES
+
+
+@pytest.mark.parametrize("validator_status", ["passed", "failed"])
+def test_annotation_guard_does_not_hide_missing_classification(
+    tmp_path: Path, validator_status: str
+) -> None:
+    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
+    skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
+    command = skip.split("'sh: ", 1)[1].removesuffix("'")
+    command = command.replace("{{artifact_dir}}", str(tmp_path)).replace(
+        "{{validator_status}}", validator_status
+    )
+    result = run("sh", "-c", command, cwd=tmp_path)
+    assert result.returncode == (1 if validator_status == "passed" else 0)
 
 
 @pytest.mark.parametrize(

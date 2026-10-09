@@ -303,7 +303,7 @@ steps:
       archived_dir: "{{archived_dir}}"
       session_dir: "{{session_dir}}"
     continue_on_failure: true
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test ! -s {{artifact_dir}}/review-attention.json'
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
   - id: mark-annotation-failed
     command: printf failed
     capture: annotation_status
