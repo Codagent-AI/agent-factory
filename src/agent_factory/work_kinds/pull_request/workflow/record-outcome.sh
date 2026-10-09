@@ -148,9 +148,10 @@ elif validator_status != "passed":
     outcome = {
         "contract": contract,
         "outcome": "failed",
-        "reasons": (reasons or verify_failure.get("reasons") or ["verify did not complete"])
-        if checks_status == "passed"
-        else reasons or ["validator did not pass within its repair cycles"],
+        "reasons": reasons or verify_failure.get("reasons") or (
+            ["verify did not complete"] if checks_status == "passed"
+            else ["validator did not pass within its repair cycles"]
+        ),
         "validator": {"status": "failed"},
     }
 elif not pr_url:

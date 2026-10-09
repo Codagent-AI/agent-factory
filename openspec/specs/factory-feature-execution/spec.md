@@ -197,6 +197,16 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 - **WHEN** the validator passes but verify fails at the acceptance push with a remote rejection
 - **THEN** the outcome is `failed`, names the acceptance-push step and rejection, reports `validator.checks` as `passed` and `validator.status` as `incomplete` with task-compliance `not-run`, preserves the branch, and skips pull request annotation
 
+#### Scenario: Validator retry recovers before acceptance push fails
+
+- **WHEN** a validator attempt fails, a later retry passes, and acceptance push fails
+- **THEN** the failed outcome names the acceptance-push step and error rather than the recovered validator attempt, and reports validator checks as `passed`
+
+#### Scenario: Verify fails before running the validator
+
+- **WHEN** simplify fails before verify records a validator result
+- **THEN** the failed outcome names simplify and its error instead of claiming the validator exhausted its repair cycles, and skips pull request annotation
+
 ### Requirement: Classify review attention without blocking
 
 After the plan commit the feature workflow SHALL NOT stop for human input. Whether or not acceptance completed, and whether or not assumption review left decision-bearing assumptions, the workflow SHALL continue to finalization. Before finalizing, it SHALL classify every item a reviewer may need to examine into exactly one tier, making items that share one root cause a single item in the highest tier any of them reaches:

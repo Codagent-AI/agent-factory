@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record the actual validator result and the innermost failed verify step."""
+"""Record the actual validator result and the last failed verify leaf."""
 
 import json
 import re
@@ -13,10 +13,13 @@ def failure(session: Path) -> dict[str, object]:
     fallback: dict[str, object] = {"validator": "failed", "reasons": []}
     try:
         output = session / "output"
-        if (output / "verify-change-validator-result.txt").read_text().strip() != "PASS":
-            return fallback
-        deepest = None
-        depth = -1
+        validator_result = output / "verify-change-validator-result.txt"
+        validator = "failed"
+        if validator_result.exists():
+            if validator_result.read_text().strip() != "PASS":
+                return fallback
+            validator = "passed"
+        failed_leaf = None
         for line in (session / "audit.log").read_text().splitlines():
             match = re.search(r"\bstep_end (.*)$", line)
             if not match:
@@ -37,13 +40,16 @@ def failure(session: Path) -> dict[str, object]:
             step = "/".join(part for part in (prefix, step_id) if part)
             if step != "verify" and not step.startswith("verify/"):
                 continue
-            prefix_depth = len(prefix.split("/")) if prefix else 0
-            if prefix_depth >= depth:
-                deepest = (step, event.get("stderr") or "")
-                depth = prefix_depth
-        if deepest is None:
+            # Parent failures are logged after their failed child. Keep that
+            # child, but replace earlier retry failures with a later failed leaf.
+            # Counted loop parents omit the child's ":N" iteration suffix.
+            if failed_leaf is None or not (
+                failed_leaf[0].startswith(step + "/") or failed_leaf[0].startswith(step + ":")
+            ):
+                failed_leaf = (step, event.get("stderr") or "")
+        if failed_leaf is None:
             return fallback
-        step, stderr = deepest
+        step, stderr = failed_leaf
         if not isinstance(stderr, str):
             return fallback
         if not stderr.strip():
@@ -63,7 +69,7 @@ def failure(session: Path) -> dict[str, object]:
                 stderr = (output / (name + ".err")).read_text()
         tail = "\n".join([line for line in stderr.splitlines() if line.strip()][-5:])
         reason = f"verify failed at {step}" + (f": {tail}" if tail else "")
-        return {"validator": "passed", "reasons": [reason]}
+        return {"validator": validator, "reasons": [reason]}
     except (OSError, ValueError):
         return fallback
 

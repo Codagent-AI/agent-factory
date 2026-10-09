@@ -2450,3 +2450,89 @@ def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
     record = workflow.split("  - id: record-verify-failure\n")[1].split("  - id: ")[0]
     assert "skip_if: 'sh: test \"{{validator_status}}\" != failed'" in record
     assert "verify-failure.py" in FEATURE_STAGED_FILES
+
+
+@pytest.mark.parametrize(
+    "validator_prefix",
+    [
+        "verify/sub:verify-change/run-validator/sub:run-validator/validator-retry:0",
+        VERIFY_PREFIX + "/acceptance-validator/sub:run-validator/validator-retry:0",
+    ],
+)
+def test_verify_failure_ignores_recovered_validator_retry(
+    tmp_path: Path, validator_prefix: str
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "verify-change-validator-result.txt").write_text("PASS")
+    steps = [
+        (validator_prefix, "run-validator", "failed", "lint failed"),
+        (validator_prefix.replace("retry:0", "retry:1"), "run-validator", "success", ""),
+        (VERIFY_PREFIX, "acceptance-push", "failed", PUSH_REJECTION),
+        ("verify/sub:verify-change", "prepare-acceptance", "failed", "acceptance failed"),
+        ("", "verify", "failed", "verify failed"),
+    ]
+    (tmp_path / "audit.log").write_text(
+        "".join(
+            "[verify] step_end "
+            + json.dumps(
+                {
+                    "identity": {"prefix": prefix, "step_id": step},
+                    "outcome": outcome,
+                    "stderr": stderr,
+                }
+            )
+            + "\n"
+            for prefix, step, outcome, stderr in steps
+        )
+    )
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "verify-failure.json").read_text()) == {
+        "validator": "passed",
+        "reasons": [f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"],
+    }
+
+
+def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) -> None:
+    (tmp_path / "audit.log").write_text(
+        "[verify] step_end "
+        + json.dumps(
+            {
+                "identity": {"prefix": "verify/sub:verify-change", "step_id": "simplify"},
+                "outcome": "failed",
+                "stderr": "simplify session crashed",
+            }
+        )
+        + "\n"
+    )
+    captured = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert captured.returncode == 0, captured.stderr
+    reason = "verify failed at verify/sub:verify-change/simplify: simplify session crashed"
+    assert json.loads((tmp_path / "verify-failure.json").read_text()) == {
+        "validator": "failed",
+        "reasons": [reason],
+    }
+    result = run(
+        str(PACKAGE / "record-outcome.sh"),
+        cwd=tmp_path,
+        input=json.dumps(
+            {
+                "contract": "factory-feature/1",
+                "outcome_path": str(tmp_path / "feature-outcome.json"),
+                "validator_status": "failed",
+                "verify_failure": str(tmp_path / "verify-failure.json"),
+                "branch_name": "claim",
+            }
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((tmp_path / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "failed"
+    assert outcome["reasons"] == [reason]
+    assert outcome["branch"] == "claim"
+    assert outcome["validator"] == {"checks": "failed", "status": "failed"}
