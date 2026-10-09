@@ -182,7 +182,7 @@ If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushe
 
 After archiving, the feature workflow SHALL run the Runner's `core/verify-change` builtin workflow given the archived change directory: assumption review, simplify, the validator, the clean-tree check, a draft pull request, and acceptance preparation against the test plan. A validator that remains red after its bounded repair SHALL return `failed` with reasons; the branch SHALL be pushed and no pull request opened. When verify fails at a step other than the validator, the `failed` outcome SHALL name that step and its error, report the validator's actual result, and skip pull request annotation.
 
-When the failed verify leaf has a non-empty `repair_blocked` response, its reason SHALL append that response after the error, removing a trailing `REPAIR_BLOCKED` line and retaining the last five non-blank lines. A successful end or a new attempt of that step SHALL clear its prior repair response. Missing, malformed, or empty responses SHALL leave the error reason unchanged. When a draft pull request is already open, the failed verify outcome SHALL retain its pull request reference.
+When the failed verify leaf has a non-empty `repair_blocked` response, its reason SHALL append that response after the error, removing a trailing `REPAIR_BLOCKED` line and keeping the start of the response, cut to 1500 characters with a trailing `…` when longer. A successful end or a new attempt of that step SHALL clear its prior repair response. Missing, malformed, or empty responses SHALL leave the error reason unchanged. When a draft pull request is already open, the failed verify outcome SHALL retain its pull request reference.
 
 #### Scenario: Open a draft pull request
 
@@ -203,7 +203,7 @@ When the failed verify leaf has a non-empty `repair_blocked` response, its reaso
 #### Scenario: Acceptance push repair changes the branch before blocking
 
 - **WHEN** acceptance push fails with a remote rejection and its repair pushes a lint fix, saves the ci.yml change as a patch, and reports `repair_blocked`
-- **THEN** the failure reason includes both the rejection and the repair's explanation without its trailing `REPAIR_BLOCKED` marker
+- **THEN** the failure reason includes both the rejection and the repair's leading summary without its trailing `REPAIR_BLOCKED` marker
 
 #### Scenario: Validator retry recovers before acceptance push fails
 

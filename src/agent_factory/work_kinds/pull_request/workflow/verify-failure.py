@@ -8,6 +8,8 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
 
+REPAIR_LIMIT = 1500
+
 
 def failure(session: Path) -> dict[str, object]:
     fallback: dict[str, object] = {"validator": "failed", "reasons": []}
@@ -88,9 +90,10 @@ def failure(session: Path) -> dict[str, object]:
         tail = "\n".join([line for line in stderr.splitlines() if line.strip()][-5:])
         reason = f"verify failed at {step}" + (f": {tail}" if tail else "")
         response = re.sub(r"(?:^|\n)REPAIR_BLOCKED\s*$", "", repairs.get(step, "")).strip()
-        repair_tail = "\n".join([line for line in response.splitlines() if line.strip()][-5:])
-        if repair_tail:
-            reason += f"; repair: {repair_tail}"
+        if len(response) > REPAIR_LIMIT:
+            response = response[:REPAIR_LIMIT].rstrip() + "…"
+        if response:
+            reason += f"; repair: {response}"
         return {"validator": validator, "reasons": [reason]}
     except (OSError, ValueError):
         return fallback

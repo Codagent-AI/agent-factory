@@ -2292,6 +2292,11 @@ def test_task_compliance_record_flows_through_pr_and_outcome(
 
 VERIFY_PREFIX = "verify/sub:verify-change/prepare-acceptance:0"
 PUSH_REJECTION = "[remote rejected] claim -> claim (refusing without workflow scope)"
+REPAIR_SUMMARY = (
+    "The lint fix is now pushed; commit 7970f91 (ci.yml change) was removed and saved as patch "
+    "security-deps-check-latest.patch"
+)
+REPAIR_RESPONSE = REPAIR_SUMMARY + "\n\n" + "detail\n" * 6 + "The token still needs workflow scope."
 
 
 @pytest.mark.parametrize(
@@ -2300,9 +2305,7 @@ PUSH_REJECTION = "[remote rejected] claim -> claim (refusing without workflow sc
         json.dumps(
             {
                 "attempt": 0,
-                "response": "old line\n\n"
-                + "detail\n" * 4
-                + "pushed lint fix, saved ci.yml change as patch\nREPAIR_BLOCKED\n",
+                "response": REPAIR_RESPONSE + "\nREPAIR_BLOCKED\n",
             }
         ),
         "{bad json}",
@@ -2333,9 +2336,35 @@ def test_verify_failure_includes_repair_blocked_response(
     assert result.returncode == 0, result.stderr
     value = json.loads((tmp_path / "verify-failure.json").read_text())
     reason = f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
-    if "pushed lint fix" in repair_payload:
-        reason += "; repair: " + "detail\n" * 4 + "pushed lint fix, saved ci.yml change as patch"
+    if REPAIR_SUMMARY in repair_payload:
+        reason += "; repair: " + REPAIR_RESPONSE
+        assert REPAIR_SUMMARY in value["reasons"][0]
     assert value == {"validator": "passed", "reasons": [reason]}
+
+
+def test_verify_failure_truncates_repair_response_preserving_start(tmp_path: Path) -> None:
+    prefix = "[verify, sub:verify-change, prepare-acceptance:0, acceptance-push]"
+    response = REPAIR_SUMMARY + "\n" + "detail\n" * 300 + "Closing remark."
+    event = {
+        "identity": {"prefix": VERIFY_PREFIX, "step_id": "acceptance-push"},
+        "outcome": "failed",
+        "stderr": PUSH_REJECTION,
+    }
+    payload = json.dumps({"response": response + "\nREPAIR_BLOCKED\n"})
+    (tmp_path / "audit.log").write_text(
+        f"{prefix} repair_blocked {payload}\n{prefix} step_end {json.dumps(event)}\n"
+    )
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    reason = json.loads((tmp_path / "verify-failure.json").read_text())["reasons"][0]
+    error, repair = reason.split("; repair: ", 1)
+    assert error == f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
+    assert repair.startswith(response.splitlines()[0])
+    assert len(repair) <= 1501
+    assert repair.endswith("…")
+    assert repair == response[:1500].rstrip() + "…"
 
 
 @pytest.mark.parametrize("later_event", ["step_start", "success", "repair_blocked", "unrelated"])
