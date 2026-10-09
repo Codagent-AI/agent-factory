@@ -195,7 +195,7 @@ steps:
         script_inputs:
           phase: verified
           artifact_dir: "{{artifact_dir}}"
-          tasks_file: "{{archived_dir}}/tasks.md"
+          change_name: "{{change_name}}"
           target_head: "{{target_head}}"
         continue_on_failure: true
         break_if: success
@@ -211,6 +211,8 @@ steps:
           violation you disagree with unfixed and explain why in your summary.
           Do not run agent-validator review or update-review. The factory's next
           review supplies the verdict.
+          If the record reports a missing tasks file, restore the change's tasks.md
+          while leaving the change archived rather than moving it.
 
           For CHECK failures from agent-validator check, do not apply a remedy when either of these independent conditions holds:
           - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
@@ -222,7 +224,7 @@ steps:
     script_inputs:
       phase: verified
       artifact_dir: "{{artifact_dir}}"
-      tasks_file: "{{archived_dir}}/tasks.md"
+      change_name: "{{change_name}}"
       target_head: "{{target_head}}"
     skip_if: previous_success
     continue_on_failure: true
