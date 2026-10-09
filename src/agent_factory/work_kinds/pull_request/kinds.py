@@ -87,6 +87,7 @@ FEATURE_STAGED_FILES = (
     "checkpoint.sh",
     "reconcile-skip.sh",
     "locate-archive.py",
+    "verify-failure.py",
     "check-openspec.sh",
     "record-validation-failure.sh",
     "verify-classification.py",

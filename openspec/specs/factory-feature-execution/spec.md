@@ -180,7 +180,9 @@ If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushe
 
 ### Requirement: Verify the change and open a draft pull request
 
-After archiving, the feature workflow SHALL run the Runner's `core/verify-change` builtin workflow given the archived change directory: assumption review, simplify, the validator, the clean-tree check, a draft pull request, and acceptance preparation against the test plan. A validator that remains red after its bounded repair SHALL return `failed` with reasons; the branch SHALL be pushed and no pull request opened.
+After archiving, the feature workflow SHALL run the Runner's `core/verify-change` builtin workflow given the archived change directory: assumption review, simplify, the validator, the clean-tree check, a draft pull request, and acceptance preparation against the test plan. A validator that remains red after its bounded repair SHALL return `failed` with reasons; the branch SHALL be pushed and no pull request opened. When verify fails at a step other than the validator, the `failed` outcome SHALL name that step and its error, report the validator's actual result, and skip pull request annotation.
+
+When the failed verify leaf has a non-empty `repair_blocked` response, its reason SHALL append that response after the error, removing a trailing `REPAIR_BLOCKED` line and keeping the start of the response, cut to 1500 characters with a trailing `…` when longer. A successful end or a new attempt of that step SHALL clear its prior repair response. Missing, malformed, or empty responses SHALL leave the error reason unchanged. When a draft pull request is already open, the failed verify outcome SHALL retain its pull request reference.
 
 #### Scenario: Open a draft pull request
 
@@ -191,6 +193,27 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 
 - **WHEN** the validator remains red after its bounded repair
 - **THEN** the workflow pushes the branch, opens no pull request, and returns `failed` with the failing checks
+
+#### Scenario: Acceptance push fails after the validator passes
+
+- **WHEN** the validator passes but verify fails at the acceptance push with a remote rejection
+- **THEN** the outcome is `failed`, names the acceptance-push step and rejection, reports `validator.checks` as `passed` and `validator.status` as `incomplete` with task-compliance `not-run`, preserves the branch, and skips pull request annotation
+- **AND** the outcome retains the draft pull request reference when one exists
+
+#### Scenario: Acceptance push repair changes the branch before blocking
+
+- **WHEN** acceptance push fails with a remote rejection and its repair pushes a lint fix, saves the ci.yml change as a patch, and reports `repair_blocked`
+- **THEN** the failure reason includes both the rejection and the repair's leading summary without its trailing `REPAIR_BLOCKED` marker
+
+#### Scenario: Validator retry recovers before acceptance push fails
+
+- **WHEN** a validator attempt fails, a later retry passes, and acceptance push fails
+- **THEN** the failed outcome names the acceptance-push step and error rather than the recovered validator attempt, and reports validator checks as `passed`
+
+#### Scenario: Verify fails before running the validator
+
+- **WHEN** simplify fails before verify records a validator result
+- **THEN** the failed outcome names simplify and its error instead of claiming the validator exhausted its repair cycles, and skips pull request annotation
 
 ### Requirement: Classify review attention without blocking
 
@@ -533,4 +556,3 @@ The requirement covers `resolve-merge`, `factory-implement` repair, and `task-co
 
 - **WHEN** the branch changes a function signature and a check fails in an untouched file with unchanged configuration and no such error at the merge base
 - **THEN** validator repair treats the failure as branch-caused and fixes it
-
