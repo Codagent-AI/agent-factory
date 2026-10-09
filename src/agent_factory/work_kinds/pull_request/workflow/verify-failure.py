@@ -20,7 +20,21 @@ def failure(session: Path) -> dict[str, object]:
                 return fallback
             validator = "passed"
         failed_leaf = None
+        repairs: dict[str, str] = {}
         for line in (session / "audit.log").read_text().splitlines():
+            repair = re.search(r"\[([^]]+)\] (repair_blocked|step_start) (.*)$", line)
+            if repair:
+                step = "/".join(repair[1].split(", "))
+                repairs.pop(step, None)
+                if repair[2] == "step_start":
+                    continue
+                with suppress(ValueError):
+                    payload: Any = json.loads(repair[3])
+                    if isinstance(payload, dict):
+                        response = cast(dict[str, Any], payload).get("response")
+                        if isinstance(response, str):
+                            repairs[step] = response
+                continue
             match = re.search(r"\bstep_end (.*)$", line)
             if not match:
                 continue
@@ -28,6 +42,10 @@ def failure(session: Path) -> dict[str, object]:
             if not isinstance(event, dict):
                 return fallback
             event = cast(dict[str, Any], event)
+            if event.get("outcome") == "success":
+                prefix_match = re.search(r"\[([^]]+)\] step_end ", line)
+                if prefix_match:
+                    repairs.pop("/".join(prefix_match[1].split(", ")), None)
             if event.get("outcome") != "failed":
                 continue
             identity = event.get("identity")
@@ -69,6 +87,10 @@ def failure(session: Path) -> dict[str, object]:
                 stderr = (output / (name + ".err")).read_text()
         tail = "\n".join([line for line in stderr.splitlines() if line.strip()][-5:])
         reason = f"verify failed at {step}" + (f": {tail}" if tail else "")
+        response = re.sub(r"(?:^|\n)REPAIR_BLOCKED\s*$", "", repairs.get(step, "")).strip()
+        repair_tail = "\n".join([line for line in response.splitlines() if line.strip()][-5:])
+        if repair_tail:
+            reason += f"; repair: {repair_tail}"
         return {"validator": validator, "reasons": [reason]}
     except (OSError, ValueError):
         return fallback

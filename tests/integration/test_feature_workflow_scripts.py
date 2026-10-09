@@ -2294,6 +2294,82 @@ VERIFY_PREFIX = "verify/sub:verify-change/prepare-acceptance:0"
 PUSH_REJECTION = "[remote rejected] claim -> claim (refusing without workflow scope)"
 
 
+@pytest.mark.parametrize(
+    "repair_payload",
+    [
+        json.dumps(
+            {
+                "attempt": 0,
+                "response": "old line\n\n"
+                + "detail\n" * 4
+                + "pushed lint fix, saved ci.yml change as patch\nREPAIR_BLOCKED\n",
+            }
+        ),
+        "{bad json}",
+        "[]",
+        "{}",
+        '{"response":42}',
+        '{"response":""}',
+        '{"response":"  \\nREPAIR_BLOCKED\\n"}',
+    ],
+)
+def test_verify_failure_includes_repair_blocked_response(
+    tmp_path: Path, repair_payload: str
+) -> None:
+    prefix = "[verify, sub:verify-change, prepare-acceptance:0, acceptance-push]"
+    event = {
+        "identity": {"prefix": VERIFY_PREFIX, "step_id": "acceptance-push"},
+        "outcome": "failed",
+        "stderr": PUSH_REJECTION,
+    }
+    (tmp_path / "output").mkdir()
+    (tmp_path / "output/verify-change-validator-result.txt").write_text("PASS")
+    (tmp_path / "audit.log").write_text(
+        f"{prefix} repair_blocked {repair_payload}\n{prefix} step_end {json.dumps(event)}\n"
+    )
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    value = json.loads((tmp_path / "verify-failure.json").read_text())
+    reason = f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
+    if "pushed lint fix" in repair_payload:
+        reason += "; repair: " + "detail\n" * 4 + "pushed lint fix, saved ci.yml change as patch"
+    assert value == {"validator": "passed", "reasons": [reason]}
+
+
+@pytest.mark.parametrize("later_event", ["step_start", "success", "repair_blocked", "unrelated"])
+def test_verify_failure_uses_only_current_leaf_repair(tmp_path: Path, later_event: str) -> None:
+    prefix = "[verify, sub:verify-change, prepare-acceptance:0, acceptance-push]"
+    event = {
+        "identity": {"prefix": VERIFY_PREFIX, "step_id": "acceptance-push"},
+        "outcome": "failed",
+        "stderr": PUSH_REJECTION,
+    }
+    block = json.dumps({"response": "old repair\nREPAIR_BLOCKED"})
+    if later_event == "step_start":
+        later = f"{prefix} step_start {{}}\n"
+    elif later_event == "success":
+        later = f"{prefix} step_end {json.dumps({**event, 'outcome': 'success'})}\n"
+    elif later_event == "repair_blocked":
+        later = f"{prefix} repair_blocked {json.dumps({'response': 'current repair'})}\n"
+    else:
+        later = '[verify, other-step] repair_blocked {"response":"wrong step"}\n'
+    (tmp_path / "audit.log").write_text(
+        f"{prefix} repair_blocked {block}\n{later}{prefix} step_end {json.dumps(event)}\n"
+    )
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    reason = f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
+    if later_event == "repair_blocked":
+        reason += "; repair: current repair"
+    elif later_event == "unrelated":
+        reason += "; repair: old repair"
+    assert json.loads((tmp_path / "verify-failure.json").read_text())["reasons"] == [reason]
+
+
 @pytest.mark.parametrize("validator", ["PASS", "FAIL"])
 @pytest.mark.parametrize("stderr_source", ["audit", "file", "empty"])
 @pytest.mark.parametrize("prefix", [VERIFY_PREFIX, "verify"])
@@ -2366,9 +2442,10 @@ def test_verify_failure_missing_or_malformed_audit_is_safe(
     }
 
 
+@pytest.mark.parametrize("pr_url", ["https://example.test/pr/9", ""])
 @pytest.mark.parametrize("evidence", [True, False])
 def test_feature_record_outcome_preserves_actual_verify_result(
-    tmp_path: Path, evidence: bool
+    tmp_path: Path, evidence: bool, pr_url: str
 ) -> None:
     failure = tmp_path / "verify-failure.json"
     reason = f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
@@ -2380,12 +2457,22 @@ def test_feature_record_outcome_preserves_actual_verify_result(
         "validator_status": "failed",
         "branch_name": "claim",
         "verify_failure": str(failure),
+        "pr_details": json.dumps({"url": pr_url, "number": 9, "headRefOid": "draft-head"}),
     }
     result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
     value = json.loads((tmp_path / "feature-outcome.json").read_text())
     assert value["outcome"] == "failed"
     assert value["branch"] == "claim"
+    if pr_url:
+        assert value["pr"] == {
+            "url": pr_url,
+            "number": 9,
+            "branch": "claim",
+            "head_sha": "draft-head",
+        }
+    else:
+        assert "pr" not in value
     if evidence:
         assert value["reasons"] == [reason]
         assert value["validator"] == {"checks": "passed", "status": "incomplete"}

@@ -154,6 +154,8 @@ elif validator_status != "passed":
         ),
         "validator": {"status": "failed"},
     }
+    if pr_url:
+        outcome["pr"] = pr_reference()
 elif not pr_url:
     outcome = {
         "contract": contract,
