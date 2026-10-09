@@ -67,6 +67,22 @@ if scope_path and Path(scope_path).exists():
     except (OSError, json.JSONDecodeError) as exc:
         print(f"record-outcome: cannot read scope: {exc}", file=sys.stderr)
         sys.exit(2)
+verify_failure = {}
+verify_failure_path = parsed.get("verify_failure")
+if verify_failure_path and Path(verify_failure_path).exists():
+    try:
+        verify_failure = json.loads(Path(verify_failure_path).read_text())
+        if (not isinstance(verify_failure, dict)
+            or verify_failure.get("validator") not in ("passed", "failed")
+            or not isinstance(verify_failure.get("reasons"), list)
+            or not all(isinstance(reason, str) for reason in verify_failure["reasons"])):
+            raise ValueError("invalid verify-failure record")
+    except (OSError, ValueError) as exc:
+        print(f"record-outcome: cannot read verify failure: {exc}", file=sys.stderr)
+        sys.exit(2)
+checks_status = validator_status
+if contract == "factory-feature/1" and verify_failure.get("validator") == "passed":
+    checks_status = "passed"
 post_path = parsed.get("post_scope_path")
 post_scope = {}
 post_error = None
@@ -132,7 +148,9 @@ elif validator_status != "passed":
     outcome = {
         "contract": contract,
         "outcome": "failed",
-        "reasons": reasons or ["validator did not pass within its repair cycles"],
+        "reasons": (reasons or verify_failure.get("reasons") or ["verify did not complete"])
+        if checks_status == "passed"
+        else reasons or ["validator did not pass within its repair cycles"],
         "validator": {"status": "failed"},
     }
 elif not pr_url:
@@ -199,7 +217,7 @@ for key in ("stopped_step", "review_attention_counts", "resume"):
     outcome[key] = value
 
 if contract == "factory-feature/1":
-    outcome["validator"]["checks"] = "passed" if validator_status == "passed" else "failed"
+    outcome["validator"]["checks"] = "passed" if checks_status == "passed" else "failed"
     compliance = None
     compliance_path = parsed.get("task_compliance")
     if isinstance(compliance_path, str) and compliance_path:
@@ -216,11 +234,13 @@ if contract == "factory-feature/1":
                 }
         except (OSError, json.JSONDecodeError):
             pass
-    if validator_status == "passed" and compliance is None:
-        compliance = {"result": "not-run", "reason": "no task-compliance record"}
+    if checks_status == "passed" and compliance is None:
+        compliance = {"result": "not-run", "reason":
+                      "verify failed before task-compliance" if validator_status != "passed"
+                      else "no task-compliance record"}
     if compliance is not None:
         outcome["task_compliance"] = compliance
-    if validator_status == "passed":
+    if checks_status == "passed":
         outcome["validator"]["status"] = {
             "passed": "passed", "not-declared": "passed", "not-run": "incomplete",
             "failed": "review-failed",

@@ -2288,3 +2288,165 @@ def test_task_compliance_record_flows_through_pr_and_outcome(
             "result": "not-run",
             "reason": "no task-compliance record",
         }
+
+
+VERIFY_PREFIX = "verify/sub:verify-change/prepare-acceptance:0"
+PUSH_REJECTION = "[remote rejected] claim -> claim (refusing without workflow scope)"
+
+
+@pytest.mark.parametrize("validator", ["PASS", "FAIL"])
+@pytest.mark.parametrize("stderr_source", ["audit", "file", "empty"])
+@pytest.mark.parametrize("prefix", [VERIFY_PREFIX, "verify"])
+def test_verify_failure_records_deepest_failed_step(
+    tmp_path: Path, validator: str, stderr_source: str, prefix: str
+) -> None:
+    session = tmp_path / "session"
+    output = session / "output"
+    output.mkdir(parents=True)
+    (output / "verify-change-validator-result.txt").write_text(validator + "\n")
+    events = [
+        {
+            "identity": {"prefix": prefix, "step_id": "acceptance-push"},
+            "outcome": "failed",
+            "stderr": "\n".join(["old line"] * 6 + [PUSH_REJECTION])
+            if stderr_source == "audit"
+            else "",
+        },
+        {
+            "identity": {"prefix": "", "step_id": "verify"},
+            "outcome": "failed",
+            "stderr": "outer failure",
+        },
+        {
+            "identity": {"prefix": "unrelated", "step_id": "later"},
+            "outcome": "failed",
+            "stderr": "unrelated failure",
+        },
+    ]
+    (session / "audit.log").write_text(
+        "".join("2026-10-09T14:00:00Z [verify] step_end " + json.dumps(e) + "\n" for e in events)
+    )
+    if stderr_source == "file":
+        (
+            output / ("_" + prefix.replace("/", "__").replace(":", "_") + "__acceptance-push_.err")
+        ).write_text(PUSH_REJECTION)
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(session), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    value = json.loads((tmp_path / "verify-failure.json").read_text())
+    if validator == "FAIL":
+        assert value == {"validator": "failed", "reasons": []}
+    else:
+        assert value["validator"] == "passed"
+        reason = value["reasons"][0]
+        assert reason.startswith(f"verify failed at {prefix}/acceptance-push")
+        assert "outer failure" not in reason
+        assert reason.count("old line") <= 4
+        if stderr_source != "empty":
+            assert PUSH_REJECTION in reason
+
+
+@pytest.mark.parametrize("audit", [None, "step_end {bad json}", 'step_end {"identity":[]}'])
+def test_verify_failure_missing_or_malformed_audit_is_safe(
+    tmp_path: Path, audit: str | None
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "verify-change-validator-result.txt").write_text("PASS")
+    if audit is not None:
+        (tmp_path / "audit.log").write_text(audit)
+    result = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads((tmp_path / "verify-failure.json").read_text()) == {
+        "validator": "failed",
+        "reasons": [],
+    }
+
+
+@pytest.mark.parametrize("evidence", [True, False])
+def test_feature_record_outcome_preserves_actual_verify_result(
+    tmp_path: Path, evidence: bool
+) -> None:
+    failure = tmp_path / "verify-failure.json"
+    reason = f"verify failed at {VERIFY_PREFIX}/acceptance-push: {PUSH_REJECTION}"
+    if evidence:
+        failure.write_text(json.dumps({"validator": "passed", "reasons": [reason]}))
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(tmp_path / "feature-outcome.json"),
+        "validator_status": "failed",
+        "branch_name": "claim",
+        "verify_failure": str(failure),
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    value = json.loads((tmp_path / "feature-outcome.json").read_text())
+    assert value["outcome"] == "failed"
+    assert value["branch"] == "claim"
+    if evidence:
+        assert value["reasons"] == [reason]
+        assert value["validator"] == {"checks": "passed", "status": "incomplete"}
+        assert value["task_compliance"] == {
+            "result": "not-run",
+            "reason": "verify failed before task-compliance",
+        }
+    else:
+        assert value["reasons"] == ["validator did not pass within its repair cycles"]
+        assert value["validator"] == {"checks": "failed", "status": "failed"}
+    verified = run(
+        "python3",
+        str(PACKAGE / "verify-feature-outcome.py"),
+        str(tmp_path / "feature-outcome.json"),
+        cwd=tmp_path,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "{bad",
+        "[]",
+        '{"validator":"unknown","reasons":[]}',
+        '{"validator":"passed","reasons":"bad"}',
+    ],
+)
+def test_feature_record_outcome_rejects_malformed_verify_failure(
+    tmp_path: Path, contents: str
+) -> None:
+    failure = tmp_path / "verify-failure.json"
+    failure.write_text(contents)
+    result = run(
+        str(PACKAGE / "record-outcome.sh"),
+        cwd=tmp_path,
+        input=json.dumps(
+            {
+                "contract": "factory-feature/1",
+                "outcome_path": str(tmp_path / "feature-outcome.json"),
+                "validator_status": "failed",
+                "verify_failure": str(failure),
+            }
+        ),
+    )
+    assert result.returncode == 2
+    assert not (tmp_path / "feature-outcome.json").exists()
+
+
+def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
+    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
+    skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
+    assert 'test "{{validator_status}}" != passed' in skip
+    assert "test ! -s {{artifact_dir}}/review-attention.json" in skip
+    assert 'verify_failure: "{{artifact_dir}}/verify-failure.json"' in workflow
+    assert (
+        workflow.index("  - id: mark-verify-failed\n")
+        < workflow.index("  - id: record-verify-failure\n")
+        < workflow.index("  - id: restore-skipped-verify-status\n")
+    )
+    record = workflow.split("  - id: record-verify-failure\n")[1].split("  - id: ")[0]
+    assert "skip_if: 'sh: test \"{{validator_status}}\" != failed'" in record
+    assert "verify-failure.py" in FEATURE_STAGED_FILES

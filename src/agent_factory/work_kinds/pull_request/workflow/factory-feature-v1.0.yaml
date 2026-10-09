@@ -181,6 +181,10 @@ steps:
     command: printf failed
     capture: validator_status
     skip_if: previous_success
+  - id: record-verify-failure
+    command: python3 .agent-runner/workflows/verify-failure.py "{{session_dir}}" "{{artifact_dir}}"
+    # mark-verify-failed succeeded, so previous_success would skip this evidence.
+    skip_if: 'sh: test "{{validator_status}}" != failed'
   - id: restore-skipped-verify-status
     command: printf passed
     capture: validator_status
@@ -299,7 +303,7 @@ steps:
       archived_dir: "{{archived_dir}}"
       session_dir: "{{session_dir}}"
     continue_on_failure: true
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test ! -s {{artifact_dir}}/review-attention.json'
   - id: mark-annotation-failed
     command: printf failed
     capture: annotation_status
@@ -322,6 +326,7 @@ steps:
       pr_details: "{{pr_details}}"
       review_attention_counts: "{{artifact_dir}}/review-attention.json"
       task_compliance: "{{artifact_dir}}/task-compliance.json"
+      verify_failure: "{{artifact_dir}}/verify-failure.json"
       resume: "{{artifact_dir}}/resume.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
   - id: verify-outcome

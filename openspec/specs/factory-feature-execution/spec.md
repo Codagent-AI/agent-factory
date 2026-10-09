@@ -180,7 +180,7 @@ If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushe
 
 ### Requirement: Verify the change and open a draft pull request
 
-After archiving, the feature workflow SHALL run the Runner's `core/verify-change` builtin workflow given the archived change directory: assumption review, simplify, the validator, the clean-tree check, a draft pull request, and acceptance preparation against the test plan. A validator that remains red after its bounded repair SHALL return `failed` with reasons; the branch SHALL be pushed and no pull request opened.
+After archiving, the feature workflow SHALL run the Runner's `core/verify-change` builtin workflow given the archived change directory: assumption review, simplify, the validator, the clean-tree check, a draft pull request, and acceptance preparation against the test plan. A validator that remains red after its bounded repair SHALL return `failed` with reasons; the branch SHALL be pushed and no pull request opened. When verify fails at a step other than the validator, the `failed` outcome SHALL name that step and its error, report the validator's actual result, and skip pull request annotation.
 
 #### Scenario: Open a draft pull request
 
@@ -191,6 +191,11 @@ After archiving, the feature workflow SHALL run the Runner's `core/verify-change
 
 - **WHEN** the validator remains red after its bounded repair
 - **THEN** the workflow pushes the branch, opens no pull request, and returns `failed` with the failing checks
+
+#### Scenario: Acceptance push fails after the validator passes
+
+- **WHEN** the validator passes but verify fails at the acceptance push with a remote rejection
+- **THEN** the outcome is `failed`, names the acceptance-push step and rejection, reports `validator.checks` as `passed` and `validator.status` as `incomplete` with task-compliance `not-run`, preserves the branch, and skips pull request annotation
 
 ### Requirement: Classify review attention without blocking
 
