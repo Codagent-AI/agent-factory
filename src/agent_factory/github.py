@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import ProjectConfig
-from agent_factory.lanes import LANES
+from agent_factory.lanes import priority_rank
 from agent_factory.routing import ProjectItem, SourceItem
 
 WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
@@ -59,9 +59,6 @@ class PullRequestInfo:
     head_sha: str
     is_draft: bool = False
     branch: str = ""
-
-
-_PRIORITY_ORDER = LANES
 
 
 @dataclass(frozen=True)
@@ -1157,16 +1154,7 @@ def rank_project_queue(items: list[ProjectQueueItem]) -> list[ProjectQueueItem]:
 
 
 def _queue_sort_key(item: ProjectQueueItem) -> tuple[int, float]:
-    return (_priority_rank(item.priority), -_created_timestamp(item.source.created_at))
-
-
-def _priority_rank(name: str | None) -> int:
-    if not name:
-        return len(_PRIORITY_ORDER)
-    try:
-        return _PRIORITY_ORDER.index(name.strip().lower())
-    except ValueError:
-        return len(_PRIORITY_ORDER)
+    return (priority_rank(item.priority), -_created_timestamp(item.source.created_at))
 
 
 def _created_timestamp(value: str) -> float:

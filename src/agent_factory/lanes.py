@@ -10,3 +10,12 @@ def lane_for(priority: str | None) -> str:
 
 def rank(lane: str) -> int:
     return LANES.index(lane)
+
+
+def priority_rank(name: str | None) -> int:
+    if not name:
+        return len(LANES)
+    try:
+        return LANES.index(name.strip().lower())
+    except ValueError:
+        return len(LANES)

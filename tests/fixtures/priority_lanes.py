@@ -22,6 +22,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     ReviewActivity,
 )
+from agent_factory.lanes import priority_rank
 from agent_factory.routing import SourceItem
 from agent_factory.store import Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import ReadinessError
@@ -43,7 +44,7 @@ class Board:
         pass
 
     def list_project_items(self, *args: object, **kwargs: object) -> list[ProjectQueueItem]:
-        return sorted(self.cards, key=lambda c: runtime.github._priority_rank(c.priority))
+        return sorted(self.cards, key=lambda c: priority_rank(c.priority))
 
     def get_permission(self, *args: object) -> str:
         return "write"
