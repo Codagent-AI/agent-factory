@@ -6,7 +6,8 @@ set -eu
 # "restore" rebuilds it from that saved description: it adds a section naming the round's
 # commits and, once validation passed and the round pushed, the feedback ids they addressed
 # (the posted replies hold the detail). It refreshes the commits after acceptance and marks
-# items those commits may have fixed (mark-later-commits.py). Anything finalization or an
+# items those commits may have fixed, or whose linked file is no longer changed by this
+# PR (mark-later-commits.py). Anything finalization or an
 # agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix pull
 # request's description is left as it is.
 
@@ -104,7 +105,10 @@ def rebuilt(original: str) -> str:
         original = eol.join(lines)
     updated.write_text(original, newline="")
     # Best effort: without the marks the round's section is still published.
-    subprocess.run(["python3", os.environ["MARKER"], str(updated)], check=False)
+    command = ["python3", os.environ["MARKER"], str(updated)]
+    if review.get("base_head"):
+        command.append(review["base_head"])
+    subprocess.run(command, check=False)
     return updated.open(newline="").read()
 
 

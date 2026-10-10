@@ -420,7 +420,10 @@ def main() -> None:
     # Classification ran before finalization's last commits, which may fix its items.
     # Best effort: the unmarked description is still published if marking fails.
     marker = Path(__file__).with_name("mark-later-commits.py")
-    marked = subprocess.run([sys.executable, str(marker), str(body)], check=False)
+    marker_command = [sys.executable, str(marker), str(body)]
+    if task_record.get("base"):
+        marker_command.append(task_record["base"])
+    marked = subprocess.run(marker_command, check=False)
     if marked.returncode != 0:
         print("could not mark items later commits may have fixed", file=sys.stderr)
     # The REST update, not `gh pr edit`: that also reads the pull request's project
