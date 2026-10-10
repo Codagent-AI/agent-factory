@@ -270,3 +270,80 @@ def test_blocked_claim_without_input_is_not_a_lane_wait(site: Site) -> None:
     assert len(site.tick()) == 1
     assert site.store.get_settings_by_prefix("lane-wait", "") == {}
     assert 1 not in site.reconciled
+
+
+@pytest.mark.parametrize("reentry", ["review", "unblock"])
+def test_cycle_limit_defers_reentry_even_when_memory_and_lanes_allow(
+    site: Site, monkeypatch: pytest.MonkeyPatch, reentry: str
+) -> None:
+    from agent_factory import runtime
+    from agent_factory.github import IssueComment
+
+    if reentry == "review":
+        second = site.seed_review(2, "Low")
+    else:
+        card = site.card(2, "Low")
+        handler = site.handlers["fix"]
+        snapshot = handler.snapshot(card, site.board, site.shared)
+        assert snapshot is not None
+        second = site.controller.accept(snapshot, resolve=handler.resolve_request)
+        assert second is not None
+        site.store.set_claim_lifecycle(second.id, "blocked", {"declined_at": "2026-01-01"})
+        site.board.comments[2] = [IssueComment("writer", "retry", "writer", "2099-01-01")]
+    first = site.seed_review(1, "High")
+
+    def finish_on_launch(state: Path, run_id: str, *args: object, **kwargs: object) -> None:
+        site.launch(state, run_id, *args, **kwargs)
+        # Remove lane contention: only the per-cycle limit should defer the second claim.
+        site.store.finish_run(run_id, execution_status="completed", result={})
+
+    monkeypatch.setattr(runtime, "launch_supervisor", finish_on_launch)
+    handler = site.handlers["fix"]
+    method_name = "review_round" if reentry == "review" else "unblock"
+    original = getattr(handler, method_name)
+    admissions: list[bool] = []
+
+    def with_memory(*args: object, **kwargs: object):
+        admissions.append(bool(kwargs["admission_available"]))
+        kwargs["memory_available"] = True
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(handler, method_name, with_memory)
+    (run,) = site.tick()
+    assert run.claim_id == first.id
+    assert admissions[-1] is False
+    assert not site.store.runs_for_claim(second.id)
+    assert 2 not in site.prepared
+    if reentry == "review":
+        assert site.store.get_claim(second.id).outcome.get("waiting_review")  # type: ignore[union-attr]
+    else:
+        assert 2 in site.reconciled
+
+
+def test_job_cap_reuses_the_claim_selection_from_lane_admission(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.controller import Controller, RequestSnapshot
+    from agent_factory.store import Claim
+
+    site.card(1, "Low")
+    (run,) = site.tick()
+    site.finish(run)
+    site.board.cards.clear()
+    site.card(2, "Low")
+    site.shared_path.write_text(
+        site.shared_path.read_text() + "\n[job_cap]\nattempts = 1\nwindow_hours = 24\n"
+    )
+    selections: list[int] = []
+    original = Controller.select_existing
+
+    def select_once(
+        controller: Controller, snapshot: RequestSnapshot, *, fresh: bool = False
+    ) -> Claim | None:
+        selections.append(snapshot.issue_number)
+        return original(controller, snapshot, fresh=fresh)
+
+    monkeypatch.setattr(Controller, "select_existing", select_once)
+    assert site.tick() == []
+    assert selections == [2]
+    assert site.store.get_setting("job-cap-card", "example/work:2")

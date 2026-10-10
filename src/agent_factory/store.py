@@ -207,6 +207,9 @@ class ClaimStore:
 
     def _ensure_lane_column(self) -> None:
         # Opening a store never changes the guard: older supervisors share this DB.
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(run)")}
+        if "lane" in columns:
+            return
         with self._transaction():
             columns = {row[1] for row in self._connection.execute("PRAGMA table_info(run)")}
             if "lane" not in columns:
@@ -237,7 +240,7 @@ class ClaimStore:
             ).fetchall()
             if rows:
                 return [_run(row) for row in rows]
-            if not check_only:
+            if not check_only and self.lane_mode() == "lanes":
                 self._connection.execute("DROP INDEX IF EXISTS one_nonterminal_run_per_lane")
                 self._connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS one_nonterminal_run_per_kind "

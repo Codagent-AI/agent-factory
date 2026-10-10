@@ -280,6 +280,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         bot_login=shared.bot_login,
                         artifact_root=artifact_root,
                         now=now,
+                        admission_available=can_reserve,
                         memory_available=memory_available,
                     )
                 else:
@@ -292,6 +293,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         artifact_root=artifact_root,
                         now=now,
                         local=local,
+                        admission_available=can_reserve,
                         memory_available=memory_available,
                         readiness=lambda selected=reentry_handler: kind_ready(selected),
                     )
@@ -388,7 +390,11 @@ def cycle(state: Path, config_path: Path) -> None:
             try:
                 cap_state = store.job_cap_state(now)
                 if cap_state.reached:
-                    selected = controller.select_existing(snapshot, fresh=fresh)
+                    # Reuse the selection and reason from the admission lane check.
+                    if not record_lane_wait(
+                        card, handler.kind, selected.id if selected else None, next_reason
+                    ):
+                        continue
                     if selected is not None:
                         unit, _ = handler.next_unit(selected, store.runs_for_claim(selected.id))
                         if unit is not None:

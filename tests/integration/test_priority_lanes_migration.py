@@ -1,5 +1,7 @@
 """INT-002: previous release's explicit SQL remains usable on both guards."""
 
+# pyright: reportPrivateUsage=false
+
 import sqlite3
 from contextlib import closing
 from pathlib import Path
@@ -93,3 +95,27 @@ def test_upgrade_downgrade(tmp_path: Path) -> None:
         assert len(store.runs_for_claim(claims[0].id)) == 2
         assert raw.execute("PRAGMA user_version").fetchone()[0] == 4
     raw.close()
+
+
+def test_existing_lane_column_needs_no_write_lock(tmp_path: Path) -> None:
+    path = tmp_path / "state.sqlite3"
+    with closing(ClaimStore(path)) as store, closing(sqlite3.connect(path)) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        store._connection.execute("PRAGMA busy_timeout = 0")
+        # Isolate the lane migration from the older schema migrations.
+        store._ensure_lane_column()
+        with closing(ClaimStore(path, read_only=True)) as reader:
+            assert reader.restore_kind_guard(True) == []
+        writer.rollback()
+
+
+def test_guard_restore_is_read_only_or_idempotent(tmp_path: Path) -> None:
+    with closing(ClaimStore(tmp_path / "state.sqlite3")) as store:
+        statements: list[str] = []
+        store._connection.set_trace_callback(statements.append)
+        assert store.restore_kind_guard(False) == []
+        assert not any(sql.startswith(("DROP", "CREATE", "ALTER")) for sql in statements)
+        store.enable_lanes()
+        store._connection.execute("PRAGMA query_only = ON")
+        assert store.restore_kind_guard(True) == []
+        assert store.lane_mode() == "lanes"

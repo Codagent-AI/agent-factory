@@ -94,6 +94,7 @@ def process_review_claim(
     now: datetime,
     local: LocalConfig,
     readiness: Callable[[], bool],
+    admission_available: bool = True,
     memory_available: bool = True,
 ) -> tuple[Run, Preparation] | None:
     if (
@@ -138,7 +139,8 @@ def process_review_claim(
     if not has_eligible_review(eligible):
         return None
     can_start = not (
-        store.is_paused()
+        not admission_available
+        or store.is_paused()
         or not store.lane_decision(handler.kind, lane, claim.id, "review").allowed
         or not memory_available
         or not handler.window(local).allows_admission(now)

@@ -295,7 +295,8 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        timeout=15,
+        # Ten parallel workers can slow the real Git/CLI subprocess chain.
+        timeout=90,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr

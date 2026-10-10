@@ -222,7 +222,8 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 
 
 class Harness:
-    cli_timeout: float = 30
+    # Budget for real Git/CLI subprocesses in the parallel E2E suite.
+    cli_timeout: float = 90
 
     def __init__(
         self,

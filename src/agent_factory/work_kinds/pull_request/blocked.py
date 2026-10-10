@@ -73,11 +73,12 @@ def process_blocked_claim(
     lane: str,
     artifact_root: Path,
     now: datetime,
+    admission_available: bool = True,
     memory_available: bool = True,
 ) -> tuple[Run, Preparation] | None:
     """Re-admit one blocked fix claim if eligible; return the reserved run and its clones.
 
-    Without memory headroom the eligible claim is still reconciled against an earlier
+    Without admission capacity or memory headroom, reconcile the eligible claim against an earlier
     attempt's branch or pull request, but no clones are cut and no run is reserved.
     """
     if claim.lifecycle != "blocked" or claim.outcome.get("blocked_by") == "review":
@@ -155,7 +156,7 @@ def process_blocked_claim(
     # as first admission does; a launch problem leaves the claim blocked for the next poll.
     preparation: Preparation | None = None
     try:
-        if memory_available:
+        if admission_available and memory_available:
             preparation = handler.prepare(claim)
         else:
             handler.reconcile(claim)
@@ -170,7 +171,7 @@ def process_blocked_claim(
         client.set_attention_label(claim.repository, claim.issue_number, False)
         return None
     if preparation is None:
-        # Still blocked and eligible; the memory gate defers the relaunch to a later poll.
+        # Still blocked and eligible; admission or memory capacity defers the relaunch.
         return None
     try:
         run = store.reserve_run(

@@ -223,6 +223,7 @@ class PullRequestHandler:
         lane: str,
         artifact_root: Path,
         now: datetime,
+        admission_available: bool = True,
         memory_available: bool = True,
     ) -> tuple[Run, Preparation] | None:
         from agent_factory.work_kinds.pull_request.blocked import process_blocked_claim
@@ -239,6 +240,7 @@ class PullRequestHandler:
             lane=lane,
             artifact_root=artifact_root,
             now=now,
+            admission_available=admission_available,
             memory_available=memory_available,
         )
 
@@ -254,6 +256,7 @@ class PullRequestHandler:
         now: datetime,
         local: LocalConfig,
         readiness: Callable[[], bool],
+        admission_available: bool = True,
         memory_available: bool = True,
     ) -> tuple[Run, Preparation] | None:
         from agent_factory.work_kinds.pull_request.review import process_review_claim
@@ -269,6 +272,7 @@ class PullRequestHandler:
             now=now,
             local=local,
             readiness=readiness,
+            admission_available=admission_available,
             memory_available=memory_available,
         )
 
