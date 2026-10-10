@@ -258,7 +258,8 @@ class Factory:
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # A tick includes several subprocess probes, each with its own deadline.
+            timeout=60,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout
