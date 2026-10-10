@@ -145,7 +145,8 @@ elif scope.get("crossed"):
     }
 elif post_scope.get("crossed"):
     outcome = failed_with_pr(post_scope.get("reasons") or ["Task scope crossed after CI repair"])
-elif "implement_completed" in parsed and implement_completed != "passed":
+elif (validator_status == "passed"
+      and "implement_completed" in parsed and implement_completed != "passed"):
     outcome = {
         "contract": contract,
         "outcome": "failed",

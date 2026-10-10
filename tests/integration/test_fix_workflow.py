@@ -615,10 +615,13 @@ def test_record_outcome_is_pull_request_when_validator_and_ci_pass(tmp_path: Pat
     }
 
 
+@pytest.mark.parametrize("completion_fields", [{}, {"implement_completed": "failed"}])
 def test_record_outcome_is_failed_without_a_pr_when_the_validator_never_passes(
-    tmp_path: Path,
+    tmp_path: Path, completion_fields: dict[str, str]
 ) -> None:
-    outcome = _record_outcome(tmp_path, validator_status="failed", ci_status="", pr_details="{}")
+    outcome = _record_outcome(
+        tmp_path, validator_status="failed", ci_status="", pr_details="{}", **completion_fields
+    )
     assert outcome["outcome"] == "failed"
     assert outcome["validator"] == {"status": "failed"}
     assert "pr" not in outcome
