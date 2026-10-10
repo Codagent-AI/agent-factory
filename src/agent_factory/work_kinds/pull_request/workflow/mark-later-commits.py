@@ -17,7 +17,13 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from agent_factory.work_kinds.pull_request.workflow.pr_description import masked, unmasked
+else:
+    from pr_description import masked, unmasked
 
 LATER_COMMITS_TITLE = "Commits after acceptance"
 ACCEPTED = re.compile(r"^Acceptance ran against `([0-9a-f]{7,40})`\.")
@@ -52,7 +58,7 @@ def later_commits(accepted: str) -> list[tuple[str, str, set[str]]]:
 
 def mark(text: str) -> str:
     eol = "\r\n" if "\r\n" in text else "\n"
-    lines = text.split(eol)
+    lines, removed = masked(text.split(eol))
     accepted = next((m.group(1) for line in lines if (m := ACCEPTED.match(line))), None)
     if accepted is None:
         return text
@@ -120,7 +126,7 @@ def mark(text: str) -> str:
     if missing:
         separator = ", " if lines[existing] != prefix.rstrip() else " "
         lines[existing] += separator + ", ".join(missing)
-    return eol.join(lines)
+    return eol.join(unmasked(lines, removed))
 
 
 def main() -> None:

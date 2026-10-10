@@ -59,7 +59,9 @@ Constants:
 
 ```python
 LIMIT = 65_536
-START = "<!-- agent-factory:proposal:start {token} {href} -->"  # href = full proposal URL, HTML-escaped
+START = (
+    "<!-- agent-factory:proposal:start {token} {href} -->"  # href = full proposal URL, HTML-escaped
+)
 SECTION = "<!-- agent-factory:proposal:{token}:section -->"
 END = "<!-- agent-factory:proposal:{token}:end -->"
 START_LINE = re.compile(r"^<!-- agent-factory:proposal:start ([0-9a-f]{12}) (\S*) -->$")

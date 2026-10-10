@@ -1,4 +1,4 @@
-- [ ] Inline the archived OpenSpec proposal in the Factory feature pull request description, end to end
+- [x] Inline the archived OpenSpec proposal in the Factory feature pull request description, end to end
 
 ## Task: Inline the proposal in feature PR descriptions (#71)
 
@@ -95,3 +95,18 @@ All workflow files live in `src/agent_factory/work_kinds/pull_request/workflow/`
 - `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and `uv build` pass,
   and `agent-validate run` passes.
 - No changes are made outside this repository.
+
+## Implementation verification
+
+Agent Validator is deferred to the later workflow step by the implementing session's explicit
+instruction. The three parameterized `test_real_validator_escapes_trusted_claim_clone` cases
+were excluded because they invoke the real Validator.
+
+The broad suite run completed with 1,565 passes and 29 failures: 28 end-to-end failures,
+mostly CLI subprocess timeouts, and one new test assertion that was subsequently corrected
+and passed in isolation. The first 15-second CLI timeout also reproduces on an isolated
+`origin/main` snapshot. A two-worker retry still hit these end-to-end failures and was
+interrupted after 54 passes and eight failures. No unrelated test or runtime code was changed
+to work around them. Final focused verification passed all 168 tests covering the helper and all existing and new
+feature annotation, staging, and review-round tests. Ruff formatting and linting, Pyright,
+and `uv build` also passed.
