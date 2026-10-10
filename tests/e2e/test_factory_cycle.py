@@ -290,13 +290,12 @@ def token_response(request, *, timeout):
 urllib.request.urlopen = token_response
 """
     entrypoint += before_cli + "\nrunpy.run_module('agent_factory.cli', run_name='__main__')\n"
-    # Parallel E2E ticks compete for Git and stub CLI subprocesses on a busy host.
     done = subprocess.run(
         [sys.executable, "-c", entrypoint, "--config", str(config), command],
         env=environment,
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=15,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr
