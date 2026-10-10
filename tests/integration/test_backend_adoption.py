@@ -71,7 +71,9 @@ def test_replacement_watcher_settles_gone_host_execution(
     evidence.mkdir()
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", kind, "x", {}))
-    run = store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, kind, lane="low", reason="initial", evidence_path=str(evidence)
+    )
     plan = ExecutionPlan(
         ("/bin/true",),
         str(tmp_path),
@@ -103,7 +105,9 @@ def test_replacement_watcher_holds_unreadable_feature_outcome(tmp_path: Path) ->
     evidence.mkdir()
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "feature", "x", {}))
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     plan = ExecutionPlan(
         ("/bin/true",),
         str(tmp_path),
@@ -130,7 +134,9 @@ def test_replacement_watcher_holds_reused_host_pid(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     plan = ExecutionPlan(
         ("/bin/true",),
         str(tmp_path),
@@ -162,7 +168,9 @@ def test_replacement_watcher_continues_a_live_host_process(tmp_path: Path) -> No
     evidence.mkdir()
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     # The result appears whole (write, then rename): a watcher polling mid-write would
     # otherwise read a truncated file under load, which is not what this test is about.
     script = (
@@ -216,7 +224,9 @@ def test_replacement_watcher_records_unsupervised_fly_loss(tmp_path: Path) -> No
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "eval", "x", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     plan = ExecutionPlan(
         ("run.sh",),
         str(tmp_path),
@@ -251,7 +261,9 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
     attempt.mkdir(parents=True)
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     script = (
         "import pathlib,sys,time; "
         "root=pathlib.Path(sys.argv[1]); (root/'ready').touch(); "
@@ -313,7 +325,7 @@ def test_real_watcher_loss_settles_and_applies_one_recovery_retry(
             assert (next_unit, reason) == ("fix", "recovery")
             assert next_unit is not None
             retry = store.reserve_run(
-                claim.id, next_unit, reason=reason, evidence_path=str(evidence)
+                claim.id, next_unit, lane="low", reason=reason, evidence_path=str(evidence)
             )
             store.finish_run(retry.id, execution_status="interrupted", result={})
             assert handler.next_unit(current_claim, store.runs_for_claim(claim.id))[0] is None
@@ -329,7 +341,9 @@ def test_observer_rereads_result_after_process_disappears(tmp_path: Path) -> Non
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {})
     plan = ExecutionPlan(("/bin/true",), str(tmp_path), {}, (), (), {"backend": "host"}, False)
     reads = [ResultRead(None), ResultRead({"evaluation_status": "completed"})]

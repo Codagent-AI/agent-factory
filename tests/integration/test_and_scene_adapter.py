@@ -490,7 +490,7 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id,
@@ -638,7 +638,7 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     assert Path(run.evidence_path) == (tmp_path / "artifacts" / f"{claim.id}-rep-1").resolve()
 

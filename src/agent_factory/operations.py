@@ -273,6 +273,7 @@ def status(
     """Render saved execution state without polling, admitting, or modifying controls."""
     lines = [f"paused: {str(store.is_paused()).lower()}"]
     lines.extend(_slot_lines(store))
+    lines.extend(_lane_wait_lines(store))
     cap = JobCapConfig()
     if config is not None:
         try:
@@ -351,7 +352,13 @@ def status(
             number = (
                 cast(Mapping[str, object], pr).get("number") if isinstance(pr, Mapping) else "?"
             )
-            lines.append(f"waiting review: PR #{number} awaits the {claim.kind} slot")
+            wait = store.get_setting("lane-wait", f"{claim.repository}:{claim.issue_number}")
+            lane = wait.get("lane") if wait else None
+            lines.append(
+                f"waiting review: PR #{number} waits for {claim.kind} lane {lane}"
+                if lane
+                else f"waiting review: PR #{number} awaits a {claim.kind} Priority lane"
+            )
         lines.extend(_blocked_lines(store, claim))
         lines.extend(_hold_lines(store, claim, config))
         lines.extend(_reporting_lines(claim))
@@ -1172,16 +1179,45 @@ def _current_line(claim: Claim, run: Run) -> str:
 
 
 def _slot_lines(store: ClaimStore) -> list[str]:
+    from agent_factory.lanes import LANES
+
     lines: list[str] = []
-    for kind in ("eval", *(definition.kind for definition in registered())):
-        runs = store.nonterminal_runs(kind=kind)
-        run = runs[0] if runs else None
-        claim = store.get_claim(run.claim_id) if run is not None else None
-        if run is None or claim is None:
-            lines.append(f"{kind} slot: free")
-            continue
+    if store.lane_mode() == "kind":
         lines.append(
-            f"{kind} slot: {claim.repository}#{claim.issue_number} {run.unit_key} ({run.status})"
+            "lanes: off (per-kind guard restored; the resident re-enables lanes when it starts)"
+        )
+    for kind in ("eval", *(definition.kind for definition in registered())):
+        occupancy = store.lane_occupancy(kind)
+        lanes = [lane for lane in LANES if lane in occupancy.holders]
+        busy = (["all"] if occupancy.legacy else []) + lanes
+        lines.append(f"{kind} slot: busy ({', '.join(busy)})" if busy else f"{kind} slot: free")
+        for run in occupancy.legacy + [occupancy.holders[lane] for lane in lanes]:
+            claim = store.get_claim(run.claim_id)
+            if claim is not None:
+                lane = run.lane or "all (pre-lane attempt)"
+                lines.append(
+                    f"{kind} lane {lane}: {claim.repository}#{claim.issue_number} "
+                    f"{run.unit_key} ({run.status})"
+                )
+    return lines
+
+
+def _lane_wait_lines(store: ClaimStore) -> list[str]:
+    lines: list[str] = []
+    for key, wait in sorted(store.get_settings_by_prefix("lane-wait", "").items()):
+        holder = store.get_run(str(wait.get("holder_run_id", "")))
+        if holder is None or holder.status not in {"reserved", "running", "observing"}:
+            continue
+        claim = store.get_claim(holder.claim_id)
+        issue = key.rsplit(":", 1)
+        label = "#".join(issue)
+        owner = f"{claim.repository}#{claim.issue_number}" if claim else holder.claim_id
+        kind = holder.kind
+        lane = holder.lane or "all (pre-lane attempt)"
+        cause = wait.get("cause")
+        lines.append(
+            f"lane wait: {label} waits for {kind} lane {wait.get('lane')} — "
+            f"held by busy {kind} lane {lane} ({owner}; {cause})"
         )
     return lines
 

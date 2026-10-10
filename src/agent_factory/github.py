@@ -19,10 +19,13 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import ProjectConfig
+from agent_factory.lanes import LANES, priority_rank
 from agent_factory.routing import ProjectItem, SourceItem
 
 WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 """Effective repository permissions that may hand work to the factory."""
+
+_PRIORITY_ORDER = LANES
 
 
 class GitHubApiError(RuntimeError):
@@ -58,9 +61,6 @@ class PullRequestInfo:
     head_sha: str
     is_draft: bool = False
     branch: str = ""
-
-
-_PRIORITY_ORDER = ("urgent", "high", "medium", "low")
 
 
 @dataclass(frozen=True)
@@ -1160,12 +1160,7 @@ def _queue_sort_key(item: ProjectQueueItem) -> tuple[int, float]:
 
 
 def _priority_rank(name: str | None) -> int:
-    if not name:
-        return len(_PRIORITY_ORDER)
-    try:
-        return _PRIORITY_ORDER.index(name.strip().lower())
-    except ValueError:
-        return len(_PRIORITY_ORDER)
+    return priority_rank(name)
 
 
 def _created_timestamp(value: str) -> float:

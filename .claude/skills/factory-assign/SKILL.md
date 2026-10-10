@@ -25,7 +25,7 @@ The tick admits a card when all of the following hold (`work_kinds/*/handler.py`
 - **Eval**: an open issue in `[routing] eval_source` (`agent-evals`) with native type **Eval** and an author who has write permission. The card needs Owner=factory and Status=Ready, and the body must parse: exactly one fenced eval TOML block with supported keys. The `eval-request` label is routing's trigger, not an admission gate. Still add it, because it is the documented convention.
 - **Feature**: an open issue in a configured feature target repository, with native type **Feature**, no `needs-input` label, an author with write, maintain, or admin permission, and Owner=factory and Status=Ready. Check the live release's feature targets and handler before changing a card. The `blocked` label and GitHub blocked-by relationship do not veto admission; keep a dependent feature in Backlog until its prerequisite has landed, even if Owner=factory.
 - **Task**: an open writer-authored issue in a fix target with native type **Task**, no `needs-input` label, Owner=factory and Status=Ready. The shared `[task]` section must enable admission. A Task only reaches the factory when moved to Ready; it is not routed automatically.
-- **All kinds**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the kind's slot is free, and the kind's readiness checks pass (disk floor, credentials, Fly). The tick admits at most one card. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
+- **All kinds**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the card's Priority lane and every higher lane of its kind are free, and the kind's readiness checks pass (disk floor, credentials, Fly). Each tick reserves at most one attempt per kind. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
 - **Earlier claims**: an active claim is reused. A settled fix starts again when its card returns to Ready. A settled eval starts again when its parsed eval settings change (edits to prose or formatting do not count), even with its Verdict still set; with unchanged settings, only once its Verdict is cleared. Ask Paul before clearing a Verdict.
 
 ## 1. Choose the kind
@@ -65,10 +65,10 @@ It uses Paul's `gh` login for the type, labels, and Priority, and the Factory Ap
 ## 3. Check capacity
 
 ```sh
-PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml status | grep -E '^(paused|eval slot|fix slot|feature slot|task slot|readiness|quota|admission window)'
+PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml status | grep -E '^(paused|lanes:|lane wait:|(eval|fix|feature|task) (slot|lane)|readiness|quota|admission window)'
 ```
 
-If the factory is paused, the kind's slot is busy, a `readiness:<kind>` line reports a failure, or the admission window is closed, say so. The card waits in Ready and is admitted once the condition clears. A tick will not help, so stop here and report.
+If the factory is paused, the card's lane or a higher lane of its kind is busy, a `readiness:<kind>` line reports a failure, or the admission window is closed, say so. The card waits in Ready and is admitted once the condition clears. A tick will not help, so stop here and report.
 
 ## 4. Tick and confirm
 
@@ -84,7 +84,7 @@ Then rerun the check, or read the claim directly. Do not use `sqlite3 -readonly`
 sqlite3 ~/.agent-factory/state.sqlite3 "SELECT id, kind, lifecycle, created_at FROM claim WHERE repository='OWNER/REPO' AND issue_number=NUMBER ORDER BY created_at"
 ```
 
-It was admitted when a new claim appears and `status` shows it in its slot, for example `fix slot: Codagent-AI/agent-runner#150 fix (running)`.
+It was admitted when a new claim appears and `status` shows it in its slot, for example `fix slot: busy (high)` followed by `fix lane high: Codagent-AI/agent-runner#150 fix (running)`.
 
 If it was not admitted, run one more tick at most. Then diagnose from the check output and the requirements above, and report what is missing. Common causes are a higher-ranked card that took the slot, a failed readiness check, or `needs-input` added by the tick because the eval request was invalid. Do not loop.
 
@@ -93,3 +93,38 @@ If it was not admitted, run one more tick at most. Then diagnose from the check 
 - the issue URL and the kind;
 - each field the helper set, and each one it left unchanged;
 - the admission result: the claim id, its lifecycle, and the slot line; or what blocks admission, and whether the card will be picked up on its own once that clears.
+
+## Priority lanes
+
+Priority lanes allow one unfinished attempt per kind at each level: Urgent, High,
+Medium, and Low. Unset or unknown Priority uses Low for occupancy, but sorts after
+explicit Low. Higher-priority starts can run beside lower work; new lower work
+waits while a higher lane of the same kind is busy. Running attempts are never
+preempted or moved when Priority changes. The next attempt uses the card's current
+Priority. Repetitions and retries of a claim that actually started in its current
+episode are continuations and need only their own lane. Admissions, fresh claims,
+unblocks, and review rounds are new starts. A claim that never launched is also a
+new start.
+
+Status keeps `<kind> slot: free` for idle kinds, or prints
+`<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
+and progress line per attempt. Lane wait lines name the requested lane, the
+blocking holder, and the cause (busy lane, higher lane, legacy holder, or kind
+mode). Pre-upgrade attempts have no lane and hold every lane of their kind until
+they finish. `lanes: off` means the per-kind guard is restored. Only resident
+startup or `agent-factory --config <local.toml> lanes enable` enables lanes;
+`tick`, `doctor`, and `status` never change mode.
+
+Size host disk and memory for up to four concurrent attempts **per host kind**
+(fix, feature, task), including each attempt's clones, artifacts, model clients,
+and build tools. The existing disk floor, memory, quota, readiness, and job-cap
+holds still bound admission; memory is re-sampled before each sandbox admission.
+Concurrent eval lanes can increase Fly image builds, Machines, and spend.
+
+Rollback past lanes goes through `scripts/deploy.sh`. It refuses while any kind
+has more than one unfinished attempt. Pause, let attempts settle or cancel claims
+until every kind has at most one unfinished attempt, then deploy the older
+release. The script restores the per-kind index after pausing. Failure before the
+old resident's removal is confirmed restores the live pointers and re-enables
+lanes; failure after removal keeps the per-kind guard. A hand rollback, or an
+older deploy script, bypasses both the refusal and guard restoration.

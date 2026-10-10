@@ -370,7 +370,9 @@ def test_status_shows_machine_id_state_and_deadline_for_an_active_run(
             ClaimDraft("example/evals", 7, "I7", "P7", "eval", "fp", {"settings": {}})
         )
         artifact = site.root / "artifact"
-        run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+        run = store.reserve_run(
+            claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+        )
         plan = _fly_plan(artifact)
         store.configure_run(
             run.id,

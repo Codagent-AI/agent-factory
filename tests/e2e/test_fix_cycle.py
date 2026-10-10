@@ -222,6 +222,9 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 
 
 class Harness:
+    # Budget for real Git/CLI subprocesses in the parallel E2E suite.
+    cli_timeout: float = 90
+
     def __init__(
         self,
         tmp_path: Path,
@@ -467,7 +470,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=self.cli_timeout,
         )
         assert done.returncode == 0, done.stderr
 
@@ -477,7 +480,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=self.cli_timeout,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout
@@ -1229,7 +1232,7 @@ def test_terminal_host_fix_releases_then_reopens_for_writer_review(tmp_path: Pat
             (evidence / "attempt-1/logs").mkdir(parents=True)
             (evidence / "attempt-1/logs/old.log").write_text("pending")
             run_pending = h.store.reserve_run(
-                claim_pending.id, "fix", reason="initial", evidence_path=str(evidence)
+                claim_pending.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
             )
             h.store.finish_run(run_pending.id, execution_status="completed", result={})
             h.store.set_setting("consumed-results", run_pending.id, {"complete": True})

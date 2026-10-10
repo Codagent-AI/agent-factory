@@ -97,7 +97,9 @@ def test_report_golden(tmp_path: Path, shape: str) -> None:
     )
     handler = EvalHandler(EvalDefaults("main", "main", {}, False, 1))
     handler.attach_store(store)
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/artifact")
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="/artifact"
+    )
     result = {
         "execution_status": "settled",
         "product_verdict": "passed",

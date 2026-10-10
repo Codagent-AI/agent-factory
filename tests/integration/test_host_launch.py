@@ -208,7 +208,9 @@ def test_fix_host_plan_records_reported_validator_build(
     assert {key: hints[key] for key in expected} == expected
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 7, "I7", "P7", "fix", "request", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(built.evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(built.evidence)
+    )
     store.configure_run(run.id, plan=record, limits={})
     saved = store.get_run(run.id)
     assert saved is not None

@@ -181,7 +181,9 @@ def test_pr_read_is_cached_within_a_tick(tmp_path: Path) -> None:
 
 def test_quiescence_waits_for_execution_reporting_and_machine_disposal(tmp_path: Path) -> None:
     store, claim = _claim(tmp_path)
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.set_claim_lifecycle(claim.id, "cancelled", {})
     client = Mock()
     saved = store.get_claim(claim.id)

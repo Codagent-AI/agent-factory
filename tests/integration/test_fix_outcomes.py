@@ -153,7 +153,7 @@ def _accept_and_reserve(tmp_path: Path) -> tuple[Controller, ClaimStore, str, st
     )
     claim = controller.accept(_snapshot(), resolve=_resolver)
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     return controller, store, claim.id, run.id
 
@@ -270,7 +270,7 @@ def test_missing_malformed_or_wrong_contract_is_a_technical_failure_then_infra_e
     assert claim is not None
     assert claim.lifecycle == "waiting"
 
-    run2 = controller.reserve_next(claim_id, readiness=lambda: None)
+    run2 = controller.reserve_next(claim_id, lane="low", readiness=lambda: None)
     assert run2 is not None
     assert run2.reason == "recovery"
     if payload is not None:

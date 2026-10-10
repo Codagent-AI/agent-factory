@@ -103,7 +103,9 @@ def test_cli_doctor_is_read_only_and_status_explains_persisted_pause_and_holds(
     claim = store.create_claim(
         ClaimDraft("example/evals", 7, "I7", "P7", "eval", "request", {"settings": {}})
     )
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     store.set_paused(True)
     store.set_hold(claim.id, "readiness", {"reason": "Docker is unavailable"})
     store.record_delivery_failure(claim.id, "handoff", RuntimeError("network unavailable"))

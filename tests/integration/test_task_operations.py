@@ -19,9 +19,12 @@ def test_status_renders_task_slot_and_claim(tmp_path: Path) -> None:
         claim = store.create_claim(
             ClaimDraft("example/work", 76, "I76", "P76", "task", "fp-task", {})
         )
-        store.reserve_run(claim.id, "task", reason="initial", evidence_path=str(tmp_path))
+        store.reserve_run(
+            claim.id, "task", lane="low", reason="initial", evidence_path=str(tmp_path)
+        )
         rendered = status(store)
-        assert "task slot: example/work#76 task (" in rendered
+        assert "task slot: busy (low)" in rendered
+        assert "task lane low: example/work#76 task (" in rendered
         assert "task" in rendered
     finally:
         store.close()

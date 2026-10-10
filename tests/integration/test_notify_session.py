@@ -192,7 +192,9 @@ def test_launched_session_counts_when_recording_its_identity_fails(
     monkeypatch.setattr(records, "update", failing_update)
     try:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         now = datetime.now(UTC)
         records.insert(store, claim.id, run.id, "o/r", 1, "fix", "failed", now)
         with pytest.raises(RuntimeError, match="database is locked"):

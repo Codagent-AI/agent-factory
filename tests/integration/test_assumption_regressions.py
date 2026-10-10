@@ -74,7 +74,9 @@ def test_dotenv_matches_literal_runner_parser(tmp_path: Path) -> None:
 def test_wall_clock_jump_does_not_timeout_a_live_attempt(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("org/repo", 1, "I", "P", "eval", "x", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {})
     plan = ExecutionPlan(("unused",), str(tmp_path), {}, (), (), {"backend": "host"}, False)
     result: dict[str, object] = {"evaluation_status": "complete", "product_verdict": "fail"}
@@ -143,7 +145,7 @@ s=ClaimStore(Path(sys.argv[1]))
 c=s.create_claim(ClaimDraft('org/repo',1,'I','P','eval','x',{'settings':{'repetitions':1}}))
 d=EvalDefaults('main','main',{},False,1)
 controller=Controller(s,Comments(),{'eval':EvalHandler(d,harness_ref='a'*40)})
-controller.reserve_next(c.id,readiness=lambda: Path(sys.argv[2]).touch())
+controller.reserve_next(c.id,lane="low",readiness=lambda: Path(sys.argv[2]).touch())
 """
     marker = tmp_path / "entered"
     with (locks / "admission.lock").open("a") as handle:
@@ -293,7 +295,9 @@ def test_replacement_watcher_uses_persisted_elapsed_time_after_clock_adjustment(
 ) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("org/repo", 1, "I", "P", "eval", "x", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {})
     store.update_progress(
         run.id,

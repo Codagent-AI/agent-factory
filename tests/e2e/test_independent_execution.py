@@ -48,7 +48,7 @@ def test_appending_nested_suite_log_prevents_false_inactivity_timeout(
     state = tmp_path / "state.sqlite3"
     with closing(ClaimStore(state)) as store:
         run = store.reserve_run(
-            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+            _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
         )
         adapter = AndSceneAdapter(environment_file=tmp_path / "candidate.env")
 
@@ -99,7 +99,7 @@ def test_nested_agent_session_updates_prevent_false_inactivity_timeout(tmp_path:
     state = tmp_path / "state.sqlite3"
     with closing(ClaimStore(state)) as store:
         run = store.reserve_run(
-            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+            _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
         )
         plan = ExecutionPlan(
             (sys.executable, str(program), str(session_file), str(artifact / "result.json")),
@@ -161,7 +161,7 @@ def test_e2e_002_supervisor_survives_launcher_and_recovers_completion(tmp_path: 
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "a")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
     )
     marker = tmp_path / "started"
     supervisor = launch_supervisor(
@@ -194,7 +194,7 @@ def test_timeout_and_cancellation_only_signal_verified_owned_child(tmp_path: Pat
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "a")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
     )
     marker = tmp_path / "started"
     supervisor = launch_supervisor(
@@ -220,7 +220,7 @@ def test_cancellation_request_is_observed_without_touching_a_decoy(tmp_path: Pat
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "a")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
     )
     marker = tmp_path / "started"
     supervisor = launch_supervisor(
@@ -248,7 +248,7 @@ def test_suite_reported_technical_failure_is_not_recorded_as_product_completion(
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "a")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
     )
     marker = tmp_path / "started"
     supervisor = launch_supervisor(
@@ -312,7 +312,7 @@ def test_bounded_claude_wait_does_not_consume_execution_or_idle_budget(
     state = tmp_path / "state.sqlite3"
     with closing(ClaimStore(state)) as store:
         run = store.reserve_run(
-            _claim(store), "rep-1", reason="initial", evidence_path=str(artifact)
+            _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
         )
         plan = ExecutionPlan(
             (sys.executable, str(program), str(artifact)),
@@ -354,17 +354,21 @@ def test_e2e_003_two_slots_survive_a_controller_restart_and_refuse_seconds(tmp_p
     eval_claim = _claim(store)
     fix_claim = _fix_claim(store)
     eval_run = store.reserve_run(
-        eval_claim, "rep-1", reason="initial", evidence_path=str(tmp_path / "eval")
+        eval_claim, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "eval")
     )
     fix_run = store.reserve_run(
-        fix_claim, "fix", reason="initial", evidence_path=str(tmp_path / "fix")
+        fix_claim, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "fix")
     )
     # A second attempt of either kind is refused while its slot is held; the other kind's
     # slot is independent.
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path="/tmp/x")
+        store.reserve_run(
+            _claim(store), "rep-1", lane="low", reason="initial", evidence_path="/tmp/x"
+        )
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(_fix_claim(store), "fix", reason="initial", evidence_path="/tmp/y")
+        store.reserve_run(
+            _fix_claim(store), "fix", lane="low", reason="initial", evidence_path="/tmp/y"
+        )
     eval_marker = tmp_path / "eval-started"
     fix_marker = tmp_path / "fix-started"
     eval_dir = tmp_path / "eval-plan"
