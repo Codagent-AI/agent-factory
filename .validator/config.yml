@@ -14,9 +14,9 @@ entry_points:
           command: uv run pyright
       - test:
           command: uv run pytest || test $? -eq 5
-          # Automatic pytest concurrency is bounded to protect subprocess deadlines on
-          # busy hosts. Give the complete suite headroom without dropping any tests.
-          timeout: 600
+          # The suite runs in parallel and must finish within 3 minutes: about 85s on an
+          # idle Mac and about 150s when two suites run at once. The timeout leaves headroom.
+          timeout: 300
     reviews:
       - all-reviewers:
           builtin: all-reviewers

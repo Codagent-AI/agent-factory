@@ -295,9 +295,7 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        # A tick starts several CLI processes whose individual probes can take 30 s.
-        # Allow the whole tick more time when process startup is slow on a loaded Mac.
-        timeout=60,
+        timeout=15,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr

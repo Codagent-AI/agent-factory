@@ -467,8 +467,7 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             env=self.env,
             capture_output=True,
             text=True,
-            # A tick includes several subprocess probes, each with its own deadline.
-            timeout=60,
+            timeout=30,
         )
         assert done.returncode == 0, done.stderr
 
