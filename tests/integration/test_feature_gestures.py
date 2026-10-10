@@ -584,7 +584,7 @@ def test_int006_review_needs_input_waits_for_pr_feedback(tmp_path: Path) -> None
     current = store.get_claim(claim.id)
     assert current is not None
     comment = IssueComment("1", "answer", "writer", "2099-01-01T00:00:00Z")
-    assert feature.gesture(current, _card("Ready"), [comment]) == "fresh"
+    assert feature.gesture(current, _card("Ready"), [comment]) is None
 
 
 def test_int006_blocked_reconciliation_failure_is_visible_and_retried(tmp_path: Path) -> None:

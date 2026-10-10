@@ -135,14 +135,27 @@ def test_review_blocked_and_prior_pr_fallback(site: Site, kind: str) -> None:
 
 
 @pytest.mark.parametrize("kind", ["fix", "task"])
-@pytest.mark.parametrize("blocked", [False, True])
-def test_review_candidate_falls_through_to_fresh_ready(
-    site: Site, kind: str, blocked: bool
-) -> None:
-    old = site.seed_review(1, "Low", kind, feedback=False, ready=True, blocked=blocked)
+def test_review_candidate_falls_through_to_fresh_ready(site: Site, kind: str) -> None:
+    old = site.seed_review(1, "Low", kind, feedback=False, ready=True)
     (run,) = site.tick()
     assert run.reason == "initial" and run.claim_id != old.id
     assert site.store.get_claim(old.id).lifecycle == "superseded"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("kind", ["fix", "feature", "task"])
+def test_review_blocked_ready_without_feedback_preserves_claim(site: Site, kind: str) -> None:
+    claim = site.seed_review(1, "Low", kind, blocked=True, feedback=False, ready=True)
+
+    assert site.tick() == []
+    current = site.store.get_claim(claim.id)
+    assert current is not None and current.lifecycle == "blocked"
+    assert current.outcome["blocked_by"] == "review"
+    assert current.outcome["review_checkpoint"] == "2026-01-01"
+    assert [c.id for c in site.store.claims_for_item("P1")] == [claim.id]
+    assert site.board.cards[0].fields[site.shared.project.status.id] == (
+        site.shared.project.status.option("review")
+    )
+    assert 1 not in site.prepared
 
 
 @pytest.mark.parametrize("kind", ["fix", "feature", "task"])

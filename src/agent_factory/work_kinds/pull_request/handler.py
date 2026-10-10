@@ -1216,7 +1216,7 @@ class PullRequestHandler:
             return "fresh"
         if claim.lifecycle == "blocked":
             if claim.outcome.get("blocked_by") == "review":
-                return "fresh" if card_status(self._shared, card) == "Ready" else None
+                return None
             if comments or card_status(self._shared, card) == "Ready":
                 return "unblock"
             return None
