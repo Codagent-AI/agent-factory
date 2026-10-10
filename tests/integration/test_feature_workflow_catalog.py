@@ -445,9 +445,7 @@ def test_classification_order_and_failure_wiring(tmp_path: Path) -> None:
     assert by_id["record-classification-failure"]["capture"] == "classification_reasons"
     assert "record-classification-failure.py" in FEATURE_STAGED_FILES
     assert os.access(catalog / "record-classification-failure.py", os.X_OK)
-    classify_step = re.search(r"- id: classify\n(?:(?!  - id:).)*", feature, re.S)
-    assert classify_step
-    classify = " ".join(classify_step.group(0).split())
+    classify = " ".join(by_id["classify"]["prompt"].split())
     for required_red in (
         "acceptance criterion that failed",
         "could not be verified and that no automated test covers",
@@ -461,9 +459,7 @@ def test_classification_order_and_failure_wiring(tmp_path: Path) -> None:
     assert "only follows a decision the issue settled or an acceptance criterion" in classify
     assert "git diff --shortstat <accepted_head> HEAD" in classify
     assert "sentence starting `Tests:`" in classify
-    verify = re.search(r"- id: verify-classification\n(?:(?!  - id:).)*", feature, re.S)
-    assert verify
-    assert "repair:\n      session: lead-agent" in verify.group(0)
+    assert by_id["verify-classification"]["repair"]["session"] == "lead-agent"
     # A criterion acceptance did not exercise but a named automated test covers is
     # not a failure: it is yellow and names the covering test, so it does not bury
     # real red items.
