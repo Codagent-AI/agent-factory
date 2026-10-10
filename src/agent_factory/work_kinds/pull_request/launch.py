@@ -830,6 +830,19 @@ def host_script(
         "set +e",
         run_command,
         "run_status=$?",
+        *(
+            [
+                'if [ "$run_status" -ne 0 ]; then',
+                f"{shlex.quote(sys.executable)} -I "
+                f"{shlex.quote(str(repo_clone / PROJECT_WORKFLOWS / 'repair-block.py'))} run "
+                f"--session-dir {shlex.quote(str(session_dir))} "
+                f"--artifact-dir {shlex.quote(str(evidence))} "
+                f"--branch {shlex.quote(branch)} || true",
+                "fi",
+            ]
+            if definition.kind == "feature" and contract != REVIEW_CONTRACT
+            else []
+        ),
         *([audit_command] if audit.AUDIT_ENABLED else []),
         'exit "$run_status"',
     ]
