@@ -145,9 +145,12 @@ def test_review_candidate_falls_through_to_fresh_ready(
     assert site.store.get_claim(old.id).lifecycle == "superseded"  # type: ignore[union-attr]
 
 
-def test_unblock_reconciles_but_waits_for_higher_lane(site: Site) -> None:
-    card = site.card(1, "Medium", "feature")
-    handler = site.handlers["feature"]
+@pytest.mark.parametrize("kind", ["fix", "feature", "task"])
+def test_unblock_reconciles_but_waits_for_higher_lane(site: Site, kind: str) -> None:
+    from agent_factory.operations import _lane_wait_lines
+
+    card = site.card(1, "Medium", kind)
+    handler = site.handlers[kind]
     snapshot = handler.snapshot(card, site.board, site.shared)
     assert snapshot is not None
     claim = site.controller.accept(snapshot, resolve=handler.resolve_request)
@@ -156,14 +159,64 @@ def test_unblock_reconciles_but_waits_for_higher_lane(site: Site) -> None:
     from agent_factory.github import IssueComment
 
     site.board.comments[1] = [IssueComment("writer", "retry", "writer", "2099-01-01")]
-    site.card(2, "High", "feature")
+    site.card(2, "High", kind)
     (high,) = site.tick()
     assert high.lane == "high"
     assert 1 in site.reconciled and 1 not in site.prepared
+    expected_wait = {"lane": "medium", "cause": "higher-lane", "holder_run_id": high.id}
+    assert site.store.get_setting("lane-wait", "example/work:1") == expected_wait
+    assert any(
+        f"example/work#1 waits for {kind} lane medium" in line
+        and "example/work#2; higher-lane" in line
+        for line in _lane_wait_lines(site.store)
+    )
+    # The next cycle clears the namespace before the unblock helper writes its wait.
+    # The final rewrite must retain that new wait and remove unrelated stale entries.
+    site.store.set_setting("lane-wait", "example/work:99", expected_wait)
+    assert site.tick() == []
+    assert site.store.get_settings_by_prefix("lane-wait", "") == {"example/work:1": expected_wait}
     site.finish(high)
     (run,) = site.tick()
     assert run.reason == "unblock" and run.lane == "medium"
     assert site.store.get_settings_by_prefix("lane-wait", "") == {}
+
+
+@pytest.mark.parametrize("provider_hold", [False, True])
+def test_quota_held_claim_is_not_otherwise_admissible_for_lane_wait(
+    site: Site, monkeypatch: pytest.MonkeyPatch, provider_hold: bool
+) -> None:
+    site.card(1, "High")
+    (high,) = site.tick()
+    card = site.card(2, "Low")
+    handler = site.handlers["fix"]
+    snapshot = handler.snapshot(card, site.board, site.shared)
+    assert snapshot is not None
+    claim = site.controller.accept(snapshot, resolve=handler.resolve_request)
+    assert claim is not None
+    hold = {"until": "2099-01-01T00:00:00+00:00"}
+    provider = "codex"
+
+    def providers(_: object) -> set[str]:
+        return {provider}
+
+    if provider_hold:
+        monkeypatch.setattr(handler, "providers", providers)
+        site.store.set_setting("admission", f"quota:{provider}", hold)
+    else:
+        site.store.set_hold(claim.id, "quota", hold)
+    assert site.tick() == []
+    assert site.store.get_settings_by_prefix("lane-wait", "") == {}
+    assert 2 not in site.prepared
+    if provider_hold:
+        site.store.clear_setting("admission", f"quota:{provider}")
+    else:
+        site.store.clear_setting("claim-hold", f"{claim.id}:quota")
+    assert site.tick() == []
+    assert site.store.get_setting("lane-wait", "example/work:2") == {
+        "lane": "low",
+        "cause": "higher-lane",
+        "holder_run_id": high.id,
+    }
 
 
 def test_kind_mode_and_one_reservation_per_kind(
