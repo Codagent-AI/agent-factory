@@ -1751,20 +1751,26 @@ def test_verify_classification_rejects_malformed_items(tmp_path: Path) -> None:
     assert "white[0]" in result.stderr
 
 
+@pytest.mark.parametrize("revert", [False, True])
 def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
     tmp_path: Path,
+    revert: bool,
 ) -> None:
     """Classification runs before finalization's last fixes, so an item may already be
     fixed by a later commit; the item then says which commit changed its linked file."""
     import os
 
     repo, _ = repository(tmp_path)
+    (repo / "settings.go").write_text("base settings\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base settings")
+    base = git(repo, "rev-parse", "HEAD")
     (repo / "openspec" / "changes" / "archive" / "2026-09-25-change").mkdir(parents=True)
     (repo / "settings.go").write_text('enabled == "true"\n')
     git(repo, "add", ".")
     git(repo, "commit", "-m", "feature")
     accepted = git(repo, "rev-parse", "HEAD")
-    (repo / "settings.go").write_text("enabled is a bool\n")
+    (repo / "settings.go").write_text("base settings\n" if revert else "enabled is a bool\n")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "fix: read enabled as a YAML bool")
     later = git(repo, "rev-parse", "HEAD")
@@ -1787,6 +1793,11 @@ def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
                 "accepted_head": accepted,
                 "later_commits": [],
             }
+        )
+    )
+    (evidence / "task-compliance.json").write_text(
+        json.dumps(
+            {"result": "passed", "reviewed_head": accepted, "base": base, "tasks_sha256": "a" * 64}
         )
     )
     issue = tmp_path / "issue.json"
@@ -1812,8 +1823,143 @@ def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
     lines = body.read_text().splitlines()
     deviation = next(line for line in lines if line.startswith("- [Known deviation]"))
     unverified = next(line for line in lines if line.startswith("- [Unverified]"))
-    assert f"may be fixed by `{later[:7]}`" in deviation
+    if revert:
+        assert "linked file no longer changed by this PR" in deviation
+        assert "may be fixed by" not in deviation
+    else:
+        assert f"may be fixed by `{later[:7]}`" in deviation
     assert "may be fixed by" not in unverified
+
+
+@pytest.mark.parametrize("base_arg", ["valid", "missing", "invalid"])
+def test_mark_later_commits_identifies_reverted_files(tmp_path: Path, base_arg: str) -> None:
+    repo, _ = repository(tmp_path)
+    for name in ("file A.md", "B.md"):
+        (repo / name).write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base files")
+    base = git(repo, "rev-parse", "HEAD")
+    for name in ("file A.md", "B.md"):
+        (repo / name).write_text("feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    git(repo, "commit", "--allow-empty", "-m", "accepted")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "file A.md").write_text("base\n")
+    (repo / "B.md").write_text("fixed feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix: revert A and fix B")
+    later = git(repo, "rev-parse", "HEAD")
+    body = tmp_path / "body.md"
+    blob = "https://github.com/o/r/blob/feature"
+    body.write_text(
+        f"### 🔴 Red (1)\n- [A]({blob}/file%20A.md#L1): problem\n"
+        f"### 🟠 Orange (1)\n- [B]({blob}/B.md#L1): problem\n"
+        f"Acceptance ran against `{accepted}`.\n"
+    )
+    args = [] if base_arg == "missing" else [base if base_arg == "valid" else "no-such-ref"]
+
+    def mark() -> str:
+        result = run("python3", str(PACKAGE / "mark-later-commits.py"), str(body), *args, cwd=repo)
+        assert result.returncode == 0, result.stderr
+        return body.read_text()
+
+    marked = mark()
+    a = next(line for line in marked.splitlines() if line.startswith("- [A]"))
+    b = next(line for line in marked.splitlines() if line.startswith("- [B]"))
+    if base_arg == "valid":
+        assert "linked file no longer changed by this PR" in a
+        assert "may be fixed by" not in a
+    else:
+        assert f"may be fixed by `{later[:7]}`" in a
+        assert "linked file no longer changed" not in a
+    assert f"may be fixed by `{later[:7]}`" in b
+    assert mark() == marked
+    if base_arg == "valid":
+        # Both marker types can replace one another without accumulating annotations.
+        args.clear()
+        fallback = mark()
+        assert "linked file no longer changed" not in fallback
+        assert f"may be fixed by `{later[:7]}`" in fallback
+        args.append(base)
+        assert mark() == marked
+        (repo / "file A.md").write_text("feature returns\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "fix: change A again")
+        changed = mark()
+        a = next(line for line in changed.splitlines() if line.startswith("- [A]"))
+        assert "linked file no longer changed" not in a
+        assert a.count("may be fixed by") == 1
+        assert mark() == changed
+
+
+def test_mark_later_commits_matches_files_reverted_by_a_merge(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    (repo / "A.md").write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base file")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "A.md").write_text("feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature accepted")
+    accepted = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "revert")
+    (repo / "A.md").write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "revert A")
+    git(repo, "checkout", "main")
+    git(repo, "merge", "--no-ff", "-m", "Merge revert", "revert")
+    body = tmp_path / "body.md"
+    body.write_text(
+        "### 🟡 Yellow (1)\n"
+        "- [A](https://github.com/o/r/blob/feature/A.md#L1): assumption\n"
+        f"Acceptance ran against `{accepted}`.\n"
+    )
+    result = run("python3", str(PACKAGE / "mark-later-commits.py"), str(body), base, cwd=repo)
+    assert result.returncode == 0, result.stderr
+    assert "linked file no longer changed by this PR" in body.read_text()
+
+
+@pytest.mark.parametrize("hash_seed", ["0", "1", "2"])
+def test_mark_later_commits_prefers_the_full_linked_path(tmp_path: Path, hash_seed: str) -> None:
+    import os
+
+    repo, _ = repository(tmp_path)
+    (repo / "dir").mkdir()
+    for name in ("A.md", "dir/A.md"):
+        (repo / name).write_text("base\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base files")
+    base = git(repo, "rev-parse", "HEAD")
+    for name in ("A.md", "dir/A.md"):
+        (repo / name).write_text("feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature accepted")
+    accepted = git(repo, "rev-parse", "HEAD")
+    (repo / "A.md").write_text("base\n")
+    (repo / "dir/A.md").write_text("fixed feature\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "fix nested file and revert root file")
+    later = git(repo, "rev-parse", "HEAD")
+    body = tmp_path / "body.md"
+    body.write_text(
+        "### 🔴 Red (1)\n"
+        "- [Nested file](https://github.com/o/r/blob/feature/dir/A.md#L1): problem\n"
+        f"Acceptance ran against `{accepted}`.\n"
+    )
+    result = subprocess.run(
+        ["python3", str(PACKAGE / "mark-later-commits.py"), str(body), base],
+        cwd=repo,
+        env={**os.environ, "PYTHONHASHSEED": hash_seed},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    item = next(
+        line for line in body.read_text().splitlines() if line.startswith("- [Nested file]")
+    )
+    assert "linked file no longer changed" not in item
+    assert f"may be fixed by `{later[:7]}`" in item
 
 
 REVIEW_GH_STUB = (
@@ -1843,10 +1989,12 @@ REVIEW_GH_STUB = (
         pytest.param('{"validator":null}', False, id="invalid-validator"),
     ],
 )
+@pytest.mark.parametrize("revert", [False, True])
 def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     tmp_path: Path,
     implement_result: str | None,
     pushed: bool,
+    revert: bool,
 ) -> None:
     """A review round restores the factory's description over the agent's rewrite, but the
     restored description still shows what the round did: the round's commits and the
@@ -1858,6 +2006,10 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     from agent_factory.work_kinds.pull_request import launch
 
     repo, _ = repository(tmp_path)
+    (repo / "spec.md").write_text("base smoke\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base spec")
+    base = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-b", "factory/feature-7")
     (repo / "spec.md").write_text("smoke passes\n")
     (repo / "plan.md").write_text("AT-001\n")
@@ -1868,7 +2020,9 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     git(repo, "add", ".")
     git(repo, "commit", "-m", "fix: defer early signals")
     round_start = git(repo, "rev-parse", "HEAD")
-    (repo / "spec.md").write_text("smoke passes with a lead auditor\n")
+    (repo / "spec.md").write_text(
+        "base smoke\n" if revert else "smoke passes with a lead auditor\n"
+    )
     git(repo, "add", ".")
     git(repo, "commit", "-m", "fix: align smoke fixture with lead auditor")
     fixture = git(repo, "rev-parse", "HEAD")
@@ -1921,6 +2075,7 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
             {
                 "kind": "feature",
                 "head_sha": round_start,
+                "base_head": base,
                 "pull_request": {"number": 9, "head_sha": round_start},
             }
         )
@@ -1992,7 +2147,11 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
         assert sha in later_line
     deviation = next(line for line in lines if line.startswith("- [Spec deviation]"))
     unverified = next(line for line in lines if line.startswith("- [AT-001 unverified]"))
-    assert f"may be fixed by `{fixture[:7]}`" in deviation
+    if revert:
+        assert "linked file no longer changed by this PR" in deviation
+        assert "may be fixed by" not in deviation
+    else:
+        assert f"may be fixed by `{fixture[:7]}`" in deviation
     assert "may be fixed by" not in unverified
     follow_up = restored.split("### 🔁 Review round", 1)[1].split("## Change summary")[0]
     assert fixture[:7] in follow_up and "align smoke fixture with lead auditor" in follow_up

@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Bring a feature pull request description up to date with the commits after acceptance.
 
-Usage: mark-later-commits.py BODY_FILE (run in the feature branch's clone; edits in place).
+Usage: mark-later-commits.py BODY_FILE [BASE] (run in the feature branch's clone; edits in place).
 
 Acceptance evidence covers only the accepted commit, and the review items were classified
 before later commits (finalization fixes, review rounds) landed. For every commit from the
 accepted one (named by the description's "Acceptance ran against" line) to HEAD, this:
 - lists it in the evidence's "Later commits:" line unless the line names it;
 - names it in the "Commits after acceptance" orange item unless an orange item names it;
-- marks each red, orange, or yellow item whose linked file it changed as possibly fixed.
+- marks each red, orange, or yellow item whose linked file it changed as possibly fixed;
+- with a resolvable target-branch BASE, instead marks items whose linked file no longer
+  differs between the PR merge base and HEAD as no longer changed by this PR.
+Without BASE or when its git checks fail, items keep the possibly-fixed behavior.
 Everything else in the description is left as it is. Without an acceptance line or a
 readable history, the description is left unchanged.
 """
@@ -24,6 +27,7 @@ ACCEPTED = re.compile(r"^Acceptance ran against `([0-9a-f]{7,40})`\.")
 TIER = re.compile(r"^### (\S+) (Red|Orange|Yellow) \((\d+)\)$")
 ITEM = re.compile(r"^- \[[^\]]*\]\(([^)]*)\)")
 MARKER = re.compile(r" _\(may be fixed by [^)]*: changed its linked file after acceptance\)_$")
+UNCHANGED_MARKER = re.compile(r" _\(linked file no longer changed by this PR\)_$")
 
 
 def git(*args: str) -> str:
@@ -50,7 +54,7 @@ def later_commits(accepted: str) -> list[tuple[str, str, set[str]]]:
     return commits
 
 
-def mark(text: str) -> str:
+def mark(text: str, base: str | None = None) -> str:
     eol = "\r\n" if "\r\n" in text else "\n"
     lines = text.split(eol)
     accepted = next((m.group(1) for line in lines if (m := ACCEPTED.match(line))), None)
@@ -62,6 +66,18 @@ def mark(text: str) -> str:
         return text
     if not commits:
         return text
+
+    merge_base = None
+    changed_since_acceptance: set[str] = set()
+    if base:
+        try:
+            merge_base = git("merge-base", base, "HEAD")
+            changed_since_acceptance = set(
+                git("diff", "--name-only", accepted, "HEAD").splitlines()
+            )
+        except (subprocess.CalledProcessError, OSError):
+            merge_base = None
+    candidate_paths = changed_since_acceptance | {name for _, _, names in commits for name in names}
 
     tier_of: list[str | None] = []
     tier = None
@@ -83,8 +99,35 @@ def mark(text: str) -> str:
             for sha, _, names in commits
             if any(target.endswith("/" + quote(name)) for name in names)
         ]
-        line = MARKER.sub("", line)
-        if fixes:
+        line = MARKER.sub("", UNCHANGED_MARKER.sub("", line))
+        unchanged = False
+        matches = sorted(
+            (name for name in candidate_paths if target.endswith("/" + quote(name))),
+            key=len,
+            reverse=True,
+        )
+        if merge_base and matches:
+            try:
+                result = subprocess.run(
+                    [
+                        "git",
+                        "--literal-pathspecs",
+                        "diff",
+                        "--quiet",
+                        merge_base,
+                        "HEAD",
+                        "--",
+                        matches[0],
+                    ],
+                    capture_output=True,
+                    check=False,
+                )
+                unchanged = result.returncode == 0
+            except OSError:
+                pass
+        if unchanged:
+            line += " _(linked file no longer changed by this PR)_"
+        elif fixes:
             named = ", ".join(f"`{sha}`" for sha in fixes)
             line += f" _(may be fixed by {named}: changed its linked file after acceptance)_"
         lines[index] = line
@@ -126,7 +169,7 @@ def mark(text: str) -> str:
 def main() -> None:
     path = Path(sys.argv[1])
     text = path.open(newline="").read()
-    updated = mark(text)
+    updated = mark(text, sys.argv[2] if len(sys.argv) > 2 else None)
     if updated != text:
         path.write_text(updated, newline="")
 
