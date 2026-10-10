@@ -161,10 +161,10 @@ If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushe
 #### Scenario: Implementation push lacks workflow scope
 
 - **WHEN** the complete-task push is rejected because the push credential lacks workflow scope for changed `.github/workflows/` files
-- **THEN** the workflow saves their binary diff as `workflow-changes.patch` in the attempt artifacts, restores those files to the checkpoint parent, amends the checkpoint while preserving its implemented trailer, and pushes the implementation
+- **THEN** the workflow saves their binary diff as `workflow-changes.patch` in the attempt artifacts, restores those files to the last pushed checkpoint fetched from the claim branch, replaces the unpushed implementation commits with one checkpoint preserving its implemented trailer, and pushes the implementation
 - **AND** on a successful push it returns `needs-input` at `archive`, naming the workflow files, missing scope, saved patch location and patch text (truncated if long), and telling a writer to apply the CI change or grant scope
 - **AND** no automatic recovery retry is spent and no pull request is opened; after a writer applies the patch on the target branch or commits it to the claim branch and comments on the issue, the next attempt merges the target and resumes at archive
-- **AND** other push failures or a failed push of the amended checkpoint remain technical failures
+- **AND** other push failures or a failed push of the rebuilt checkpoint remain technical failures
 
 #### Scenario: Verify against the archived tree
 

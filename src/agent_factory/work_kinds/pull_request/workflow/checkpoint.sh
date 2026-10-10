@@ -65,29 +65,38 @@ branch = sys.argv[2]
 def git(*args):
     return subprocess.check_output(['git', *args])
 
+# Implementors commit their work before this script adds the checkpoint.
+# Fetch the pushed branch so all unpushed implementation commits are covered.
+subprocess.run(['git', 'fetch', 'origin', 'refs/heads/' + branch], check=True)
+base = git('rev-parse', 'FETCH_HEAD').decode().strip()
+subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'], check=True)
 paths = [
     path.decode() for path in git(
-        'diff', '--name-only', '-z', '--no-renames', 'HEAD~1', 'HEAD',
+        'diff', '--name-only', '-z', '--no-renames', base, 'HEAD',
         '--', '.github/workflows'
     ).split(b'\0') if path
 ]
 if not paths:
-    raise SystemExit('workflow scope rejection without workflow changes in checkpoint')
-patch = git('diff', '--binary', 'HEAD~1', 'HEAD', '--', '.github/workflows')
+    raise SystemExit('workflow scope rejection without workflow changes since the last pushed checkpoint')
+patch = git('diff', '--binary', base, 'HEAD', '--', '.github/workflows')
 artifact_dir.mkdir(parents=True, exist_ok=True)
 patch_path = artifact_dir / 'workflow-changes.patch'
 patch_path.write_bytes(patch)
 original_head = git('rev-parse', 'HEAD').decode().strip()
+message = git('log', '-1', '--format=%B')
+# A revert on top still pushes workflow-touching commits. Replace only the
+# unpushed history with one checkpoint containing the non-workflow changes.
+subprocess.run(['git', 'reset', '--soft', base], check=True)
 for path in paths:
     exists = subprocess.run(
-        ['git', 'cat-file', '-e', 'HEAD~1:' + path],
+        ['git', 'cat-file', '-e', base + ':' + path],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ).returncode == 0
     if exists:
-        git('checkout', 'HEAD~1', '--', path)
+        git('checkout', base, '--', path)
     else:
-        git('rm', '--', path)
-subprocess.run(['git', 'commit', '--amend', '--no-edit'], check=True)
+        git('rm', '-f', '--', path)
+subprocess.run(['git', 'commit', '--allow-empty', '-F', '-'], input=message, check=True)
 push = subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/' + branch])
 if push.returncode:
     # Keep the rejected implementation intact if the handoff push also fails.

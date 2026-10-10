@@ -2671,8 +2671,9 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
 
 @pytest.mark.parametrize("workflow_change", ["modified", "added", "deleted"])
 @pytest.mark.parametrize("json_input", [True, False])
+@pytest.mark.parametrize("already_committed", [True, False])
 def test_implemented_checkpoint_preserves_workflow_patch_on_scope_rejection(
-    tmp_path: Path, workflow_change: str, json_input: bool
+    tmp_path: Path, workflow_change: str, json_input: bool, already_committed: bool
 ) -> None:
     repo, remote = repository(tmp_path)
     workflow = repo / ".github/workflows/ci.yml"
@@ -2682,16 +2683,25 @@ def test_implemented_checkpoint_preserves_workflow_patch_on_scope_rejection(
         git(repo, "add", ".")
         git(repo, "commit", "-m", "existing workflow")
         git(repo, "push", "origin", "main")
+    change = repo / "openspec/changes/target"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("- [ ] Implement\n")
+    git(repo, "checkout", "-b", "claim")
+    planned = run(str(PACKAGE / "checkpoint.sh"), "planned", "claim", "target", cwd=repo)
+    assert planned.returncode == 0, planned.stderr
     base = git(repo, "rev-parse", "HEAD")
     hook = remote / "hooks/pre-receive"
     hook.write_text(
         "#!/bin/sh\n"
         "while read old new ref; do\n"
-        f'  if test -n "$(git diff --name-only {base} "$new" -- .github/workflows)"; then\n'
+        f'  for commit in $(git rev-list {base}.."$new"); do\n'
+        '    if test -n "$(git diff-tree --no-commit-id --name-only -r "$commit" '
+        '-- .github/workflows)"; then\n'
         "    echo 'refusing to allow a Personal Access Token to create or update workflow "
         ".github/workflows/ci.yml without `workflow` scope' >&2\n"
         "    exit 1\n"
-        "  fi\n"
+        "    fi\n"
+        "  done\n"
         "done\n"
     )
     hook.chmod(0o755)
@@ -2700,9 +2710,13 @@ def test_implemented_checkpoint_preserves_workflow_patch_on_scope_rejection(
     else:
         workflow.write_text("name: new\n")
     (repo / "source.py").write_text("implemented = True\n")
-    change = repo / "openspec/changes/target"
-    change.mkdir(parents=True)
-    (change / "tasks.md").write_text("- [ ] Implement\n")
+    if already_committed:
+        (change / "tasks.md").write_text("- [x] Implement\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "implement workflow and source")
+        (repo / "extra.py").write_text("also_implemented = True\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "finish implementation")
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     payload = {
@@ -2724,6 +2738,24 @@ def test_implemented_checkpoint_preserves_workflow_patch_on_scope_rejection(
     assert "Factory-Checkpoint: implemented" in git(remote, "log", "-1", "--format=%B", "claim")
     assert git(remote, "show", "claim:source.py") == "implemented = True"
     assert git(remote, "diff", base, "claim", "--", ".github/workflows") == ""
+    commits = git(remote, "rev-list", base + "..claim").splitlines()
+    assert len(commits) == 1
+    for commit in commits:
+        assert (
+            git(
+                remote,
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                commit,
+                "--",
+                ".github/workflows",
+            )
+            == ""
+        )
+    if already_committed:
+        assert git(remote, "show", "claim:extra.py") == "also_implemented = True"
     assert git(remote, "show", "claim:openspec/changes/target/tasks.md") == "- [x] Implement"
     patch = (evidence / "workflow-changes.patch").read_text()
     assert ".github/workflows/ci.yml" in patch
@@ -2799,6 +2831,13 @@ def test_checkpoint_scope_rejection_outside_handoff_still_fails(
 
 def test_implemented_checkpoint_failed_retry_has_no_needs_input_outcome(tmp_path: Path) -> None:
     repo, remote = repository(tmp_path)
+    change = repo / "openspec/changes/target"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("- [ ] Implement\n")
+    git(repo, "checkout", "-b", "claim")
+    planned = run(str(PACKAGE / "checkpoint.sh"), "planned", "claim", "target", cwd=repo)
+    assert planned.returncode == 0, planned.stderr
+    base = git(repo, "rev-parse", "HEAD")
     hook = remote / "hooks/pre-receive"
     hook.write_text(
         "#!/bin/sh\n"
@@ -2816,9 +2855,6 @@ def test_implemented_checkpoint_failed_retry_has_no_needs_input_outcome(tmp_path
     workflow = repo / ".github/workflows/ci.yml"
     workflow.parent.mkdir(parents=True)
     workflow.write_text("name: CI\n")
-    change = repo / "openspec/changes/target"
-    change.mkdir(parents=True)
-    (change / "tasks.md").write_text("- [ ] Implement\n")
     evidence = tmp_path / "evidence"
     evidence.mkdir()
     result = run(
@@ -2834,12 +2870,25 @@ def test_implemented_checkpoint_failed_retry_has_no_needs_input_outcome(tmp_path
     assert "branch policy rejected retry" in result.stderr
     assert (evidence / "workflow-changes.patch").is_file()
     assert not (evidence / "feature-outcome.json").exists()
-    assert run("git", "rev-parse", "claim", cwd=remote).returncode != 0
+    assert git(remote, "rev-parse", "claim") == base
 
     # A later invocation must still encounter the original workflow change.
     assert workflow.read_text() == "name: CI\n"
     assert "Factory-Checkpoint: implemented" in git(repo, "log", "-1", "--format=%B")
 
+    hook.write_text(
+        "#!/bin/sh\n"
+        "while read old new ref; do\n"
+        f'  for commit in $(git rev-list {base}.."$new"); do\n'
+        '    if test -n "$(git diff-tree --no-commit-id --name-only -r "$commit" '
+        '-- .github/workflows)"; then\n'
+        "      echo 'refusing to allow a Personal Access Token to create or update workflow "
+        ".github/workflows/ci.yml without workflow scope' >&2\n"
+        "      exit 1\n"
+        "    fi\n"
+        "  done\n"
+        "done\n"
+    )
     repeated = run(
         str(PACKAGE / "checkpoint.sh"),
         "implemented",
@@ -2848,6 +2897,9 @@ def test_implemented_checkpoint_failed_retry_has_no_needs_input_outcome(tmp_path
         str(evidence),
         cwd=repo,
     )
-    assert repeated.returncode != 0
-    assert workflow.read_text() == "name: CI\n"
-    assert not (evidence / "feature-outcome.json").exists()
+    assert repeated.returncode == 0, repeated.stderr
+    assert not workflow.exists()
+    outcome = json.loads((evidence / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert outcome["stopped_step"] == "archive"
+    assert "name: CI" in (evidence / "workflow-changes.patch").read_text()
