@@ -132,3 +132,61 @@ def test_stop_and_fresh_resume() -> None:
     assert REASON in message and "define, specs, check" in message
     assert "No branch was published; the next attempt starts fresh." in message
     assert feature_resume_point("needs-input", None, None, False, False) == ""
+
+
+@pytest.mark.parametrize("outcome", ["needs-input", "failed", "pull-request"])
+def test_standalone_legacy_outcome_validation(tmp_path: Path, outcome: str) -> None:
+    path = tmp_path / "feature-outcome.json"
+    # The standalone script historically checked only contract and outcome. The
+    # supervisor's stricter validation remains responsible for legacy payload fields.
+    path.write_text(
+        json.dumps(
+            {
+                "contract": "factory-feature/1",
+                "outcome": outcome,
+                "stopped_step": "",
+                "branch": None,
+            }
+        )
+    )
+    done = subprocess.run(
+        ["python3", str(PACKAGE / "verify-feature-outcome.py"), str(path)],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("context", ["run", "archive"])
+def test_concurrent_outcome_is_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, context: str
+) -> None:
+    session = tmp_path / "session"
+    artifacts = tmp_path / "artifacts"
+    session.mkdir()
+    artifacts.mkdir()
+    path = "archive, sub:archive-change, check" if context == "archive" else PATH
+    (session / "audit.log").write_text(blocked(path))
+
+    def unpublished(_branch: str) -> bool:
+        return False
+
+    monkeypatch.setitem(rb.record.__globals__, "published", unpublished)
+    original = json.dumps(
+        {
+            "contract": "factory-feature/1",
+            "outcome": "needs-input",
+            "blocked_step": "another check",
+            "questions": ["why"],
+            "direction_summary": "Another recorder finished",
+        }
+    )
+
+    def race(_source: object, destination: Path) -> None:
+        destination.write_text(original)
+        raise FileExistsError("another recorder published first")
+
+    monkeypatch.setattr(rb.os, "link", race)
+    rb.record(context, session, artifacts, "claim")
+    assert (artifacts / "feature-outcome.json").read_text() == original
+    assert sorted(file.name for file in artifacts.iterdir()) == ["feature-outcome.json"]

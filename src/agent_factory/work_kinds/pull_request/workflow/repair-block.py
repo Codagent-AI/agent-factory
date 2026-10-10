@@ -6,6 +6,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from collections.abc import Iterable
 from contextlib import suppress
@@ -223,7 +224,8 @@ def record(context: str, session_dir: Path, artifact_dir: Path, branch: str) -> 
         with tempfile.NamedTemporaryFile(mode="w", dir=artifact_dir, delete=False) as stream:
             temporary = Path(stream.name)
             stream.write(json.dumps(outcome) + "\n")
-        os.link(temporary, destination)
+        with suppress(FileExistsError):
+            os.link(temporary, destination)
     finally:
         if temporary is not None:
             with suppress(OSError):
@@ -242,6 +244,7 @@ def main() -> None:
     except Exception as error:
         if args.context == "archive":
             raise SystemExit(str(error)) from error
+        print(f"repair-block: {error}", file=sys.stderr)
 
 
 if __name__ == "__main__":

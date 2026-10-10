@@ -358,5 +358,22 @@ def test_invalid_attempt_start_writes_nothing(tmp_path: Path) -> None:
     artifacts = tmp_path / "artifacts"
     artifacts.mkdir()
     (artifacts / "attempt-start.json").write_text("invalid json")
-    assert record(repo, artifacts) is None
+    session = artifacts / "session"
+    session.mkdir()
+    (session / "audit.log").write_text(blocked())
+    done = run(
+        "python3",
+        str(PACKAGE / "repair-block.py"),
+        "run",
+        "--session-dir",
+        str(session),
+        "--artifact-dir",
+        str(artifacts),
+        "--branch",
+        "claim",
+        cwd=repo,
+    )
+    assert done.returncode == 0
+    assert "repair-block:" in done.stderr and "Expecting value" in done.stderr
+    assert not (artifacts / "feature-outcome.json").exists()
     assert sorted(path.name for path in artifacts.iterdir()) == ["attempt-start.json", "session"]
