@@ -1,0 +1,4 @@
+- [ ] Implement the change described by these files:
+  - [proposal.md](proposal.md)
+  - [specs/factory-eval-intake/spec.md](specs/factory-eval-intake/spec.md)
+  - [specs/factory-eval-execution/spec.md](specs/factory-eval-execution/spec.md)
