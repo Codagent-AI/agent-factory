@@ -158,6 +158,14 @@ After the plan commit the feature workflow SHALL implement the whole change as a
 After implementation the feature workflow SHALL archive the OpenSpec change, applying its specification deltas to the repository's specifications, and commit the result before any verification, draft pull request, or acceptance runs, so that verification and acceptance evidence describe the tree the pull request carries.
 If archive repair declares `REPAIR_BLOCKED`, the workflow SHALL retain the pushed implemented branch and return `needs-input` with the archive explanation and an archive resume point. The outcome's direction summary SHALL tell the operator that the cause can be fixed on the target branch, or committed to the claim's branch, and that commenting on the issue resumes the claim at archive with the target branch merged in.
 
+#### Scenario: Implementation push lacks workflow scope
+
+- **WHEN** the complete-task push is rejected because the push credential lacks workflow scope for changed `.github/workflows/` files
+- **THEN** the workflow saves their binary diff as `workflow-changes.patch` in the attempt artifacts, restores those files to the checkpoint parent, amends the checkpoint while preserving its implemented trailer, and pushes the implementation
+- **AND** on a successful push it returns `needs-input` at `archive`, naming the workflow files, missing scope, saved patch location and patch text (truncated if long), and telling a writer to apply the CI change or grant scope
+- **AND** no automatic recovery retry is spent and no pull request is opened; after a writer applies the patch on the target branch or commits it to the claim branch and comments on the issue, the next attempt merges the target and resumes at archive
+- **AND** other push failures or a failed push of the amended checkpoint remain technical failures
+
 #### Scenario: Verify against the archived tree
 
 - **WHEN** implementation completes

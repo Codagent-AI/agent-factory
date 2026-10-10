@@ -263,6 +263,7 @@ from Running to Ready. The same claim resumes at the stopped definition step;
 a preflight stop for a repository without `openspec/` starts fresh after it is
 initialized. Bot and non-writer comments do not resume work. A technical
 failure resumes from the latest pushed checkpoint when one is available.
+If the feature complete-task push is rejected for missing workflow scope, Factory saves the workflow diff as `workflow-changes.patch` in the attempt artifacts, pushes the implementation without those changes, and stops with `needs-input` at archive without a recovery retry; a writer must apply the patch or grant scope and commit it, then comment on the issue to resume.
 Each feature resume and continuation merges the current configured target branch
 into the claim branch before work continues. The admission target, Runner, and
 Skills revisions remain frozen for that claim. A merge conflict is resolved
