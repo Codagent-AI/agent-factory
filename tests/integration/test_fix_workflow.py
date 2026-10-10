@@ -135,6 +135,26 @@ def test_record_outcome_skips_when_implementor_did_not_complete() -> None:
     )
 
 
+def test_implement_group_records_completion_only_after_finalization() -> None:
+    text = _workflow_text()
+    assert re.search(r"^  - id: seed-skipped-implement-completed\n", text, re.MULTILINE)
+    assert text.index("- id: seed-skipped-implement-completed\n") < text.index("- id: implement\n")
+    for step_id in ("seed-skipped-implement-completed", "seed-implement-completed"):
+        seed = _step_block(text, step_id)
+        assert "command: printf 'failed'" in seed
+        assert "capture: implement_completed" in seed
+        assert "skip_if:" not in seed
+    group = _step_block(text, "implement")
+    assert group.index("- id: seed-implement-completed\n") < group.index("- id: implement-fix\n")
+    step_ids = re.findall(r"^      - id: (.+)$", group, re.MULTILINE)
+    assert step_ids[-2:] == ["annotate-pr", "mark-implement-completed"]
+    mark = _step_block(group, "mark-implement-completed")
+    assert "command: printf 'passed'" in mark
+    assert "capture: implement_completed" in mark
+    assert "skip_if:" not in mark
+    assert 'implement_completed: "{{implement_completed}}"' in _step_block(text, "record-outcome")
+
+
 def test_non_fixable_run_has_implement_status_for_record_outcome_guard() -> None:
     text = _workflow_text()
     assert re.search(r"^  - id: seed-skipped-implement-status\n", text, re.MULTILINE)
@@ -627,10 +647,54 @@ def test_record_outcome_is_failed_but_keeps_the_pr_reference_when_ci_stays_red(
     assert outcome["reasons"] == ["CI did not pass within its fix cycle"]
 
 
-def test_record_outcome_is_failed_when_no_pr_was_opened(tmp_path: Path) -> None:
-    outcome = _record_outcome(tmp_path, validator_status="passed", ci_status="passed")
+@pytest.mark.parametrize("completion_fields", [{}, {"implement_completed": "passed"}])
+def test_record_outcome_is_failed_when_no_pr_was_opened(
+    tmp_path: Path, completion_fields: dict[str, str]
+) -> None:
+    outcome = _record_outcome(
+        tmp_path, validator_status="passed", ci_status="passed", **completion_fields
+    )
     assert outcome["outcome"] == "failed"
     assert outcome["reasons"] == ["failed to push the branch or open a pull request"]
+
+
+def test_record_outcome_names_incomplete_implementation_after_an_early_validator_pass(
+    tmp_path: Path,
+) -> None:
+    outcome = _record_outcome(
+        tmp_path, implement_completed="failed", validator_status="passed", pr_details="{}"
+    )
+    assert outcome["outcome"] == "failed"
+    assert outcome["reasons"] == [
+        "implementor step did not complete before final validation and pull request"
+    ]
+    assert "failed to push" not in str(outcome["reasons"])
+    assert outcome["validator"] == {"status": "failed"}
+    assert "pr" not in outcome
+
+
+def test_record_outcome_preserves_reasons_and_pr_when_implementation_is_incomplete(
+    tmp_path: Path,
+) -> None:
+    pr = {"url": "https://github.com/example/work/pull/8", "number": 8, "headRefOid": "a" * 40}
+    outcome = _record_outcome(
+        tmp_path,
+        implement_completed="failed",
+        validator_status="passed",
+        ci_status="passed",
+        reasons=json.dumps(["implementation interrupted"]),
+        branch_name="factory/fix-2-abcdef12",
+        pr_details=json.dumps(pr),
+    )
+    assert outcome["outcome"] == "failed"
+    assert outcome["reasons"] == ["implementation interrupted"]
+    assert outcome["validator"] == {"status": "failed"}
+    assert outcome["pr"] == {
+        "url": pr["url"],
+        "number": 8,
+        "branch": "factory/fix-2-abcdef12",
+        "head_sha": "a" * 40,
+    }
 
 
 @pytest.mark.parametrize(

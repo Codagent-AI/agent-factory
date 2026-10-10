@@ -30,6 +30,7 @@ if not isinstance(contract, str) or not contract or not isinstance(outcome_path,
     print("record-outcome: contract and outcome_path are required strings", file=sys.stderr)
     sys.exit(2)
 validator_status = parsed.get("validator_status") or "failed"
+implement_completed = parsed.get("implement_completed")
 ci_status = parsed.get("ci_status") or ""
 annotation_status = parsed.get("annotation_status") or "passed"
 branch_name = parsed.get("branch_name") or ""
@@ -144,6 +145,15 @@ elif scope.get("crossed"):
     }
 elif post_scope.get("crossed"):
     outcome = failed_with_pr(post_scope.get("reasons") or ["Task scope crossed after CI repair"])
+elif "implement_completed" in parsed and implement_completed != "passed":
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": reasons or ["implementor step did not complete before final validation and pull request"],
+        "validator": {"status": "failed"},
+    }
+    if pr_url:
+        outcome["pr"] = pr_reference()
 elif validator_status != "passed":
     outcome = {
         "contract": contract,
