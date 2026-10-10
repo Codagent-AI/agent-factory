@@ -493,6 +493,16 @@ class PullRequestHandler:
     def branch_name(self, claim: Claim) -> str:
         return launch.branch_name(claim.issue_number, claim.id, self.definition.branch_prefix)
 
+    def _has_unconsumed_pull_request(self, claim: Claim, number: object) -> bool:
+        if self._store is None or not isinstance(number, int):
+            return False
+        return any(
+            run.status not in NONTERMINAL_RUN_STATUSES
+            and not self._store.get_setting("consumed-results", run.id)
+            and mapping(run.result.get("pr")).get("number") == number
+            for run in self._store.runs_for_claim(claim.id)
+        )
+
     def reconcile(self, claim: Claim) -> PullRequestInfo | None:
         """Look for a branch or open PR from an earlier attempt before launching anything."""
         if self._github is None or self._store is None:
@@ -553,12 +563,13 @@ class PullRequestHandler:
                 self._close_superseded_pull_requests(
                     claim, {"pr": {"number": pull.number, "url": pull.url}}
                 )
-            self._store.record_event(
-                claim.id,
-                "handoff",
-                f"An earlier attempt already opened a pull request: {pull.url}\n\n"
-                "No new attempt was launched.",
-            )
+            if not self._has_unconsumed_pull_request(claim, pull.number):
+                self._store.record_event(
+                    claim.id,
+                    "handoff",
+                    f"An earlier attempt already opened a pull request: {pull.url}\n\n"
+                    "No new attempt was launched.",
+                )
             return pull
         if existing is not None:
             if self.definition.reconcile is ReconcilePolicy.RESUME_FROM_OWN_BRANCH:
@@ -1005,8 +1016,15 @@ class PullRequestHandler:
         return Classification("settled")
 
     def settle(self, claim: Claim, runs: Sequence[Run]) -> Outcome | None:
-        if claim.lifecycle in {"settled", "blocked"}:
+        if claim.lifecycle == "blocked":
             return None
+        if claim.lifecycle == "settled":
+            # Reconciliation can settle before consumption supplies the attempt's handoff.
+            number = mapping(claim.outcome.get("pr")).get("number")
+            if "handoff" in mapping(
+                claim.reporting.get("events")
+            ) or not self._has_unconsumed_pull_request(claim, number):
+                return None
         unit_runs = [run for run in runs if run.unit_key == self.definition.unit_key]
         if not unit_runs:
             return None

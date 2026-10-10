@@ -215,3 +215,63 @@ def test_resume_policy_holds_two_nondraft_factory_prs(tmp_path: Path) -> None:
     handler.attach_github(GitHub())  # pyright: ignore[reportArgumentType]
     with pytest.raises(ReadinessError, match="ambiguous"):
         handler.reconcile(claim)
+
+
+@pytest.mark.parametrize("consumed, result_number", [(False, 2), (True, 2), (False, 3)])
+def test_reconcile_preserves_handoff_for_unconsumed_own_result(
+    tmp_path: Path, consumed: bool, result_number: int
+) -> None:
+    from typing import cast
+
+    from agent_factory.controller import AttemptResult, Controller, ReportingClient
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+    from agent_factory.work_kinds.pull_request.kinds import FIX
+
+    handler = PullRequestHandler(
+        FIX,
+        SharedConfig.from_file(Path("config/codagent.toml")),
+        LocalConfig.from_file(Path("config/local.example.toml")),
+    )
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    controller = Controller(
+        store, cast(ReportingClient, object()), {"fix": handler}, artifact_root=tmp_path
+    )
+    claim = store.create_claim(ClaimDraft("example/work", 2, "I2", "P2", "fix", "fp", {}))
+    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    store.mark_running(run.id, {})
+    result: dict[str, object] = {
+        "outcome": "pull-request",
+        "pr": {
+            "number": result_number,
+            "url": f"https://example.test/pr/{result_number}",
+            "head_sha": "a" * 40,
+            "branch": handler.branch_name(claim),
+        },
+    }
+    store.finish_run(run.id, execution_status="completed", result=result)
+    if consumed:
+        store.set_setting("consumed-results", run.id, {"complete": True})
+
+    class GitHub:
+        def get_branch(self, repository: str, name: str) -> None:
+            return None
+
+        def list_open_pull_requests_for_head(
+            self, repository: str, name: str
+        ) -> list[PullRequestInfo]:
+            return [PullRequestInfo("https://example.test/pr/2", 2, "a" * 40)]
+
+    handler.attach_github(GitHub())  # pyright: ignore[reportArgumentType]
+    assert handler.reconcile(claim) is not None
+    current = store.get_claim(claim.id)
+    assert current is not None and current.lifecycle == "settled"
+    handoffs = [event for event in store.pending_events(claim.id) if event.key == "handoff"]
+    if consumed or result_number != 2:
+        assert len(handoffs) == 1
+        assert "No new attempt was launched" in handoffs[0].body
+    else:
+        assert handoffs == []
+        controller.record_result(run.id, AttemptResult("completed", "pull-request", result))
+        handoffs = [event for event in store.pending_events(claim.id) if event.key == "handoff"]
+        assert len(handoffs) == 1
+        assert handoffs[0].body == "Pull request opened: https://example.test/pr/2"
