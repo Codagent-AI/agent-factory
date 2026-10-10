@@ -144,7 +144,7 @@ def doctor(
     profiles = (
         {
             role: str(shared.eval.defaults.get(role, ""))
-            for role in ("lead", "implementor", "tester")
+            for role in ("lead", "crosscheck", "implementor", "tester")
         }
         if shared is not None
         else {}
