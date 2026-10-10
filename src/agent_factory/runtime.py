@@ -17,6 +17,7 @@ from typing import cast
 
 from agent_factory import (
     audit,
+    github,
     job_cap,
     notify,
     retention,
@@ -42,7 +43,7 @@ from agent_factory.github import (
     ProjectQueueItem,
     SubprocessGhRunner,
 )
-from agent_factory.lanes import lane_for, priority_rank
+from agent_factory.lanes import lane_for
 from agent_factory.operations import Diagnostic, doctor
 from agent_factory.store import NONTERMINAL_RUN_STATUSES, Claim, ClaimStore, Run
 from agent_factory.suites.and_scene import (
@@ -485,7 +486,7 @@ def _reentry(claim: Claim) -> bool:
 def _admission_key(store: ClaimStore, card: ProjectQueueItem, index: int) -> tuple[int, int, int]:
     claims = store.claims_for_item(card.id)
     return (
-        priority_rank(card.priority),
+        github._priority_rank(card.priority),  # pyright: ignore[reportPrivateUsage]
         0 if claims and _reentry(claims[-1]) else 1,
         index,
     )

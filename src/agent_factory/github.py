@@ -19,11 +19,13 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import ProjectConfig
-from agent_factory.lanes import priority_rank
+from agent_factory.lanes import LANES, priority_rank
 from agent_factory.routing import ProjectItem, SourceItem
 
 WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 """Effective repository permissions that may hand work to the factory."""
+
+_PRIORITY_ORDER = LANES
 
 
 class GitHubApiError(RuntimeError):
@@ -1154,7 +1156,11 @@ def rank_project_queue(items: list[ProjectQueueItem]) -> list[ProjectQueueItem]:
 
 
 def _queue_sort_key(item: ProjectQueueItem) -> tuple[int, float]:
-    return (priority_rank(item.priority), -_created_timestamp(item.source.created_at))
+    return (_priority_rank(item.priority), -_created_timestamp(item.source.created_at))
+
+
+def _priority_rank(name: str | None) -> int:
+    return priority_rank(name)
 
 
 def _created_timestamp(value: str) -> float:
