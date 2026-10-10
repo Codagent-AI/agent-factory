@@ -67,9 +67,13 @@ def git(*args):
 
 # Implementors commit their work before this script adds the checkpoint.
 # Fetch the pushed branch so all unpushed implementation commits are covered.
-subprocess.run(['git', 'fetch', 'origin', 'refs/heads/' + branch], check=True)
+fetch = subprocess.run(['git', 'fetch', 'origin', 'refs/heads/' + branch])
+if fetch.returncode:
+    raise SystemExit('cannot fetch claim branch ' + branch + ' to locate the last pushed checkpoint')
 base = git('rev-parse', 'FETCH_HEAD').decode().strip()
-subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'], check=True)
+ancestor = subprocess.run(['git', 'merge-base', '--is-ancestor', base, 'HEAD'])
+if ancestor.returncode:
+    raise SystemExit('claim branch ' + branch + ' on origin is not an ancestor of HEAD; cannot rebuild checkpoint')
 paths = [
     path.decode() for path in git(
         'diff', '--name-only', '-z', '--no-renames', base, 'HEAD',

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
 import subprocess
 from collections.abc import Callable
 from importlib.resources import files
@@ -2903,3 +2906,70 @@ def test_implemented_checkpoint_failed_retry_has_no_needs_input_outcome(tmp_path
     assert outcome["outcome"] == "needs-input"
     assert outcome["stopped_step"] == "archive"
     assert "name: CI" in (evidence / "workflow-changes.patch").read_text()
+
+
+@pytest.mark.parametrize("remote_state", ["missing", "diverged"])
+def test_checkpoint_scope_recovery_explains_unusable_remote_base(
+    tmp_path: Path, remote_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, remote = repository(tmp_path)
+    if remote_state == "diverged":
+        git(repo, "checkout", "-b", "writer")
+        (repo / "writer.txt").write_text("remote work\n")
+        git(repo, "add", ".")
+        git(repo, "commit", "-m", "writer commit")
+        writer_head = git(repo, "rev-parse", "HEAD")
+        git(repo, "push", "origin", "HEAD:refs/heads/writer")
+        git(repo, "checkout", "main")
+        git(repo, "push", "origin", "HEAD:refs/heads/claim")
+        # Advance origin after the scope rejection, just before recovery fetches.
+        # Delegate every operation to real git; only the writer's timing is controlled.
+        git_binary = shutil.which("git")
+        assert git_binary is not None
+        wrapper_dir = tmp_path / "bin"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "git"
+        wrapper.write_text(
+            "#!/bin/sh\n"
+            'if [ "$1" = fetch ]; then\n'
+            f"  {shlex.quote(git_binary)} --git-dir={shlex.quote(str(remote))} "
+            f"update-ref refs/heads/claim {writer_head} || exit $?\n"
+            "fi\n"
+            f'exec {shlex.quote(git_binary)} "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        monkeypatch.setenv("PATH", str(wrapper_dir) + os.pathsep + os.environ["PATH"])
+    hook = remote / "hooks/pre-receive"
+    hook.write_text(
+        "#!/bin/sh\necho 'refusing to allow a Personal Access Token to create or update "
+        "workflow .github/workflows/ci.yml without workflow scope' >&2\nexit 1\n"
+    )
+    hook.chmod(0o755)
+    workflow = repo / ".github/workflows/ci.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: CI\n")
+    change = repo / "openspec/changes/target"
+    change.mkdir(parents=True)
+    (change / "tasks.md").write_text("- [ ] Implement\n")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = run(
+        str(PACKAGE / "checkpoint.sh"),
+        "implemented",
+        "claim",
+        "target",
+        str(evidence),
+        cwd=repo,
+    )
+    assert result.returncode != 0
+    expected = (
+        "cannot fetch claim branch claim to locate the last pushed checkpoint"
+        if remote_state == "missing"
+        else "claim branch claim on origin is not an ancestor of HEAD; cannot rebuild checkpoint"
+    )
+    assert expected in result.stderr
+    assert "Traceback" not in result.stderr
+    assert workflow.read_text() == "name: CI\n"
+    assert "Factory-Checkpoint: implemented" in git(repo, "log", "-1", "--format=%B")
+    assert not (evidence / "workflow-changes.patch").exists()
+    assert not (evidence / "feature-outcome.json").exists()
