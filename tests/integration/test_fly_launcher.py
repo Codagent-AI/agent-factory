@@ -338,6 +338,7 @@ def test_stand_in_mode_runs_the_same_path_and_destroys_its_machine(
     run_dir = tmp_path / "stand-in-run"
     write_guest_flyctl(env.bin, env.guest_root, env.flyctl_log, run_dir / ".factory/machine.json")
 
+    started = int(time.time())
     code = main(
         [
             "stand-in",
@@ -357,7 +358,7 @@ def test_stand_in_mode_runs_the_same_path_and_destroys_its_machine(
     assert env.api.machines == {}
     create = next(r for r in env.api.requests if str(r["path"]).endswith("/machines"))
     deadline = int(create["body"]["config"]["metadata"]["deadline_epoch"])  # type: ignore[index]
-    assert 290 <= deadline - int(time.time()) <= 300
+    assert started + 300 <= deadline <= int(time.time()) + 300
 
 
 def test_corrupt_machine_record_is_an_error_not_a_reason_to_create_another(
