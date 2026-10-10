@@ -1,4 +1,4 @@
-- [ ] Record a run-ending REPAIR_BLOCKED in any feature step as a needs-input outcome, end to end
+- [x] Record a run-ending REPAIR_BLOCKED in any feature step as a needs-input outcome, end to end
 
 ## Task: Record REPAIR_BLOCKED in any feature step as needs-input (#142)
 

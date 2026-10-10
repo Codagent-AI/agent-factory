@@ -12,7 +12,7 @@ _VALID_OUTCOMES = frozenset({"pull-request", "needs-input", "failed"})
 
 
 def _valid_feature_extra(key: str, item: object) -> bool:
-    if key == "stopped_step":
+    if key in ("stopped_step", "blocked_step"):
         return isinstance(item, str) and bool(item)
     if not isinstance(item, dict):
         return False
@@ -60,7 +60,7 @@ def read_interpreted_outcome(
     if value.get("contract") != contract or value.get("outcome") not in _VALID_OUTCOMES:
         return OutcomeRead(None, f"invalid contract or outcome in {path}")
     if contract == "factory-feature/1":
-        for key in ("stopped_step", "review_attention_counts", "resume"):
+        for key in ("stopped_step", "blocked_step", "review_attention_counts", "resume"):
             if key in value and not _valid_feature_extra(key, value[key]):
                 return OutcomeRead(None, f"invalid {key} in {path}")
         if value["outcome"] == "pull-request":
@@ -80,7 +80,7 @@ def read_interpreted_outcome(
         if value["outcome"] == "needs-input":
             questions = value.get("questions")
             if (
-                not isinstance(value.get("stopped_step"), str)
+                ("blocked_step" not in value and not isinstance(value.get("stopped_step"), str))
                 or not isinstance(questions, list)
                 or not questions
                 or not all(
@@ -90,8 +90,14 @@ def read_interpreted_outcome(
                 or not isinstance(value.get("direction_summary"), str)
                 or not value["direction_summary"]
                 or (
-                    value["stopped_step"] != "preflight"
+                    "blocked_step" not in value
+                    and value.get("stopped_step") != "preflight"
                     and not isinstance(value.get("branch"), str)
+                )
+                or (
+                    "blocked_step" in value
+                    and "branch" in value
+                    and not isinstance(value["branch"], str)
                 )
                 or "pr" in value
             ):
@@ -108,7 +114,10 @@ def read_interpreted_outcome(
                 or not value["branch"]
             ):
                 return OutcomeRead(None, f"invalid failed outcome in {path}")
-    elif any(key in value for key in ("stopped_step", "review_attention_counts", "resume")):
+    elif any(
+        key in value
+        for key in ("stopped_step", "blocked_step", "review_attention_counts", "resume")
+    ):
         return OutcomeRead(None, f"unsupported extra outcome field in {path}")
     verdict = cast(str, value["outcome"])
     return OutcomeRead(InterpretedOutcome("completed", verdict, value))

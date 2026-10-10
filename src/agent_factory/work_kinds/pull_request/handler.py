@@ -1362,6 +1362,8 @@ def _feature_stop_message(result: Mapping[str, object], repository: str) -> str:
         lines.append("No branch was created; the next attempt starts fresh.")
     elif isinstance(branch, str):
         lines.append(f"Branch: https://github.com/{repository}/tree/{branch}")
+    else:
+        lines.append("No branch was published; the next attempt starts fresh.")
     return "\n\n".join(lines)
 
 

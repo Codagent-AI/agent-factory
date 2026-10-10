@@ -1,5 +1,6 @@
 # Operating Agent Factory
 
+
 ## Fly setup
 
 Evals can run in Fly.io Machines instead of Docker. One-time setup:
@@ -255,6 +256,13 @@ Skills plugin, so the recorded Runner and Skills commits are provenance rather
 than the executed versions. After a human merges the PR, the normal pull
 request sync updates the operator's working clone and closes the issue; Done
 then releases the claim's clones and credential copy.
+
+Feature failures are described in the attempt's outcome and the issue's stop comment;
+Runner audit logs and transcripts remain in the attempt's evidence. A run-ending
+`REPAIR_BLOCKED` becomes a `needs-input` card naming the blocked check and the resume
+step, or stating that the next attempt starts a fresh definition when no resume point
+was published. Other failures still use the single recovery retry. Unpushed work may
+be lost when the clone is slimmed.
 
 When definition needs a decision, Factory leaves the card in Running with
 `needs-input` and comments with the questions, drafted direction, and branch
