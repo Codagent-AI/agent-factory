@@ -230,9 +230,32 @@ steps:
       target_head: "{{target_head}}"
     skip_if: previous_success
     continue_on_failure: true
+  - id: seed-ci-status
+    command: printf passed
+    capture: ci_status
+  - id: finalize
+    workflow: builtin:core/finalize-pr-v1.0.yaml
+    params:
+      ci_fix_cycles: "3"
+    continue_on_failure: true
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" finalize'
+  - id: mark-ci-failed
+    command: printf failed
+    capture: ci_status
+    skip_if: previous_success
+  - id: seed-classification-reasons
+    command: printf '[]'
+    capture: classification_reasons
+  - id: seed-classification-counts
+    command: printf '%s' "{{artifact_dir}}/review-attention.json"
+    capture: classification_counts
+  - id: seed-classification-status
+    command: printf passed
+    capture: classification_status
   - id: classify
     session: lead-agent
     mode: autonomous
+    continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
     prompt: |
       Follow `.agent-runner/workflows/factory-define-rules.md`.
@@ -270,29 +293,38 @@ steps:
       only follows a decision the issue settled or an acceptance criterion, which is
       never orange or red; and every other recorded assumption or decision. White:
       passed acceptance criteria with evidence.
+  - id: mark-classify-failed
+    command: printf session-failed
+    capture: classification_status
+    skip_if: previous_success
   - id: verify-classification
+    continue_on_failure: true
     command: python3 .agent-runner/workflows/verify-classification.py "{{artifact_dir}}/review-attention.json"
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test "{{classification_status}}" != passed'
     repair:
       session: lead-agent
       prompt: |
         Correct {{artifact_dir}}/review-attention.json so it satisfies the
         classification rules and fixes each reported problem. Change only that file.
-  - id: seed-ci-status
-    command: printf passed
-    capture: ci_status
-  - id: finalize
-    workflow: builtin:core/finalize-pr-v1.0.yaml
-    params:
-      ci_fix_cycles: "3"
-    continue_on_failure: true
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" finalize'
-  - id: mark-ci-failed
-    command: printf failed
-    capture: ci_status
+  - id: mark-classification-invalid
+    command: printf invalid
+    capture: classification_status
     skip_if: previous_success
+  - id: record-classification-failure
+    script: record-classification-failure.py
+    script_inputs:
+      artifact_dir: "{{artifact_dir}}"
+      classification_status: "{{classification_status}}"
+      ci_status: "{{ci_status}}"
+    capture: classification_reasons
+    continue_on_failure: true
+    skip_if: 'sh: test "{{classification_status}}" = passed'
+  - id: clear-classification-counts
+    command: printf ''
+    capture: classification_counts
+    skip_if: 'sh: test "{{classification_status}}" = passed'
   - id: seed-annotation-status
-    command: printf passed
+    command: if test "{{classification_status}}" = passed; then printf passed; else printf failed; fi
     capture: annotation_status
   - id: annotate-pr
     script: annotate-pr.sh
@@ -303,7 +335,7 @@ steps:
       archived_dir: "{{archived_dir}}"
       session_dir: "{{session_dir}}"
     continue_on_failure: true
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test "{{classification_status}}" != passed'
   - id: mark-annotation-failed
     command: printf failed
     capture: annotation_status
@@ -324,7 +356,8 @@ steps:
       annotation_status: "{{annotation_status}}"
       branch_name: "{{branch_name}}"
       pr_details: "{{pr_details}}"
-      review_attention_counts: "{{artifact_dir}}/review-attention.json"
+      reasons: "{{classification_reasons}}"
+      review_attention_counts: "{{classification_counts}}"
       task_compliance: "{{artifact_dir}}/task-compliance.json"
       verify_failure: "{{artifact_dir}}/verify-failure.json"
       resume: "{{artifact_dir}}/resume.json"

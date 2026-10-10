@@ -7,10 +7,13 @@ import platform
 import re
 import shutil
 import subprocess
+import tempfile
 from importlib.resources import files
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
+import yaml
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX, registered
 
@@ -43,14 +46,29 @@ def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> 
 
 
 def suitable_runner() -> bool:
-    if not RUNNER.is_file():
-        return False
-    result = subprocess.run(
-        [str(RUNNER), "-validate", str(PACKAGE / "factory-feature-v1.0.yaml")],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+    compatible = False
+    if RUNNER.is_file():
+        # Probe Runner capabilities independently of the catalog being tested.
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory) / "probe-v1.0.yaml"
+            fixture.write_text(
+                "name: probe\ndescription: known-good capability probe\nhidden: true\n"
+                "steps:\n  - id: verify\n"
+                "    workflow: builtin:core/verify-change-v1.0.yaml\n"
+                "    params:\n      change_name: probe\n      change_dir: probe\n"
+                "      change_label: probe\n      artifact_validation_instruction: probe\n"
+                "    continue_on_failure: true\n"
+            )
+            result = subprocess.run(
+                [str(RUNNER), "-validate", str(fixture)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            compatible = result.returncode == 0
+    if not compatible and os.environ.get("FEATURE_REQUIRE_RUNNER") == "1":
+        pytest.fail("required Agent Runner is missing or incompatible; set FEATURE_TEST_RUNNER")
+    return compatible
 
 
 @pytest.mark.darwin
@@ -122,33 +140,6 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     assert "capture: annotation_status" in feature
     assert 'annotation_status: "{{annotation_status}}"' in feature
     assert "mark-annotation-failed" in feature
-    classify_step = re.search(r"- id: classify\n(?:(?!  - id:).)*", feature, re.S)
-    assert classify_step
-    classify = " ".join(classify_step.group(0).split())
-    for required_red in (
-        "acceptance criterion that failed",
-        "could not be verified and that no automated test covers",
-        "acceptance that did not complete",
-        "known deviation from the specifications or from a decision the issue settled",
-        "fell back to a",
-    ):
-        assert required_red in classify
-    assert "Read {{issue_file}} and its settled decisions" in classify
-    assert "share one root cause a single item" in classify
-    assert "only follows a decision the issue settled or an acceptance criterion" in classify
-    assert "git diff --shortstat <accepted_head> HEAD" in classify
-    assert "sentence starting `Tests:`" in classify
-    verify = re.search(r"- id: verify-classification\n(?:(?!  - id:).)*", feature, re.S)
-    assert verify
-    assert "repair:\n      session: lead-agent" in verify.group(0)
-    # A criterion acceptance did not exercise but a named automated test covers is
-    # not a failure: it is yellow and names the covering test, so it does not bury
-    # real red items.
-    assert "failed or unverified" not in classify
-    assert (
-        "Yellow: each acceptance criterion acceptance did not exercise but a named "
-        "automated test covers, naming that test in its detail"
-    ) in classify
     session = tmp_path / "session"
     output = session / "output"
     output.mkdir(parents=True)
@@ -398,3 +389,86 @@ def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None
         "what remedy a human would need to approve",
     ):
         assert phrase in prompt, phrase
+
+
+def test_classification_order_and_failure_wiring(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+    from agent_factory.work_kinds.pull_request.launch import stage_workflow
+
+    catalog = stage_workflow(tmp_path, "factory-feature/1", FEATURE)
+    feature = (catalog / "factory-feature-v1.0.yaml").read_text()
+    workflow = cast(dict[str, Any], yaml.safe_load(feature))
+    steps = cast(list[dict[str, Any]], workflow["steps"])
+    ids = [step["id"] for step in steps]
+    by_id = {step["id"]: step for step in steps}
+    ordered = (
+        "finalize",
+        "mark-ci-failed",
+        "seed-classification-reasons",
+        "seed-classification-counts",
+        "seed-classification-status",
+        "classify",
+        "mark-classify-failed",
+        "verify-classification",
+        "mark-classification-invalid",
+        "record-classification-failure",
+        "clear-classification-counts",
+        "seed-annotation-status",
+        "annotate-pr",
+        "record-outcome",
+    )
+    indexes = [ids.index(step) for step in ordered]
+    assert indexes == sorted(indexes)
+    assert ids[ids.index("classify") - 1] == "seed-classification-status"
+    for name in ("classify", "verify-classification", "record-classification-failure"):
+        assert by_id[name]["continue_on_failure"] is True
+    for name in ("verify-classification", "annotate-pr"):
+        assert 'test "{{classification_status}}" != passed' in by_id[name]["skip_if"]
+    assert by_id["seed-annotation-status"]["command"] == (
+        'if test "{{classification_status}}" = passed; then printf passed; else printf failed; fi'
+    )
+    inputs = by_id["record-outcome"]["script_inputs"]
+    assert inputs["reasons"] == "{{classification_reasons}}"
+    assert inputs["review_attention_counts"] == "{{classification_counts}}"
+    assert by_id["seed-classification-reasons"]["command"] == "printf '[]'"
+    assert by_id["seed-classification-counts"]["capture"] == "classification_counts"
+    assert by_id["clear-classification-counts"]["command"] == "printf ''"
+    for name, status in (
+        ("mark-classify-failed", "session-failed"),
+        ("mark-classification-invalid", "invalid"),
+    ):
+        assert by_id[name]["command"] == f"printf {status}"
+        assert by_id[name]["capture"] == "classification_status"
+        assert by_id[name]["skip_if"] == "previous_success"
+    for name in ("record-classification-failure", "clear-classification-counts"):
+        assert by_id[name]["skip_if"] == 'sh: test "{{classification_status}}" = passed'
+    assert by_id["record-classification-failure"]["capture"] == "classification_reasons"
+    assert "record-classification-failure.py" in FEATURE_STAGED_FILES
+    assert os.access(catalog / "record-classification-failure.py", os.X_OK)
+    classify_step = re.search(r"- id: classify\n(?:(?!  - id:).)*", feature, re.S)
+    assert classify_step
+    classify = " ".join(classify_step.group(0).split())
+    for required_red in (
+        "acceptance criterion that failed",
+        "could not be verified and that no automated test covers",
+        "acceptance that did not complete",
+        "known deviation from the specifications or from a decision the issue settled",
+        "fell back to a",
+    ):
+        assert required_red in classify
+    assert "Read {{issue_file}} and its settled decisions" in classify
+    assert "share one root cause a single item" in classify
+    assert "only follows a decision the issue settled or an acceptance criterion" in classify
+    assert "git diff --shortstat <accepted_head> HEAD" in classify
+    assert "sentence starting `Tests:`" in classify
+    verify = re.search(r"- id: verify-classification\n(?:(?!  - id:).)*", feature, re.S)
+    assert verify
+    assert "repair:\n      session: lead-agent" in verify.group(0)
+    # A criterion acceptance did not exercise but a named automated test covers is
+    # not a failure: it is yellow and names the covering test, so it does not bury
+    # real red items.
+    assert "failed or unverified" not in classify
+    assert (
+        "Yellow: each acceptance criterion acceptance did not exercise but a named "
+        "automated test covers, naming that test in its detail"
+    ) in classify

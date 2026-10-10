@@ -1,4 +1,4 @@
-- [ ] Classify feature review attention after finalization, with a durable outcome when classification fails
+- [x] Classify feature review attention after finalization, with a durable outcome when classification fails
 
 ## Task: Classify review attention after finalization (#149)
 

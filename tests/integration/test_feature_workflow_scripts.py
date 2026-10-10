@@ -2576,8 +2576,10 @@ def test_annotation_guard_does_not_hide_missing_classification(
     annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
     skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
     command = skip.split("'sh: ", 1)[1].removesuffix("'")
-    command = command.replace("{{artifact_dir}}", str(tmp_path)).replace(
-        "{{validator_status}}", validator_status
+    command = (
+        command.replace("{{artifact_dir}}", str(tmp_path))
+        .replace("{{validator_status}}", validator_status)
+        .replace("{{classification_status}}", "passed")
     )
     result = run("sh", "-c", command, cwd=tmp_path)
     assert result.returncode == (1 if validator_status == "passed" else 0)
@@ -2667,3 +2669,165 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
     assert outcome["reasons"] == [reason]
     assert outcome["branch"] == "claim"
     assert outcome["validator"] == {"checks": "failed", "status": "failed"}
+
+
+@pytest.mark.parametrize("shape", ["missing", "truncated", "array", "no-tiers", "valid"])
+@pytest.mark.parametrize("classification_status", ["session-failed", "invalid"])
+@pytest.mark.parametrize("ci_status", ["passed", "failed"])
+def test_classification_failure_records_verified_outcome(
+    tmp_path: Path, shape: str, classification_status: str, ci_status: str
+) -> None:
+    contents = {
+        "truncated": '{"red":',
+        "array": "[]",
+        "no-tiers": "{}",
+        "valid": json.dumps(
+            {
+                "red": [],
+                "orange": [],
+                "yellow": [],
+                "white": [],
+                "accepted_head": "a" * 40,
+                "later_commits": [],
+            }
+        ),
+    }.get(shape)
+    source = tmp_path / "review-attention.json"
+    rejected = tmp_path / "review-attention.rejected.json"
+    if contents is not None:
+        source.write_text(contents)
+        rejected.write_text("old rejected evidence")
+    reasons = run(
+        str(PACKAGE / "record-classification-failure.py"),
+        cwd=tmp_path,
+        input=json.dumps(
+            {
+                "artifact_dir": str(tmp_path),
+                "classification_status": classification_status,
+                "ci_status": ci_status,
+            }
+        ),
+    )
+    assert reasons.returncode == 0, reasons.stderr
+    decoded = json.loads(reasons.stdout)
+    detail = (
+        "the classifying session failed"
+        if classification_status == "session-failed"
+        else ("review-attention.json stayed invalid after repair")
+    )
+    if contents is None:
+        detail += " (no review-attention.json existed)"
+    elif classification_status == "invalid":
+        detail += " (kept as review-attention.rejected.json)"
+    assert decoded[0] == (
+        f"review-attention classification failed after finalization: {detail}; "
+        "the pull request was not annotated"
+    )
+    assert decoded[1:] == (
+        ["CI did not pass within its fix cycle"] if ci_status == "failed" else []
+    )
+    assert not source.exists()
+    if contents is not None:
+        assert rejected.read_text() == contents
+    else:
+        assert not rejected.exists()
+    assert_classification_failure_outcome(tmp_path, reasons.stdout, ci_status)
+
+
+def assert_classification_failure_outcome(artifact: Path, reasons: str, ci_status: str) -> None:
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(artifact / "feature-outcome.json"),
+        "validator_status": "passed",
+        "annotation_status": "failed",
+        "ci_status": ci_status,
+        "branch_name": "claim",
+        "pr_details": json.dumps(
+            {
+                "url": "https://example.test/pull/9",
+                "number": 9,
+                "headRefOid": "final-head",
+            }
+        ),
+        "reasons": reasons,
+        "review_attention_counts": "",
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=artifact, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads((artifact / "feature-outcome.json").read_text())
+    assert outcome["outcome"] == "failed"
+    assert outcome["branch"] == "claim"
+    assert outcome["pr"] == {
+        "url": "https://example.test/pull/9",
+        "number": 9,
+        "branch": "claim",
+        "head_sha": "final-head",
+    }
+    assert outcome["ci"] == {"status": ci_status}
+    assert outcome["reasons"] == json.loads(reasons)
+    assert "review_attention_counts" not in outcome
+    verified = run(
+        "python3",
+        str(PACKAGE / "verify-feature-outcome.py"),
+        str(artifact / "feature-outcome.json"),
+        cwd=artifact,
+    )
+    assert verified.returncode == 0, verified.stderr
+
+
+@pytest.mark.parametrize("classification_status", ["session-failed", "invalid"])
+@pytest.mark.parametrize("ci_status", ["passed", "failed"])
+def test_classification_failure_preserves_evidence_when_rename_fails(
+    tmp_path: Path, classification_status: str, ci_status: str
+) -> None:
+    source = tmp_path / "review-attention.json"
+    source.write_bytes(b'{"red":')
+    rejected = tmp_path / "review-attention.rejected.json"
+    rejected.mkdir()
+    (rejected / "existing-evidence").write_text("keep me")
+    result = run(
+        str(PACKAGE / "record-classification-failure.py"),
+        cwd=tmp_path,
+        input=json.dumps(
+            {
+                "artifact_dir": str(tmp_path),
+                "classification_status": classification_status,
+                "ci_status": ci_status,
+            }
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    reason = json.loads(result.stdout)[0]
+    assert "review-attention.json could not be moved to review-attention.rejected.json:" in reason
+    assert "Errno" in reason
+    assert source.read_bytes() == b'{"red":'
+    assert (rejected / "existing-evidence").read_text() == "keep me"
+    assert_classification_failure_outcome(tmp_path, result.stdout, ci_status)
+
+
+@pytest.mark.parametrize("annotation_status", ["passed", "failed"])
+@pytest.mark.parametrize("ci_status", ["passed", "failed"])
+@pytest.mark.parametrize("validator_status", ["passed", "failed"])
+def test_empty_classification_reasons_preserve_existing_outcomes(
+    tmp_path: Path, annotation_status: str, ci_status: str, validator_status: str
+) -> None:
+    path = tmp_path / "feature-outcome.json"
+    payload = {
+        "contract": "factory-feature/1",
+        "outcome_path": str(path),
+        "validator_status": validator_status,
+        "annotation_status": annotation_status,
+        "ci_status": ci_status,
+        "branch_name": "claim",
+        "pr_details": json.dumps({"url": "https://example.test/pull/9", "number": 9}),
+    }
+    result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
+    assert result.returncode == 0, result.stderr
+    before = path.read_bytes()
+    result = run(
+        str(PACKAGE / "record-outcome.sh"),
+        cwd=tmp_path,
+        input=json.dumps({**payload, "reasons": "[]"}),
+    )
+    assert result.returncode == 0, result.stderr
+    assert path.read_bytes() == before
