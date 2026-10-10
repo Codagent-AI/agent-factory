@@ -562,3 +562,82 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
             )
         assert fly_handler.next_unit(old, []) == ("rep-1", "initial")
         assert "validator" not in cast(dict[str, object], old.frozen_spec["revisions"])
+
+
+def test_admission_defers_terminal_result_finished_after_consumption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.controller import Controller, RequestSnapshot
+    from agent_factory.store import Claim
+    from agent_factory.work_kinds.base import Preparation
+
+    with FakeMachinesApi() as api:
+        site = Installation(tmp_path, api, "```eval\nrepetitions = 1\n```")
+        _wire(monkeypatch, site)
+
+        def no_findings(*args: object, **kwargs: object) -> list[Diagnostic]:
+            return []
+
+        monkeypatch.setattr(runtime, "doctor", no_findings)
+        request = parse_request(
+            site.github.body,
+            EvalDefaults(
+                "main",
+                "main",
+                {
+                    "lead": "codex:x:medium",
+                    "implementor": "codex:x:medium",
+                    "tester": "codex:x:medium",
+                },
+                False,
+                1,
+            ),
+        )
+        frozen = request.freeze(site.revisions, suite="and-scene").payload
+        with site.store() as store:
+            store.create_claim(
+                ClaimDraft(
+                    site.shared.routing.eval_source,
+                    1,
+                    "I1",
+                    "P1",
+                    "eval",
+                    request.fingerprint,
+                    frozen,
+                )
+            )
+        accept = Controller.accept
+        prepared: list[str] = []
+
+        def finish_after_accept(
+            self: Controller,
+            snapshot: RequestSnapshot,
+            *,
+            resolve: Callable[[object], object],
+            fresh: bool = False,
+        ) -> Claim | None:
+            claim = accept(self, snapshot, resolve=resolve, fresh=fresh)
+            assert claim is not None
+            with site.store() as store:
+                run = store.reserve_run(
+                    claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "result")
+                )
+                store.mark_running(run.id, {})
+                store.finish_run(run.id, execution_status="completed", result={})
+                store.set_claim_lifecycle(claim.id, "active", {})
+            return claim
+
+        def prepare(self: EvalHandler, claim: Claim) -> Preparation:
+            prepared.append(claim.id)
+            raise ReadinessError("unexpected admission preparation")
+
+        monkeypatch.setattr(Controller, "accept", finish_after_accept)
+        monkeypatch.setattr(EvalHandler, "prepare", prepare)
+        site.tick()
+
+        assert prepared == []
+        with site.store() as store:
+            claim = store.claims_for_item("P1")[0]
+            assert claim.lifecycle == "active"
+            assert len(store.runs_for_claim(claim.id)) == 1
+            assert store.get_hold(claim.id, "readiness") is None
