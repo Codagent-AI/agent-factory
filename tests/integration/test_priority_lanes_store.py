@@ -164,3 +164,26 @@ def test_gate_cause_selection(tmp_path: Path) -> None:
                 )
             assert error.value.cause == "legacy"
             assert error.value.holder.id == holder.id
+
+
+@pytest.mark.parametrize("value", ["", "HIGH", "critical"])
+def test_unrecognized_lane_holds_every_lane(tmp_path: Path, value: str) -> None:
+    with closing(ClaimStore(tmp_path / "db")) as store:
+        store.enable_lanes()
+        holder_claim = store.create_claim(ClaimDraft("o/r", 1, "I1", "P1", "fix", "fp", {}))
+        other = store.create_claim(ClaimDraft("o/r", 2, "I2", "P2", "fix", "fp", {}))
+        holder = store.reserve_run(
+            holder_claim.id, "one", lane="low", reason="initial", evidence_path="/e"
+        )
+        store._connection.execute("UPDATE run SET lane=? WHERE id=?", (value, holder.id))
+        assert store.get_run(holder.id).lane is None  # type: ignore[union-attr]
+        occupancy = store.lane_occupancy("fix")
+        assert occupancy.holders == {}
+        assert [run.id for run in occupancy.legacy] == [holder.id]
+        for lane in ("urgent", "high", "medium", "low"):
+            decision = store.lane_decision("fix", lane, other.id, "initial")
+            assert (decision.allowed, decision.cause) == (False, "legacy")
+            with pytest.raises(LaneBusy) as error:
+                store.reserve_run(other.id, "one", lane=lane, reason="initial", evidence_path="/e")
+            assert error.value.cause == "legacy"
+        assert store.lane_decision("eval", "low", None, "initial").allowed

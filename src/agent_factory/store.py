@@ -1152,5 +1152,11 @@ def _run(row: sqlite3.Row) -> Run:
         cancellation_requested=cast(int, row["cancellation_requested"]) == 1,
         started_at=cast(str | None, row["started_at"]),
         finished_at=cast(str | None, row["finished_at"]),
-        lane=cast(str | None, row["lane"]) if "lane" in list(row.keys()) else None,
+        lane=_recorded_lane(row),
     )
+
+
+def _recorded_lane(row: sqlite3.Row) -> str | None:
+    """Read a run's lane; an absent or unrecognized value is a legacy holder of every lane."""
+    value = row["lane"] if "lane" in list(row.keys()) else None
+    return value if isinstance(value, str) and value in LANES else None
