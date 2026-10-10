@@ -313,3 +313,20 @@ def test_claude_crosscheck_quota_wait_bounds_the_deadline(tmp_path: Path) -> Non
         bounded_quota_deadline(tmp_path, now=datetime(2026, 9, 10, 12, tzinfo=UTC).timestamp())
         is not None
     )
+
+
+@pytest.mark.parametrize("role", ["unattributed", "null"])
+def test_unattributed_claude_quota_wait_bounds_the_deadline(tmp_path: Path, role: str) -> None:
+    from datetime import UTC, datetime
+
+    from agent_factory.suites.and_scene import bounded_quota_deadline
+
+    (tmp_path / "factory-suite.log").write_text(
+        f"Claude {role} quota reached; waiting until 2026-09-10T14:00:00Z "
+        "before resuming Agent Runner\n"
+    )
+
+    assert (
+        bounded_quota_deadline(tmp_path, now=datetime(2026, 9, 10, 12, tzinfo=UTC).timestamp())
+        is not None
+    )

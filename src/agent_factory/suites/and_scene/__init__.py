@@ -1000,7 +1000,9 @@ def bounded_quota_deadline(artifact: Path, *, now: float) -> float | None:
     except OSError as error:
         raise ReadinessError(f"suite quota log cannot be read: {error.strerror}") from error
     matches = re.findall(
-        r"^Claude (?:lead|crosscheck|implementor|tester|null) quota reached; waiting until "
+        # Older harnesses print `null` for an unattributed wait; newer ones `unattributed`.
+        r"^Claude (?:lead|crosscheck|implementor|tester|unattributed|null) quota reached; "
+        r"waiting until "
         r"(\S+) before resuming Agent Runner$",
         tail,
         re.MULTILINE,
