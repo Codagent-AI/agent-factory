@@ -110,9 +110,13 @@ def rebuilt(original: str) -> str:
     # Best effort: without the marks the round's section is still published.
     subprocess.run(["python3", os.environ["MARKER"], str(updated)], check=False)
     with updated.open(newline="") as source:
-        fitted = fit(source.read())
-    updated.write_text(fitted, newline="")
-    return fitted
+        text = source.read()
+    try:
+        text = fit(text)
+    except Exception as error:
+        print(f"could not fit the proposal in the description: {error}", file=sys.stderr)
+    updated.write_text(text, newline="")
+    return text
 
 
 # newline="" keeps a description's CRLF line endings as they are on both sides.

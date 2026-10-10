@@ -3067,3 +3067,35 @@ def test_annotation_fit_failure_publishes_unshortened_body(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     assert "could not fit the proposal in the description: fit unavailable" in result.stderr
     assert flow.body_path.read_text() == expected
+
+
+def test_review_fit_failure_still_publishes_round_and_marked_commits(tmp_path: Path) -> None:
+    """Unexpected fitting errors preserve best-effort review-round publication."""
+    flow = ProposalWorkflow(tmp_path, proposal_text())
+    original = flow.annotate()
+    flow.save()
+    added = flow.commit("fix: review settings", "settings.go")
+    helper = flow.review_stage / "pr_description.py"
+    with helper.open("a") as target:
+        target.write('\ndef fit(body: str) -> str:\n    raise RuntimeError("fit unavailable")\n')
+    # Record stderr without changing the staged restore harness or GitHub stub.
+    result = subprocess.run(
+        [str(flow.review_stage / "review-description.sh")],
+        cwd=flow.repo,
+        env=flow.env,
+        input=json.dumps(
+            {"mode": "restore", "review_file": str(flow.review), "artifact_dir": str(flow.evidence)}
+        ),
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "could not fit the proposal in the description: fit unavailable" in result.stderr
+    restored = flow.body_path.read_text()
+    assert inline_region(restored) == inline_region(original)
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+    assert f"- `{added[:7]}` fix: review settings" in restored
+    assert added in next(
+        line for line in restored.splitlines() if line.startswith("Later commits:")
+    )
+    assert not (flow.evidence / "description-restore-failed").exists()

@@ -255,3 +255,36 @@ def test_fit_cli_preserves_crlf_and_handles_an_oversized_proposal(tmp_path: Path
     assert pr.ALL_OMITTED.format(href=HREF) in updated
     assert "\n" not in updated.replace("\r\n", "")
     assert updated.startswith("report before\r\n") and updated.endswith("report after\r\n")
+
+
+@pytest.mark.parametrize("eol", ["\n", "\r\n"])
+def test_fit_preserves_comma_and_entity_names_across_rounds(
+    monkeypatch: pytest.MonkeyPatch, eol: str
+) -> None:
+    import html
+
+    names = ["First, with punctuation", "Second &amp;, also"]
+    original = body(
+        "## Why\n"
+        + "why" * 3000
+        + "\n## Out of Scope\n"
+        + "scope" * 100
+        + f"\n## {names[0]}\n"
+        + "first" * 200
+        + f"\n## {names[1]}\n"
+        + "second" * 1000
+    ).replace("\n", eol)
+    current = original
+    for omitted in ([names[1]], names, ["Out of Scope", *names]):
+        monkeypatch.setattr(pr, "LIMIT", pr.measure(current) - 100)
+        current = pr.fit(current)
+        encoded = ", ".join(
+            html.escape(name, quote=False).replace(",", "&#44;") for name in omitted
+        )
+        assert pr.OMITTED.format(names=encoded, href=HREF) in current
+        assert current.count("_Omitted for length:") == 1
+        assert "Introduction" not in current
+        assert "### Why" + eol + "why" * 3000 in current
+        assert pr.measure(current) <= pr.LIMIT
+        assert current.startswith("report before" + eol)
+        assert current.endswith("report after" + eol)

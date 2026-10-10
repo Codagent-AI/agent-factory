@@ -120,7 +120,10 @@ def fit(body: str) -> str:
     notice = lines[start + 1] if start + 1 < end else ""
     suffix = f". Read the [full proposal]({href})._"
     if notice.startswith("_Omitted for length: ") and notice.endswith(suffix):
-        previous = notice[len("_Omitted for length: ") : -len(suffix)].split(", ")
+        previous = [
+            html.unescape(name)
+            for name in notice[len("_Omitted for length: ") : -len(suffix)].split(", ")
+        ]
     # Empty section markers retain the positions of earlier omissions. Their names
     # live in the notice in that same order, so later rounds can extend the notice
     # in proposal order without retaining any omitted proposal text.
@@ -143,7 +146,14 @@ def fit(body: str) -> str:
             kept: list[str] = []
         else:
             notice = OMITTED.format(
-                names=", ".join(name for i, name in enumerate(names) if i in dropped), href=href
+                # Encode commas inside names so the separator remains unambiguous on
+                # later rounds. Escape ampersands first to preserve literal entities.
+                names=", ".join(
+                    html.escape(name, quote=False).replace(",", "&#44;")
+                    for i, name in enumerate(names)
+                    if i in dropped
+                ),
+                href=href,
             )
             kept = [
                 line
