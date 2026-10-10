@@ -398,3 +398,9 @@ def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None
         "what remedy a human would need to approve",
     ):
         assert phrase in prompt, phrase
+
+
+def test_complete_task_passes_artifact_dir_to_checkpoint() -> None:
+    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    step = text.split("  - id: complete-task\n", 1)[1].split("\n  - id: ", 1)[0]
+    assert 'artifact_dir: "{{artifact_dir}}"' in step
