@@ -130,7 +130,8 @@ elif args[0] == 'print':
         },
         capture_output=True,
         text=True,
-        timeout=20,
+        # A deploy starts many Python stubs; allow headroom when parallel suites share the host.
+        timeout=90,
     )
     pointers = json.loads(plist.read_text())["exe"]
     assert (releases / "current").resolve() == (

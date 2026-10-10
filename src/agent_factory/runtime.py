@@ -224,7 +224,6 @@ def cycle(state: Path, config_path: Path) -> None:
 
         reserved_kinds: set[str] = set()
         lane_waits: dict[str, dict[str, object]] = {}
-        store.replace_settings("lane-wait", {})
 
         def record_lane_wait(
             card: ProjectQueueItem, kind: str, claim_id: str | None, reason: str
@@ -256,226 +255,256 @@ def cycle(state: Path, config_path: Path) -> None:
                 }
             return decision.allowed
 
-        ordered = sorted(enumerate(cards), key=lambda item: _admission_key(store, item[1], item[0]))
-        for _, card in ordered:
-            lane = lane_for(card.priority)
-            claims = store.claims_for_item(card.id)
-            current = claims[-1] if claims else None
-            reentry_handler = controller.handler(current.kind) if current is not None else None
-            if current is not None and reentry_handler is not None and _reentry(current):
-                can_reserve = current.kind not in reserved_kinds
-                memory_available = can_reserve and (
-                    not reentry_handler.needs_sandbox_memory(local) or sandbox_memory().available
-                )
-                if current.lifecycle == "blocked" and current.outcome.get("blocked_by") != "review":
-                    admitted = reentry_handler.unblock(
-                        store,
-                        client,
-                        shared,
-                        local,
-                        card,
-                        current,
-                        lane=lane,
-                        bot_login=shared.bot_login,
-                        artifact_root=artifact_root,
-                        now=now,
-                        admission_available=can_reserve,
-                        memory_available=memory_available,
+        try:
+            ordered = sorted(
+                enumerate(cards), key=lambda item: _admission_key(store, item[1], item[0])
+            )
+            for _, card in ordered:
+                lane = lane_for(card.priority)
+                claims = store.claims_for_item(card.id)
+                current = claims[-1] if claims else None
+                reentry_handler = controller.handler(current.kind) if current is not None else None
+                if current is not None and reentry_handler is not None and _reentry(current):
+                    can_reserve = current.kind not in reserved_kinds
+                    memory_available = can_reserve and (
+                        not reentry_handler.needs_sandbox_memory(local)
+                        or sandbox_memory().available
                     )
-                else:
-                    admitted = reentry_handler.review_round(
-                        store,
-                        client,
-                        current,
-                        lane=lane,
-                        bot_login=shared.bot_login,
-                        artifact_root=artifact_root,
-                        now=now,
-                        local=local,
-                        admission_available=can_reserve,
-                        memory_available=memory_available,
-                        readiness=lambda selected=reentry_handler: kind_ready(selected),
-                    )
-                refreshed = store.get_claim(current.id) or current
-                if admitted is not None:
-                    run, preparation = admitted
-                    reserved_kinds.add(current.kind)
-                    try:
-                        _launch(
-                            state,
-                            config_path,
-                            store,
-                            controller,
-                            reentry_handler,
-                            local,
-                            refreshed,
-                            run,
-                            preparation,
-                        )
-                    except (WorktreeError, ReadinessError) as error:
-                        _hold_for_readiness(store, current.id, error)
-                    _report(store, controller, client, shared, card, current.id, reentry_handler)
-                    continue
-                if not paused and reentry_handler.window(local).allows_admission(now):
-                    if refreshed.outcome.get("waiting_review"):
-                        record_lane_wait(card, current.kind, current.id, "review")
-                    elif (
+                    if (
                         current.lifecycle == "blocked"
                         and current.outcome.get("blocked_by") != "review"
                     ):
-                        # The unblock helper reconciles eligible input even when its lane is busy.
                         key = f"{card.source.repository}:{card.source.number}"
-                        wait = store.get_setting("lane-wait", key)
-                        if wait is not None and refreshed.lifecycle == "blocked":
-                            lane_waits[key] = wait
-                if current.lifecycle == "blocked" and current.outcome.get("blocked_by") != "review":
-                    continue
-            snapshot = None
-            handler: WorkKindHandler | None = None
-            candidate_card = _readiness_labelled(store, client, shared, card)
-            if (
-                current is not None
-                and current.lifecycle == "blocked"
-                and current.outcome.get("blocked_by") == "review"
-                and card_status(shared, card) == "Ready"
-            ):
-                # An explicit drag to Ready can request a fresh claim when review
-                # intake found no eligible feedback. Do not let the old label hide it.
-                candidate_card = replace(
-                    candidate_card,
-                    source=replace(
-                        candidate_card.source, labels=candidate_card.source.labels - {"needs-input"}
-                    ),
-                )
-            for candidate in registered.values():
-                snapshot = candidate.snapshot(candidate_card, client, shared)
-                if snapshot is not None:
-                    handler = candidate
-                    break
-            if snapshot is None or handler is None:
-                continue
-            factory_readiness_label = (
-                handler.kind in {"fix", "feature"}
-                and "needs-input" in card.source.labels
-                and "needs-input" not in candidate_card.source.labels
-            )
-            parsed = handler.request_fingerprint(snapshot)
-            if isinstance(parsed, Feedback):
-                # Existing controller supplies durable corrective comment feedback.
-                controller.accept(snapshot, resolve=lambda _: ("", ""))
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
-                continue
-            if not factory_readiness_label:
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
-            # Admission is per kind: lanes and windows gate independently.
-            # Quota holds are provider-scoped and enforced in Controller.reserve_next
-            # against the specific claim's providers, not pre-filtered here.
-            existing = store.claims_for_item(snapshot.project_item_id)
-            fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
-            selected = controller.select_existing(snapshot, fresh=fresh)
-            next_reason = "initial"
-            if selected is not None:
-                _, next_reason = handler.next_unit(selected, store.runs_for_claim(selected.id))
-            ready = not paused and handler.window(local).allows_admission(now)
-            if ready:
-                ready = record_lane_wait(
-                    card, handler.kind, selected.id if selected else None, next_reason
-                )
-            ready = ready and handler.kind not in reserved_kinds
-            if not ready:
-                continue
-            if not kind_ready(handler):
-                continue
-            try:
-                cap_state = store.job_cap_state(now)
-                if cap_state.reached:
-                    # Reuse the selection and reason from the admission lane check.
-                    if not record_lane_wait(
-                        card, handler.kind, selected.id if selected else None, next_reason
-                    ):
-                        continue
-                    if selected is not None:
-                        unit, _ = handler.next_unit(selected, store.runs_for_claim(selected.id))
-                        if unit is not None:
-                            job_cap.hold_claim(store, selected.id, cap_state, now)
-                            _report(store, controller, client, shared, card, selected.id, handler)
-                    else:
-                        episode = job_cap.open_episode(store, cap_state, now)
-                        key = f"{snapshot.repository}:{snapshot.issue_number}"
-                        receipt = store.get_setting("job-cap-card", key)
-                        if receipt is None or receipt.get("episode") != episode:
-                            draft = controller.preflight(snapshot, resolve=handler.resolve_request)
-                            if draft is None:
-                                continue
-                            holds = store.get_settings_by_prefix("admission", "quota:")
-                            if any(
-                                (hold := holds.get(f"quota:{provider}")) is not None
-                                and hold_active(hold, now)
-                                for provider in handler.providers_for_spec(draft.frozen_spec)
-                            ):
-                                continue
-                        if (
-                            receipt is None
-                            or receipt.get("episode") != episode
-                            or not receipt.get("comment_id")
-                        ):
-                            job_cap.notify_card(
+                        store.clear_setting("lane-wait", key)
+                        try:
+                            admitted = reentry_handler.unblock(
                                 store,
                                 client,
-                                shared.bot_login,
-                                snapshot.repository,
-                                snapshot.issue_number,
-                                episode,
-                                cap_state,
+                                shared,
+                                local,
+                                card,
+                                current,
+                                lane=lane,
+                                bot_login=shared.bot_login,
+                                artifact_root=artifact_root,
+                                now=now,
+                                admission_available=can_reserve,
+                                memory_available=memory_available,
                             )
-                    continue
-                claim = controller.accept(
-                    snapshot,
-                    resolve=handler.resolve_request,
-                    fresh=fresh,
-                )
-            except ReadinessError as error:
-                if not factory_readiness_label:
-                    key = f"{snapshot.repository}:{snapshot.issue_number}"
-                    store.set_setting(
-                        "request-readiness",
-                        key,
-                        {**(store.get_setting("request-readiness", key) or {}), "label": "factory"},
+                        finally:
+                            wait = store.get_setting("lane-wait", key)
+                            if wait is not None:
+                                lane_waits[key] = wait
+                    else:
+                        admitted = reentry_handler.review_round(
+                            store,
+                            client,
+                            current,
+                            lane=lane,
+                            bot_login=shared.bot_login,
+                            artifact_root=artifact_root,
+                            now=now,
+                            local=local,
+                            admission_available=can_reserve,
+                            memory_available=memory_available,
+                            readiness=lambda selected=reentry_handler: kind_ready(selected),
+                        )
+                    refreshed = store.get_claim(current.id) or current
+                    if admitted is not None:
+                        run, preparation = admitted
+                        reserved_kinds.add(current.kind)
+                        try:
+                            _launch(
+                                state,
+                                config_path,
+                                store,
+                                controller,
+                                reentry_handler,
+                                local,
+                                refreshed,
+                                run,
+                                preparation,
+                            )
+                        except (WorktreeError, ReadinessError) as error:
+                            _hold_for_readiness(store, current.id, error)
+                        _report(
+                            store, controller, client, shared, card, current.id, reentry_handler
+                        )
+                        continue
+                    if (
+                        not paused
+                        and reentry_handler.window(local).allows_admission(now)
+                        and refreshed.outcome.get("waiting_review")
+                    ):
+                        record_lane_wait(card, current.kind, current.id, "review")
+                    if (
+                        current.lifecycle == "blocked"
+                        and current.outcome.get("blocked_by") != "review"
+                    ):
+                        continue
+                snapshot = None
+                handler: WorkKindHandler | None = None
+                candidate_card = _readiness_labelled(store, client, shared, card)
+                if (
+                    current is not None
+                    and current.lifecycle == "blocked"
+                    and current.outcome.get("blocked_by") == "review"
+                    and card_status(shared, card) == "Ready"
+                ):
+                    # An explicit drag to Ready can request a fresh claim when review
+                    # intake found no eligible feedback. Do not let the old label hide it.
+                    candidate_card = replace(
+                        candidate_card,
+                        source=replace(
+                            candidate_card.source,
+                            labels=candidate_card.source.labels - {"needs-input"},
+                        ),
                     )
+                for candidate in registered.values():
+                    snapshot = candidate.snapshot(candidate_card, client, shared)
+                    if snapshot is not None:
+                        handler = candidate
+                        break
+                if snapshot is None or handler is None:
+                    continue
+                factory_readiness_label = (
+                    handler.kind in {"fix", "feature"}
+                    and "needs-input" in card.source.labels
+                    and "needs-input" not in candidate_card.source.labels
+                )
+                parsed = handler.request_fingerprint(snapshot)
+                if isinstance(parsed, Feedback):
+                    # Existing controller supplies durable corrective comment feedback.
+                    controller.accept(snapshot, resolve=lambda _: ("", ""))
                     client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
-                controller.report_request_readiness(snapshot, str(error), factory_label=True)
-                continue
-            if factory_readiness_label and claim is not None:
-                client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
-            if claim is not None or not factory_readiness_label:
-                store.set_setting(
-                    "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
-                )
-            if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
-                continue
-            try:
-                if handler.needs_sandbox_memory(local) and not sandbox_memory().available:
                     continue
-                if not record_lane_wait(card, handler.kind, claim.id, next_reason):
+                if not factory_readiness_label:
+                    client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+                # Admission is per kind: lanes and windows gate independently.
+                # Quota holds are provider-scoped and enforced in Controller.reserve_next
+                # against the specific claim's providers, not pre-filtered here.
+                existing = store.claims_for_item(snapshot.project_item_id)
+                fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
+                selected = controller.select_existing(snapshot, fresh=fresh)
+                next_reason = "initial"
+                if selected is not None:
+                    _, next_reason = handler.next_unit(selected, store.runs_for_claim(selected.id))
+                ready = not paused and handler.window(local).allows_admission(now)
+                if ready:
+                    ready = record_lane_wait(
+                        card, handler.kind, selected.id if selected else None, next_reason
+                    )
+                ready = ready and handler.kind not in reserved_kinds
+                if not ready:
                     continue
-                preparation = handler.prepare(claim)
-                run = controller.reserve_next(claim.id, lane=lane, readiness=lambda: None)
-                if run is None:
-                    record_lane_wait(card, handler.kind, claim.id, next_reason)
-                    # Preparation may have settled the claim (an earlier attempt's PR was
-                    # found); present that immediately rather than on the next poll.
+                if not kind_ready(handler):
+                    continue
+                try:
+                    cap_state = store.job_cap_state(now)
+                    if cap_state.reached:
+                        # Reuse the selection and reason from the admission lane check.
+                        if not record_lane_wait(
+                            card, handler.kind, selected.id if selected else None, next_reason
+                        ):
+                            continue
+                        if selected is not None:
+                            unit, _ = handler.next_unit(selected, store.runs_for_claim(selected.id))
+                            if unit is not None:
+                                job_cap.hold_claim(store, selected.id, cap_state, now)
+                                _report(
+                                    store, controller, client, shared, card, selected.id, handler
+                                )
+                        else:
+                            episode = job_cap.open_episode(store, cap_state, now)
+                            key = f"{snapshot.repository}:{snapshot.issue_number}"
+                            receipt = store.get_setting("job-cap-card", key)
+                            if receipt is None or receipt.get("episode") != episode:
+                                draft = controller.preflight(
+                                    snapshot, resolve=handler.resolve_request
+                                )
+                                if draft is None:
+                                    continue
+                                holds = store.get_settings_by_prefix("admission", "quota:")
+                                if any(
+                                    (hold := holds.get(f"quota:{provider}")) is not None
+                                    and hold_active(hold, now)
+                                    for provider in handler.providers_for_spec(draft.frozen_spec)
+                                ):
+                                    continue
+                            if (
+                                receipt is None
+                                or receipt.get("episode") != episode
+                                or not receipt.get("comment_id")
+                            ):
+                                job_cap.notify_card(
+                                    store,
+                                    client,
+                                    shared.bot_login,
+                                    snapshot.repository,
+                                    snapshot.issue_number,
+                                    episode,
+                                    cap_state,
+                                )
+                        continue
+                    claim = controller.accept(
+                        snapshot,
+                        resolve=handler.resolve_request,
+                        fresh=fresh,
+                    )
+                except ReadinessError as error:
+                    if not factory_readiness_label:
+                        key = f"{snapshot.repository}:{snapshot.issue_number}"
+                        store.set_setting(
+                            "request-readiness",
+                            key,
+                            {
+                                **(store.get_setting("request-readiness", key) or {}),
+                                "label": "factory",
+                            },
+                        )
+                        client.set_attention_label(snapshot.repository, snapshot.issue_number, True)
+                    controller.report_request_readiness(snapshot, str(error), factory_label=True)
+                    continue
+                if factory_readiness_label and claim is not None:
+                    client.set_attention_label(snapshot.repository, snapshot.issue_number, False)
+                if claim is not None or not factory_readiness_label:
+                    store.set_setting(
+                        "request-readiness", f"{snapshot.repository}:{snapshot.issue_number}", {}
+                    )
+                if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
+                    continue
+                try:
+                    if handler.needs_sandbox_memory(local) and not sandbox_memory().available:
+                        continue
+                    if not record_lane_wait(card, handler.kind, claim.id, next_reason):
+                        continue
+                    preparation = handler.prepare(claim)
+                    run = controller.reserve_next(claim.id, lane=lane, readiness=lambda: None)
+                    if run is None:
+                        record_lane_wait(card, handler.kind, claim.id, next_reason)
+                        # Preparation may have settled the claim (an earlier attempt's PR was
+                        # found); present that immediately rather than on the next poll.
+                        _report(store, controller, client, shared, card, claim.id, handler)
+                        continue
+                    reserved_kinds.add(handler.kind)
+                    lane_waits.pop(f"{card.source.repository}:{card.source.number}", None)
+                    _launch(
+                        state,
+                        config_path,
+                        store,
+                        controller,
+                        handler,
+                        local,
+                        claim,
+                        run,
+                        preparation,
+                    )
                     _report(store, controller, client, shared, card, claim.id, handler)
-                    continue
-                reserved_kinds.add(handler.kind)
-                lane_waits.pop(f"{card.source.repository}:{card.source.number}", None)
-                _launch(
-                    state, config_path, store, controller, handler, local, claim, run, preparation
-                )
-                _report(store, controller, client, shared, card, claim.id, handler)
-            except (WorktreeError, ReadinessError) as error:
-                _hold_for_readiness(store, claim.id, error)
-                _report(store, controller, client, shared, card, claim.id, handler)
-        store.replace_settings("lane-wait", lane_waits)
+                except (WorktreeError, ReadinessError) as error:
+                    _hold_for_readiness(store, claim.id, error)
+                    _report(store, controller, client, shared, card, claim.id, handler)
+        finally:
+            store.replace_settings("lane-wait", lane_waits)
 
 
 def _reentry(claim: Claim) -> bool:

@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from agent_factory.config import JobCapConfig
-from agent_factory.store import ClaimDraft
+from agent_factory.store import Claim, ClaimDraft
+from agent_factory.work_kinds.base import Preparation
 from tests.fixtures.priority_lanes import Site
 
 
@@ -183,8 +184,7 @@ def test_unblock_reconciles_but_waits_for_higher_lane(site: Site, kind: str) -> 
         and "example/work#2; higher-lane" in line
         for line in _lane_wait_lines(site.store)
     )
-    # The next cycle clears the namespace before the unblock helper writes its wait.
-    # The final rewrite must retain that new wait and remove unrelated stale entries.
+    # The final rewrite must retain the unblock helper's new wait and remove stale entries.
     site.store.set_setting("lane-wait", "example/work:99", expected_wait)
     assert site.tick() == []
     assert site.store.get_settings_by_prefix("lane-wait", "") == {"example/work:1": expected_wait}
@@ -192,6 +192,65 @@ def test_unblock_reconciles_but_waits_for_higher_lane(site: Site, kind: str) -> 
     (run,) = site.tick()
     assert run.reason == "unblock" and run.lane == "medium"
     assert site.store.get_settings_by_prefix("lane-wait", "") == {}
+
+
+@pytest.mark.parametrize("blocked", [False, True])
+def test_admission_failure_publishes_collected_lane_waits(
+    site: Site, monkeypatch: pytest.MonkeyPatch, blocked: bool
+) -> None:
+    site.card(1, "High")
+    (high,) = site.tick()
+    card = site.card(2, "Medium")
+    if blocked:
+        handler = site.handlers["fix"]
+        snapshot = handler.snapshot(card, site.board, site.shared)
+        assert snapshot is not None
+        claim = site.controller.accept(snapshot, resolve=handler.resolve_request)
+        assert claim is not None
+        site.store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": "2026-01-01"})
+    site.card(3, "Low", "eval")
+    site.store.set_setting("lane-wait", "example/work:99", {"lane": "low"})
+
+    def fail_prepare(claim: Claim) -> Preparation:
+        raise RuntimeError("admission failed")
+
+    monkeypatch.setattr(site.handlers["eval"], "prepare", fail_prepare)
+    with pytest.raises(RuntimeError, match="admission failed"):
+        site.tick()
+
+    assert site.store.get_settings_by_prefix("lane-wait", "") == {
+        "example/work:2": {
+            "lane": "medium",
+            "cause": "higher-lane",
+            "holder_run_id": high.id,
+        }
+    }
+
+
+def test_unblock_failure_preserves_its_lane_wait(
+    site: Site, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    site.card(1, "High")
+    (high,) = site.tick()
+    card = site.card(2, "Medium")
+    handler = site.handlers["fix"]
+    snapshot = handler.snapshot(card, site.board, site.shared)
+    assert snapshot is not None
+    claim = site.controller.accept(snapshot, resolve=handler.resolve_request)
+    assert claim is not None
+    site.store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": "2026-01-01"})
+
+    def fail_reconcile(claim: Claim) -> None:
+        raise RuntimeError("reconciliation failed")
+
+    monkeypatch.setattr(handler, "reconcile", fail_reconcile)
+    with pytest.raises(RuntimeError, match="reconciliation failed"):
+        site.tick()
+    assert site.store.get_setting("lane-wait", "example/work:2") == {
+        "lane": "medium",
+        "cause": "higher-lane",
+        "holder_run_id": high.id,
+    }
 
 
 @pytest.mark.parametrize("provider_hold", [False, True])
