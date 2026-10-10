@@ -20,11 +20,11 @@ def failure_reasons(artifact: Path, status: str, ci_status: str) -> list[str]:
         )
     if status == "session-failed":
         detail = "the classifying session failed"
-        # Keep the standard session-failure reason; add evidence problems when necessary.
-        if evidence != "kept as review-attention.rejected.json":
-            detail += f" ({evidence})"
     else:
-        detail = f"review-attention.json stayed invalid after repair ({evidence})"
+        detail = "review-attention.json stayed invalid after repair"
+    # Keep the standard session-failure reason; add evidence problems when necessary.
+    if status != "session-failed" or evidence != "kept as review-attention.rejected.json":
+        detail += f" ({evidence})"
     reasons = [
         f"review-attention classification failed after finalization: {detail}; "
         "the pull request was not annotated"
