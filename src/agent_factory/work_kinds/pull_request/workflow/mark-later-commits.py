@@ -10,7 +10,8 @@ accepted one (named by the description's "Acceptance ran against" line) to HEAD,
 - names it in the "Commits after acceptance" orange item unless an orange item names it;
 - marks each red, orange, or yellow item whose linked file it changed as possibly fixed;
 - with a resolvable target-branch BASE, instead marks items whose linked file no longer
-  differs between the PR merge base and HEAD as no longer changed by this PR.
+  differs between the PR merge base and HEAD as no longer changed by this PR, provided
+  the PR changed that file at acceptance.
 Without BASE or when its git checks fail, items keep the possibly-fixed behavior.
 Everything else in the description is left as it is. Without an acceptance line or a
 readable history, the description is left unchanged.
@@ -69,9 +70,14 @@ def mark(text: str, base: str | None = None) -> str:
 
     merge_base = None
     changed_since_acceptance: set[str] = set()
+    changed_at_acceptance: set[str] = set()
     if base:
         try:
             merge_base = git("merge-base", base, "HEAD")
+            acceptance_base = git("merge-base", base, accepted)
+            changed_at_acceptance = set(
+                git("diff", "--name-only", acceptance_base, accepted).splitlines()
+            )
             changed_since_acceptance = set(
                 git("diff", "--name-only", accepted, "HEAD").splitlines()
             )
@@ -106,7 +112,9 @@ def mark(text: str, base: str | None = None) -> str:
             key=len,
             reverse=True,
         )
-        if merge_base and matches:
+        # A target-branch merge can change a cited file the PR never changed. Such an
+        # item may still apply, even though the file now equals the target branch.
+        if merge_base and matches and matches[0] in changed_at_acceptance:
             try:
                 result = subprocess.run(
                     [

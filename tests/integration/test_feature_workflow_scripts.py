@@ -1920,6 +1920,53 @@ def test_mark_later_commits_matches_files_reverted_by_a_merge(tmp_path: Path) ->
     assert "linked file no longer changed by this PR" in body.read_text()
 
 
+@pytest.mark.parametrize("tier", ["🟠 Orange", "🟡 Yellow"])
+def test_mark_later_commits_keeps_items_for_files_only_changed_on_target(
+    tmp_path: Path, tier: str
+) -> None:
+    repo, _ = repository(tmp_path)
+    (repo / "foo.py").write_text("existing pattern\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "base pattern")
+    git(repo, "checkout", "-b", "feature")
+    (repo / "feature.py").write_text("feature deviates from existing pattern\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature accepted")
+    accepted = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "main")
+    (repo / "foo.py").write_text("updated existing pattern\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "update target pattern")
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "feature")
+    git(repo, "merge", "--no-ff", "-m", "Merge target", "main")
+    body = tmp_path / "body.md"
+    item = "- [Existing pattern](https://github.com/o/r/blob/feature/foo.py#L1): deviation"
+    original = f"### {tier} (1)\n{item}\nAcceptance ran against `{accepted}`.\n"
+    body.write_text(original)
+
+    def mark(with_base: bool = True) -> str:
+        args = [base] if with_base else []
+        result = run("python3", str(PACKAGE / "mark-later-commits.py"), str(body), *args, cwd=repo)
+        assert result.returncode == 0, result.stderr
+        return body.read_text()
+
+    # Git versions differ in whether --first-parent --name-only names merge files.
+    # Preserve the legacy annotation (possibly fixed or none), never dismiss the item.
+    legacy = mark(with_base=False)
+    legacy_item = next(
+        line for line in legacy.splitlines() if line.startswith("- [Existing pattern]")
+    )
+    body.write_text(original)
+    marked = mark()
+    marked_item = next(
+        line for line in marked.splitlines() if line.startswith("- [Existing pattern]")
+    )
+    assert "linked file no longer changed" not in marked_item
+    assert marked_item == legacy_item
+    assert mark() == marked
+
+
 @pytest.mark.parametrize("hash_seed", ["0", "1", "2"])
 def test_mark_later_commits_prefers_the_full_linked_path(tmp_path: Path, hash_seed: str) -> None:
     import os
