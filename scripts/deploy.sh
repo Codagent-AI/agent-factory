@@ -80,6 +80,7 @@ source "$(dirname "$0")/slots.sh"
 source "$(dirname "$0")/validator.sh"
 # shellcheck source=scripts/fixture-guard.sh
 source "$(dirname "$0")/fixture-guard.sh"
+source "$(dirname "$0")/lane-guard.sh"
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $base/.git ]]; then
@@ -130,6 +131,7 @@ else
 fi
 
 fixture_guard "$executable" "$running" before
+lane_guard before
 "$running" --config "$config" pause >/dev/null
 say "paused the factory"
 
@@ -167,12 +169,15 @@ point_at() {
   plutil -lint -s "$plist"
   sed -i '' "s#^shared_config = .*#shared_config = \"$shared\"#" "$config"
 }
+lane_guard restore
+lane_pointers_moved=true
 point_at "$executable" "$release/config/codagent.toml"
 say "LaunchAgent and shared_config point at release $short"
 
 if ! doctor_output=$(PATH=$release/.venv/bin:$PATH "$executable" --config "$config" doctor 2>&1); then
   grep -v ': OK' <<<"$doctor_output" >&2 || true
   point_at "$running" "$previous_shared"
+  lane_pointers_moved=false
   die "doctor failed; the LaunchAgent and shared_config point at the previous release again, and the factory stays paused"
 fi
 say "doctor passed"
@@ -183,6 +188,7 @@ for _ in $(seq 60); do
   sleep 1
 done
 launchctl print "$domain/$label" >/dev/null 2>&1 && die "the LaunchAgent did not unload; the factory stays paused"
+trap - EXIT
 launchctl bootstrap "$domain" "$plist"
 launchctl print "$domain/$label" | grep -q "program = $executable" \
   || die "the reloaded LaunchAgent does not run $executable; the factory stays paused"

@@ -673,7 +673,7 @@ def test_presuite_failures_relaunch_same_unit_then_settle(tmp_path: Path) -> Non
         ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {"settings": {"repetitions": 1}})
     )
     first = store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "one")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "one")
     )
     controller.record_result(
         first.id,
@@ -687,7 +687,7 @@ def test_presuite_failures_relaunch_same_unit_then_settle(tmp_path: Path) -> Non
     assert current is not None and current.lifecycle == "waiting"
     assert handler.next_unit(current, store.runs_for_claim(claim.id)) == ("rep-1", "initial")
     second = store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "two")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "two")
     )
     controller.record_result(
         second.id,
@@ -856,7 +856,9 @@ def test_fly_reconcile_knows_machine_from_run_metadata_before_record(tmp_path: P
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     machine: dict[str, object] = {
         "id": "machine-1",
         "state": "started",
@@ -889,7 +891,9 @@ def test_launcher_exit_before_machine_record_finishes_failed_run(
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {})
     run = store.get_run(run.id)
     assert run is not None

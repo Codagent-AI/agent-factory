@@ -11,14 +11,15 @@ import shutil
 import sqlite3
 import time
 import uuid
-from collections.abc import Generator, Mapping
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 from agent_factory.config import JobCapConfig
+from agent_factory.lanes import LANES, rank
 
 _DEFAULT_JOB_CAP = JobCapConfig()
 
@@ -97,12 +98,57 @@ class Run:
     cancellation_requested: bool
     started_at: str | None
     finished_at: str | None
+    lane: str | None = None
 
     @property
     def process(self) -> dict[str, object]:
         """The recorded suite identity, kept separately from its watcher."""
         value = self.supervisor.get("process")
         return dict(cast(Mapping[str, object], value)) if isinstance(value, Mapping) else {}
+
+
+@dataclass(frozen=True)
+class LaneDecision:
+    allowed: bool
+    cause: str | None = None
+    holder: Run | None = None
+
+
+@dataclass(frozen=True)
+class LaneOccupancy:
+    mode: str
+    holders: dict[str, Run]
+    legacy: list[Run]
+
+
+class LaneBusy(NonterminalRunError):
+    def __init__(self, cause: str, holder: Run) -> None:
+        self.cause = cause
+        self.holder = holder
+        super().__init__(f"{cause}: {holder.kind} run {holder.id} holds the lane")
+
+
+def classify_reservation(runs: Sequence[Run], reason: str) -> Literal["start", "continuation"]:
+    """Classify chronological history, folding pre-suite retries into their episode."""
+    if not runs:
+        return "start"
+    episodes = {"review", "unblock"}
+    latest = runs[-1]
+    retry = latest.reason == reason and latest.result.get("failure_stage") == "pre-suite"
+    if reason in episodes and not retry:
+        return "start"
+    start = 0
+    for index in range(len(runs) - 1, -1, -1):
+        if runs[index].reason in episodes:
+            start = index
+            while (
+                start > 0
+                and runs[start - 1].reason == runs[start].reason
+                and runs[start - 1].result.get("failure_stage") == "pre-suite"
+            ):
+                start -= 1
+            break
+    return "continuation" if any(r.started_at is not None for r in runs[start:]) else "start"
 
 
 @dataclass(frozen=True)
@@ -156,7 +202,99 @@ class ClaimStore:
         self._migrate()
         self._ensure_watch_schema()
         self._ensure_notify_schema()
+        self._ensure_lane_column()
         self._connection.execute("CREATE INDEX IF NOT EXISTS run_created_at ON run(created_at)")
+
+    def _ensure_lane_column(self) -> None:
+        # Opening a store never changes the guard: older supervisors share this DB.
+        with self._transaction():
+            columns = {row[1] for row in self._connection.execute("PRAGMA table_info(run)")}
+            if "lane" not in columns:
+                self._connection.execute("ALTER TABLE run ADD COLUMN lane TEXT")
+
+    def lane_mode(self) -> str:
+        row = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='one_nonterminal_run_per_lane'"
+        ).fetchone()
+        return "lanes" if row is not None else "kind"
+
+    def enable_lanes(self) -> None:
+        self._ensure_lane_column()
+        with self._transaction():
+            self._connection.execute("DROP INDEX IF EXISTS one_nonterminal_run_per_kind")
+            self._connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS one_nonterminal_run_per_lane "
+                "ON run(kind, lane) WHERE status IN ('reserved', 'running', 'observing')"
+            )
+
+    def restore_kind_guard(self, check_only: bool) -> list[Run]:
+        with self._transaction(immediate=not check_only):
+            rows = self._connection.execute(
+                "SELECT * FROM run WHERE status IN ('reserved', 'running', 'observing') "
+                "AND kind IN (SELECT kind FROM run "
+                "WHERE status IN ('reserved', 'running', 'observing') "
+                "GROUP BY kind HAVING COUNT(*) > 1) ORDER BY kind, created_at"
+            ).fetchall()
+            if rows:
+                return [_run(row) for row in rows]
+            if not check_only:
+                self._connection.execute("DROP INDEX IF EXISTS one_nonterminal_run_per_lane")
+                self._connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS one_nonterminal_run_per_kind "
+                    "ON run(kind) WHERE status IN ('reserved', 'running', 'observing')"
+                )
+        return []
+
+    def lane_occupancy(self, kind: str) -> LaneOccupancy:
+        runs = self.nonterminal_runs(kind=kind)
+        return LaneOccupancy(
+            self.lane_mode(),
+            {r.lane: r for r in runs if r.lane is not None},
+            [r for r in runs if r.lane is None],
+        )
+
+    def lane_decision(
+        self, kind: str, lane: str, claim_id: str | None, reason: str
+    ) -> LaneDecision:
+        if lane not in LANES:
+            raise ValueError(f"invalid lane: {lane}")
+        active = self.nonterminal_runs(kind=kind)
+        if self.lane_mode() == "kind" and active:
+            return LaneDecision(False, "kind-mode", active[0])
+        for run in active:
+            if run.lane is None:
+                return LaneDecision(False, "legacy", run)
+        for run in active:
+            if run.lane == lane:
+                return LaneDecision(False, "lane-busy", run)
+        rows = (
+            self._connection.execute(
+                "SELECT * FROM run WHERE claim_id = ? ORDER BY created_at, rowid", (claim_id,)
+            ).fetchall()
+            if claim_id is not None
+            else []
+        )
+        if classify_reservation([_run(row) for row in rows], reason) == "start":
+            higher = [r for r in active if r.lane is not None and rank(r.lane) < rank(lane)]
+            if higher:
+                return LaneDecision(
+                    False, "higher-lane", min(higher, key=lambda r: rank(r.lane or "low"))
+                )
+        return LaneDecision(True)
+
+    def _lane_gate(self, kind: str, lane: str, claim_id: str, reason: str) -> None:
+        decision = self.lane_decision(kind, lane, claim_id, reason)
+        if not decision.allowed and decision.holder is not None:
+            raise LaneBusy(decision.cause or "lane-busy", decision.holder)
+
+    def replace_settings(self, namespace: str, values: Mapping[str, Mapping[str, object]]) -> None:
+        """Publish a cycle's complete wait snapshot, removing stale entries atomically."""
+        with self._transaction():
+            self._connection.execute("DELETE FROM settings WHERE namespace = ?", (namespace,))
+            self._connection.executemany(
+                "INSERT INTO settings VALUES (?, ?, ?, ?)",
+                [(namespace, key, _dump(value), _now()) for key, value in values.items()],
+            )
 
     def job_cap_state(self, now: datetime, cap: JobCapConfig | None = None) -> JobCapState:
         cap = cap or self.job_cap
@@ -383,8 +521,8 @@ class ClaimStore:
         )
 
     @contextmanager
-    def _transaction(self) -> Generator[None, None, None]:
-        self._connection.execute("BEGIN IMMEDIATE")
+    def _transaction(self, *, immediate: bool = True) -> Generator[None, None, None]:
+        self._connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         try:
             yield
         except BaseException:
@@ -518,7 +656,9 @@ class ClaimStore:
             ),
         )
 
-    def reserve_run(self, claim_id: str, unit_key: str, *, reason: str, evidence_path: str) -> Run:
+    def reserve_run(
+        self, claim_id: str, unit_key: str, *, reason: str, evidence_path: str, lane: str
+    ) -> Run:
         run_id = str(uuid.uuid4())
         with self._transaction():
             claim_row = self._connection.execute(
@@ -526,10 +666,11 @@ class ClaimStore:
             ).fetchone()
             if claim_row is None:
                 raise KeyError(claim_id)
+            kind = cast(str, claim_row["kind"])
+            self._lane_gate(kind, lane, claim_id, reason)
             cap_state = self.job_cap_state(datetime.now(UTC))
             if cap_state.reached:
                 raise JobCapReached(cap_state)
-            kind = cast(str, claim_row["kind"])
             try:
                 row = self._connection.execute(
                     "SELECT COALESCE(MAX(attempt_number), -1) + 1 FROM run "
@@ -540,8 +681,8 @@ class ClaimStore:
                 self._connection.execute(
                     """INSERT INTO run (id, claim_id, unit_key, attempt_number, reason, status,
                     kind, launch_nonce, supervisor_json, plan_json, evidence_path, progress_json,
-                    cancellation_requested, result_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, '{}', '{}', ?, '{}', 0, '{}', ?)""",
+                    cancellation_requested, result_json, created_at, lane)
+                    VALUES (?, ?, ?, ?, ?, 'reserved', ?, ?, '{}', '{}', ?, '{}', 0, '{}', ?, ?)""",
                     (
                         run_id,
                         claim_id,
@@ -552,6 +693,7 @@ class ClaimStore:
                         uuid.uuid4().hex,
                         evidence_path,
                         _now(),
+                        lane,
                     ),
                 )
                 self._connection.execute(
@@ -1007,4 +1149,5 @@ def _run(row: sqlite3.Row) -> Run:
         cancellation_requested=cast(int, row["cancellation_requested"]) == 1,
         started_at=cast(str | None, row["started_at"]),
         finished_at=cast(str | None, row["finished_at"]),
+        lane=cast(str | None, row["lane"]) if "lane" in list(row.keys()) else None,
     )

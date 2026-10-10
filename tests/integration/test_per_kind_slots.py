@@ -284,15 +284,19 @@ def test_reserve_run_enforces_one_nonterminal_run_per_kind(tmp_path: Path) -> No
         ClaimDraft("example/evals", 2, "I2", "P2", "other", "fp-2", frozen_spec())
     )
 
-    eval_run = store.reserve_run(eval_claim.id, "rep-1", reason="initial", evidence_path="/e1")
-    other_run = store.reserve_run(other_claim.id, "fix", reason="initial", evidence_path="/e2")
+    eval_run = store.reserve_run(
+        eval_claim.id, "rep-1", lane="low", reason="initial", evidence_path="/e1"
+    )
+    other_run = store.reserve_run(
+        other_claim.id, "fix", lane="low", reason="initial", evidence_path="/e2"
+    )
     assert eval_run.kind == "eval"
     assert other_run.kind == "other"
 
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(eval_claim.id, "rep-2", reason="initial", evidence_path="/e3")
+        store.reserve_run(eval_claim.id, "rep-2", lane="low", reason="initial", evidence_path="/e3")
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(other_claim.id, "fix", reason="recovery", evidence_path="/e4")
+        store.reserve_run(other_claim.id, "fix", lane="low", reason="recovery", evidence_path="/e4")
 
     assert {run.id for run in store.nonterminal_runs(kind="eval")} == {eval_run.id}
     assert {run.id for run in store.nonterminal_runs(kind="other")} == {other_run.id}
@@ -300,6 +304,8 @@ def test_reserve_run_enforces_one_nonterminal_run_per_kind(tmp_path: Path) -> No
 
     store.finish_run(other_run.id, execution_status="blocked", result={"reason": "blocked"})
     assert store.nonterminal_runs(kind="other") == []
-    freed = store.reserve_run(other_claim.id, "fix", reason="unblock", evidence_path="/e5")
+    freed = store.reserve_run(
+        other_claim.id, "fix", lane="low", reason="unblock", evidence_path="/e5"
+    )
     assert freed.kind == "other"
     store.close()

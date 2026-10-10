@@ -790,7 +790,7 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
     )
 
     store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "artifacts")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "artifacts")
     )
     store.set_claim_lifecycle(claim.id, "active", {})
     _cli(config, env, "tick")

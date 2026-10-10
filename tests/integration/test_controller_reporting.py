@@ -81,10 +81,13 @@ def test_controller_invalid_feedback_pause_and_lost_response_reporting(tmp_path:
         ),
     )
     assert claim is not None
-    assert controller.reserve_next(claim.id, readiness=lambda: "Docker unavailable") is None
-    assert controller.reserve_next(claim.id, readiness=lambda: None) is None
+    assert (
+        controller.reserve_next(claim.id, lane="low", readiness=lambda: "Docker unavailable")
+        is None
+    )
+    assert controller.reserve_next(claim.id, lane="low", readiness=lambda: None) is None
     controller.resume()
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
 
     controller.record_result(
@@ -121,25 +124,25 @@ def test_controller_preserves_product_failure_and_stops_after_second_technical_f
         ),
     )
     assert claim is not None
-    first = controller.reserve_next(claim.id, readiness=lambda: None)
+    first = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert first is not None
     controller.record_result(
         first.id,
         AttemptResult("completed", "failed", {"score": 20}),
     )
-    second = controller.reserve_next(claim.id, readiness=lambda: None)
+    second = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert second is not None
     controller.record_result(
         second.id, AttemptResult("failed", None, {"failure": {"owner": "harness"}})
     )
-    retry = controller.reserve_next(claim.id, readiness=lambda: None)
+    retry = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert retry is not None and retry.reason == "recovery"
     controller.record_result(
         retry.id, AttemptResult("failed", None, {"failure": {"owner": "harness"}})
     )
 
     assert controller.presentation(claim.id).verdict == "infra-error"
-    assert controller.reserve_next(claim.id, readiness=lambda: None) is None
+    assert controller.reserve_next(claim.id, lane="low", readiness=lambda: None) is None
 
 
 def test_controller_does_not_trust_user_markers_and_records_delivery_failure(
@@ -189,7 +192,7 @@ def test_controller_never_hands_off_a_cancelled_repetition(tmp_path: Path) -> No
         ),
     )
     assert claim is not None
-    first = controller.reserve_next(claim.id, readiness=lambda: None)
+    first = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert first is not None
 
     controller.record_result(first.id, AttemptResult("cancelled", None, {}))
@@ -269,7 +272,7 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
         ),
     )
     assert first is not None
-    run = controller.reserve_next(first.id, readiness=lambda: None)
+    run = controller.reserve_next(first.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id,
@@ -282,7 +285,7 @@ def test_codex_quota_suspends_other_claims_too(tmp_path: Path) -> None:
         ),
     )
     assert second is not None
-    assert controller.reserve_next(second.id, readiness=lambda: None) is None
+    assert controller.reserve_next(second.id, lane="low", readiness=lambda: None) is None
     store.close()
 
 
@@ -309,7 +312,7 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
         ),
     )
     assert codex_claim is not None
-    run = controller.reserve_next(codex_claim.id, readiness=lambda: None)
+    run = controller.reserve_next(codex_claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id,
@@ -328,7 +331,9 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
         ),
     )
     assert another_codex_claim is not None
-    assert controller.reserve_next(another_codex_claim.id, readiness=lambda: None) is None
+    assert (
+        controller.reserve_next(another_codex_claim.id, lane="low", readiness=lambda: None) is None
+    )
 
     cursor_claim = controller.accept(
         replace(snapshot(cursor_body), issue_id="I3", project_item_id="P3", issue_number=3),
@@ -337,7 +342,7 @@ def test_quota_hold_scoped_to_provider_leaves_other_providers_admissible(tmp_pat
         ),
     )
     assert cursor_claim is not None
-    cursor_run = controller.reserve_next(cursor_claim.id, readiness=lambda: None)
+    cursor_run = controller.reserve_next(cursor_claim.id, lane="low", readiness=lambda: None)
     assert cursor_run is not None
     store.close()
 
@@ -368,7 +373,7 @@ def test_malformed_terminal_artifact_is_reported_as_failure_not_stale_success(
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     artifact = Path(run.evidence_path)
     artifact.mkdir(parents=True)
@@ -401,7 +406,7 @@ def test_missing_handler_for_a_claim_kind_is_reported_not_silently_skipped(
     )
     store.set_claim_lifecycle(claim.id, "active", {})
     run = store.reserve_run(
-        claim.id, "unit", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "unit", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     store.finish_run(run.id, execution_status="completed", result={})
 
@@ -440,7 +445,7 @@ def test_real_suite_result_is_reported_concisely_with_delivery_and_usage(tmp_pat
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     result = AndSceneAdapter(environment_file=tmp_path / "env").read_result(artifact)
     controller.record_result(run.id, result)
@@ -472,7 +477,7 @@ def test_technical_retry_and_exhaustion_report_failure_details(tmp_path: Path) -
     )
     assert claim is not None
     for _ in range(2):
-        run = controller.reserve_next(claim.id, readiness=lambda: None)
+        run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
         assert run is not None
         controller.record_result(
             run.id,
@@ -509,7 +514,7 @@ def test_report_redacts_credentials_in_failure_diagnostics(tmp_path: Path) -> No
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id,

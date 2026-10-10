@@ -514,7 +514,7 @@ def test_terminal_registry_retry_does_not_block_overdue_machine_disposal(factory
     _wait(lambda: factory.run(run.id).status == "completed", factory)
     other = store.create_claim(ClaimDraft("example/evals", 9, "I9", "P9", "eval", "fp", {}))
     other_run = store.reserve_run(
-        other.id, "rep-1", reason="initial", evidence_path=str(factory.roots / "other")
+        other.id, "rep-1", lane="low", reason="initial", evidence_path=str(factory.roots / "other")
     )
     store.finish_run(other_run.id, execution_status="cancelled", result={})
     store.set_claim_lifecycle(other.id, "cancelled", {})

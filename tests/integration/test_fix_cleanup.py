@@ -90,7 +90,9 @@ def test_already_removed_clone_does_not_fail_retry(tmp_path: Path) -> None:
 def test_missing_docker_binary_records_error_instead_of_crashing(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "a"))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
+    )
     store.configure_run(
         run.id,
         plan={"ownership_hints": {"image_tag": "agent-runner-factory:run-1"}},
@@ -133,7 +135,9 @@ def test_done_removes_every_attempts_private_credential_copy(tmp_path: Path) -> 
     private = tmp_path / "private"
     copies: list[Path] = []
     for reason in ("initial", "recovery"):
-        run = store.reserve_run(claim.id, "fix", reason=reason, evidence_path=str(tmp_path / "a"))
+        run = store.reserve_run(
+            claim.id, "fix", lane="low", reason=reason, evidence_path=str(tmp_path / "a")
+        )
         copy = private / run.id / "fix.env"
         copy.parent.mkdir(parents=True)
         copy.write_text("GH_TOKEN=secret\n")
@@ -156,7 +160,9 @@ def test_done_removes_every_attempts_private_credential_copy(tmp_path: Path) -> 
 def test_done_for_a_host_only_claim_removes_clones_without_running_docker(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id, clone = _settled_claim_with_clones(store, tmp_path)
-    run = store.reserve_run(claim_id, "fix", reason="initial", evidence_path=str(tmp_path / "a"))
+    run = store.reserve_run(
+        claim_id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
+    )
     private = tmp_path / "private"
     copy = private / run.id / "fix.env"
     copy.parent.mkdir(parents=True)
@@ -190,7 +196,9 @@ def _cancelled_claim_with_clone_and_token(
     clone.mkdir()
     (clone / "marker.txt").write_text("hi")
     store.set_preparation(claim.id, {"clones": {"target": str(clone)}})
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "a"))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "a")
+    )
     private = tmp_path / "private" / run.id
     private.mkdir(parents=True)
     (private / "fix.env").write_text("GH_TOKEN=secret\n")

@@ -92,7 +92,7 @@ def _settled_claim_with_pr(
     store: ClaimStore, *, pr_number: int = 214, repository: str = "example/work"
 ) -> str:
     claim = store.create_claim(ClaimDraft(repository, 212, "I212", "P212", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev")
     url = f"https://github.com/example/work/pull/{pr_number}"
     store.finish_run(
         run.id,
@@ -271,7 +271,7 @@ def _handler(tmp_path: Path) -> tuple[PullRequestHandler, ClaimStore]:
 
 
 def _finished_run(store: ClaimStore, claim_id: str, result: dict[str, object]) -> Run:
-    run = store.reserve_run(claim_id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(claim_id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev")
     store.finish_run(run.id, execution_status="completed", result=result)
     finished = store.get_run(run.id)
     assert finished is not None

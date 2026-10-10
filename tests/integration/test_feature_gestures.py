@@ -225,7 +225,9 @@ def test_int006_definition_stop_reports_questions_direction_and_branch(tmp_path:
         LocalConfig.from_toml(_LOCAL_BASE),
     )
     feature.attach_store(store)
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -263,7 +265,9 @@ def test_archive_stop_blocks_claim_without_recovery_and_posts_explanation(tmp_pa
         LocalConfig.from_toml(_LOCAL_BASE),
     )
     feature.attach_store(store)
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     explanation = "Main spec contains a stray delta header outside the change directory."
     store.finish_run(
         run.id,
@@ -294,7 +298,9 @@ def test_int006_preflight_stop_reports_fresh_next_attempt(tmp_path: Path) -> Non
         LocalConfig.from_toml(_LOCAL_BASE),
     )
     feature.attach_store(store)
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -381,7 +387,9 @@ def test_int006_feature_review_completion_preserves_acceptance_context(tmp_path:
         LocalConfig.from_toml(_LOCAL_BASE),
     )
     feature.attach_store(store)
-    run = store.reserve_run(claim.id, "feature", reason="review", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="review", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -421,7 +429,9 @@ def test_int006_failed_feature_review_links_the_open_pr(tmp_path: Path) -> None:
         LocalConfig.from_toml(_LOCAL_BASE),
     )
     feature.attach_store(store)
-    run = store.reserve_run(claim.id, "feature", reason="review", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="review", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -460,7 +470,7 @@ def test_int006_archive_recovery_copies_report_and_announces_resume(
     )
     feature.attach_store(store)
     run = store.reserve_run(
-        claim.id, "feature", reason="recovery", evidence_path=str(tmp_path / "evidence")
+        claim.id, "feature", lane="low", reason="recovery", evidence_path=str(tmp_path / "evidence")
     )
     prior = tmp_path / "prior" / "agent-runner-session" / "output"
     prior.mkdir(parents=True)
@@ -523,7 +533,7 @@ def test_int006_missing_prior_branch_reports_fresh_fallback(
     )
     feature.attach_store(store)
     run = store.reserve_run(
-        claim.id, "feature", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
 
     def credential(*_args: object) -> Path:
@@ -574,7 +584,7 @@ def test_int006_review_needs_input_waits_for_pr_feedback(tmp_path: Path) -> None
     current = store.get_claim(claim.id)
     assert current is not None
     comment = IssueComment("1", "answer", "writer", "2099-01-01T00:00:00Z")
-    assert feature.gesture(current, _card("Ready"), [comment]) is None
+    assert feature.gesture(current, _card("Ready"), [comment]) == "fresh"
 
 
 def test_int006_blocked_reconciliation_failure_is_visible_and_retried(tmp_path: Path) -> None:
@@ -615,10 +625,10 @@ def test_int006_blocked_reconciliation_failure_is_visible_and_retried(tmp_path: 
         "artifact_root": tmp_path,
         "now": datetime(2026, 1, 2, tzinfo=UTC),
     }
-    assert process_blocked_claim(*arguments, **options) is None  # type: ignore[arg-type]
+    assert process_blocked_claim(*arguments, lane="low", **options) is None  # type: ignore[arg-type]
     assert "readiness: ambiguous feature pull requests" in status(store)
     feature.broken = False
-    assert process_blocked_claim(*arguments, **options) is not None  # type: ignore[arg-type]
+    assert process_blocked_claim(*arguments, lane="low", **options) is not None  # type: ignore[arg-type]
     assert "readiness: ambiguous feature pull requests" not in status(store)
 
 
@@ -648,7 +658,9 @@ def test_int006_prepare_uses_own_branch_or_lets_workflow_record_missing_branch(
             },
         )
     )
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(run.id, execution_status="failed", result=result)
 
     class Workspace(PullRequestWorkspace):
@@ -755,7 +767,9 @@ def test_int006_interrupted_first_attempt_resumes_from_its_pushed_checkpoint(
     mirror.parent.mkdir(parents=True)
     _git("clone", "--mirror", str(remote), str(mirror))
     store.set_preparation(claim.id, {"branch_name": branch, "continuation_head": ""})
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="interrupted",
@@ -868,7 +882,9 @@ def test_int006_interrupted_continuation_resumes_from_its_inherited_checkpoint(
             "resume": {"branch": branch, "head_sha": head},
         },
     )
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="interrupted",
@@ -940,7 +956,9 @@ def test_int006_failed_claim_continues_prior_planned_branch(
         },
     )
     previous = store.create_claim(draft)
-    run = store.reserve_run(previous.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        previous.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -1063,6 +1081,7 @@ def test_int006_feature_review_admission_names_pr_and_feedback(
         client,  # pyright: ignore[reportArgumentType]
         feature,
         current,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=datetime(2099, 1, 2, tzinfo=UTC),
@@ -1247,7 +1266,11 @@ def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
     prior_head = _git("rev-parse", "HEAD", cwd=work)
     _git("push", "origin", "HEAD", cwd=work)
     previous_run = store.reserve_run(
-        previous.id, "feature", reason="initial", evidence_path=str(tmp_path / "prior-evidence")
+        previous.id,
+        "feature",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "prior-evidence"),
     )
     store.finish_run(
         previous_run.id,
@@ -1274,7 +1297,11 @@ def test_int004_unadvanced_continuation_keeps_prior_branch_after_merge_stop(
         },
     )
     run = store.reserve_run(
-        current.id, "feature", reason="initial", evidence_path=str(tmp_path / "current-evidence")
+        current.id,
+        "feature",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "current-evidence"),
     )
     store.finish_run(
         run.id,

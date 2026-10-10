@@ -42,7 +42,9 @@ def test_classification_table(
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", kind, "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         claim = replace(
             claim, lifecycle=lifecycle, outcome={"waiting_review": {"pr": 1}} if waiting else {}
         )

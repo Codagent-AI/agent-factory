@@ -259,6 +259,7 @@ def test_first_tick_backfills_and_prunes_off_board_history(tmp_path: Path) -> No
         run = store.reserve_run(
             claim.id,
             "rep-1" if kind == "eval" else "fix",
+            lane="low",
             reason="initial",
             evidence_path=str(evidence),
         )
@@ -339,7 +340,9 @@ def test_cli_registry_failure_retries_without_touching_other_tags(tmp_path: Path
     claim = store.create_claim(ClaimDraft("example/evals", 4, "I4", "P4", "eval", "image", {}))
     tag = f"claim-{claim.id[:12]}"
     digest = "sha256:" + "a" * 64
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "ev"))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "ev")
+    )
     store.update_progress(
         run.id, {"image_build": {"repository": "registry.fly.io/app", "tag": tag, "digest": digest}}
     )
@@ -416,7 +419,7 @@ def test_cli_releases_fix_clones_then_reopens_cleanup_for_later_run(tmp_path: Pa
     saved = store.get_claim(claim.id)
     assert saved is not None and saved.cleanup["complete"] is True
     review = store.reserve_run(
-        claim.id, "fix", reason="review", evidence_path=str(tmp_path / "review")
+        claim.id, "fix", lane="low", reason="review", evidence_path=str(tmp_path / "review")
     )
     store.set_claim_lifecycle(claim.id, "active", {})
     assert store.get_claim(claim.id).cleanup["complete"] is False  # type: ignore[union-attr]

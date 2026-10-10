@@ -220,6 +220,7 @@ class PullRequestHandler:
         claim: Claim,
         *,
         bot_login: str,
+        lane: str,
         artifact_root: Path,
         now: datetime,
         memory_available: bool = True,
@@ -235,6 +236,7 @@ class PullRequestHandler:
             card,
             claim,
             bot_login=bot_login,
+            lane=lane,
             artifact_root=artifact_root,
             now=now,
             memory_available=memory_available,
@@ -247,6 +249,7 @@ class PullRequestHandler:
         claim: Claim,
         *,
         bot_login: str,
+        lane: str,
         artifact_root: Path,
         now: datetime,
         local: LocalConfig,
@@ -261,6 +264,7 @@ class PullRequestHandler:
             self,
             claim,
             bot_login=bot_login,
+            lane=lane,
             artifact_root=artifact_root,
             now=now,
             local=local,
@@ -1208,7 +1212,7 @@ class PullRequestHandler:
             return "fresh"
         if claim.lifecycle == "blocked":
             if claim.outcome.get("blocked_by") == "review":
-                return None
+                return "fresh" if card_status(self._shared, card) == "Ready" else None
             if comments or card_status(self._shared, card) == "Ready":
                 return "unblock"
             return None

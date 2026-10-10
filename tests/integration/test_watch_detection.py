@@ -21,7 +21,9 @@ def test_detection_uses_current_grace_and_never_requeues(tmp_path: Path) -> None
         claim = store.create_claim(
             ClaimDraft("Codagent-AI/example", 12, "I", "P", "eval", "fp", {})
         )
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         store.set_setting("consumed-results", run.id, {"complete": True})
         store._connection.execute(
@@ -44,7 +46,9 @@ def _failed_run(store: ClaimStore, finished: datetime, key: str) -> str:
     claim = store.create_claim(
         ClaimDraft("Codagent-AI/example", 13, "I", f"P-{key}", "eval", f"fp-{key}", {})
     )
-    run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        claim.id, key, lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     store.finish_run(run.id, execution_status="failed", result={})
     store.set_setting("consumed-results", run.id, {"complete": True})
     store._connection.execute(
@@ -70,7 +74,9 @@ def _fix_run(
     claim = store.create_claim(
         ClaimDraft("Codagent-AI/example", 15, "I", f"P-{key}", kind, f"fp-{key}", {})
     )
-    run = store.reserve_run(claim.id, key, reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        claim.id, key, lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     store.finish_run(run.id, execution_status=status, result={"outcome": outcome})
     if consumed:
         store.set_setting("consumed-results", run.id, {"complete": True})
@@ -207,7 +213,9 @@ def test_pr_ready_after_cursor_passes_finished_at(tmp_path: Path) -> None:
         now = datetime.now(UTC)
         detect.detect(store, 7, lambda: now - timedelta(minutes=10))
         claim = store.create_claim(ClaimDraft("o/r", 14, "I", "P", "fix", "fp-pr", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/pr"
+        )
         store.finish_run(run.id, execution_status="interrupted", result={})
         finished = now - timedelta(minutes=5)
         store._connection.execute(
@@ -236,7 +244,7 @@ def test_task_pr_ready_and_failure_each_queue_once(tmp_path: Path) -> None:
         detect.detect(store, 0, lambda: now - timedelta(minutes=10))
         ready = store.create_claim(ClaimDraft("o/r", 76, "I76", "P76", "task", "fp-76", {}))
         ready_run = store.reserve_run(
-            ready.id, "task", reason="initial", evidence_path="/tmp/task-pr"
+            ready.id, "task", lane="low", reason="initial", evidence_path="/tmp/task-pr"
         )
         store.finish_run(
             ready_run.id,
@@ -245,7 +253,7 @@ def test_task_pr_ready_and_failure_each_queue_once(tmp_path: Path) -> None:
         )
         failed = store.create_claim(ClaimDraft("o/r", 77, "I77", "P77", "task", "fp-77", {}))
         failed_run = store.reserve_run(
-            failed.id, "task", reason="initial", evidence_path="/tmp/task-fail"
+            failed.id, "task", lane="low", reason="initial", evidence_path="/tmp/task-fail"
         )
         store.finish_run(failed_run.id, execution_status="failed", result={})
         store.set_setting("consumed-results", failed_run.id, {"complete": True})
@@ -316,7 +324,9 @@ def test_claims_and_finished_evals_queue_no_event(tmp_path: Path) -> None:
         claim = store.create_claim(
             ClaimDraft("Codagent-AI/example", 21, "I", "P-eval", "eval", "fp-eval", {})
         )
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/eval")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/eval"
+        )
         store.finish_run(run.id, execution_status="completed", result={})
         store.set_setting("consumed-results", run.id, {"complete": True})
         store._connection.execute(

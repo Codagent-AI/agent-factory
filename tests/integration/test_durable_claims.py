@@ -86,23 +86,29 @@ def test_sqlite_claim_history_retry_budget_and_holds_survive_restart(tmp_path: P
         )
     )
     store = ClaimStore(database)
-    first = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/evidence/1")
+    first = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="/evidence/1"
+    )
     store.finish_run(
         first.id,
         execution_status="completed",
         result={"product_verdict": "ready-for-human-review", "score": 61},
     )
     interrupted = store.reserve_run(
-        claim.id, "rep-2", reason="initial", evidence_path="/evidence/2"
+        claim.id, "rep-2", lane="low", reason="initial", evidence_path="/evidence/2"
     )
     store.finish_run(
         interrupted.id, execution_status="failed", result={"failure": {"owner": "harness"}}
     )
-    retry = store.reserve_run(claim.id, "rep-2", reason="recovery", evidence_path="/evidence/2")
+    retry = store.reserve_run(
+        claim.id, "rep-2", lane="low", reason="recovery", evidence_path="/evidence/2"
+    )
     assert retry.attempt_number == 1
     assert store.recovery_attempts(claim.id, "rep-2") == 1
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(claim.id, "rep-2", reason="initial", evidence_path="/evidence/2")
+        store.reserve_run(
+            claim.id, "rep-2", lane="low", reason="initial", evidence_path="/evidence/2"
+        )
     store.finish_run(retry.id, execution_status="failed", result={"failure": {"owner": "harness"}})
     reset = datetime.now(UTC) + timedelta(hours=5)
     store.set_hold(claim.id, "quota", {"until": reset.isoformat()})

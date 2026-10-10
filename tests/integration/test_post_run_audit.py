@@ -344,7 +344,7 @@ def test_consumed_attempt_with_an_undelivered_audit_is_reported_once(tmp_path: P
         ClaimDraft("example/work", 1, "I1", "P1", "ghost", "fp", {"version": 1})
     )
     run = store.reserve_run(
-        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     evidence = Path(run.evidence_path)
     _source(evidence, (SESSION, "closed"))
@@ -433,7 +433,7 @@ def test_status_lists_recent_undelivered_audits_one_based(
         ClaimDraft("example/work", 7, "I1", "P1", "fix", "fp", {"version": 1})
     )
     run = store.reserve_run(
-        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     store.finish_run(run.id, execution_status="completed", result={})
     evidence = Path(run.evidence_path)
@@ -515,7 +515,9 @@ def test_disabled_settlement_ignores_host_and_eval_evidence(
         ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp", {"version": 1})
     )
     evidence = tmp_path / "evidence"
-    run = store.reserve_run(claim.id, "unit", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "unit", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     if evidence_kind == "eval":
         store.configure_run(run.id, plan={"ownership_hints": {"suite": "and-scene"}}, limits={})
         collected = evidence / ".runtime/agent-runner-projects/p/runs/rep-1" / audit.METRICS_FILE
@@ -550,7 +552,7 @@ def test_disabled_status_omits_missing_audit(
         ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp", {"version": 1})
     )
     run = store.reserve_run(
-        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     _source(Path(run.evidence_path), (SESSION, "closed"))
     store.finish_run(run.id, execution_status="completed", result={})
@@ -615,7 +617,7 @@ def test_audit_event_failure_does_not_stop_result_consumption(
         ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {"version": 1})
     )
     run = store.reserve_run(
-        claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     Path(run.evidence_path).mkdir(parents=True)
     audit.write_summary(Path(run.evidence_path), {"outcome": audit.FAILED, "reason": "x"})

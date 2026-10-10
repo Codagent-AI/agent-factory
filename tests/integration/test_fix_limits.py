@@ -198,7 +198,7 @@ def test_run_records_fix_limits_not_eval_limits(tmp_path: Path) -> None:
     controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
     claim = controller.accept(_snapshot(), resolve=_resolver)
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     limits = handler.limits(local)
     assert (limits.inactivity_seconds, limits.execution_seconds, limits.total_seconds) == (1, 2, 3)
@@ -230,7 +230,7 @@ def test_each_fix_limit_stops_the_attempt_and_names_itself(
     controller = Controller(store, _Comments(), {"fix": handler}, artifact_root=tmp_path / "a")
     claim = controller.accept(_snapshot(), resolve=_resolver)
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     artifact = Path(run.evidence_path) / "attempt-1"
     fix_limits = replace(
@@ -270,7 +270,7 @@ def test_durable_outcome_survives_audit_wait_limits(
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", kind.kind, "x", {}))
     run = store.reserve_run(
-        claim.id, kind.unit_key, reason="initial", evidence_path=str(tmp_path / "a")
+        claim.id, kind.unit_key, lane="low", reason="initial", evidence_path=str(tmp_path / "a")
     )
     artifact = Path(run.evidence_path) / "attempt-1"
     fix_limits = replace(
@@ -320,7 +320,9 @@ def test_eval_result_does_not_exempt_execution_timeout(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "eval", "x", {}))
     artifact = tmp_path / "attempt-1"
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+    )
     watcher = launch_supervisor(
         tmp_path / "state.sqlite3",
         run.id,
@@ -344,7 +346,7 @@ def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path)
     assert claim is not None
 
     def timed_out_attempt() -> Run:
-        run = controller.reserve_next(claim.id, readiness=lambda: None)
+        run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
         assert run is not None
         store.configure_run(run.id, plan={}, limits={})
         store.finish_run(run.id, execution_status="timed_out", result={"timeout": "inactivity"})
@@ -363,7 +365,7 @@ def test_timeouts_consume_the_single_recovery_retry_exactly_once(tmp_path: Path)
     settled = store.get_claim(claim.id)
     assert settled is not None and settled.lifecycle == "settled"
     assert settled.outcome["verdict"] == "infra-error"
-    assert controller.reserve_next(claim.id, readiness=lambda: None) is None
+    assert controller.reserve_next(claim.id, lane="low", readiness=lambda: None) is None
     assert len(store.runs_for_claim(claim.id)) == 2
     store.close()
 

@@ -312,12 +312,12 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
     )
     assert first is not None
     assert _revisions(first)["evals"] == old
-    run = controller.reserve_next(first.id, readiness=lambda: None)
+    run = controller.reserve_next(first.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id, AttemptResult("failed", None, {"failure": {"owner": "harness"}})
     )
-    retry = controller.reserve_next(first.id, readiness=lambda: None)
+    retry = controller.reserve_next(first.id, lane="low", readiness=lambda: None)
     assert retry is not None and retry.reason == "recovery"
     retried_claim = store.get_claim(first.id)
     assert retried_claim is not None

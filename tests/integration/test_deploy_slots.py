@@ -27,6 +27,21 @@ def _holds(predicate: str, status: str) -> bool:
     ("status", "free"),
     [
         (FREE, True),
+        (
+            FREE.replace(
+                "fix slot: free",
+                "fix slot: busy (high, low)\n"
+                "fix lane high: o/r#1 fix (running)\nfix lane low: o/r#2 fix (running)",
+            ),
+            False,
+        ),
+        (
+            FREE.replace(
+                "fix slot: free",
+                "fix slot: busy (all)\nfix lane all (pre-lane attempt): o/r#1 fix (running)",
+            ),
+            False,
+        ),
         (FREE.replace("eval slot: free", "eval slot: example/evals#3 eval (running)"), False),
         (FREE.replace("fix slot: free", "fix slot: example/work#1 fix (running)"), False),
         (FREE + "host attempts: 0\n", True),

@@ -89,6 +89,7 @@ def process_review_claim(
     claim: Claim,
     *,
     bot_login: str,
+    lane: str,
     artifact_root: Path,
     now: datetime,
     local: LocalConfig,
@@ -138,7 +139,7 @@ def process_review_claim(
         return None
     can_start = not (
         store.is_paused()
-        or store.nonterminal_runs(kind=handler.kind)
+        or not store.lane_decision(handler.kind, lane, claim.id, "review").allowed
         or not memory_available
         or not handler.window(local).allows_admission(now)
         or not readiness()
@@ -210,9 +211,11 @@ def process_review_claim(
             claim.id,
             handler.definition.unit_key,
             reason="review",
+            lane=lane,
             evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-review"),
         )
     except (NonterminalRunError, OSError):
+        discard_clones(store, claim, preparation)
         return None
     except JobCapReached as error:
         discard_clones(store, claim, preparation)

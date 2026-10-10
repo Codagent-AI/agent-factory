@@ -70,6 +70,7 @@ def process_blocked_claim(
     claim: Claim,
     *,
     bot_login: str,
+    lane: str,
     artifact_root: Path,
     now: datetime,
     memory_available: bool = True,
@@ -81,13 +82,9 @@ def process_blocked_claim(
     """
     if claim.lifecycle != "blocked" or claim.outcome.get("blocked_by") == "review":
         return None
-    # Cheap SQLite gates first; the paginated comment listing only runs when an
-    # unblock could actually be admitted this cycle.
-    if (
-        store.is_paused()
-        or store.nonterminal_runs(kind=handler.kind)
-        or not handler.window(local).allows_admission(now)
-    ):
+    # Pause, window and quota gates precede input reads. Lane contention still
+    # allows eligible input to reconcile an earlier branch or pull request.
+    if store.is_paused() or not handler.window(local).allows_admission(now):
         return None
     quota = store.get_hold(claim.id, "quota")
     if quota is not None and hold_active(quota, now):
@@ -118,6 +115,26 @@ def process_blocked_claim(
         comments, since=since_value, bot_login=bot_login, permission=_permission
     )
     if handler.gesture(claim, card, eligible) != "unblock":
+        return None
+    decision = store.lane_decision(handler.kind, lane, claim.id, "unblock")
+    if not decision.allowed:
+        if decision.holder is not None:
+            store.set_setting(
+                "lane-wait",
+                f"{claim.repository}:{claim.issue_number}",
+                {
+                    "lane": lane,
+                    "cause": decision.cause,
+                    "holder_run_id": decision.holder.id,
+                },
+            )
+        try:
+            handler.reconcile(claim)
+        except (ReadinessError, WorktreeError) as error:
+            store.set_hold(claim.id, "readiness", {"reason": str(error)})
+            store.record_event(
+                claim.id, f"unblock-readiness:{error}", f"Cannot re-admit yet: {error}"
+            )
         return None
     cap_state = store.job_cap_state(now)
     if cap_state.reached:
@@ -160,6 +177,7 @@ def process_blocked_claim(
             claim.id,
             handler.definition.unit_key,
             reason="unblock",
+            lane=lane,
             evidence_path=str(artifact_root / f"{claim.id}-{handler.definition.unit_key}-unblock"),
         )
     except NonterminalRunError:

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import ProjectConfig
+from agent_factory.lanes import LANES
 from agent_factory.routing import ProjectItem, SourceItem
 
 WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
@@ -60,7 +61,7 @@ class PullRequestInfo:
     branch: str = ""
 
 
-_PRIORITY_ORDER = ("urgent", "high", "medium", "low")
+_PRIORITY_ORDER = LANES
 
 
 @dataclass(frozen=True)

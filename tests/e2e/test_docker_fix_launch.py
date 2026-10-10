@@ -135,6 +135,7 @@ def test_e2e_004_real_docker_fix_launches_are_isolated_per_run(
                 run = store.reserve_run(
                     claim.id,
                     "fix",
+                    lane="low",
                     reason="initial",
                     evidence_path=str(tmp_path / f"evidence-{index}"),
                 )

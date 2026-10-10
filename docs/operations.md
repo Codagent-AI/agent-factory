@@ -195,8 +195,8 @@ resolves and records its own harness commit at admission, independent of what
 `doctor` last reported.
 
 `status` is also read-only. It reports saved pause state, one block per work
-kind (`eval slot: ...` / `fix slot: free`) naming that kind's holder or
-reporting it free, why a kind is waiting (window, pause, per-kind readiness, a
+kind (`eval slot: busy (high, low)` / `fix slot: free`) with lane lines
+naming every holder or reporting the kind free, why a kind is waiting (window, pause, per-kind readiness, a
 provider quota hold naming which kinds it blocks, memory, or disk), blocked fix
 claims with their decline reason, pending merge syncs with their last failure
 reason, unfinished reporting, and cleanup errors. It prints a next permitted
@@ -209,7 +209,7 @@ With `[feature]` configured, `doctor` adds `feature-host`: it checks the feature
 roles, including `crosscheck` CLI authentication, the packaged feature and
 define workflows, the installed Runner's `core/verify-change`, the shared fix
 credential, and the feature disk floor. A target without `openspec/` is listed
-as informational. `status` always shows `feature slot: free` or its holder,
+as informational. `status` always shows `feature slot: free` or a busy summary with lane holders,
 and lists feature claims even if `[feature]` is later removed. Removing that
 section stops new handoffs and admissions while existing claims continue to
 be reported, synced, cleaned up, and pruned.
@@ -614,3 +614,38 @@ The optional shared `[notify]` section has `enabled = false` by default and requ
 `doctor` adds a `notify` group when enabled. It checks `claude`, `ps`, Claude authentication and needed CLI flags, and the readable `~/.claude/sessions` registry; an empty registry is informational. `status` shows enabled state, running sessions, today's launch count and known cost, and the last 24 hours' visible outcomes (`sent`, `no-session`, `failed`, or `budget-exhausted`). `unmarked` stops are stored but hidden. A failed readiness check blocks only notifier launch, and the stop records `failed`.
 
 Delivery depends on Claude Code's local, undocumented `~/.claude/sessions/<pid>.json` layout and cross-session messaging. The registry's adjacent `.key` files are never read. An ended, renamed-and-reused, or unresolvable session can receive nothing; the seconds-long name reuse race remains even though the sender resolves twice and confirms one matching name through `ListAgents`. A receiver in another permission mode may hold the message. The notifier uses the Claude CLI directly with only `ListAgents` and `SendMessage`, a minimal environment, and no GitHub token. Its result reflects the sender's `SendMessage` call, not whether the recipient consumed a held message.
+
+## Priority lanes
+
+Priority lanes allow one unfinished attempt per kind at each level: Urgent, High,
+Medium, and Low. Unset or unknown Priority uses Low for occupancy, but sorts after
+explicit Low. Higher-priority starts can run beside lower work; new lower work
+waits while a higher lane of the same kind is busy. Running attempts are never
+preempted or moved when Priority changes. The next attempt uses the card's current
+Priority. Repetitions and retries of a claim that actually started in its current
+episode are continuations and need only their own lane. Admissions, fresh claims,
+unblocks, and review rounds are new starts. A claim that never launched is also a
+new start.
+
+Status keeps `<kind> slot: free` for idle kinds, or prints
+`<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
+and progress line per attempt. Lane wait lines name the requested lane, the
+blocking holder, and the cause (busy lane, higher lane, legacy holder, or kind
+mode). Pre-upgrade attempts have no lane and hold every lane of their kind until
+they finish. `lanes: off` means the per-kind guard is restored. Only resident
+startup or `agent-factory --config <local.toml> lanes enable` enables lanes;
+`tick`, `doctor`, and `status` never change mode.
+
+Size host disk and memory for up to four concurrent attempts **per host kind**
+(fix, feature, task), including each attempt's clones, artifacts, model clients,
+and build tools. The existing disk floor, memory, quota, readiness, and job-cap
+holds still bound admission; memory is re-sampled before each sandbox admission.
+Concurrent eval lanes can increase Fly image builds, Machines, and spend.
+
+Rollback past lanes goes through `scripts/deploy.sh`. It refuses while any kind
+has more than one unfinished attempt. Pause, let attempts settle or cancel claims
+until every kind has at most one unfinished attempt, then deploy the older
+release. The script restores the per-kind index after pausing. Failure before the
+old resident's removal is confirmed restores the live pointers and re-enables
+lanes; failure after removal keeps the per-kind guard. A hand rollback, or an
+older deploy script, bypasses both the refusal and guard restoration.

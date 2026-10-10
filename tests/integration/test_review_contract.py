@@ -554,7 +554,7 @@ def test_int008_review_payload_uses_current_base_only_for_features(
 
     monkeypatch.setattr(launch, "build_host_plan", host_plan)
     run = store.reserve_run(
-        claim.id, kind, reason="review", evidence_path=str(tmp_path / "evidence")
+        claim.id, kind, lane="low", reason="review", evidence_path=str(tmp_path / "evidence")
     )
     work_kind.plan(claim, run, prepared)
     evidence = Path(run.evidence_path) / "attempt-1"

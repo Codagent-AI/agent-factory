@@ -85,7 +85,9 @@ def test_continuation_closes_prior_draft_pr_once_and_preserves_handoff(
                 raise GitHubApiError("close failed")
 
     handler.attach_github(GitHub())  # type: ignore[arg-type]
-    run = store.reserve_run(claim.id, "feature", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -143,7 +145,9 @@ def test_new_feature_or_review_round_does_not_close_any_pr(
             raise AssertionError("prior branches should not be queried")
 
     handler.attach_github(GitHub())  # type: ignore[arg-type]
-    run = store.reserve_run(claim.id, "feature", reason=reason, evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "feature", lane="low", reason=reason, evidence_path=str(tmp_path)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",

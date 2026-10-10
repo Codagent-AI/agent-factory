@@ -1,4 +1,4 @@
-- [ ] Run one issue per Priority level in each work kind's lane, end to end
+- [x] Run one issue per Priority level in each work kind's lane, end to end
 
 ## Task: Priority lanes per work kind (#143)
 
@@ -151,3 +151,16 @@ only. Automated tests must not call GitHub, Fly, Docker, or any model.
 - `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and `uv build` pass, and
   `agent-validate run` passes.
 - No changes are made outside this repository, and `config/codagent.toml` gains no pins.
+
+
+## Implementation validation
+
+- Implemented INT-001 through INT-006 and E2E-001, including all 20 rounds of the
+  cross-process reservation scenarios.
+- Final full-suite run: `uv run pytest -q -n 4` — 1,620 passed; the existing host-fix
+  journey hit its 30-second CLI timeout. Its isolated retry passed (1 passed), so all
+  1,621 tests have passed on the final implementation. Earlier full runs also exposed
+  CLI timing failures under parallel load; no assertions were removed.
+- `uv run ruff format --check .`, `uv run ruff check .`, `uv run pyright`, and
+  `uv build` passed.
+- Agent Validator was not run, as explicitly required for this workflow step.

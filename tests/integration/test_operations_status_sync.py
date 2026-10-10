@@ -12,7 +12,7 @@ from agent_factory.store import ClaimDraft, ClaimStore
 
 def _settled_claim_with_pr(store: ClaimStore) -> str:
     claim = store.create_claim(ClaimDraft("example/work", 212, "I212", "P212", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev")
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -64,11 +64,12 @@ def test_status_omits_sync_for_a_settled_claim_without_a_pr(tmp_path: Path) -> N
 def test_status_shows_eval_slot_holder_and_fix_slot_free(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/evals", 7, "I7", "P7", "eval", "fp", {}))
-    store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/tmp/ev")
+    store.reserve_run(claim.id, "rep-1", lane="low", reason="initial", evidence_path="/tmp/ev")
 
     text = status(store)
 
-    assert "eval slot: example/evals#7 rep-1 (reserved)" in text
+    assert "eval slot: busy (low)" in text
+    assert "eval lane low: example/evals#7 rep-1 (reserved)" in text
     assert "fix slot: free" in text
     assert "host attempts: 0" in text
 
@@ -103,15 +104,17 @@ execution = "docker"
     )
     store = ClaimStore(state)
     fix = store.create_claim(ClaimDraft("example/work", 8, "I8", "P8", "fix", "fp", {}))
-    host = store.reserve_run(fix.id, "fix", reason="initial", evidence_path="/tmp/host")
+    host = store.reserve_run(fix.id, "fix", lane="low", reason="initial", evidence_path="/tmp/host")
     store.configure_run(host.id, plan={"ownership_hints": {"backend": "host"}}, limits={})
     store.mark_running(host.id, {})
     feature = store.create_claim(ClaimDraft("example/work", 9, "I9", "P9", "feature", "fp", {}))
     pending = store.reserve_run(
-        feature.id, "feature", reason="initial", evidence_path="/tmp/pending"
+        feature.id, "feature", lane="low", reason="initial", evidence_path="/tmp/pending"
     )
     eval_claim = store.create_claim(ClaimDraft("example/evals", 10, "I10", "P10", "eval", "fp", {}))
-    fly = store.reserve_run(eval_claim.id, "rep-1", reason="initial", evidence_path="/tmp/eval")
+    fly = store.reserve_run(
+        eval_claim.id, "rep-1", lane="low", reason="initial", evidence_path="/tmp/eval"
+    )
     store.configure_run(fly.id, plan={"ownership_hints": {"backend": "fly"}}, limits={})
     store.mark_running(fly.id, {})
     store.close()
@@ -127,16 +130,16 @@ execution = "docker"
     ]
     first = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     assert "host attempts: 2" in first
-    assert "eval slot: example/evals#10 rep-1 (running)" in first
-    assert "fix slot: example/work#8 fix (running)" in first
-    assert "feature slot: example/work#9 feature (reserved)" in first
+    assert "eval lane low: example/evals#10 rep-1 (running)" in first
+    assert "fix lane low: example/work#8 fix (running)" in first
+    assert "feature lane low: example/work#9 feature (reserved)" in first
     store = ClaimStore(state)
     store.finish_run(host.id, execution_status="completed", result={})
     store.finish_run(pending.id, execution_status="completed", result={})
     store.close()
     second = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     assert "host attempts: 0" in second
-    assert "eval slot: example/evals#10 rep-1 (running)" in second
+    assert "eval lane low: example/evals#10 rep-1 (running)" in second
     assert "fix slot: free" in second
     assert "feature slot: free" in second
 
@@ -144,7 +147,7 @@ execution = "docker"
 def test_status_shows_blocked_fix_claim_with_decline_reason(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 5, "I5", "P5", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev")
     store.finish_run(run.id, execution_status="completed", result={"outcome": "needs-input"})
     store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()})
     store.record_event(claim.id, f"{run.id}:needs-input", "Needs input.\n\n- reproduction missing")
@@ -160,11 +163,15 @@ def test_status_shows_the_most_recent_decline_reason_after_multiple_declines(
 ) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 5, "I5", "P5", "fix", "fp", {}))
-    first_run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    first_run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
+    )
     store.finish_run(first_run.id, execution_status="completed", result={"outcome": "needs-input"})
     store.record_event(claim.id, f"{first_run.id}:needs-input", "Needs input.\n\n- first decline")
     store.set_claim_lifecycle(claim.id, "active", {})
-    second_run = store.reserve_run(claim.id, "fix", reason="unblock", evidence_path="/tmp/ev2")
+    second_run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="unblock", evidence_path="/tmp/ev2"
+    )
     store.finish_run(second_run.id, execution_status="completed", result={"outcome": "needs-input"})
     store.record_event(claim.id, f"{second_run.id}:needs-input", "Needs input.\n\n- second decline")
     store.set_claim_lifecycle(claim.id, "blocked", {"declined_at": datetime.now(UTC).isoformat()})
@@ -274,17 +281,21 @@ def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_res
     store = ClaimStore(tmp_path / "state.sqlite3")
 
     running = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp1", {}))
-    store.reserve_run(running.id, "rep-1", reason="initial", evidence_path="/tmp/ev")
+    store.reserve_run(running.id, "rep-1", lane="low", reason="initial", evidence_path="/tmp/ev")
 
     blocked = store.create_claim(ClaimDraft("example/work", 2, "I2", "P2", "fix", "fp2", {}))
-    run = store.reserve_run(blocked.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(
+        blocked.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
+    )
     store.finish_run(run.id, execution_status="completed", result={"outcome": "needs-input"})
     store.set_claim_lifecycle(blocked.id, "blocked", {})
 
     review_incomplete = store.create_claim(
         ClaimDraft("example/work", 3, "I3", "P3", "fix", "fp3", {})
     )
-    run = store.reserve_run(review_incomplete.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(
+        review_incomplete.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
+    )
     store.finish_run(run.id, execution_status="completed", result={})
     store.set_claim_lifecycle(review_incomplete.id, "settled", {"verdict": "pending-human-review"})
     store.set_cleanup(review_incomplete.id, {"review_observed": True, "complete": False})
@@ -293,7 +304,7 @@ def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_res
         ClaimDraft("example/work", 4, "I4", "P4", "fix", "fp4", {})
     )
     run = store.reserve_run(
-        done_pending_report.id, "fix", reason="initial", evidence_path="/tmp/ev"
+        done_pending_report.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
     )
     store.finish_run(run.id, execution_status="completed", result={})
     store.set_claim_lifecycle(done_pending_report.id, "settled", {"verdict": "failed"})
@@ -303,7 +314,9 @@ def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_res
     done_pending_sync = store.create_claim(
         ClaimDraft("example/work", 5, "I5", "P5", "fix", "fp5", {})
     )
-    run = store.reserve_run(done_pending_sync.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(
+        done_pending_sync.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -313,7 +326,9 @@ def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_res
     store.set_cleanup(done_pending_sync.id, {"review_observed": True, "complete": True})
 
     fully_settled = store.create_claim(ClaimDraft("example/work", 6, "I6", "P6", "fix", "fp6", {}))
-    run = store.reserve_run(fully_settled.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(
+        fully_settled.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
+    )
     store.finish_run(run.id, execution_status="completed", result={})
     store.set_claim_lifecycle(fully_settled.id, "settled", {"verdict": "failed"})
     store.set_cleanup(fully_settled.id, {"review_observed": True, "complete": True})
@@ -322,13 +337,15 @@ def test_status_hides_settled_and_superseded_claims_by_default_and_shows_the_res
         ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp7", {})
     )
     run = store.reserve_run(
-        superseded_original.id, "fix", reason="initial", evidence_path="/tmp/ev"
+        superseded_original.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev"
     )
     store.finish_run(run.id, execution_status="completed", result={})
     replacement = store.supersede_and_create(
         superseded_original.id, ClaimDraft("example/work", 7, "I7", "P7", "fix", "fp7b", {})
     )
-    run = store.reserve_run(replacement.id, "fix", reason="initial", evidence_path="/tmp/ev2")
+    run = store.reserve_run(
+        replacement.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev2"
+    )
     store.finish_run(run.id, execution_status="completed", result={})
     store.set_claim_lifecycle(replacement.id, "settled", {"verdict": "failed"})
     store.set_cleanup(replacement.id, {"review_observed": True, "complete": True})
@@ -373,7 +390,7 @@ def test_status_shows_quota_hold_does_not_block_fix_when_fix_uses_another_provid
 def test_status_shows_a_cancelled_claim_whose_release_failed(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 8, "I8", "P8", "fix", "fp8", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/ev")
+    run = store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/ev")
     store.finish_run(run.id, execution_status="cancelled", result={})
     store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
     store.set_cleanup(claim.id, {"complete": False, "last_error": {"clone": "busy"}})

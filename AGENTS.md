@@ -209,3 +209,38 @@ To take an issue from handoff to a reviewed PR (assign, watch, answer
 ## Session notifications
 
 `codagent-github-project` records the creating Claude session on an issue; `factory-assign` replaces that marker at handoff. One session is tracked per issue. When a claim stops with a pull request, needs-input, failure, settled eval, cancellation, or a card that is no longer queued, the resident waits for the settle period and any service watcher dispatch, then sends a short, link-only notice to the recorded live local session. It never changes the claim or issue. Delivery is best effort: ended or unresolvable sessions receive nothing, a renamed-and-reused session name has a small race, and another permission mode may hold a message. See `docs/operations.md` for `[notify]` settings, `doctor`, and `status`.
+
+## Priority lanes
+
+Priority lanes allow one unfinished attempt per kind at each level: Urgent, High,
+Medium, and Low. Unset or unknown Priority uses Low for occupancy, but sorts after
+explicit Low. Higher-priority starts can run beside lower work; new lower work
+waits while a higher lane of the same kind is busy. Running attempts are never
+preempted or moved when Priority changes. The next attempt uses the card's current
+Priority. Repetitions and retries of a claim that actually started in its current
+episode are continuations and need only their own lane. Admissions, fresh claims,
+unblocks, and review rounds are new starts. A claim that never launched is also a
+new start.
+
+Status keeps `<kind> slot: free` for idle kinds, or prints
+`<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
+and progress line per attempt. Lane wait lines name the requested lane, the
+blocking holder, and the cause (busy lane, higher lane, legacy holder, or kind
+mode). Pre-upgrade attempts have no lane and hold every lane of their kind until
+they finish. `lanes: off` means the per-kind guard is restored. Only resident
+startup or `agent-factory --config <local.toml> lanes enable` enables lanes;
+`tick`, `doctor`, and `status` never change mode.
+
+Size host disk and memory for up to four concurrent attempts **per host kind**
+(fix, feature, task), including each attempt's clones, artifacts, model clients,
+and build tools. The existing disk floor, memory, quota, readiness, and job-cap
+holds still bound admission; memory is re-sampled before each sandbox admission.
+Concurrent eval lanes can increase Fly image builds, Machines, and spend.
+
+Rollback past lanes goes through `scripts/deploy.sh`. It refuses while any kind
+has more than one unfinished attempt. Pause, let attempts settle or cancel claims
+until every kind has at most one unfinished attempt, then deploy the older
+release. The script restores the per-kind index after pausing. Failure before the
+old resident's removal is confirmed restores the live pointers and re-enables
+lanes; failure after removal keeps the per-kind guard. A hand rollback, or an
+older deploy script, bypasses both the refusal and guard restoration.

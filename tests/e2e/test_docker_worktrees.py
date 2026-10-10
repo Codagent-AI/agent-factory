@@ -188,7 +188,9 @@ def _check_background_container_supervision(artifact: Path, tmp_path: Path) -> N
     state = tmp_path / "supervision.sqlite3"
     with closing(ClaimStore(state)) as store:
         claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
-        run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+        run = store.reserve_run(
+            claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+        )
         plan = ExecutionPlan(
             (sys.executable, "-c", "import time; time.sleep(1)"),
             str(tmp_path),
