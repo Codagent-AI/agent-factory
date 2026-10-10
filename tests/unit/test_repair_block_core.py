@@ -32,18 +32,18 @@ def test_causal_nested_block(path: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "tail",
+    "tail,expected",
     [
-        event(PATH, "step_start"),
-        event(PATH, "step_end", outcome="success"),
-        event(PATH, "repair_blocked", response="REPAIR_BLOCKED"),
-        "2026-01-01T00:00:00Z [" + PATH + "] repair_blocked invalid json",
-        event(PATH, "repair_blocked", response=3),
+        (event(PATH, "step_start"), None),
+        (event(PATH, "step_end", outcome="success"), None),
+        (event(PATH, "repair_blocked", response="REPAIR_BLOCKED"), (PATH, "")),
+        ("2026-01-01T00:00:00Z [" + PATH + "] repair_blocked invalid json", None),
+        (event(PATH, "repair_blocked", response=3), None),
     ],
 )
-def test_path_supersession(tail: str) -> None:
+def test_path_supersession(tail: str, expected: tuple[str, str] | None) -> None:
     events = rb.parse_audit((blocked() + tail).splitlines())
-    assert rb.blocked_response(events, PATH, "path") is None
+    assert rb.blocked_response(events, PATH, "path") == expected
 
 
 def test_supersession_scopes() -> None:

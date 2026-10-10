@@ -79,8 +79,8 @@ def blocked_response(events: list[Event], endpoint: str, scope: str) -> tuple[st
         else:
             raise ValueError("unknown supersession scope")
         if event == "repair_blocked":
-            reason = explanation(data.get("response"))
-            candidate = (path, reason) if reason else None
+            response = data.get("response")
+            candidate = (path, explanation(response)) if isinstance(response, str) else None
     return candidate
 
 
@@ -186,26 +186,18 @@ def record(context: str, session_dir: Path, artifact_dir: Path, branch: str) -> 
     if context == "archive":
         block = blocked_response(events, "archive, sub:archive-change", "subtree")
         if not block:
-            # Preserve the archive hook's distinct diagnostics for an empty declaration.
-            raw = None
-            for path, event, data in events:
-                if descendant(path, "archive, sub:archive-change") and event not in (
-                    "step_end",
-                    "sub_workflow_end",
-                ):
-                    raw = data.get("response") if event == "repair_blocked" else None
-            if isinstance(raw, str) and not explanation(raw):
-                raise ValueError("archive repair block has no explanation")
             raise ValueError(
                 "archive step failed without a REPAIR_BLOCKED declaration; see archive entries in "
                 + str(audit)
             )
+        if not block[1]:
+            raise ValueError("archive repair block has no explanation")
         resume = "archive"
         branch_value = branch
     else:
         endpoint = causal_endpoint(events)
         block = blocked_response(events, endpoint, "path") if endpoint else None
-        if not block:
+        if not block or not block[1]:
             return
         resume, prior_head = resume_point(artifact_dir, branch)
         exists = published(branch)
