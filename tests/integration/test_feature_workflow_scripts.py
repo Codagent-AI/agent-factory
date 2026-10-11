@@ -2758,8 +2758,8 @@ class ProposalWorkflow:
         git(self.repo, "commit", "-m", subject)
         return git(self.repo, "rev-parse", "HEAD")
 
-    def annotate(self) -> str:
-        result = subprocess.run(
+    def run_annotation(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
             [
                 str(self.feature_stage / "annotate-pr.sh"),
                 str(self.evidence),
@@ -2772,27 +2772,37 @@ class ProposalWorkflow:
             capture_output=True,
             text=True,
         )
+
+    def annotate(self) -> str:
+        result = self.run_annotation()
         assert result.returncode == 0, result.stderr
         return self.body_path.read_text()
 
-    def describe(self, mode: str) -> str:
+    def run_description(self, payload: dict[str, str]) -> subprocess.CompletedProcess[str]:
         self.stub.write_text(REVIEW_GH_STUB)
-        result = subprocess.run(
+        return subprocess.run(
             [str(self.review_stage / "review-description.sh")],
             cwd=self.repo,
             env=self.env,
             input=json.dumps(
                 {
-                    "mode": mode,
                     "review_file": str(self.review),
                     "artifact_dir": str(self.evidence),
-                    "decision": json.dumps(
-                        {"items": [{"source": "comment", "id": "c1", "decision": "change"}]}
-                    ),
+                    **payload,
                 }
             ),
             capture_output=True,
             text=True,
+        )
+
+    def describe(self, mode: str) -> str:
+        result = self.run_description(
+            {
+                "mode": mode,
+                "decision": json.dumps(
+                    {"items": [{"source": "comment", "id": "c1", "decision": "change"}]}
+                ),
+            }
         )
         assert result.returncode == 0, result.stderr
         assert not (self.evidence / "description-restore-failed").exists()
@@ -3051,19 +3061,7 @@ def test_annotation_fit_failure_publishes_unshortened_body(tmp_path: Path) -> No
     helper = flow.feature_stage / "pr_description.py"
     with helper.open("a") as target:
         target.write('\ndef fit(body: str) -> str:\n    raise RuntimeError("fit unavailable")\n')
-    result = subprocess.run(
-        [
-            str(flow.feature_stage / "annotate-pr.sh"),
-            str(flow.evidence),
-            str(flow.issue),
-            "change",
-            str(flow.archive.relative_to(flow.repo)),
-        ],
-        cwd=flow.repo,
-        env=flow.env,
-        capture_output=True,
-        text=True,
-    )
+    result = flow.run_annotation()
     assert result.returncode == 0, result.stderr
     assert "could not fit the proposal in the description: fit unavailable" in result.stderr
     assert flow.body_path.read_text() == expected
@@ -3078,17 +3076,7 @@ def test_review_fit_failure_still_publishes_round_and_marked_commits(tmp_path: P
     helper = flow.review_stage / "pr_description.py"
     with helper.open("a") as target:
         target.write('\ndef fit(body: str) -> str:\n    raise RuntimeError("fit unavailable")\n')
-    # Record stderr without changing the staged restore harness or GitHub stub.
-    result = subprocess.run(
-        [str(flow.review_stage / "review-description.sh")],
-        cwd=flow.repo,
-        env=flow.env,
-        input=json.dumps(
-            {"mode": "restore", "review_file": str(flow.review), "artifact_dir": str(flow.evidence)}
-        ),
-        capture_output=True,
-        text=True,
-    )
+    result = flow.run_description({"mode": "restore"})
     assert result.returncode == 0, result.stderr
     assert "could not fit the proposal in the description: fit unavailable" in result.stderr
     restored = flow.body_path.read_text()
