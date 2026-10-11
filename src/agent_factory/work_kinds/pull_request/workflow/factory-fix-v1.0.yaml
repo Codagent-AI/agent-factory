@@ -113,6 +113,10 @@ steps:
     command: printf 'failed'
     capture: implement_status
 
+  - id: seed-skipped-implement-completed
+    command: printf 'failed'
+    capture: implement_completed
+
   - id: implement
     skip_if: 'sh: test {{fixable}} != true'
     continue_on_failure: true
@@ -120,6 +124,10 @@ steps:
       - id: seed-implement-status
         command: printf 'failed'
         capture: implement_status
+
+      - id: seed-implement-completed
+        command: printf 'failed'
+        capture: implement_completed
 
       - id: seed-validator-status
         command: printf 'failed'
@@ -355,12 +363,17 @@ steps:
           printf '%s\n\n%s\n' "$header" "$body" \
             | gh api -X PATCH "repos/{owner}/{repo}/pulls/$number" -F body=@- >/dev/null
 
+      - id: mark-implement-completed
+        command: printf 'passed'
+        capture: implement_completed
+
   - id: record-outcome
     script: record-outcome.sh
     skip_if: 'sh: test {{fixable}} != true || test "{{implement_status}}" != passed'
     script_inputs:
       contract: factory-fix/1
       outcome_path: "{{artifact_dir}}/fix-outcome.json"
+      implement_completed: "{{implement_completed}}"
       validator_status: "{{validator_status}}"
       ci_status: "{{ci_status}}"
       branch_name: "{{branch_name}}"
