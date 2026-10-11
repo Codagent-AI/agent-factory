@@ -78,6 +78,7 @@ def test_feature_files_are_listed_and_exist() -> None:
         "record-stop.sh",
         "record-archive-block.sh",
         "annotate-pr.sh",
+        "pr_description.py",
     ):
         assert name in FEATURE_STAGED_FILES
         assert (PACKAGE / name).is_file()
@@ -2118,9 +2119,13 @@ def test_feature_outcome_qualifies_validator_status(
     )
 
 
-def test_task_compliance_record_rejects_non_object_json(tmp_path: Path) -> None:
+def test_task_compliance_record_rejects_non_object_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import importlib.util
+    import sys
 
+    monkeypatch.setattr(sys, "path", [str(PACKAGE), *sys.path])
     spec = importlib.util.spec_from_file_location("annotate_pr", str(PACKAGE / "annotate-pr.py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -2667,3 +2672,418 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
     assert outcome["reasons"] == [reason]
     assert outcome["branch"] == "claim"
     assert outcome["validator"] == {"checks": "failed", "status": "failed"}
+
+
+class ProposalWorkflow:
+    """Run staged publication scripts against test-owned git history and GitHub stubs."""
+
+    def __init__(self, root: Path, proposal: str | None) -> None:
+        import os
+
+        from agent_factory.work_kinds.pull_request import launch
+        from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+        self.root = root
+        self.repo, _ = repository(root)
+        git(self.repo, "checkout", "-b", "factory/feature-7")
+        self.archive = self.repo / "openspec/changes/archive/test-change"
+        self.archive.mkdir(parents=True)
+        if proposal is not None:
+            (self.archive / "proposal.md").write_text(proposal)
+        (self.archive / "decisions.md").write_text("Decision: keep the approved scope.\n")
+        (self.repo / "settings.go").write_text("original\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "feature: approved proposal")
+        self.accepted = git(self.repo, "rev-parse", "HEAD")
+        self.later = [
+            self.commit("fix: update settings", "settings.go"),
+            self.commit("fix: cleanup"),
+        ]
+        self.evidence = root / "evidence"
+        self.evidence.mkdir()
+        (self.evidence / "review-attention.json").write_text(
+            json.dumps(
+                {
+                    "red": [{"title": "Unverified criterion", "detail": "no run", "link": ""}],
+                    "orange": [{"title": "Compatibility choice", "detail": "accepted", "link": ""}],
+                    "yellow": [
+                        {"title": "Settings assumption", "detail": "check", "link": "settings.go:1"}
+                    ],
+                    "white": [{"title": "Checks passed", "detail": "test evidence", "link": ""}],
+                    "accepted_head": self.accepted,
+                    "later_commits": [],
+                }
+            )
+        )
+        (self.evidence / "task-compliance.json").write_text(
+            json.dumps(
+                {
+                    "result": "passed",
+                    "base": self.accepted,
+                    "reviewed_head": self.later[-1],
+                    "tasks_sha256": "a" * 64,
+                }
+            )
+        )
+        (self.evidence / "acceptance-assumptions.md").write_text(
+            "Unresolved assumption: host availability."
+        )
+        (self.evidence / "acceptance-flow-evidence.md").write_text("Smoke flow passed.")
+        self.issue = root / "issue.json"
+        self.issue.write_text(
+            json.dumps(
+                {"number": 7, "claim_id": "claim-7", "title": "Add a flag", "repository": "o/r"}
+            )
+        )
+        self.body_path = root / "body.md"
+        self.stub = root / "bin/gh"
+        self.stub.parent.mkdir()
+        self.stub.write_text(GH_STUB)
+        self.stub.chmod(0o755)
+        self.env = {
+            **os.environ,
+            "PATH": f"{self.stub.parent}:{os.environ['PATH']}",
+            "GH_BODY": str(self.body_path),
+        }
+        self.feature_stage = launch.stage_workflow(
+            root / "feature-stage", FEATURE.default_contract, FEATURE
+        )
+        self.review_stage = launch.stage_workflow(root / "review-stage", launch.REVIEW_CONTRACT)
+        self.review = root / "review.json"
+
+    def commit(self, subject: str, name: str = "round.txt") -> str:
+        with (self.repo / name).open("a") as target:
+            target.write(subject + "\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", subject)
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def run_annotation(self) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                str(self.feature_stage / "annotate-pr.sh"),
+                str(self.evidence),
+                str(self.issue),
+                "change",
+                str(self.archive.relative_to(self.repo)),
+            ],
+            cwd=self.repo,
+            env=self.env,
+            capture_output=True,
+            text=True,
+        )
+
+    def annotate(self) -> str:
+        result = self.run_annotation()
+        assert result.returncode == 0, result.stderr
+        return self.body_path.read_text()
+
+    def run_description(self, payload: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        self.stub.write_text(REVIEW_GH_STUB)
+        return subprocess.run(
+            [str(self.review_stage / "review-description.sh")],
+            cwd=self.repo,
+            env=self.env,
+            input=json.dumps(
+                {
+                    "review_file": str(self.review),
+                    "artifact_dir": str(self.evidence),
+                    **payload,
+                }
+            ),
+            capture_output=True,
+            text=True,
+        )
+
+    def describe(self, mode: str) -> str:
+        result = self.run_description(
+            {
+                "mode": mode,
+                "decision": json.dumps(
+                    {"items": [{"source": "comment", "id": "c1", "decision": "change"}]}
+                ),
+            }
+        )
+        assert result.returncode == 0, result.stderr
+        assert not (self.evidence / "description-restore-failed").exists()
+        return self.body_path.read_text()
+
+    def save(self) -> None:
+        self.review.write_text(
+            json.dumps(
+                {
+                    "kind": "feature",
+                    "head_sha": git(self.repo, "rev-parse", "HEAD"),
+                    "pull_request": {"number": 9},
+                }
+            )
+        )
+        (self.evidence / "implement-result.json").write_text('{"validator":{"status":"passed"}}')
+        self.describe("save")
+
+
+def proposal_text(sizes: tuple[int, ...] = (20,) * 6) -> str:
+    names = ("Why", "What Changes", "Capabilities", "Technical Approach", "Out of Scope", "Impact")
+    return "\n".join(
+        f"## {name}\n{name}: " + "x" * size for name, size in zip(names, sizes, strict=True)
+    )
+
+
+def inline_region(body: str) -> str:
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    lines = body.splitlines()
+    found = pr.region(lines)
+    assert found is not None
+    return "\n".join(lines[found[0] : found[1] + 1])
+
+
+def report_without_proposal(body: str) -> str:
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    lines = body.splitlines()
+    found = pr.region(lines)
+    assert found is not None
+    return "\n".join(lines[: found[0]] + lines[found[1] + 1 :])
+
+
+def test_annotation_inlines_expanded_proposal_and_preserves_report(tmp_path: Path) -> None:
+    """INT-001, INT-006: the actual feature staging imports and publishes the helper."""
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    proposal = proposal_text().replace(
+        "Capabilities: ", "```markdown\n## fenced heading\n```\nCapabilities: "
+    )
+    flow = ProposalWorkflow(tmp_path, proposal)
+    body = flow.annotate()
+    expected = "\n".join(
+        pr.render(
+            proposal,
+            "https://github.com/o/r/blob/factory/feature-7/openspec/changes/archive/test-change/proposal.md",
+        )
+    )
+    assert inline_region(body) == expected
+    assert body.startswith("**Feature for #7:** Add a flag")
+    assert body.count("Closes #7") == 1
+    assert "<!-- agent-factory:claim:claim-7 -->" in body
+    positions = [
+        body.index(value)
+        for value in (
+            "# Review first",
+            "Closes #7",
+            "## Change summary",
+            "[Test plan]",
+            "<!-- agent-factory:proposal:start ",
+            "<details>",
+        )
+    ]
+    assert positions == sorted(positions)
+    assert "<details>" not in body[: body.index(expected)]
+    assert "## Change summary" not in expected
+    assert "## fenced heading" in expected
+    for value in (
+        "[Proposal]",
+        "[Specifications]",
+        "[Design]",
+        "[Test plan]",
+        "Unverified criterion",
+        "Compatibility choice",
+        "Settings assumption",
+        "Decision: keep",
+        "Unresolved assumption",
+        "Smoke flow passed",
+        "Checks passed",
+        f"Acceptance ran against `{flow.accepted}`.",
+    ):
+        assert value in body
+    assert (flow.feature_stage / "pr_description.py").is_file()
+    assert (flow.review_stage / "pr_description.py").is_file()
+
+
+def test_quoted_proposal_report_and_markers_survive_annotation_and_review(tmp_path: Path) -> None:
+    """INT-002: marker quotes never select or alter proposal report examples."""
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    quotes = "\n".join(
+        [
+            "<!-- agent-factory:proposal:start proposal.md -->",
+            "<!-- agent-factory:proposal-section -->",
+            "<!-- agent-factory:proposal:end -->",
+            pr.START.format(token="a" * 12, href="proposal.md"),
+            pr.SECTION.format(token="a" * 12),
+            pr.END.format(token="a" * 12),
+            "Acceptance ran against `abcdef012345`.",
+            "Later commits: `quoted`",
+            "### 🟡 Yellow (1)",
+            "- [Commits after acceptance](settings.go): quoted example",
+        ]
+    )
+    proposal = f"## Why\n{quotes}\n```markdown\n{quotes}\n```\n## Impact\nend"
+    flow = ProposalWorkflow(tmp_path, proposal)
+    first = flow.annotate()
+    region = inline_region(first)
+    assert quotes in region
+    assert quotes.replace("### 🟡 Yellow", "#### 🟡 Yellow") in region
+    flow.save()
+    added = flow.commit("fix: round changes settings", "settings.go")
+    (flow.archive / "proposal.md").write_text("## Why\nRound changed this proposal.")
+    restored = flow.describe("restore")
+    assert inline_region(restored) == region
+    report = report_without_proposal(restored)
+    assert f"Acceptance ran against `{flow.accepted}`." in report
+    later = next(line for line in report.splitlines() if line.startswith("Later commits:"))
+    orange = next(
+        line for line in report.splitlines() if line.startswith("- [Commits after acceptance]")
+    )
+    for sha in [*flow.later, added]:
+        assert sha in later and sha[:12] in orange
+    yellow = next(
+        line for line in report.splitlines() if line.startswith("- [Settings assumption]")
+    )
+    assert "may be fixed by" in yellow
+    assert f"`{added[:7]}`" in yellow
+    assert f"`{flow.later[0][:7]}`" in yellow
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+
+
+@pytest.mark.parametrize(
+    "sizes,omitted",
+    [
+        ((20,) * 6, []),
+        ((5000, 5000, 5000, 45000, 5000, 30000), ["Technical Approach", "Impact"]),
+        (
+            (20000, 20000, 20000, 20000, 25000, 20000),
+            ["Capabilities", "Technical Approach", "Out of Scope", "Impact"],
+        ),
+        (
+            (70000,) * 6,
+            ["Why", "What Changes", "Capabilities", "Technical Approach", "Out of Scope", "Impact"],
+        ),
+    ],
+)
+def test_annotation_fits_whole_proposal_sections_only(
+    tmp_path: Path, sizes: tuple[int, ...], omitted: list[str]
+) -> None:
+    """INT-003: full, partial, key-only, and notice-only publication budgets."""
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    proposal = proposal_text(sizes)
+    # Include marker forms in both retained and omitted sections.
+    quoted = pr.END.format(token="a" * 12) + "\n" + pr.SECTION.format(token="a" * 12)
+    proposal = proposal.replace("Why: ", quoted + "\nWhy: ").replace(
+        "Impact: ", quoted + "\nImpact: "
+    )
+    flow = ProposalWorkflow(tmp_path, proposal)
+    body = flow.annotate()
+    assert pr.measure(body) <= pr.LIMIT
+    region = inline_region(body)
+    if len(omitted) == 6:
+        assert "_The proposal was omitted for length." in region
+    elif omitted:
+        assert f"_Omitted for length: {', '.join(omitted)}." in region
+    else:
+        assert "Omitted for length" not in region
+    for name, size in zip(
+        ("Why", "What Changes", "Capabilities", "Technical Approach", "Out of Scope", "Impact"),
+        sizes,
+        strict=True,
+    ):
+        assert (f"{name}: " + "x" * size in region) == (name not in omitted)
+    if "Why" not in omitted:
+        assert quoted in region
+    before = report_without_proposal(body)
+    # A re-annotation with a small proposal produces exactly the same report.
+    (flow.archive / "proposal.md").write_text(proposal_text())
+    after = report_without_proposal(flow.annotate())
+    assert before == after
+
+
+@pytest.mark.parametrize("near_limit", [False, True])
+def test_review_round_fits_final_marked_body_from_staged_scripts(
+    tmp_path: Path, near_limit: bool
+) -> None:
+    """INT-004, INT-006: fit runs after round insertion and commit marking."""
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    flow = ProposalWorkflow(tmp_path, proposal_text())
+    first = flow.annotate()
+    extra = 0
+    if near_limit:
+        # Grow Why so annotation leaves just 80 bytes for the round.
+        extra = pr.LIMIT - pr.measure(first) - 80
+        (flow.archive / "proposal.md").write_text(proposal_text((20 + extra, 20, 20, 20, 20, 20)))
+        first = flow.annotate()
+        assert "Omitted for length" not in first
+        assert pr.LIMIT - pr.measure(first) == 80
+    flow.save()
+    rounds = [flow.commit(f"fix: review change {i} " + "description " * 12) for i in range(3)]
+    restored = flow.describe("restore")
+    assert pr.measure(restored) <= pr.LIMIT
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+    assert "- comment c1" in restored
+    report = report_without_proposal(restored)
+    for sha in rounds:
+        assert f"- `{sha[:7]}`" in report
+        assert sha in report
+    if near_limit:
+        assert "omitted for length" in inline_region(restored).lower()
+        assert "### Why" not in inline_region(restored) or "x" * (20 + extra) in restored
+    else:
+        assert inline_region(restored) == inline_region(first)
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_missing_or_unreadable_proposal_publishes_links_and_notice(
+    tmp_path: Path, unreadable: bool
+) -> None:
+    """INT-005: missing or invalid UTF-8 proposal is best effort."""
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+
+    flow = ProposalWorkflow(tmp_path, None)
+    if unreadable:
+        (flow.archive / "proposal.md").write_bytes(b"\xff")
+    body = flow.annotate()
+    assert pr.UNAVAILABLE in body and "[Proposal]" in body
+    assert pr.region(body.splitlines()) is None
+    flow.save()
+    added = flow.commit("fix: legacy review")
+    restored = flow.describe("restore")
+    assert pr.region(restored.splitlines()) is None
+    assert "Omitted for length" not in restored
+    assert added in restored
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+
+
+def test_annotation_fit_failure_publishes_unshortened_body(tmp_path: Path) -> None:
+    """A helper failure is reported while the existing best-effort publication survives."""
+    flow = ProposalWorkflow(tmp_path, proposal_text())
+    expected = flow.annotate()
+    helper = flow.feature_stage / "pr_description.py"
+    with helper.open("a") as target:
+        target.write('\ndef fit(body: str) -> str:\n    raise RuntimeError("fit unavailable")\n')
+    result = flow.run_annotation()
+    assert result.returncode == 0, result.stderr
+    assert "could not fit the proposal in the description: fit unavailable" in result.stderr
+    assert flow.body_path.read_text() == expected
+
+
+def test_review_fit_failure_still_publishes_round_and_marked_commits(tmp_path: Path) -> None:
+    """Unexpected fitting errors preserve best-effort review-round publication."""
+    flow = ProposalWorkflow(tmp_path, proposal_text())
+    original = flow.annotate()
+    flow.save()
+    added = flow.commit("fix: review settings", "settings.go")
+    helper = flow.review_stage / "pr_description.py"
+    with helper.open("a") as target:
+        target.write('\ndef fit(body: str) -> str:\n    raise RuntimeError("fit unavailable")\n')
+    result = flow.run_description({"mode": "restore"})
+    assert result.returncode == 0, result.stderr
+    assert "could not fit the proposal in the description: fit unavailable" in result.stderr
+    restored = flow.body_path.read_text()
+    assert inline_region(restored) == inline_region(original)
+    assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
+    assert f"- `{added[:7]}` fix: review settings" in restored
+    assert added in next(
+        line for line in restored.splitlines() if line.startswith("Later commits:")
+    )
+    assert not (flow.evidence / "description-restore-failed").exists()

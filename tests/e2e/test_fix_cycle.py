@@ -467,7 +467,8 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # A whole tick includes several separately bounded readiness probes.
+            timeout=60,
         )
         assert done.returncode == 0, done.stderr
 
@@ -477,7 +478,8 @@ runpy.run_module('agent_factory.cli', run_name='__main__')
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # Keep the same outer CLI budget as tick(), including subprocess startup.
+            timeout=60,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout

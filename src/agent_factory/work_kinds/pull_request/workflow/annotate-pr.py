@@ -7,8 +7,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from agent_factory.work_kinds.pull_request.workflow import pr_description
+else:
+    import pr_description
 
 
 def command(*args: str) -> str:
@@ -356,6 +361,12 @@ def main() -> None:
             "",
         ]
     )
+    try:
+        proposal = (archive / "proposal.md").read_text()
+    except (OSError, UnicodeDecodeError):
+        lines.extend([pr_description.UNAVAILABLE, ""])
+    else:
+        lines.extend([*pr_description.render(proposal, f"{prefix}/proposal.md"), ""])
     if hidden or flags["yellow"]:
         lines.extend([f"<details><summary>{others}</summary>", ""])
         for tier, icon, items in (("orange", "🟠", hidden), ("yellow", "🟡", flags["yellow"])):
@@ -423,6 +434,10 @@ def main() -> None:
     marked = subprocess.run([sys.executable, str(marker), str(body)], check=False)
     if marked.returncode != 0:
         print("could not mark items later commits may have fixed", file=sys.stderr)
+    try:
+        body.write_text(pr_description.fit(body.read_text()))
+    except Exception as error:
+        print(f"could not fit the proposal in the description: {error}", file=sys.stderr)
     # The REST update, not `gh pr edit`: that also reads the pull request's project
     # items, which a token without org Projects access cannot do once the PR is on a board.
     edit = [

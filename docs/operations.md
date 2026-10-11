@@ -241,6 +241,15 @@ evaluation is still needed, stay on a fixture-capable release. A new request
 without the key evaluates only the default fixture. A hand rollback or a
 deploy with an older script bypasses the refusal.
 
+Before rolling back to a release without inline proposal regions, list open factory
+feature pull requests whose description contains `<!-- agent-factory:proposal:start `.
+For each one, settle or cancel its open review claim and request no review rounds until
+the factory runs a release with proposal-region support again. A writer may instead
+remove the region, from its start marker through its matching end marker, by hand
+before requesting a round on the older release; the artifact links remain. Older
+scripts can read quoted report lines as real evidence and publish without the size
+check. No deploy guard enforces this rule; containment is operational.
+
 ### Feature pull requests
 
 Move a writer-authored Feature issue in a configured fix target to Ready to
