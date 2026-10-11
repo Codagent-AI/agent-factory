@@ -77,8 +77,8 @@ def parse_arguments(argv: Sequence[str], manifest: Mapping[str, object]) -> Laun
     while values[:1] == ["--env-file"]:
         del values[:1]
         env_files.append(Path(_next(values, "--env-file")))
-    # The harness emits auth flags in role order (lead, implementor, tester, judge),
-    # so their relative order varies with the configured role CLIs.
+    # The harness emits auth flags in role order (lead, crosscheck, implementor, tester,
+    # judge), so their relative order varies with the configured role CLIs.
     codex = claude = False
     while values and values[0] in _AUTH_FLAGS:
         flag = values.pop(0)

@@ -16,8 +16,10 @@ if TYPE_CHECKING:
     from agent_factory.work_kinds.eval.handler import EvalHandler as EvalHandler
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
-_ROLES = frozenset({"lead", "implementor", "tester"})
-_KEYS = frozenset({"lead", "implementor", "tester", "skip_validator", "repetitions"})
+# Eval role profiles in suite role order. `crosscheck` reviews planned tasks.
+ROLES = ("lead", "crosscheck", "implementor", "tester")
+_ROLES = frozenset(ROLES)
+_KEYS = _ROLES | {"skip_validator", "repetitions"}
 
 
 def _accepted_keys() -> frozenset[str]:
@@ -163,6 +165,7 @@ __all__ = [
     "EvalHandler",
     "FrozenSpec",
     "ParsedRequest",
+    "ROLES",
     "parse_request",
 ]
 

@@ -61,7 +61,8 @@ comments before reposting, so a lost GitHub response never reruns work or
 duplicates activity.
 
 The shipped eval parser supports the configured Runner/Skills refs, complete
-role profiles, `skip_validator`, and a positive `repetitions` count. Defaults
+`lead`, `crosscheck`, `implementor`, and `tester` role profiles,
+`skip_validator`, and a positive `repetitions` count. Defaults
 are applied solely while a new claim is frozen. The snapshot used by its parser
 contract is kept in `tests/fixtures/eval-request.md` with its source revision.
 

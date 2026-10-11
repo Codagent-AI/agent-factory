@@ -78,6 +78,7 @@ repetitions = 3
 lead = "codex:x:medium"
 implementor = "codex:x:medium"
 tester = "codex:x:medium"
+crosscheck = "codex:x:medium"
 
 [[fix.targets]]
 repository = "example/work"

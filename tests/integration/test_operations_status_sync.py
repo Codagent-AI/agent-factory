@@ -227,6 +227,7 @@ suite = "and-scene"
 repetitions = 3
 [eval.defaults]
 lead = "{eval_provider}:model:high"
+crosscheck = "codex:x:medium"
 
 [fix]
 contract = "factory-fix/1"

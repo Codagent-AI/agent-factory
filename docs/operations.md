@@ -214,6 +214,22 @@ and lists feature claims even if `[feature]` is later removed. Removing that
 section stops new handoffs and admissions while existing claims continue to
 be reported, synced, cleaned up, and pruned.
 
+### Eval role profiles
+
+An eval request's fenced `eval` TOML block may set `lead`, `crosscheck`,
+`implementor`, and `tester`, each a complete `cli:model:effort` string, for
+example `crosscheck = "claude:claude-opus-5-5:high"`. Omitted roles use
+`[eval.defaults]` in `config/codagent.toml`. `crosscheck` is the agent that
+reviews planned tasks, and the `and-scene` suite requires it; `doctor` fails
+`Eval crosscheck default` in the `eval` group, holding eval admission, while
+`[eval.defaults]` lacks a complete `crosscheck` profile. Under Fly
+execution a `cursor` profile in any of the four roles, requested or inherited
+from the defaults, is invalid, and `doctor` reports a Cursor default in the
+`eval-fly` group. Each claim freezes its role profiles at admission. A claim
+frozen before the `crosscheck` default existed runs with three roles; one
+that froze a crosscheck profile is held at readiness if its harness does not
+accept `--crosscheck-cli`.
+
 ### Selecting an and-scene fixture for an eval
 
 Add `fixture_ref = "<and-scene branch, tag, or commit>"` to the request's

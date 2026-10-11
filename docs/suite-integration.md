@@ -21,8 +21,15 @@ contract, calibration-gate removal, linked-worktree metadata mounts, Cursor
 session persistence, and the `tester` role interface — `doctor` reports the
 commit the configured branch resolves to, but it does not fetch and it does
 not prove that commit carries these behaviors. The configured role names are
-`lead`, `implementor`, and `tester`; their defaults are complete
-`cli:model:effort` selections in the same configuration file.
+`lead`, `crosscheck`, `implementor`, and `tester`; their defaults are complete
+`cli:model:effort` selections in the same configuration file. `crosscheck` is
+the agent that reviews planned tasks. Factory passes it as
+`--crosscheck-cli/-model/-effort` only when a claim froze one; a claim admitted
+before the default existed keeps its three-role invocation. A claim with a
+frozen crosscheck whose retained harness does not accept `--crosscheck-cli` is
+held at readiness with a message naming the option and the harness commit.
+Factory readiness does not inspect Agent Runner workflow files; the suite
+selects and verifies its workflow in its own preflight, before any model call.
 
 The machine-local configuration identifies the three source repositories, a
 factory storage root, and a separate suite environment file. The storage root
