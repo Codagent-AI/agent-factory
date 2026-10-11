@@ -295,7 +295,9 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        timeout=15,
+        # A tick runs several probes, each with its own 15-second deadline.
+        # Allow their combined subprocess startup cost on a busy test host.
+        timeout=60,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr

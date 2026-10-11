@@ -4,6 +4,6 @@ The shared helper is staged for feature and review workflows. Missing or unreada
 
 - 🟡 Accepted limitations: closing keywords quoted in a proposal remain verbatim and would link that issue; unbalanced HTML can affect rendering; setext headings are not demoted; rolling back past this change requires the documented containment for open feature PRs and review claims.
 
-Validation: all 168 focused tests pass; unit tests and INT-001 through INT-006 exercise the real staged scripts with GitHub stubs. Ruff formatting and linting, Pyright, and `uv build` pass. All 20 existing archived proposals render without text loss, and the shared helper is included in the wheel and source distribution.
+Validation: all 1,599 selected tests pass in 137.34 seconds; unit tests and INT-001 through INT-006 exercise the real staged scripts with GitHub stubs. Ruff formatting and linting, Pyright, and `uv build` pass. All 20 existing archived proposals render without text loss, and the shared helper is included in the wheel and source distribution.
 
-The broad suite is blocked by end-to-end failures, mostly CLI subprocess timeouts; the first timeout also reproduces on `origin/main`. Agent Validator and the three tests that invoke the real Validator are intentionally deferred to the next workflow step. See `tasks.md` for the run counts and verification limit.
+End-to-end CLI test budgets now allow 60 seconds for whole invocations that execute several separately bounded probes. Production deadlines and behavioral assertions are unchanged. Agent Validator and the three tests that invoke the real Validator are intentionally deferred to the next workflow step. See `tasks.md` for the verification details.

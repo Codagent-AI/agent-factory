@@ -102,11 +102,13 @@ Agent Validator is deferred to the later workflow step by the implementing sessi
 instruction. The three parameterized `test_real_validator_escapes_trusted_claim_clone` cases
 were excluded because they invoke the real Validator.
 
-The broad suite run completed with 1,565 passes and 29 failures: 28 end-to-end failures,
-mostly CLI subprocess timeouts, and one new test assertion that was subsequently corrected
-and passed in isolation. The first 15-second CLI timeout also reproduces on an isolated
-`origin/main` snapshot. A two-worker retry still hit these end-to-end failures and was
-interrupted after 54 passes and eight failures. No unrelated test or runtime code was changed
-to work around them. Final focused verification passed all 168 tests covering the helper and all existing and new
-feature annotation, staging, and review-round tests. Ruff formatting and linting, Pyright,
-and `uv build` also passed.
+The initial broad suite exposed end-to-end CLI subprocess timeouts, also reproduced on an
+isolated `origin/main` snapshot. The follow-up validator test log contained 20 such failures.
+Whole CLI invocations now have a 60-second test budget, above the individual production
+probe deadlines, to accommodate concurrent subprocess startup. Production timeouts,
+behavioral assertions, and pytest worker configuration are unchanged.
+
+Final verification with `uv run pytest -k 'not test_real_validator_escapes_trusted_claim_clone'`
+passed all 1,599 selected tests in 137.34 seconds, including INT-001 to INT-006 and the
+regressions for omission names and best-effort review publication. Ruff formatting and
+linting, Pyright, and `uv build` also passed.
