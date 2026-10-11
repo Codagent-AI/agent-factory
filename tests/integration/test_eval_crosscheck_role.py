@@ -90,9 +90,7 @@ def test_handler_defaults_carry_the_configured_crosscheck(site: Site) -> None:  
     from agent_factory.work_kinds.eval import EvalHandler
 
     site.shared_path.write_text(
-        SHARED.replace(
-            'tester = "codex:x:medium"', 'tester = "codex:x:medium"\ncrosscheck = "claude:y:high"'
-        ),
+        SHARED.replace('crosscheck = "codex:x:medium"', 'crosscheck = "claude:y:high"'),
         encoding="utf-8",
     )
     handler = EvalHandler.from_config(site.shared(), site.config(evals="docker"))
@@ -108,8 +106,8 @@ def test_doctor_under_fly_fails_a_cursor_crosscheck_default(site: Site) -> None:
 
     site.shared_path.write_text(
         SHARED.replace(
-            'tester = "codex:x:medium"',
-            'tester = "codex:x:medium"\ncrosscheck = "cursor:agent:medium"',
+            'crosscheck = "codex:x:medium"',
+            'crosscheck = "cursor:agent:medium"',
         ),
         encoding="utf-8",
     )
@@ -129,8 +127,8 @@ def test_fly_backend_checks_claude_login_for_a_claude_crosscheck_default(
 
     site.shared_path.write_text(
         SHARED.replace(
-            'tester = "codex:x:medium"',
-            'tester = "codex:x:medium"\ncrosscheck = "claude:y:high"',
+            'crosscheck = "codex:x:medium"',
+            'crosscheck = "claude:y:high"',
         ),
         encoding="utf-8",
     )
@@ -330,3 +328,28 @@ def test_unattributed_claude_quota_wait_bounds_the_deadline(tmp_path: Path, role
         bounded_quota_deadline(tmp_path, now=datetime(2026, 9, 10, 12, tzinfo=UTC).timestamp())
         is not None
     )
+
+
+@pytest.mark.parametrize("line", ["", 'crosscheck = "codex:x"'])
+def test_doctor_holds_evals_while_the_crosscheck_default_is_incomplete(
+    site: Site,  # noqa: F811
+    line: str,
+) -> None:
+    from agent_factory.operations import doctor
+
+    site.shared_path.write_text(
+        SHARED.replace('crosscheck = "codex:x:medium"', line), encoding="utf-8"
+    )
+
+    diagnostics = doctor(site.config(evals="docker", fixes="host"))
+
+    held = [d for d in diagnostics if d.name == "Eval crosscheck default"]
+    assert [(d.available, d.group) for d in held] == [(False, "eval")]
+
+
+def test_doctor_accepts_a_complete_crosscheck_default(site: Site) -> None:  # noqa: F811
+    from agent_factory.operations import doctor
+
+    diagnostics = doctor(site.config(evals="docker", fixes="host"))
+
+    assert not [d for d in diagnostics if d.name == "Eval crosscheck default"]

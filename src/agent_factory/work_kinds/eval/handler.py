@@ -105,7 +105,7 @@ class EvalHandler:
             str(values.get("agent_runner_ref", "main")),
             str(values.get("agent_skills_ref", "main")),
             # An unconfigured crosscheck stays absent rather than freezing an empty
-            # profile, which keeps the three-role invocation; shipped defaults set it.
+            # profile; doctor holds eval admission until the default is complete.
             {
                 role: str(values.get(role, ""))
                 for role in ROLES

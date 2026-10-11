@@ -79,6 +79,7 @@ repetitions = 1
 lead = "codex:x:medium"
 implementor = "codex:x:medium"
 tester = "codex:x:medium"
+crosscheck = "codex:x:medium"
 """
 
 

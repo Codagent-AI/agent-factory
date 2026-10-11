@@ -50,6 +50,9 @@ eval_type = "Eval"
 harness_ref = "main"
 suite = "and-scene"
 repetitions = 3
+
+[eval.defaults]
+crosscheck = "codex:x:high"
 """
 
 _LOCAL_BASE = """\

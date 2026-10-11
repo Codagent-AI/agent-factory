@@ -149,6 +149,18 @@ def doctor(
         if shared is not None
         else {}
     )
+    crosscheck = profiles.get("crosscheck", "").split(":")
+    if shared is not None and (len(crosscheck) != 3 or not all(crosscheck)):
+        # New claims would freeze without the role the and-scene suite requires.
+        diagnostics.append(
+            Diagnostic(
+                "Eval crosscheck default",
+                False,
+                "eval.defaults.crosscheck is not a complete cli:model:effort triple",
+                "Set crosscheck in [eval.defaults] in config/codagent.toml.",
+                group="eval",
+            )
+        )
     if config.eval_execution == "fly":
         # A local Cursor login proves nothing on Fly, where Cursor cannot run.
         cursor_roles = sorted(
