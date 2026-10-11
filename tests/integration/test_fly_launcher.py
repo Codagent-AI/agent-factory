@@ -429,3 +429,37 @@ def test_machine_that_never_starts_is_a_transport_failure(env: Environment) -> N
     env.api.wait_failures.extend([408] * 20)
     assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == EXIT_TRANSPORT
     assert "did not start" in (env.factory / "launcher.log").read_text()
+
+
+def test_harness_delivery_is_refreshed_readable_and_not_handed_to_job(env: Environment) -> None:
+    panel = env.input_dir.parent / "panel"
+    panel.mkdir(mode=0o700)
+    module = panel / "judge.mjs"
+    module.write_text("// pinned panel")
+    module.chmod(0o600)
+    target = env.guest_root / "lib/panel-judging"
+    target.mkdir(parents=True)
+    (target / "stale.mjs").write_text("// stale")
+    request = JobRequest(
+        artifact_dir=env.artifact,
+        script=stand_in_script("cat /lib/panel-judging/judge.mjs > /artifacts/panel.txt"),
+        input_dir=env.input_dir,
+        environment="\n",
+        codex_auth=False,
+        claude_auth=False,
+        deliveries=((panel, "/lib/panel-judging"),),
+    )
+
+    assert env.lifecycle(env.manifest()).run(request) == 0
+    assert (env.artifact / "panel.txt").read_text() == "// pinned panel"
+    assert not (target / "stale.mjs").exists()
+    assert target.stat().st_mode & 0o005 == 0o005
+    assert (target / "judge.mjs").stat().st_mode & 0o004
+    assert not target.stat().st_mode & 0o022
+    assert not (target / "judge.mjs").stat().st_mode & 0o022
+    commands = [c["argv"][-1] for c in env.flyctl_calls() if c["argv"][:2] == ["ssh", "console"]]
+    setup = next(c for c in commands if "rm -rf /eval-input" in c)
+    assert "/lib/panel-judging" in setup.split("&&", 1)[0]
+    assert any("chown -R -h -P root:root /lib/panel-judging" in c for c in commands)
+    handover = next(c for c in commands if 'chown -R -h -P "$owner"' in c)
+    assert "/lib/panel-judging" not in handover

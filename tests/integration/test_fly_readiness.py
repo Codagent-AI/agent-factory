@@ -199,6 +199,7 @@ def _dry_run_suite(
     evals = tmp_path / "evals"
     run_script = evals / "evals/agent-runner/and-scene/run.sh"
     run_script.parent.mkdir(parents=True)
+    (evals / "evals/lib/panel-judging").mkdir(parents=True)
     run_script.write_text(f"#!/bin/sh\n{run_body}\n", encoding="utf-8")
     run_script.chmod(0o755)
 
@@ -452,3 +453,41 @@ def test_pinned_worktree_origin_without_credentials_is_recorded(
     subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", origin], check=True)
 
     assert _remote_url(tmp_path) == origin
+
+
+def test_fly_readiness_accepts_panel_mount_before_dev_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    suite, worktrees = _dry_run_suite(
+        tmp_path,
+        monkeypatch,
+        r"""while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --artifact-dir) artifact=$2; shift 2 ;;
+    --env-file) env_file=$2; shift 2 ;;
+    --agent-runner-dir) runner=$2; shift 2 ;;
+    --agent-skills-dir) skills=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+panel="$(dirname "$0")/../../lib/panel-judging"
+exec "$SANDBOX_RUNNER" --dry-run --artifact-dir "$artifact" --input-dir "$(dirname "$0")" \
+  --docker-run-arg --mount --docker-run-arg \
+    "type=bind,source=$panel,target=/lib/panel-judging,readonly" \
+  --dev-audit --docker-run-arg --security-opt --docker-run-arg seccomp=unconfined \
+  --docker-run-arg --mount --docker-run-arg \
+    "type=bind,source=$runner/.git,target=$runner/.git,readonly" \
+  --docker-run-arg --mount --docker-run-arg \
+    "type=bind,source=$skills,target=/agent-skills-source,readonly" \
+  --env NAME --env-file "$env_file" --mount-claude-auth --mount-codex-auth -- "echo ok"
+""",
+    )
+    launcher = tmp_path / "bin/agent-factory-fly-launcher"
+    launcher.write_text(
+        f"#!{sys.executable}\n"
+        "from agent_factory.fly.launcher import main\nraise SystemExit(main())\n"
+    )
+
+    assert suite._fly_dry_run(worktrees) is None  # pyright: ignore[reportPrivateUsage]

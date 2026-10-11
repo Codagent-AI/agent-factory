@@ -16,6 +16,7 @@ _GUEST_PATHS = (
     "/run/factory",
     "/var/lib/factory",
     "/eval-input",
+    "/lib/panel-judging",
     "/host-home",
     "/tmp/factory-bundle",
 )
@@ -82,6 +83,9 @@ if args[:2] == ["machine", "list"]:
     sys.exit(0)
 if args[:2] == ["ssh", "console"]:
     command = rewrite(option(args, "-C"))
+    # Local tests have no root privileges; record the real root handoff above,
+    # then emulate it with the test process's owner when executing the command.
+    command = command.replace("root:root", str(os.getuid()) + ":" + str(os.getgid()))
     done = subprocess.run(["bash", "-c", command], capture_output=True)
     output = done.stdout
     if os.path.exists(ROOT + "/.truncate-tar") and "-cf -" in command:
