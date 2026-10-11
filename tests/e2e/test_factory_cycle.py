@@ -295,7 +295,8 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        timeout=15,
+        # A whole tick can exceed one probe deadline when subprocess startup is slow.
+        timeout=60,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr

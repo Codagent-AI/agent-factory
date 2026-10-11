@@ -258,7 +258,8 @@ class Factory:
             env=self.env,
             capture_output=True,
             text=True,
-            timeout=30,
+            # A whole tick can exceed one probe deadline when subprocess startup is slow.
+            timeout=60,
         )
         assert done.returncode == 0, done.stderr
         return done.stdout
