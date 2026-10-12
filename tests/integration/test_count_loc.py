@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -490,6 +491,40 @@ def test_unresponsive_remote_times_out_as_unavailable(
     git(repo, "config", "remote.origin.uploadpack", "sleep 30; git-upload-pack")
     monkeypatch.chdir(repo)
     monkeypatch.setattr(loc, "COMMAND_TIMEOUT", 1.0)
+    started = time.monotonic()
     result = loc.measure("main", head)
+    # The upload-pack shell's `sleep 30` is killed with fetch, not waited for.
+    assert time.monotonic() - started < 10
     assert isinstance(result, loc.Unavailable)
     assert "timed out after 1s" in result.reason
+
+
+@pytest.mark.parametrize("hang", [False, True])
+def test_blob_reads_are_bounded_and_non_interactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hang: bool
+) -> None:
+    """A blob read that reaches the network (a lazy fetch in a partial clone) gets the same
+    non-interactive environment and deadline as every other command."""
+    from tests.unit.test_count_loc import loc
+
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "git").write_text(
+        "#!/bin/sh\n"
+        + (
+            "sleep 30 &\nwait\n"
+            if hang
+            else 'printf "%s%s" "$GIT_TERMINAL_PROMPT" "$GCM_INTERACTIVE"\n'
+        )
+    )
+    (fake / "git").chmod(0o755)
+    monkeypatch.setattr(loc, "COMMAND_TIMEOUT", 1.0)
+    env = {**os.environ, "PATH": f"{fake}:{os.environ['PATH']}"}
+    env.pop("GIT_TERMINAL_PROMPT", None)
+    started = time.monotonic()
+    if hang:
+        with pytest.raises(RuntimeError, match="timed out after 1s"):
+            loc.blob_prefix("a" * 40, env)
+        assert time.monotonic() - started < 10
+    else:
+        assert loc.blob_prefix("a" * 40, env) == b"0never"

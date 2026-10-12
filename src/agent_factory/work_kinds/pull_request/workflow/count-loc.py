@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import contextlib
 import html
 import json
 import os
@@ -11,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,46 +136,76 @@ NON_INTERACTIVE = {
 }
 
 
+def spawn(args: list[str], env: dict[str, str] | None, stderr: Any) -> subprocess.Popen[bytes]:
+    """Start a non-interactive command in its own session, without a controlling terminal,
+    so a timeout can kill it together with every helper it started (remote helpers, ssh)."""
+    return subprocess.Popen(
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
+        env={**(os.environ if env is None else env), **NON_INTERACTIVE},
+        start_new_session=True,
+    )
+
+
+def kill_group(process: subprocess.Popen[bytes]) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+
+
+def timed_out(args: list[str]) -> RuntimeError:
+    return RuntimeError(f"{' '.join(args)}: timed out after {COMMAND_TIMEOUT:g}s")
+
+
+def run(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes, bytes]:
+    with spawn(list(args), env, subprocess.PIPE) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=COMMAND_TIMEOUT)
+        except subprocess.TimeoutExpired as error:
+            kill_group(process)
+            process.communicate()
+            raise timed_out(list(args)) from error
+    return process.returncode, stdout, stderr
+
+
 def command(*args: str, env: dict[str, str] | None = None) -> bytes:
-    try:
-        completed = subprocess.run(
-            args,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            env={**(os.environ if env is None else env), **NON_INTERACTIVE},
-            timeout=COMMAND_TIMEOUT,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise RuntimeError(f"{' '.join(args)}: timed out after {error.timeout:g}s") from error
-    if completed.returncode:
-        detail = completed.stderr.decode("utf-8", "replace").strip()
-        raise RuntimeError(f"{' '.join(args)}: {detail or f'exit {completed.returncode}'}")
-    return completed.stdout
+    status, stdout, stderr = run(*args, env=env)
+    if status:
+        detail = stderr.decode("utf-8", "replace").strip()
+        raise RuntimeError(f"{' '.join(args)}: {detail or f'exit {status}'}")
+    return stdout
 
 
 def blob_prefix(blob: str, env: dict[str, str]) -> bytes:
     """Read only the binary-detection prefix, then stop and reap the Git process."""
     args = ["git", "cat-file", "blob", blob]
     # A file keeps stderr from blocking the stdout read or accumulating in memory.
-    with (
-        tempfile.TemporaryFile() as errors,
-        subprocess.Popen(
-            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors, env=env
-        ) as process,
-    ):
+    with tempfile.TemporaryFile() as errors, spawn(args, env, errors) as process:
         assert process.stdout is not None
         terminated = False
+        # A lazy fetch in a partial clone may reach the network: bound the read as well.
+        expired = threading.Event()
+
+        def expire() -> None:
+            expired.set()
+            kill_group(process)
+
+        deadline = threading.Timer(COMMAND_TIMEOUT, expire)
+        deadline.start()
         try:
             prefix = process.stdout.read(8000)
             if len(prefix) == 8000 and process.poll() is None:
-                process.kill()
+                kill_group(process)
                 terminated = True
             status = process.wait()
         finally:
+            deadline.cancel()
             if process.poll() is None:
-                process.kill()
+                kill_group(process)
                 process.wait()
+        if expired.is_set() and not terminated:
+            raise timed_out(args)
         if status and not (terminated and status == -signal.SIGKILL):
             errors.seek(0)
             detail = errors.read(8000).decode("utf-8", "replace").strip()
@@ -201,15 +233,8 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
             "origin",
             f"+refs/heads/{base_ref}:refs/remotes/origin/{base_ref}",
         )
-        exists = subprocess.run(
-            ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-            env=env,
-            timeout=COMMAND_TIMEOUT,
-            check=False,
-        )
-        if exists.returncode:
+        exists, _, _ = run("git", "cat-file", "-e", f"{head_sha}^{{commit}}", env=env)
+        if exists:
             command("git", "fetch", "--no-tags", "origin", head_sha)
         mb = (
             command("git", "merge-base", f"refs/remotes/origin/{base_ref}", head_sha, env=env)
