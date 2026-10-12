@@ -2875,22 +2875,27 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
     assert outcome["validator"] == {"checks": "failed", "status": "failed"}
 
 
+@pytest.mark.parametrize("crash", [False, True])
 @pytest.mark.parametrize("code", [False, True])
 @pytest.mark.parametrize("base_known", [False, True])
 def test_annotate_pr_reports_published_loc_and_preserves_decision_examples(
     tmp_path: Path,
     code: bool,
     base_known: bool,
+    crash: bool,
 ) -> None:
-    """INT-004: feature annotation adds size without changing the attention tiers."""
+    """INT-004: feature annotation adds size without changing the attention tiers;
+    a crashed counter still publishes the description with an unavailable section."""
     import os
+    import shutil
 
     repo, _ = repository(tmp_path)
     git(repo, "checkout", "-b", "feature")
     archive = repo / "openspec/changes/archive/change"
     archive.mkdir(parents=True)
     decisions = (
-        Path(__file__).parents[2] / "openspec/changes/feature-162-cf207692/decisions.md"
+        Path(__file__).parents[2]
+        / "openspec/changes/archive/2026-10-12-feature-162-cf207692/decisions.md"
     ).read_text()
     decisions += (
         "\n```md\n<!-- agent-factory:loc -->\nexample\n<!-- agent-factory:loc-end -->\n```\n"
@@ -2945,9 +2950,16 @@ def test_annotate_pr_reports_published_loc_and_preserves_decision_examples(
     )
     stub.chmod(0o755)
     body = tmp_path / "body.md"
+    scripts = Path(str(PACKAGE))
+    if crash:
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        for name in ("annotate-pr.sh", "annotate-pr.py", "mark-later-commits.py"):
+            shutil.copy2(str(PACKAGE / name), scripts / name)
+        (scripts / "count-loc.py").write_text("raise SystemExit(3)\n")
     result = subprocess.run(
         [
-            str(PACKAGE / "annotate-pr.sh"),
+            str(scripts / "annotate-pr.sh"),
             str(artifacts),
             str(issue),
             "change",
@@ -2965,7 +2977,9 @@ def test_annotate_pr_reports_published_loc_and_preserves_decision_examples(
     from tests.unit.test_count_loc import loc
 
     assert sum(text == loc.START for _, _, text in loc.live_lines(rendered)) == 1
-    if base_known:
+    if crash:
+        assert "count unavailable: the counter failed" in rendered
+    elif base_known:
         count = 1 if code else 0
         for kind in ("code", "tests"):
             assert f"| {kind} | {count} | {count} | 0 | 0 | +{count} −0 |" in rendered
