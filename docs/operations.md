@@ -257,6 +257,23 @@ evaluation is still needed, stay on a fixture-capable release. A new request
 without the key evaluates only the default fixture. A hand rollback or a
 deploy with an older script bypasses the refusal.
 
+### Selecting the evaluated workflow
+
+Add `workflow = "<namespace>:<name>"` to the request's fenced `eval` TOML
+block, for example `workflow = "core:orchestrated-implement-change"`, to
+evaluate an Agent Runner workflow other than the suite default
+(`core:plan-and-implement-change`). The factory passes it to the and-scene
+`run.sh` as `--workflow` under Docker and Fly. A malformed value, such as a
+file path, is an invalid request. The value is part of the frozen settings, so
+changing it requests a new claim, and the frozen-inputs comment shows it. The
+pinned Agent Runner revision must define the workflow; the suite checks that
+and the workflow's required parameters at launch. Results from a non-default
+workflow are not comparable with default-workflow results.
+
+A release without this setting ignores a frozen `workflow` and runs the suite
+default, with no refusal from `scripts/deploy.sh`. Before rolling back past
+it, let each unfinished claim that requested a workflow settle or cancel it.
+
 ### Feature pull requests
 
 Move a writer-authored Feature issue in a configured fix target to Ready to

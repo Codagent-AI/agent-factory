@@ -433,6 +433,11 @@ class AndSceneAdapter:
         arguments.extend(arguments_by_input)
         if settings.get("skip_validator") is True:
             arguments.append("--skip-validator")
+        workflow = settings.get("workflow")
+        if workflow is not None:
+            if not isinstance(workflow, str) or not inputs.WORKFLOW.fullmatch(workflow):
+                raise ReadinessError("accepted workflow is not a logical workflow reference")
+            arguments.extend(("--workflow", workflow))
         if resume:
             arguments.append("--resume")
         if self._execution == "fly":
