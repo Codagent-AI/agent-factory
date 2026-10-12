@@ -2873,3 +2873,106 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
     assert outcome["reasons"] == [reason]
     assert outcome["branch"] == "claim"
     assert outcome["validator"] == {"checks": "failed", "status": "failed"}
+
+
+@pytest.mark.parametrize("code", [False, True])
+@pytest.mark.parametrize("base_known", [False, True])
+def test_annotate_pr_reports_published_loc_and_preserves_decision_examples(
+    tmp_path: Path,
+    code: bool,
+    base_known: bool,
+) -> None:
+    """INT-004: feature annotation adds size without changing the attention tiers."""
+    import os
+
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "feature")
+    archive = repo / "openspec/changes/archive/change"
+    archive.mkdir(parents=True)
+    decisions = (
+        Path(__file__).parents[2] / "openspec/changes/feature-162-cf207692/decisions.md"
+    ).read_text()
+    decisions += (
+        "\n```md\n<!-- agent-factory:loc -->\nexample\n<!-- agent-factory:loc-end -->\n```\n"
+    )
+    (archive / "decisions.md").write_text(decisions)
+    (repo / "readme.md").write_text("excluded\n")
+    if code:
+        (repo / "source.py").write_text("code\n")
+        (repo / "test_source.py").write_text("test\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "feature")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    flags = {
+        "red": [{"title": "Existing red", "detail": "detail", "link": "#evidence"}],
+        "orange": [{"title": "Existing orange", "detail": "detail", "link": "#evidence"}],
+        "yellow": [],
+        "white": [],
+        "accepted_head": head,
+    }
+    (artifacts / "review-attention.json").write_text(json.dumps(flags))
+    (artifacts / "task-compliance.json").write_text(
+        json.dumps(
+            {
+                "result": "not-declared",
+                "base": head,
+                "reviewed_head": head,
+                "tasks_sha256": "hash",
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim", "title": "Feature"}))
+    pr = json.dumps(
+        [
+            {
+                "number": 9,
+                "url": "https://github.com/o/r/pull/9",
+                "headRefOid": head,
+                **({"baseRefName": "main"} if base_known else {}),
+            }
+        ]
+    )
+    stub = tmp_path / "gh"
+    stub.write_text(
+        GH_STUB.replace(
+            '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'',
+            "  echo '" + pr + "'",
+        )
+    )
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    result = subprocess.run(
+        [
+            str(PACKAGE / "annotate-pr.sh"),
+            str(artifacts),
+            str(issue),
+            "change",
+            str(archive.relative_to(repo)),
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+    )
+    assert result.returncode == 0, result.stderr
+    rendered = body.read_text()
+    assert rendered.index("[Test plan]") < rendered.index("### Lines of code")
+    assert decisions in rendered
+    from tests.unit.test_count_loc import loc
+
+    assert sum(text == loc.START for _, _, text in loc.live_lines(rendered)) == 1
+    if base_known:
+        count = 1 if code else 0
+        for kind in ("code", "tests"):
+            assert f"| {kind} | {count} | {count} | 0 | 0 | +{count} −0 |" in rendered
+        assert head[:12] in rendered
+    else:
+        assert "count unavailable: pull request base branch unknown" in rendered
+    updated_flags = json.loads((artifacts / "review-attention.json").read_text())
+    assert updated_flags["red"] == flags["red"]
+    assert updated_flags["orange"] == flags["orange"]
+    assert "### 🔴 Red (1)" in rendered and "### 🟠 Orange (1)" in rendered

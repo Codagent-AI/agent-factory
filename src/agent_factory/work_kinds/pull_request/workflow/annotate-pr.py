@@ -273,7 +273,7 @@ def main() -> None:
             "--state",
             "open",
             "--json",
-            "number,url,headRefOid",
+            "number,url,headRefOid,baseRefName",
             "--limit",
             "1",
         )
@@ -356,6 +356,19 @@ def main() -> None:
             "",
         ]
     )
+    loc = subprocess.check_output(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("count-loc.py")),
+            "section",
+            "--base-ref",
+            str(pr[0].get("baseRefName") or ""),
+            "--head",
+            str(pr[0].get("headRefOid") or ""),
+        ],
+        text=True,
+    ).strip()
+    lines.extend([loc, ""])
     if hidden or flags["yellow"]:
         lines.extend([f"<details><summary>{others}</summary>", ""])
         for tier, icon, items in (("orange", "🟠", hidden), ("yellow", "🟡", flags["yellow"])):

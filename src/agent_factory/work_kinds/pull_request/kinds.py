@@ -94,6 +94,7 @@ FEATURE_STAGED_FILES = (
     "verify-feature-outcome.py",
     "annotate-pr.sh",
     "annotate-pr.py",
+    "count-loc.py",
     "task-compliance-gate.py",
     "mark-later-commits.py",
     "check-contract.sh",
@@ -120,6 +121,7 @@ FIX = PullRequestKind(
     workflow_file="factory-fix-v1.0.yaml",
     staged_files=(
         "factory-fix-v1.0.yaml",
+        "count-loc.py",
         "record-triage.sh",
         "record-outcome.sh",
         "check-contract.sh",

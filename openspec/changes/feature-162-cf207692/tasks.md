@@ -1,4 +1,4 @@
-- [ ] Report a deterministic lines-of-code count in every factory fix and feature pull request description
+- [x] Report a deterministic lines-of-code count in every factory fix and feature pull request description
 
 ## Task: Lines-of-code section in factory PR descriptions (#162)
 
