@@ -246,6 +246,7 @@ def test_pinned_fixture_argv_across_launch_and_recovery_plans(
                 manifest.pop("artifact_dir")
             assert pinned_manifest == default_manifest
             assert "fixture" not in pinned_manifest["commits"]
+            assert pinned_manifest["worktrees"]["evals"] == str(worktrees.evals)
 
 
 def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_worktrees(

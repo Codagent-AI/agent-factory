@@ -309,6 +309,7 @@ class AndSceneAdapter:
                         "worktrees": {
                             "runner": str(worktrees.runner),
                             "skills": str(worktrees.skills),
+                            "evals": str(worktrees.evals),
                         },
                         "git_common_dirs": [
                             _git_common_dir(worktrees.runner),

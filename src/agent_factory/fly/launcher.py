@@ -1,7 +1,7 @@
 """Compatibility launcher used by and-scene's ``SANDBOX_RUNNER`` seam.
 
-Docker-looking arguments are intentionally validation-only: execution details
-come exclusively from the non-secret manifest prepared by the factory.
+Docker-looking arguments are validated against the non-secret factory manifest.
+Read-only harness mounts also deliver pinned harness code to the Machine.
 """
 
 from __future__ import annotations
@@ -49,6 +49,7 @@ class LaunchArguments:
     env_names: tuple[str, ...]
     env_files: tuple[Path, ...]
     mounts: tuple[str, ...]
+    deliveries: tuple[tuple[Path, str], ...]
     mount_codex_auth: bool
     mount_claude_auth: bool
     script: str
@@ -60,15 +61,13 @@ def parse_arguments(argv: Sequence[str], manifest: Mapping[str, object]) -> Laun
     dry_run = _take(values, "--dry-run")
     artifact = Path(_value(values, "--artifact-dir"))
     input_dir = Path(_value(values, "--input-dir"))
+    mounts: list[str] = []
+    deliveries: list[tuple[Path, str]] = []
+    _take_mounts(values, manifest, mounts, deliveries)
     _required_flag(values, "--dev-audit")
     _required_pair(values, "--docker-run-arg", "--security-opt")
     _required_pair(values, "--docker-run-arg", "seccomp=unconfined")
-    mounts: list[str] = []
-    while values[:2] == ["--docker-run-arg", "--mount"]:
-        del values[:2]
-        mount = _value(values, "--docker-run-arg")
-        _validate_mount(mount, manifest)
-        mounts.append(mount)
+    _take_mounts(values, manifest, mounts, deliveries)
     env_names: list[str] = []
     while values[:1] == ["--env"]:
         del values[:1]
@@ -94,6 +93,7 @@ def parse_arguments(argv: Sequence[str], manifest: Mapping[str, object]) -> Laun
         tuple(env_names),
         tuple(env_files),
         tuple(mounts),
+        tuple(deliveries),
         codex,
         claude,
         values[1],
@@ -120,7 +120,14 @@ def main(argv: Sequence[str] | None = None, *, manifest_path: Path | None = None
     factory = parsed.artifact_dir / ".factory"
     factory.mkdir(parents=True, exist_ok=True)
     (factory / "parsed-launch.json").write_text(
-        json.dumps({"dry_run": parsed.dry_run, "mounts": parsed.mounts, "script": parsed.script}),
+        json.dumps(
+            {
+                "dry_run": parsed.dry_run,
+                "mounts": parsed.mounts,
+                "deliveries": [(str(source), target) for source, target in parsed.deliveries],
+                "script": parsed.script,
+            }
+        ),
         encoding="utf-8",
     )
     if parsed.dry_run:
@@ -142,6 +149,7 @@ def _launch(parsed: LaunchArguments, manifest: Mapping[str, object], factory: Pa
             environment=environment_text(parsed.env_files, parsed.env_names),
             codex_auth=parsed.mount_codex_auth,
             claude_auth=parsed.mount_claude_auth,
+            deliveries=parsed.deliveries,
         )
     except (OSError, ValueError) as error:
         print(f"Fly launcher could not prepare the job: {error}", file=sys.stderr)
@@ -290,7 +298,41 @@ def _required_pair(values: list[str], first: str, second: str) -> None:
         raise ArgumentError(second)
 
 
-def _validate_mount(mount: str, manifest: Mapping[str, object]) -> None:
+def _take_mounts(
+    values: list[str],
+    manifest: Mapping[str, object],
+    mounts: list[str],
+    deliveries: list[tuple[Path, str]],
+) -> None:
+    while values[:2] == ["--docker-run-arg", "--mount"]:
+        del values[:2]
+        mount = _value(values, "--docker-run-arg")
+        delivery = _validate_mount(mount, manifest)
+        mounts.append(mount)
+        if delivery is not None:
+            deliveries.append(delivery)
+
+
+# Delivery replaces its target as root; keep it within dedicated harness paths.
+_DELIVERY_PREFIXES = (Path("/lib/panel-judging"),)
+
+_RESERVED_TARGETS = tuple(
+    Path(value)
+    for value in (
+        "/eval-input",
+        "/artifacts",
+        "/agent-runner-source",
+        "/agent-skills-source",
+        "/host-home",
+        "/run",
+        "/var/lib/factory",
+        "/workspace",
+        "/tmp",
+    )
+)
+
+
+def _validate_mount(mount: str, manifest: Mapping[str, object]) -> tuple[Path, str] | None:
     fields = mount.split(",")
     if len(fields) != 4 or fields[-1] != "readonly":
         raise ArgumentError(mount)
@@ -307,16 +349,39 @@ def _validate_mount(mount: str, manifest: Mapping[str, object]) -> None:
     if not isinstance(worktrees, Mapping):
         raise ArgumentError(mount)
     worktree_values = cast(Mapping[str, object], worktrees)
+    candidate = Path(source).resolve()
+    evals = worktree_values.get("evals")
+    if isinstance(evals, str):
+        root = Path(evals).resolve()
+        if candidate == root or root in candidate.parents:
+            guest = Path(target)
+            if (
+                not candidate.is_dir()
+                or guest.anchor != "/"
+                or ".." in guest.parts
+                or guest == Path("/")
+                or not any(
+                    guest == prefix or prefix in guest.parents for prefix in _DELIVERY_PREFIXES
+                )
+                or any(
+                    guest == reserved or reserved in guest.parents or guest in reserved.parents
+                    for reserved in _RESERVED_TARGETS
+                )
+            ):
+                raise ArgumentError(mount)
+            return candidate, str(guest)
     allowed = [
-        Path(value).resolve() for value in worktree_values.values() if isinstance(value, str)
+        Path(value).resolve()
+        for name in ("runner", "skills")
+        if isinstance(value := worktree_values.get(name), str)
     ]
     common_dirs = manifest.get("git_common_dirs", ())
     if isinstance(common_dirs, list):
         common_values = cast(list[object], common_dirs)
         allowed.extend(Path(value).resolve() for value in common_values if isinstance(value, str))
-    candidate = Path(source).resolve()
     if not any(candidate == root or root in candidate.parents for root in allowed):
         raise ArgumentError(mount)
+    return None
 
 
 if __name__ == "__main__":
