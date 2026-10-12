@@ -93,6 +93,13 @@ def round_section(eol: str) -> list[str]:
     return lines
 
 
+def count_loc(*args: str) -> None:
+    subprocess.run(
+        ["python3", os.environ["LOC"], *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
 def rebuilt(original: str) -> str:
     eol = "\r\n" if "\r\n" in original else "\n"
     section = round_section(eol)
@@ -110,19 +117,8 @@ def rebuilt(original: str) -> str:
     if review.get("base_head"):
         command.append(review["base_head"])
     subprocess.run(command, check=False)
-    subprocess.run(
-        ["python3", os.environ["LOC"], "refresh-file", str(updated), "--number", number],
-        capture_output=True, text=True, check=True,
-    )
+    count_loc("refresh-file", str(updated), "--number", number)
     return updated.open(newline="").read()
-
-
-def refresh() -> None:
-    subprocess.run(
-        ["python3", os.environ["LOC"], "refresh-pr", "--number", number,
-         "--artifact-dir", str(artifacts)],
-        capture_output=True, text=True, check=True,
-    )
 
 
 def failed(error: Exception) -> None:
@@ -137,7 +133,7 @@ if review["kind"] == "fix" or (
 ):
     if payload["mode"] == "restore":
         try:
-            refresh()
+            count_loc("refresh-pr", "--number", number, "--artifact-dir", str(artifacts))
         except (subprocess.CalledProcessError, OSError) as error:
             failed(error)
     raise SystemExit(0)
