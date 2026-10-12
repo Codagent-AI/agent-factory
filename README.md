@@ -69,7 +69,8 @@ contract is kept in `tests/fixtures/eval-request.md` with its source revision.
 The pinned `and-scene` integration, suite prerequisites, companion wrapper
 revision, retained review-command lifetime, and safe storage cleanup procedure
 are documented in [suite integration](docs/suite-integration.md). In particular,
-the configured harness is a deployment commit—not a branch or the sibling
+the configured harness is a branch (`eval.harness_ref`, default `main`) that
+Factory resolves to a commit at each claim's admission, not the sibling
 checkout currently open on the Mac.
 
 ## Planned stack
