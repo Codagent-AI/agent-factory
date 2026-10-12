@@ -7,8 +7,10 @@ import html
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -130,6 +132,33 @@ def command(*args: str, env: dict[str, str] | None = None) -> bytes:
     return completed.stdout
 
 
+def blob_prefix(blob: str, env: dict[str, str]) -> bytes:
+    """Read only the binary-detection prefix, then stop and reap the Git process."""
+    args = ["git", "cat-file", "blob", blob]
+    # A file keeps stderr from blocking the stdout read or accumulating in memory.
+    with (
+        tempfile.TemporaryFile() as errors,
+        subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errors, env=env) as process,
+    ):
+        assert process.stdout is not None
+        terminated = False
+        try:
+            prefix = process.stdout.read(8000)
+            if len(prefix) == 8000 and process.poll() is None:
+                process.kill()
+                terminated = True
+            status = process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        if status and not (terminated and status == -signal.SIGKILL):
+            errors.seek(0)
+            detail = errors.read(8000).decode("utf-8", "replace").strip()
+            raise RuntimeError(f"{' '.join(args)}: {detail or f'exit {status}'}")
+        return prefix
+
+
 def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
     if not base_ref:
         return Unavailable("pull request base branch unknown")
@@ -201,12 +230,12 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
                 if blob in seen or not blob.strip("0"):
                     continue
                 seen.add(blob)
-                if b"\0" in command("git", "cat-file", "blob", blob, env=env)[:8000]:
+                if b"\0" in blob_prefix(blob, env):
                     binary_blobs.add(blob)
         result = count(patch, binary_blobs)
         result.merge_base = mb
         return result
-    except (OSError, RuntimeError, ValueError) as error:
+    except (OSError, RuntimeError, ValueError, SyntaxError) as error:
         return Unavailable(" ".join(str(error).split()))
 
 

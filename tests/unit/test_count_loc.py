@@ -205,3 +205,32 @@ def test_insertion_uses_existing_blank_line_without_changing_other_text() -> Non
     body = "## Change summary\n\nlinks\n\nhuman text\n"
     assert loc.upsert(body, "section") == ("## Change summary\n\nlinks\n\nsection\n\nhuman text\n")
     assert loc.upsert("human text\n\n", "section") == "human text\n\nsection\n\n"
+
+
+def test_quoted_path_syntax_error_renders_unavailable_section(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import subprocess
+
+    malformed = 'diff --git a/x b/x\n--- a/x\n+++ "b/unterminated\n@@ -0,0 +1 @@\n'
+
+    def command(*args: str, env: dict[str, str] | None = None) -> bytes:
+        if "diff" in args:
+            return malformed.encode()
+        return b"a" * 40
+
+    def exists(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(["git", "cat-file", "-e"], 0, b"", b"")
+
+    monkeypatch.setattr(loc, "command", command)
+    monkeypatch.setattr(loc.subprocess, "run", exists)
+    monkeypatch.setattr(
+        sys, "argv", [str(SCRIPT), "section", "--base-ref", "main", "--head", "b" * 40]
+    )
+    assert loc.main() == 0
+    output = capsys.readouterr()
+    assert "Lines-of-code count unavailable:" in output.out
+    assert "unterminated string literal" in output.out
+    assert loc.START in output.out and loc.END in output.out
+    assert not output.err

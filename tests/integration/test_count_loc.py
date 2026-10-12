@@ -369,3 +369,48 @@ def test_binary_detection_reads_first_8000_bytes_only(
     git(repo, "push", "origin", "feature")
     result = invoke(repo, "section", "--base-ref", "main", "--head", head)
     assert f"| code | {files} | {files} | 0 | 0 | +{files} −0 |" in result.stdout
+
+
+@pytest.mark.parametrize("blob_error", [False, True])
+def test_blob_prefix_streaming_and_failed_reads(tmp_path: Path, blob_error: bool) -> None:
+    """A producer that never finishes must be stopped after its 8000-byte prefix."""
+    stub = tmp_path / "git"
+    stub.write_text(
+        """#!/usr/bin/env python3
+import os, sys, time
+args = sys.argv[1:]
+if args[:2] == ['cat-file', 'blob']:
+    if os.environ.get('BLOB_ERROR'):
+        print('fatal: missing blob', file=sys.stderr)
+        sys.exit(1)
+    sys.stdout.buffer.write(b'x' * 8000)
+    sys.stdout.buffer.flush()
+    time.sleep(60)
+elif args[0] == 'merge-base':
+    print('a' * 40)
+elif 'diff' in args:
+    print('diff --git a/new.py b/new.py')
+    print('index ' + '0' * 40 + '..' + 'b' * 40 + ' 100644')
+    print('--- /dev/null\\n+++ b/new.py\\n@@ -0,0 +1 @@\\n+source')
+"""
+    )
+    stub.chmod(0o755)
+    result = subprocess.run(
+        [sys.executable, SCRIPT, "section", "--base-ref", "main", "--head", "b" * 40],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "BLOB_ERROR": "1" if blob_error else "",
+        },
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stderr
+    if blob_error:
+        assert "Lines-of-code count unavailable: git cat-file blob" in result.stdout
+        assert "fatal: missing blob" in result.stdout
+        assert "| code |" not in result.stdout
+    else:
+        assert "| code | 1 | 1 | 0 | 0 | +1 −0 |" in result.stdout
