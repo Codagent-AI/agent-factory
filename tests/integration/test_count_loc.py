@@ -414,3 +414,30 @@ elif 'diff' in args:
         assert "| code |" not in result.stdout
     else:
         assert "| code | 1 | 1 | 0 | 0 | +1 −0 |" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("setting", "value"),
+    [("diff.submodule", "log"), ("diff.submodule", "diff"), ("diff.ignoreSubmodules", "all")],
+)
+def test_gitlink_count_ignores_local_diff_settings(
+    tmp_path: Path, setting: str, value: str
+) -> None:
+    repo, _ = repository(tmp_path)
+    first = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{first},vendor")
+    git(repo, "commit", "-m", "base gitlink")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", "-b", "feature")
+    second = git(repo, "rev-parse", "HEAD")
+    git(repo, "update-index", "--cacheinfo", f"160000,{second},vendor")
+    git(repo, "commit", "-m", "advance gitlink")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "feature")
+    baseline = invoke(repo, "section", "--base-ref", "main", "--head", head)
+    assert baseline.returncode == 0, baseline.stderr
+    assert "| code | 1 | 0 | 1 | 0 | +1 −1 |" in baseline.stdout
+    git(repo, "config", setting, value)
+    result = invoke(repo, "section", "--base-ref", "main", "--head", head)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == baseline.stdout

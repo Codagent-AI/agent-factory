@@ -206,6 +206,8 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
             "--text",
             "--full-index",
             "--no-renames",
+            "--submodule=short",
+            "--ignore-submodules=none",
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
