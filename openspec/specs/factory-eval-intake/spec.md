@@ -38,9 +38,9 @@ Execution admission SHALL identify an evaluation card by its native issue type, 
 
 ### Requirement: Interpret one evaluation configuration per request
 
-The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean; `fixture_ref`, when supplied, SHALL be a non-empty TOML string. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
+The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `crosscheck`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean; `fixture_ref`, when supplied, SHALL be a non-empty TOML string. Omitted settings SHALL use configured defaults; the configured eval defaults SHALL include a complete `crosscheck` profile, which the `and-scene` suite requires for the agent that reviews planned tasks. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
 
-When the eval kind is configured for Fly execution, a request whose effective lead, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
+When the eval kind is configured for Fly execution, a request whose effective lead, crosscheck, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
 
 Request-level revision selection SHALL apply to Agent Runner, Agent Skills, and the and-scene fixture. `fixture_ref` names an and-scene branch, tag, or commit for the suite's fixture. When it is omitted, the suite SHALL use the fixture its pinned harness selects, as before this change; configuration SHALL supply no default for it. The `agent-evals` harness SHALL follow the configured harness branch (default `main`); request-level selection of harness revisions remains unsupported. Recording the resolved harness commit SHALL identify the test environment used for the result.
 
@@ -51,6 +51,16 @@ Repetitions SHALL be a positive integer. An optional configured maximum SHALL re
 - **WHEN** a valid block supplies a Runner ref and a complete lead profile while omitting other settings
 - **THEN** those supplied settings replace their respective defaults
 - **AND** all omitted settings retain their configured defaults
+
+#### Scenario: Override the crosscheck profile
+
+- **WHEN** a valid block supplies `crosscheck = "claude:claude-opus-5-5:high"` and omits every other setting
+- **THEN** the request is valid, its effective crosscheck profile is the supplied triple, and all other settings retain their configured defaults
+
+#### Scenario: Omit the crosscheck profile
+
+- **WHEN** a valid block does not supply `crosscheck`
+- **THEN** the request's effective crosscheck profile is the configured eval default
 
 #### Scenario: Supply invalid execution settings
 
@@ -318,3 +328,4 @@ A deploy or rollback SHALL NOT change a claim's frozen inputs or the reports ren
   rolled back
 - **THEN** its recorded settings, revisions, sources, and request fingerprint are unchanged, and
   its `Refs` field, frozen-inputs comment, and repetition reports are the same as before
+
