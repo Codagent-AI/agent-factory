@@ -267,7 +267,7 @@ def pr_state(number: int | None = None) -> dict[str, Any] | None:
     return state
 
 
-def render(result: Counts | Unavailable, base_ref: str, mb: str, head: str) -> str:
+def render(result: Counts | Unavailable, base_ref: str, head: str) -> str:
     lines = [START, "### Lines of code", ""]
     if isinstance(result, Unavailable):
         reason = html.escape(" ".join(result.reason.split()), quote=False)
@@ -284,7 +284,7 @@ def render(result: Counts | Unavailable, base_ref: str, mb: str, head: str) -> s
             )
         lines += [
             "",
-            f"Measured `{mb[:12]}..{head[:12]}` (merge base with `{base_ref}` "
+            f"Measured `{result.merge_base[:12]}..{head[:12]}` (merge base with `{base_ref}` "
             "to the pull request head).",
             "OpenSpec specifications, other documentation, and configuration are excluded.",
         ]
@@ -381,7 +381,7 @@ def state_section(state: dict[str, Any]) -> str:
     base = str(cast(dict[str, Any], state.get("base") or {}).get("ref") or "")
     head = str(cast(dict[str, Any], state.get("head") or {}).get("sha") or "")
     result = measure(base, head)
-    return render(result, base, result.merge_base if isinstance(result, Counts) else "", head)
+    return render(result, base, head)
 
 
 def main() -> int:
@@ -400,14 +400,7 @@ def main() -> int:
         args.number = payload.get("number")
     if args.mode == "section":
         result = measure(args.base_ref, args.head)
-        print(
-            render(
-                result,
-                args.base_ref,
-                result.merge_base if isinstance(result, Counts) else "",
-                args.head,
-            )
-        )
+        print(render(result, args.base_ref, args.head))
         return 0
     try:
         state = pr_state(args.number)
@@ -418,7 +411,7 @@ def main() -> int:
         if args.mode != "refresh-file":
             print(str(error), file=sys.stderr)
             return 1
-        section = render(Unavailable(str(error)), "", "", "")
+        section = render(Unavailable(str(error)), "", "")
         state = {}
     if args.mode == "refresh-file":
         try:

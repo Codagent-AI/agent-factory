@@ -128,7 +128,7 @@ def test_issue_reference_diff_totals(
 
 
 def test_render_zero_rows_and_measured_commits() -> None:
-    section = loc.render(loc.Counts(), "main", "a" * 40, "b" * 40)
+    section = loc.render(loc.Counts(merge_base="a" * 40), "main", "b" * 40)
     assert "| code | 0 | 0 | 0 | 0 | +0 −0 |" in section
     assert "| tests | 0 | 0 | 0 | 0 | +0 −0 |" in section
     assert "Measured `aaaaaaaaaaaa..bbbbbbbbbbbb`" in section
@@ -137,7 +137,7 @@ def test_render_zero_rows_and_measured_commits() -> None:
 
 
 def test_unavailable_is_one_escaped_line() -> None:
-    section = loc.render(loc.Unavailable("fetch failed\n" + loc.START), "", "", "")
+    section = loc.render(loc.Unavailable("fetch failed\n" + loc.START), "", "")
     assert (
         "Lines-of-code count unavailable: fetch failed &lt;!-- agent-factory:loc --&gt;." in section
     )
@@ -154,7 +154,7 @@ def test_unavailable_is_one_escaped_line() -> None:
     ],
 )
 def test_insert_anchors_and_idempotence(body: str, anchor: str) -> None:
-    section = loc.render(loc.Counts(), "main", "a", "b")
+    section = loc.render(loc.Counts(merge_base="a"), "main", "b")
     result = loc.upsert(body, section)
     assert result.index(section) >= result.index(anchor) + len(anchor)
     assert loc.upsert(result, section) == result
@@ -163,7 +163,7 @@ def test_insert_anchors_and_idempotence(body: str, anchor: str) -> None:
 def test_replace_duplicates_and_preserve_outside_bytes() -> None:
     block = f"{loc.START}\nold\n{loc.END}\n"
     body = "prefix  \n" + block + "middle\n" + block + "suffix"
-    section = loc.render(loc.Counts(), "main", "a", "b")
+    section = loc.render(loc.Counts(merge_base="a"), "main", "b")
     assert loc.upsert(body, section) == "prefix  \n" + section + "\nmiddle\nsuffix"
 
 
@@ -185,7 +185,7 @@ def test_inline_and_fenced_markers_are_literal(fence: str, existing: bool) -> No
         f"{loc.START}\nexample\n{loc.END}\n{fence}\n"
     )
     old = f"{loc.START}\nstale\n{loc.END}\n" if existing else ""
-    section = loc.render(loc.Counts(), "main", "a", "b")
+    section = loc.render(loc.Counts(merge_base="a"), "main", "b")
     updated = loc.upsert(example + old, section)
     assert updated.startswith(example)
     assert sum(text == loc.START for _, _, text in loc.live_lines(updated)) == 1
