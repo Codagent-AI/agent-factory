@@ -124,8 +124,28 @@ def count(diff_text: str, binary_blobs: set[str] | None = None) -> Counts:
     return result
 
 
+# A count must never stall a workflow step: no command may wait for a credential prompt
+# or run unbounded on an unresponsive remote.
+COMMAND_TIMEOUT = 120.0
+NON_INTERACTIVE = {
+    "GIT_TERMINAL_PROMPT": "0",
+    "GCM_INTERACTIVE": "never",
+    "GH_PROMPT_DISABLED": "1",
+}
+
+
 def command(*args: str, env: dict[str, str] | None = None) -> bytes:
-    completed = subprocess.run(args, capture_output=True, env=env, check=False)
+    try:
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            env={**(os.environ if env is None else env), **NON_INTERACTIVE},
+            timeout=COMMAND_TIMEOUT,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"{' '.join(args)}: timed out after {error.timeout:g}s") from error
     if completed.returncode:
         detail = completed.stderr.decode("utf-8", "replace").strip()
         raise RuntimeError(f"{' '.join(args)}: {detail or f'exit {completed.returncode}'}")
@@ -138,7 +158,9 @@ def blob_prefix(blob: str, env: dict[str, str]) -> bytes:
     # A file keeps stderr from blocking the stdout read or accumulating in memory.
     with (
         tempfile.TemporaryFile() as errors,
-        subprocess.Popen(args, stdout=subprocess.PIPE, stderr=errors, env=env) as process,
+        subprocess.Popen(
+            args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors, env=env
+        ) as process,
     ):
         assert process.stdout is not None
         terminated = False
@@ -182,7 +204,9 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
         exists = subprocess.run(
             ["git", "cat-file", "-e", f"{head_sha}^{{commit}}"],
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             env=env,
+            timeout=COMMAND_TIMEOUT,
             check=False,
         )
         if exists.returncode:
@@ -237,7 +261,7 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
         result = count(patch, binary_blobs)
         result.merge_base = mb
         return result
-    except (OSError, RuntimeError, ValueError, SyntaxError) as error:
+    except (OSError, RuntimeError, ValueError, SyntaxError, subprocess.TimeoutExpired) as error:
         return Unavailable(" ".join(str(error).split()))
 
 

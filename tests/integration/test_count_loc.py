@@ -441,3 +441,55 @@ def test_gitlink_count_ignores_local_diff_settings(
     result = invoke(repo, "section", "--base-ref", "main", "--head", head)
     assert result.returncode == 0, result.stderr
     assert result.stdout == baseline.stdout
+
+
+def test_credential_prompt_never_blocks_the_count(
+    published: tuple[Path, Path, str, str],
+) -> None:
+    """An origin that asks for credentials fails fast instead of waiting for a prompt."""
+    import http.server
+    import threading
+
+    class Unauthorized(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="git"')
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Unauthorized)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    repo, _, _, head = published
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/repo.git"
+        git(repo, "remote", "set-url", "origin", url)
+        result = subprocess.run(
+            [sys.executable, SCRIPT, "section", "--base-ref", "main", "--head", head],
+            cwd=repo,
+            env={**os.environ, "GIT_ASKPASS": "", "SSH_ASKPASS": ""},
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    finally:
+        server.shutdown()
+    assert result.returncode == 0, result.stderr
+    assert "Lines-of-code count unavailable: git fetch" in result.stdout
+    assert "<!-- agent-factory:loc-end -->" in result.stdout
+
+
+def test_unresponsive_remote_times_out_as_unavailable(
+    published: tuple[Path, Path, str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.unit.test_count_loc import loc
+
+    repo, _, _, head = published
+    git(repo, "config", "remote.origin.uploadpack", "sleep 30; git-upload-pack")
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr(loc, "COMMAND_TIMEOUT", 1.0)
+    result = loc.measure("main", head)
+    assert isinstance(result, loc.Unavailable)
+    assert "timed out after 1s" in result.reason
