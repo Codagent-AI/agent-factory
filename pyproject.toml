@@ -43,7 +43,9 @@ venv = ".venv"
 # Docker-dependent tests are deselected by default: this project runs its fixes on the host,
 # and a machine without a responsive daemon would otherwise stall on every Docker call.
 # Run them with `pytest -m docker` on a Docker-enabled host.
-addopts = "--strict-config --strict-markers -m 'not docker' -n auto --dist worksteal"
+# CLI cycle tests launch many subprocesses; keep default contention bounded.
+# An explicit -n still overrides this default.
+addopts = "--strict-config --strict-markers -m 'not docker' -n 4 --dist worksteal"
 testpaths = ["tests"]
 # Shared doubles are imported as `tests.fixtures...`.
 pythonpath = ["."]
