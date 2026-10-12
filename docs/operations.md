@@ -270,6 +270,10 @@ pinned Agent Runner revision must define the workflow; the suite checks that
 and the workflow's required parameters at launch. Results from a non-default
 workflow are not comparable with default-workflow results.
 
+A release without this setting ignores a frozen `workflow` and runs the suite
+default, with no refusal from `scripts/deploy.sh`. Before rolling back past
+it, let each unfinished claim that requested a workflow settle or cancel it.
+
 ### Feature pull requests
 
 Move a writer-authored Feature issue in a configured fix target to Ready to
