@@ -62,7 +62,9 @@ duplicates activity.
 
 The shipped eval parser supports the configured Runner/Skills refs, complete
 `lead`, `crosscheck`, `implementor`, and `tester` role profiles,
-`skip_validator`, and a positive `repetitions` count. Defaults
+`skip_validator`, a positive `repetitions` count, an and-scene `fixture_ref`,
+and an optional Agent Runner `workflow` (for example
+`core:orchestrated-implement-change`; omitted, the suite's default runs). Defaults
 are applied solely while a new claim is frozen. The snapshot used by its parser
 contract is kept in `tests/fixtures/eval-request.md` with its source revision.
 
