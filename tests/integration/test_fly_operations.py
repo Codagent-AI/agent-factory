@@ -9,12 +9,14 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
 from agent_factory import runtime, supervisor
+from agent_factory.backends import Probe
 from agent_factory.config import LocalConfig, SharedConfig
 from agent_factory.controller import ExecutionPlan
 from agent_factory.fly import backend as fly_backend
@@ -359,6 +361,112 @@ def _fly_plan(artifact: Path) -> ExecutionPlan:
         {"artifact_path": str(artifact), "backend": "fly-machine"},
         False,
     )
+
+
+@pytest.mark.parametrize("transition", ["launcher-exit", "gone", "stopped"])
+def test_fly_observation_reads_collection_after_terminal_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: Literal["launcher-exit", "gone", "stopped"],
+) -> None:
+    result = {"evaluation_status": "completed", "verdict": "passed"}
+    identity_calls = 0
+    probe_calls = 0
+
+    def identity_status(_identity: object) -> str:
+        nonlocal identity_calls
+        identity_calls += 1
+        if transition == "launcher-exit" and identity_calls > 1:
+            # Collection lands just before the launcher is observed to have exited.
+            (tmp_path / "result.json").write_text(json.dumps(result))
+            return "missing"
+        return "alive"
+
+    class Backend(fly_backend.FlyMachineBackend):
+        def probe(self, identity: Mapping[str, object]) -> Probe:
+            nonlocal probe_calls
+            probe_calls += 1
+            if transition != "launcher-exit" and probe_calls > 1:
+                (tmp_path / "result.json").write_text(json.dumps(result))
+                return Probe(transition)
+            return Probe("alive")
+
+    def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(supervisor, "_identity_status", identity_status)
+    monkeypatch.setattr(supervisor, "_FLY_PROBE_SECONDS", 0)
+    monkeypatch.setattr(supervisor.time, "sleep", no_sleep)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        claim = store.create_claim(ClaimDraft("example/evals", 7, "I7", "P7", "eval", "fp", {}))
+        run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+        store.mark_running(run.id, {})
+
+        supervisor._observe_fly(  # pyright: ignore[reportPrivateUsage]
+            store,
+            run.id,
+            _fly_plan(tmp_path),
+            SupervisionLimits(60, 600, 3600),
+            {"id": "machine-1"},
+            Backend(),
+            {},
+        )
+
+        observed = store.get_run(run.id)
+        assert observed is not None
+        assert observed.status == "completed"
+        assert observed.result == result
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("machine_recorded", [False, True])
+def test_fly_recovery_reads_collection_after_observing_launcher_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, machine_recorded: bool
+) -> None:
+    result = {"evaluation_status": "completed", "verdict": "passed"}
+    identity_calls = 0
+
+    def identity_status(_identity: object) -> str:
+        nonlocal identity_calls
+        identity_calls += 1
+        if not machine_recorded and identity_calls == 1:
+            return "alive"
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return "missing"
+
+    def machine_identity(*_args: object) -> dict[str, object] | None:
+        return {"id": "machine-1"} if machine_recorded else None
+
+    def adopt(*_args: object) -> Probe:
+        return Probe("gone")
+
+    def provenance(*_args: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(supervisor, "_identity_status", identity_status)
+    monkeypatch.setattr(fly_backend.FlyMachineBackend, "identity_from_plan", machine_identity)
+    monkeypatch.setattr(fly_backend.FlyMachineBackend, "adopt", adopt)
+    monkeypatch.setattr(fly_backend.FlyMachineBackend, "provenance", provenance)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        claim = store.create_claim(ClaimDraft("example/evals", 7, "I7", "P7", "eval", "fp", {}))
+        run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+        store.mark_running(run.id, {})
+        running = store.get_run(run.id)
+        assert running is not None
+
+        supervisor._supervise_fly(  # pyright: ignore[reportPrivateUsage]
+            store, running, _fly_plan(tmp_path), SupervisionLimits(60, 600, 3600)
+        )
+
+        observed = store.get_run(run.id)
+        assert observed is not None
+        assert observed.status == "completed"
+        assert observed.result == result
+    finally:
+        store.close()
 
 
 def test_status_shows_machine_id_state_and_deadline_for_an_active_run(
