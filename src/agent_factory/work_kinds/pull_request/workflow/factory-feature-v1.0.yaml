@@ -129,6 +129,7 @@ steps:
     script: checkpoint.sh
     script_inputs:
       phase: implemented
+      artifact_dir: "{{artifact_dir}}"
       branch_name: "{{branch_name}}"
       change_name: "{{change_name}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
