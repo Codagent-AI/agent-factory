@@ -91,6 +91,7 @@ FEATURE_STAGED_FILES = (
     "check-openspec.sh",
     "record-validation-failure.sh",
     "verify-classification.py",
+    "record-classification-failure.py",
     "verify-feature-outcome.py",
     "annotate-pr.sh",
     "annotate-pr.py",
