@@ -20,10 +20,12 @@ git cat-file -e "$target^{commit}"
 fallback=''
 effective_resume=$resume
 merge_status=''
+prior_head=''
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$script_dir/merge-base.sh"
 if [ -n "$prior" ]; then
   if git fetch origin "refs/heads/$prior:refs/remotes/origin/$prior" 2>/dev/null; then
+    prior_head=$(git rev-parse "refs/remotes/origin/$prior")
     git checkout -B "$branch" "refs/remotes/origin/$prior" >&2
     merge_base "${base_head:-$target}" "$target" "$branch" "$artifact_dir" "$resume" "$prior"
   elif git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" 2>/dev/null; then
@@ -59,4 +61,12 @@ if [ "$effective_resume" = finalize ]; then
     merged|conflict) effective_resume=verify ;;
   esac
 fi
+python3 - "$artifact_dir/attempt-start.json" "$effective_resume" "$(git rev-parse HEAD)" "$prior_head" <<'PYTHON'
+import json, sys
+from pathlib import Path
+value = {'resume_from': sys.argv[2], 'head': sys.argv[3]}
+if sys.argv[4]:
+    value['prior_head'] = sys.argv[4]
+Path(sys.argv[1]).write_text(json.dumps(value) + '\n')
+PYTHON
 printf '%s' "$effective_resume"
