@@ -92,7 +92,9 @@ def _finished(
     )
     (artifact / "logs").mkdir()
     (artifact / "logs" / "agent-runner.log").write_text("private", encoding="utf-8")
-    run = store.reserve_run(claim.id, unit, reason="initial", evidence_path=str(artifact))
+    run = store.reserve_run(
+        claim.id, unit, lane="low", reason="initial", evidence_path=str(artifact)
+    )
     store.mark_running(run.id, {})
     store.finish_run(run.id, execution_status="completed", result={})
     if consumed:

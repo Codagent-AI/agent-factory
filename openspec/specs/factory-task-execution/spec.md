@@ -190,7 +190,7 @@ Each task attempt SHALL have configurable limits with defaults of 15 minutes wit
 
 Wherever the claim lifecycle, operations, or execution-backend requirements name fix and feature claims as pull-request claims, task claims SHALL be included and follow the fix rules unless a task requirement says otherwise. That includes:
 
-- one slot per kind, with a blocked task claim occupying no slot;
+- one attempt per kind and Priority lane, with a blocked task claim occupying no lane;
 - correcting contradicting status edits, where a triage-blocked task stays in Running and a review-blocked task stays in Review;
 - pre-suite failure handling;
 - exemption of settled work from closure cancellation;
@@ -234,3 +234,4 @@ Validator repair SHALL be instructed not to remediate a CHECK failure when the s
 
 - **WHEN** the branch changes a function signature and a check fails in an untouched file with unchanged configuration and no such error at the merge base
 - **THEN** validator repair treats the failure as branch-caused and fixes it
+

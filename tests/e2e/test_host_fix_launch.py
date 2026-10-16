@@ -192,7 +192,7 @@ class HostFixture:
                 )
             )
             run = store.reserve_run(
-                claim.id, "fix", reason="initial", evidence_path=str(self.evidence_root)
+                claim.id, "fix", lane="low", reason="initial", evidence_path=str(self.evidence_root)
             )
         self.run_id = run.id
         self.evidence = self.evidence_root / "attempt-1"

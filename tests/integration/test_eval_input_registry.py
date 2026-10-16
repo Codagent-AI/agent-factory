@@ -102,7 +102,7 @@ def test_ordinary_registry_input(
     assert refs is not None and refs.endswith(f"sample@{sample_sha[:7]}")
     assert "sample" in handler.frozen_inputs_event(claim)
     run = store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     assert f"Sample: {sample_sha}" in handler.attempt_message(
         run, {"execution_status": "settled", "product_verdict": "passed"}, stage="settled"

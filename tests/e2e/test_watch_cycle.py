@@ -79,7 +79,9 @@ def test_quiet_cycle_and_queued_budget_notice_deliver_once(
         step(store, client, shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
         assert watch_store.rows(store) == []
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "eval", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         store.set_setting("consumed-results", run.id, {"complete": True})
         old = datetime.now(UTC) - timedelta(minutes=8)
@@ -139,7 +141,9 @@ def test_failure_session_completes_and_delivers_once(
         )
         client = Comments()
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "eval", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/failure")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/failure"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         store.set_setting("consumed-results", run.id, {"complete": True})
         old = datetime.now(UTC) - timedelta(minutes=1)
@@ -223,7 +227,9 @@ def test_ready_pr_check_files_issues_and_posts_nothing(
         )
         client = Comments()
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/pr"
+        )
         pr = "https://github.com/o/r/pull/9"
         issue = "https://github.com/o/agent-runner/issues/41"
         store.finish_run(
@@ -348,7 +354,9 @@ def test_ready_pr_without_parseable_url_is_logged_without_launch(
             watch=WatchConfig(True, "o/r", "claude:model:medium"),
         )
         claim = store.create_claim(ClaimDraft("o/r", 2, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/pr"
+        )
         store.finish_run(
             run.id,
             execution_status="completed",
@@ -396,7 +404,9 @@ def test_interrupted_host_result_after_failed_board_cycle_starts_one_check(
             watch=WatchConfig(True, "o/r", "claude:model:medium", grace_minutes=0),
         )
         claim = store.create_claim(ClaimDraft("o/r", 8, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/pr"
+        )
         store.finish_run(run.id, execution_status="interrupted", result={})
         finished = datetime.now(UTC) - timedelta(minutes=5)
         store._connection.execute(
@@ -638,7 +648,9 @@ def test_second_check_waits_for_same_pr(tmp_path: Path, monkeypatch: pytest.Monk
         def token() -> str:
             return "unused"
 
-        first = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/pr")
+        first = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/pr"
+        )
         store.finish_run(
             first.id,
             execution_status="completed",
@@ -650,7 +662,9 @@ def test_second_check_waits_for_same_pr(tmp_path: Path, monkeypatch: pytest.Monk
         step(store, Comments(), shared, local, tmp_path / "local.toml", token)  # type: ignore[arg-type]
         first_rows = [row for row in watch_store.rows(store) if row["event_kind"] == "PR-READY"]
         assert len(first_rows) == 1 and first_rows[0]["state"] == "launched"
-        second = store.reserve_run(claim.id, "two", reason="review", evidence_path="/tmp/pr2")
+        second = store.reserve_run(
+            claim.id, "two", lane="low", reason="review", evidence_path="/tmp/pr2"
+        )
         store.finish_run(
             second.id,
             execution_status="completed",

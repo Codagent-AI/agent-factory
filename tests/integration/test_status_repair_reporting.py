@@ -68,7 +68,7 @@ def _active_claim(store: ClaimStore) -> str:
     claim = store.create_claim(
         ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", {"settings": {}})
     )
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="unused")
+    run = store.reserve_run(claim.id, "rep-1", lane="low", reason="initial", evidence_path="unused")
     store.mark_running(run.id, {})
     return claim.id
 

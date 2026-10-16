@@ -237,7 +237,9 @@ def test_reconcile_preserves_handoff_for_unconsumed_own_result(
         store, cast(ReportingClient, object()), {"fix": handler}, artifact_root=tmp_path
     )
     claim = store.create_claim(ClaimDraft("example/work", 2, "I2", "P2", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {})
     result: dict[str, object] = {
         "outcome": "pull-request",

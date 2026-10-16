@@ -116,7 +116,9 @@ def test_int_005_reserved_recovery_attempt_launches_instead_of_attaching(
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
-        run = store.reserve_run(claim.id, "rep-1", reason="recovery", evidence_path=str(artifact))
+        run = store.reserve_run(
+            claim.id, "rep-1", lane="low", reason="recovery", evidence_path=str(artifact)
+        )
         launched: list[str] = []
 
         def launch(_store: object, reserved: Run, _plan: object, _limits: object) -> None:

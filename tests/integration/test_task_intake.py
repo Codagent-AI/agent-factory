@@ -91,12 +91,18 @@ def test_task_slot_is_independent_of_fix_and_feature(tmp_path: Path) -> None:
                     "example/work", number, f"I{number}", f"P{number}", kind, f"fp-{kind}", {}
                 )
             )
-            store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(tmp_path / kind))
+            store.reserve_run(
+                claim.id, kind, lane="low", reason="initial", evidence_path=str(tmp_path / kind)
+            )
         assert {run.kind for run in store.nonterminal_runs()} == {"fix", "feature", "task"}
         extra = store.create_claim(ClaimDraft("example/work", 4, "I4", "P4", "task", "fp-4", {}))
         try:
             store.reserve_run(
-                extra.id, "task", reason="initial", evidence_path=str(tmp_path / "extra")
+                extra.id,
+                "task",
+                lane="low",
+                reason="initial",
+                evidence_path=str(tmp_path / "extra"),
             )
         except NonterminalRunError:
             pass

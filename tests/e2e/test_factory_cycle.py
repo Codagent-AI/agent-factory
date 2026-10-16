@@ -299,8 +299,8 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        # A whole tick can exceed one probe deadline when subprocess startup is slow.
-        timeout=60,
+        # Ten parallel workers can slow the real Git/CLI subprocess chain.
+        timeout=90,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr
@@ -795,7 +795,7 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
     )
 
     store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "artifacts")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "artifacts")
     )
     store.set_claim_lifecycle(claim.id, "active", {})
     _cli(config, env, "tick")

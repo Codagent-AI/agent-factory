@@ -135,7 +135,9 @@ def _observe(
     )
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "x", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+    )
     store.configure_run(run.id, plan={"argv": ["true"]}, limits={})
     store.mark_running(run.id, {})
     if cancel:

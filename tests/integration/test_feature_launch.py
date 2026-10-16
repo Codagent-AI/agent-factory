@@ -302,7 +302,7 @@ def test_int007_controller_records_moved_base_and_holds_fetch_failure(
 
     monkeypatch.setattr(launch, "resolve_runner_executable", runner_executable)
     run = store.reserve_run(
-        claim.id, "feature", reason="initial", evidence_path=str(tmp_path / "evidence")
+        claim.id, "feature", lane="low", reason="initial", evidence_path=str(tmp_path / "evidence")
     )
     plan = feature.plan(store.get_claim(claim.id) or claim, run, prepared)
     assert plan.argv[0] == "/bin/bash"

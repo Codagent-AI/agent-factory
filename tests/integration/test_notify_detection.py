@@ -46,7 +46,9 @@ def test_settle_queued_outage_and_one_stop(tmp_path: Path) -> None:
     try:
         begin(store, shared)
         claim = store.create_claim(ClaimDraft("o/r", 12, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         store.finish_run(run.id, execution_status="completed", result={"outcome": "pull-request"})
         store.set_claim_lifecycle(claim.id, "settled", {"outcome": "pull-request"})
         now = datetime.now(UTC)
@@ -102,7 +104,9 @@ def test_absent_issue_must_be_verified_and_outage_restarts_settle(tmp_path: Path
     try:
         begin(store, shared)
         claim = store.create_claim(ClaimDraft("o/r", 12, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         store.finish_run(run.id, execution_status="completed", result={})
         now = datetime.now(UTC)
         bodies: dict[tuple[str, int], str] = {}
@@ -152,7 +156,9 @@ def test_watch_gate_waits_then_records_pending_note(tmp_path: Path) -> None:
     try:
         begin(store, shared)
         claim = store.create_claim(ClaimDraft("o/r", 12, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/evidence")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/evidence"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         store.set_claim_lifecycle(claim.id, "settled", {"outcome": "failed"})
         now = datetime.now(UTC)

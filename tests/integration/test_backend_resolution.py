@@ -45,7 +45,9 @@ def test_persisted_plan_resolves_after_restart(
 ) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", kind, "x", {}))
-    run = store.reserve_run(claim.id, "unit", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "unit", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     plan = ExecutionPlan(argv, str(tmp_path), {}, (), (), hints, False)
     store.configure_run(run.id, plan=plan_document(plan), limits=vars(SupervisionLimits()))
 
@@ -59,7 +61,9 @@ def test_ambiguous_persisted_plan_holds_its_run(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     plan = ExecutionPlan(("/bin/true",), str(tmp_path), {}, (), (), {}, False)
     store.configure_run(run.id, plan=plan_document(plan), limits=vars(SupervisionLimits()))
     assert store.begin_run(run.id, launch_nonce=run.launch_nonce, supervisor={}, process={})
@@ -74,12 +78,18 @@ def test_ambiguous_persisted_plan_holds_its_run(tmp_path: Path) -> None:
 def test_reconciliation_selects_only_live_and_unconsumed_runs(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-    consumed = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    consumed = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.finish_run(consumed.id, execution_status="failed", result={})
     store.set_setting("consumed-results", consumed.id, {"complete": True})
-    pending = store.reserve_run(claim.id, "fix", reason="recovery", evidence_path=str(tmp_path))
+    pending = store.reserve_run(
+        claim.id, "fix", lane="low", reason="recovery", evidence_path=str(tmp_path)
+    )
     store.finish_run(pending.id, execution_status="failed", result={})
-    active = store.reserve_run(claim.id, "review", reason="review", evidence_path=str(tmp_path))
+    active = store.reserve_run(
+        claim.id, "review", lane="low", reason="review", evidence_path=str(tmp_path)
+    )
 
     selected = store.runs_requiring_backend_reconciliation()
 
@@ -95,7 +105,9 @@ def test_recorded_fly_run_reconciles_after_fly_is_disabled(tmp_path: Path) -> No
     (factory / "manifest.json").write_text(
         '{"fly":{"app":"old-app","token_file":"/tmp/old-token"}}'
     )
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(artifact))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+    )
     plan = ExecutionPlan(
         ("run.sh",),
         str(tmp_path),
@@ -146,7 +158,11 @@ def test_legacy_plan_adoption_and_status(
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", kind, "x", {}))
     run = store.reserve_run(
-        claim.id, "rep-1" if kind == "eval" else "fix", reason=reason, evidence_path=str(tmp_path)
+        claim.id,
+        "rep-1" if kind == "eval" else "fix",
+        lane="low",
+        reason=reason,
+        evidence_path=str(tmp_path),
     )
     plan = ExecutionPlan(
         argv, str(tmp_path), {}, (), (), {**hints, "artifact_path": str(tmp_path)}, False
@@ -168,7 +184,9 @@ def test_legacy_fly_adoption_disposal_and_status(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "eval", "x", {}))
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     plan = ExecutionPlan(
         ("run.sh",),
         str(tmp_path),

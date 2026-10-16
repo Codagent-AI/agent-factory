@@ -52,6 +52,10 @@ def main() -> None:
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("tick")
     subcommands.add_parser("honored-revisions")
+    lanes = subcommands.add_parser("lanes").add_subparsers(dest="lanes_command", required=True)
+    lanes.add_parser("supported")
+    lanes.add_parser("enable")
+    lanes.add_parser("downgrade").add_argument("--check", action="store_true")
     pinned = subcommands.add_parser("pinned-claims")
     pinned.add_argument("--revision", required=True)
     status_parser = subcommands.add_parser("status")
@@ -69,6 +73,9 @@ def main() -> None:
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
+    if args.command == "lanes" and args.lanes_command == "supported":
+        print("priority-lanes")
+        return
     if args.command == "honored-revisions":
         print("\n".join(inputs.honored_revisions()))
         return
@@ -85,7 +92,23 @@ def main() -> None:
         state = local.state_path
     else:
         state = args.state
-    if args.command == "tick":
+    if args.command == "lanes":
+        with closing(
+            ClaimStore(state, read_only=args.lanes_command == "downgrade" and args.check)
+        ) as store:
+            if args.lanes_command == "enable":
+                store.enable_lanes()
+            else:
+                offenders = store.restore_kind_guard(args.check)
+                for run in offenders:
+                    claim = store.get_claim(run.claim_id)
+                    if claim is not None:
+                        print(
+                            f"{run.kind}: {claim.id} {claim.repository}#{claim.issue_number} "
+                            f"{run.lane or 'all'}"
+                        )
+                raise SystemExit(1 if offenders else 0)
+    elif args.command == "tick":
         _tick(state, args.config)
     elif args.command == "pinned-claims":
         with closing(ClaimStore(state, read_only=True)) as store:
@@ -133,6 +156,8 @@ def main() -> None:
             store.close()
         print(f"paused: {str(args.command == 'pause').lower()}")
     else:
+        with closing(ClaimStore(state)) as store:
+            store.enable_lanes()
         keep_running = True
 
         def stop(_signum: int, _frame: object) -> None:

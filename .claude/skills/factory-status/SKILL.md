@@ -53,7 +53,7 @@ Lead with what needs Paul, then the rest. Keep each item to one line with a link
    - Triage next steps that need Paul (from each triage result's `next_step`).
    - Blocked (`needs-input`) claims: the question in one line.
    - Finished evals awaiting a verdict: the score and failed gates.
-2. **Running**: each eval, fix, feature, and task slot's claim, and how long it has run. Include blocked task claims and task PRs waiting for review under **Waiting on you**.
+2. **Running**: each busy eval, fix, feature, and task lane's claim, and how long it has run. Include blocked task claims and task PRs waiting for review under **Waiting on you**.
 3. **Since last time**: finished claims, factory PRs merged automatically, factory issues the service filed or updated (`watch factory issues:` in `status`, with their PR or claim), triage (cause and what was done), and failures nobody has handled.
 4. **Health**, only when something is off:
    - paused, a readiness failure, or a closed admission window;
@@ -75,3 +75,17 @@ Act only when Paul asks:
 - Retrying an ended service check or triage: `agent-factory … watch redispatch <id>`.
 - Deploying merged changes: the `factory-deploy` skill.
 - Assigning an issue to the factory: the `factory-assign` skill.
+
+## Priority lanes
+
+Each kind runs at most one attempt per Priority lane: High (Urgent and High),
+Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
+of the same kind, including the next repetition, retry, resume, or review round of
+a claim already under way. The rules, sizing, and rollback procedure are in
+"Priority lanes" in `docs/operations.md`.
+
+Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
+`<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;
+`lane wait: <repo>#<n> waits for <kind> lane <lane>` naming the holder and the
+cause (`lane-busy`, `higher-lane`, `legacy`, or `kind-mode`); and `lanes: off` when
+the per-kind guard is restored.
