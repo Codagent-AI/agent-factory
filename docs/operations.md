@@ -133,6 +133,7 @@ destroys a Machine on an API stop, which a quota hold relies on. At its deadline
 Machine stops itself, which ends compute billing; the controller's next cycle
 destroys it. A stopped Machine keeps only its disk, billed as storage, so if the
 controller is off for a long time, check `flyctl machine list -a <app>`.
+On restart the guest marks an interrupted job DONE with exit code 143; recovery delivers a new job instead of rerunning it (only Machines created after deploying this guest init have this behavior).
 
 `stand-in` runs a script of yours through the same create, verify, deliver,
 observe, collect, and destroy path an eval uses, without touching the claim

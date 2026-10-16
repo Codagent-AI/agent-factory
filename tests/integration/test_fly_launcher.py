@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -54,6 +55,7 @@ class FlyctlCall(TypedDict):
 class Environment:
     def __init__(self, tmp_path: Path, api: FakeMachinesApi) -> None:
         self.api = api
+        self.guest: subprocess.Popen[bytes]
         self.guest_root = tmp_path / "guest"
         self.artifact = tmp_path / "artifact"
         self.factory = self.artifact / ".factory"
@@ -133,6 +135,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Environment
                 "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
             }
         )
+        environment.guest = guest
         try:
             yield environment
         finally:
@@ -251,6 +254,57 @@ def test_recovery_resumes_in_the_same_machine_with_a_fresh_deadline(env: Environ
     )
     assert (env.artifact / "resumed.txt").read_text().strip() == "resumed"
     assert len([r for r in env.api.requests if str(r["path"]).endswith("/machines")]) == 1
+
+
+def test_recovery_after_machine_restart_delivers_its_own_resume_job(env: Environment) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == 0
+    first = json.loads((env.factory / "machine.json").read_text())
+    stop_guest(env.guest)
+    env.api.machines[first["id"]]["state"] = "stopped"
+    artifacts = env.guest_root / "artifacts"
+    job = artifacts / ".factory/job/1"
+    # Recreate the disk left by an interrupted initial attempt. The fake API
+    # does not boot the guest, so start its real init explicitly below.
+    for name in ("DONE", "exit-code", "files.txt"):
+        (job / name).unlink()
+    (job / "job.sh").write_text(
+        '#!/bin/bash\necho reran > "$FACTORY_ROOT/artifacts/sentinel"\nexit 2\n'
+    )
+    (artifacts / "run-state.json").write_text('{"schema_version": 1}')
+    guest = start_guest(
+        {
+            **os.environ,
+            "FACTORY_ROOT": str(env.guest_root),
+            "FACTORY_WATCHDOG_SECONDS": "0.2",
+            "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
+        }
+    )
+    try:
+        for _ in range(600):
+            if (job / "DONE").exists():
+                break
+            time.sleep(0.05)
+        assert (job / "DONE").exists()
+        assert (job / "exit-code").read_text().strip() == "143"
+        # An attach to the old attempt must collect the interrupted result.
+        assert env.lifecycle(env.manifest()).attach(env.artifact) == 143
+        assert (env.artifact / "guest-exit-code").read_text().strip() == "143"
+
+        request = env.request("printf '%s' --resume > /artifacts/resumed.txt", auth=False)
+        recovery = env.manifest("run-2", expect_checkpoint=True)
+        assert env.lifecycle(recovery).run(request) == 0
+
+        record = json.loads((env.factory / "machine.json").read_text())
+        assert record["id"] == first["id"] and record["run_id"] == "run-2"
+        assert record["job"] == 2
+        delivered = (artifacts / ".factory/job/2/job.sh").read_text()
+        assert "--resume" in delivered and "resumed.txt" in delivered
+        assert (env.artifact / "resumed.txt").read_text() == "--resume"
+        assert not (artifacts / "sentinel").exists()
+        assert "already running; attaching" not in (env.factory / "launcher.log").read_text()
+        assert any(str(r["path"]).endswith("/start") for r in env.api.requests)
+    finally:
+        stop_guest(guest)
 
 
 def test_expected_checkpoint_missing_is_a_lost_machine_but_unexpected_is_not(

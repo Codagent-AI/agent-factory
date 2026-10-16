@@ -48,6 +48,65 @@ def test_guest_init_runs_queued_jobs_and_records_artifact_manifest(tmp_path: Pat
         stop_guest(process)
 
 
+def test_restarted_guest_does_not_rerun_an_interrupted_job(tmp_path: Path) -> None:
+    root = tmp_path / "guest"
+    artifacts = root / "artifacts"
+    job = artifacts / ".factory/job/1"
+    job.mkdir(parents=True)
+    (job / "start").touch()
+    (job / "job.sh").write_text(
+        '#!/bin/bash\necho reran > "$FACTORY_ROOT/artifacts/sentinel"\nexit 0\n'
+    )
+    (job / "job.sh").chmod(0o700)
+    (job / "job.log").write_text("previous output\n")
+    pgid = artifacts / ".factory/active-job-pgid"
+    pgid.write_text("99999999\n")
+    (artifacts / "run-state.json").write_text("{}")
+    environment = {
+        **os.environ,
+        "FACTORY_ROOT": str(root),
+        "FACTORY_WATCHDOG_SECONDS": "0.2",
+        "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 60),
+    }
+    process = start_guest(environment)
+    try:
+        for _ in range(600):
+            if (job / "DONE").exists():
+                break
+            time.sleep(0.05)
+        assert (job / "DONE").exists()
+        assert (job / "exit-code").read_text().strip() == "143"
+        assert "run-state.json\t" in (job / "files.txt").read_text()
+        assert not (artifacts / "sentinel").exists()
+        assert not pgid.exists()
+        # DONE is published before the diagnostic is appended.
+        for _ in range(600):
+            if "interrupted by a Machine restart" in (job / "job.log").read_text():
+                break
+            time.sleep(0.05)
+        log = (job / "job.log").read_text()
+        assert log.startswith("previous output\n")
+        assert "interrupted by a Machine restart" in log and "not rerun" in log
+
+        next_job = artifacts / ".factory/job/2"
+        next_job.mkdir()
+        (next_job / "job.sh").write_text(
+            '#!/bin/bash\necho resumed > "$FACTORY_ROOT/artifacts/resumed"\nexit 7\n'
+        )
+        (next_job / "job.sh").chmod(0o700)
+        (next_job / "start").touch()
+        for _ in range(600):
+            if (next_job / "DONE").exists():
+                break
+            time.sleep(0.05)
+        assert (next_job / "DONE").exists()
+        assert (next_job / "exit-code").read_text().strip() == "7"
+        assert (artifacts / "resumed").read_text().strip() == "resumed"
+        assert not (artifacts / "sentinel").exists()
+    finally:
+        stop_guest(process)
+
+
 def test_job_cleanup_empties_what_the_job_user_owns_without_unlinking_it(tmp_path: Path) -> None:
     """The credential directories and env file sit in root-owned parents.
 

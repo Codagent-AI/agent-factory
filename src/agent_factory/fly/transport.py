@@ -843,6 +843,11 @@ class Lifecycle:
     # -- delivery -----------------------------------------------------------
 
     def _next_job(self) -> tuple[int, bool]:
+        """Find the first unfinished job and whether the guest has started it.
+
+        ``running`` means the guest has not finished the job; a Machine reboot
+        marks an interrupted job DONE before accepting another job.
+        """
         output = self.transport.command(
             "n=1; while [ -e /artifacts/.factory/job/$n/DONE ]; do n=$((n+1)); done; "
             "if [ -e /artifacts/.factory/job/$n/start ]; then printf '%s running' $n; "
