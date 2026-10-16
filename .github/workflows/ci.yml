@@ -41,17 +41,13 @@ jobs:
 
       - name: Keep test files on an unindexed RAM disk
         # The tests create many short-lived files and executables. On the hosted runner,
-        # Spotlight and the file-event log reacting to them took a large share of the
-        # 3 vCPUs the tests need.
+        # Spotlight and other system services reacting to them took a large share of
+        # the 3 vCPUs the tests need.
         run: |
           sudo mdutil -a -i off
           device="$(hdiutil attach -nomount ram://2097152 | awk '{print $1}')"
           diskutil erasevolume APFS FactoryTests "$device"
-          sudo mdutil -i off /Volumes/FactoryTests
-          sudo mkdir -p /Volumes/FactoryTests/.fseventsd
-          sudo touch /Volumes/FactoryTests/.fseventsd/no_log
-          diskutil unmount force /Volumes/FactoryTests
-          diskutil mount FactoryTests
+          touch /Volumes/FactoryTests/.metadata_never_index
           mkdir /Volumes/FactoryTests/tmp
           echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
 
