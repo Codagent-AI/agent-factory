@@ -9,7 +9,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Generator, Iterator
 from contextlib import contextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import cast
 
@@ -17,6 +17,7 @@ import pytest
 
 from agent_factory.fly.api import FlyApiError, FlyMachinesClient
 from tests.fixtures.fly.api import FakeMachinesApi
+from tests.fixtures.network import LoopbackHTTPServer
 
 MARKER = {"factory-owner": "agent-factory"}
 
@@ -257,7 +258,7 @@ class _Recorder(BaseHTTPRequestHandler):
 def _server(location: str | None) -> Generator[tuple[str, list[str | None]]]:
     seen: list[str | None] = []
     handler = type("Handler", (_Recorder,), {"location": location, "seen": seen})
-    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

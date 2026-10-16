@@ -781,6 +781,7 @@ def test_annotate_pr_reports_why_the_description_update_failed(tmp_path: Path) -
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "GH_BODY": str(tmp_path / "body.md"),
             "GH_API_ERROR": "HTTP 422: body is too long (maximum is 65536 characters)",
+            "FACTORY_ANNOTATE_RETRY_SECONDS": "0",
         },
         text=True,
         capture_output=True,
@@ -1536,7 +1537,12 @@ def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
             "openspec/changes/archive/2026-09-25-change",
         ],
         cwd=repo,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_COUNT": str(count)},
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GH_COUNT": str(count),
+            "FACTORY_ANNOTATE_RETRY_SECONDS": "0",
+        },
         text=True,
         capture_output=True,
     )
