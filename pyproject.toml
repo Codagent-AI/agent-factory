@@ -45,7 +45,7 @@ venv = ".venv"
 # Run them with `pytest -m docker` on a Docker-enabled host.
 # CLI cycle tests launch many subprocesses; keep default contention bounded.
 # An explicit -n still overrides this default.
-addopts = "--strict-config --strict-markers -m 'not docker' -n 4 --dist load"
+addopts = "--strict-config --strict-markers -m 'not docker' -n 4 --dist worksteal"
 testpaths = ["tests"]
 # Shared doubles are imported as `tests.fixtures...`.
 pythonpath = ["."]
