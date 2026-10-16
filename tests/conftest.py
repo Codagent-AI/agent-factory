@@ -33,9 +33,31 @@ def hermetic_bin(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return directory
 
 
+@pytest.fixture(scope="session")
+def git_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Git's default repository template without its sample hooks.
+
+    Git copies about fifteen inert `.sample` hook files into every repository it
+    creates or clones. They were a third of the files the suite wrote, and on the CI
+    runner system services react to every file.
+    """
+    directory = tmp_path_factory.mktemp("git-template")
+    (directory / "info").mkdir()
+    (directory / "info" / "exclude").write_text(
+        "# git ls-files --others --exclude-from=.git/info/exclude\n"
+    )
+    (directory / "description").write_text(
+        "Unnamed repository; edit this file 'description' to name the repository.\n"
+    )
+    return directory
+
+
 @pytest.fixture(autouse=True)
 def hermetic_tools(
-    request: pytest.FixtureRequest, hermetic_bin: Path, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    hermetic_bin: Path,
+    git_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The marker, not a keyword: parametrize ids such as `[docker]` are keywords too.
     node = cast(pytest.Item, request.node)  # pyright: ignore[reportUnknownMemberType]
@@ -45,6 +67,7 @@ def hermetic_tools(
         # instead of reaching the network. Unlike an insteadOf redirect, this leaves the
         # URLs that git reports unchanged.
         monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(git_template))
     # Supervisors started by a test observe their run five times a second rather than
     # twenty: each observation probes the process with `ps`, and several journeys keep
     # runs in flight at once on a 3-vCPU CI runner.

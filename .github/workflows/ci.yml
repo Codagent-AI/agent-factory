@@ -52,4 +52,4 @@ jobs:
           echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
 
       - name: Test
-        run: uv run pytest --durations=20 -n 3
+        run: uv run pytest --durations=20
