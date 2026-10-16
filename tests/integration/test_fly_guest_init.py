@@ -79,11 +79,6 @@ def test_restarted_guest_does_not_rerun_an_interrupted_job(tmp_path: Path) -> No
         assert "run-state.json\t" in (job / "files.txt").read_text()
         assert not (artifacts / "sentinel").exists()
         assert not pgid.exists()
-        # DONE is published before the diagnostic is appended.
-        for _ in range(600):
-            if "interrupted by a Machine restart" in (job / "job.log").read_text():
-                break
-            time.sleep(0.05)
         log = (job / "job.log").read_text()
         assert log.startswith("previous output\n")
         assert "interrupted by a Machine restart" in log and "not rerun" in log
@@ -105,6 +100,38 @@ def test_restarted_guest_does_not_rerun_an_interrupted_job(tmp_path: Path) -> No
         assert not (artifacts / "sentinel").exists()
     finally:
         stop_guest(process)
+
+
+def test_interrupted_job_diagnostic_is_written_before_manifest_and_done(tmp_path: Path) -> None:
+    from agent_factory.fly.guest import guest_init_script
+
+    root = tmp_path / "guest"
+    job = root / "artifacts/.factory/job/1"
+    job.mkdir(parents=True)
+    (job / "start").touch()
+    blocked = root / "manifest-blocked"
+    # Stop exactly at manifest generation to observe publication ordering.
+    script = guest_init_script().replace(
+        '  write_manifest "$directory"',
+        '  touch "$ROOT/manifest-blocked"; while :; do sleep 1; done\n'
+        '  write_manifest "$directory"',
+        1,
+    )
+    guest = subprocess.Popen(
+        ["bash", "-c", script],
+        env={**os.environ, "FACTORY_ROOT": str(root)},
+        start_new_session=True,
+    )
+    try:
+        for _ in range(600):
+            if blocked.exists():
+                break
+            time.sleep(0.05)
+        assert blocked.exists() and not (job / "DONE").exists()
+        assert (job / "job.log").exists(), "interruption must be logged before writing the manifest"
+        assert "not rerun" in (job / "job.log").read_text()
+    finally:
+        stop_guest(guest)
 
 
 def test_job_cleanup_empties_what_the_job_user_owns_without_unlinking_it(tmp_path: Path) -> None:

@@ -39,6 +39,7 @@ EXIT_MISMATCH = 73
 
 OWNER = "agent-factory"
 _START_WAIT_WINDOWS = 5
+_GUEST_BOOT_POLLS = 120
 _LOG_MARKER = b"---FACTORY-LOG---\n"
 _BUILD_TIMEOUT_SECONDS = 1800
 BUN_VERSION = "1.2.23"
@@ -644,6 +645,7 @@ class Lifecycle:
         if not _owned(machine, self._stable_metadata(record)):
             raise OwnershipMismatchError(machine_id)
         self.transport.machine_id = machine_id
+        self._wait_guest_boot(machine)
         job, _running = self._next_job()
         recorded = record.get("job")
         if isinstance(recorded, int) and recorded < job:
@@ -727,6 +729,8 @@ class Lifecycle:
             raise OwnershipMismatchError(machine_id)
         self._wait_started(machine_id)
         started = self.client.get_machine(machine_id)
+        self.transport.machine_id = machine_id
+        self._wait_guest_boot(started)
         self._update_record(
             {
                 "image_ref": _image(started),
@@ -800,6 +804,28 @@ class Lifecycle:
         self.transport.command(
             f"mkdir -p /var/lib/factory && printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
+
+        self._wait_guest_boot(machine)
+
+    def _wait_guest_boot(self, machine: Mapping[str, object]) -> None:
+        """Do not select or collect a job while boot is still retiring it."""
+        init = _value(machine, "config", "init", "exec")
+        if not isinstance(init, list) or not any(
+            isinstance(argument, str) and "/artifacts/.factory/booted" in argument
+            for argument in cast(list[object], init)
+        ):
+            # Older Machines keep their original init and cannot publish readiness.
+            return
+        for _ in range(_GUEST_BOOT_POLLS):
+            ready = self.transport.command(
+                'boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf local)"; '
+                '[ "$(cat /artifacts/.factory/booted 2>/dev/null)" = "$boot_id" ] '
+                "&& printf 1 || printf 0"
+            )
+            if ready.strip() == b"1":
+                return
+            self.sleep(1)
+        raise FlyTransportError("guest did not finish booting")
 
     def _wait_started(self, machine_id: str) -> None:
         """Fly caps one wait at 60 s; a first image pull on a host can take minutes."""

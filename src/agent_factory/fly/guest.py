@@ -93,10 +93,14 @@ if [ -e "$directory/start" ]; then
   # Match a job terminated by SIGTERM: 128 + 15.
   interrupted_exit_code=143
   printf '%s\n' "$interrupted_exit_code" >"$directory/exit-code"
+  printf '%s\n' 'Job interrupted by a Machine restart; not rerun.' >>"$directory/job.log"
   write_manifest "$directory"
   touch "$directory/DONE"
-  printf '%s\n' 'Job interrupted by a Machine restart; not rerun.' >>"$directory/job.log"
 fi
+
+# SSH can be available before the artifact walk finishes. Publish readiness only
+# after DONE. Bind it to this kernel boot because the artifact disk persists.
+(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf local) >"$ROOT/artifacts/.factory/booted"
 
 watchdog &
 watchdog_pid=$!

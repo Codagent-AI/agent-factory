@@ -18,7 +18,7 @@ import pytest
 
 from agent_factory.fly import transport
 from agent_factory.fly.api import FlyMachinesClient
-from agent_factory.fly.guest import stand_in_script
+from agent_factory.fly.guest import guest_init_script, stand_in_script
 from agent_factory.fly.launcher import main
 from agent_factory.fly.transport import (
     EXIT_COLLECTION_FAILED,
@@ -305,6 +305,110 @@ def test_recovery_after_machine_restart_delivers_its_own_resume_job(env: Environ
         assert any(str(r["path"]).endswith("/start") for r in env.api.requests)
     finally:
         stop_guest(guest)
+
+
+@pytest.mark.parametrize("machine_state", ["stopped", "started"])
+def test_recovery_waits_for_interrupted_job_manifest_before_selecting_a_job(
+    env: Environment, machine_state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == 0
+    record = json.loads((env.factory / "machine.json").read_text())
+    stop_guest(env.guest)
+    env.api.machines[record["id"]]["state"] = machine_state
+    artifacts = env.guest_root / "artifacts"
+    job = artifacts / ".factory/job/1"
+    for name in ("DONE", "exit-code", "files.txt"):
+        (job / name).unlink()
+    (artifacts / "run-state.json").write_text("{}")
+    booted = env.guest_root / "artifacts/.factory/booted"
+    booted.unlink(missing_ok=True)  # readiness has not been published on this simulated boot.
+    blocked = env.guest_root / "manifest-blocked"
+    release = env.guest_root / "release-manifest"
+    shim_bin = env.guest_root / "slow-bin"
+    shim_bin.mkdir()
+    shim = shim_bin / "sort"
+    shim.write_text(
+        '#!/bin/bash\ntouch "$FACTORY_ROOT/manifest-blocked"\n'
+        'while [ ! -e "$FACTORY_ROOT/release-manifest" ]; do sleep 0.05; done\n'
+        'exec /usr/bin/sort "$@"\n'
+    )
+    shim.chmod(0o700)
+    guest = subprocess.Popen(
+        ["bash", "-c", guest_init_script()],
+        env={
+            **os.environ,
+            "PATH": f"{shim_bin}{os.pathsep}{os.environ['PATH']}",
+            "FACTORY_ROOT": str(env.guest_root),
+            "FACTORY_WATCHDOG_SECONDS": "0.2",
+            "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
+        },
+        start_new_session=True,
+    )
+    lifecycle = env.lifecycle(env.manifest("run-2", expect_checkpoint=True))
+    next_job = lifecycle._next_job  # pyright: ignore[reportPrivateUsage]
+    waited = False
+
+    def select_job() -> tuple[int, bool]:
+        assert (job / "DONE").exists(), "launcher selected a job before boot cleanup completed"
+        return next_job()
+
+    def release_during_wait(seconds: float) -> None:
+        nonlocal waited
+        waited = True
+        release.touch()
+        fast_poll(seconds)
+
+    monkeypatch.setattr(lifecycle, "_next_job", select_job)
+    monkeypatch.setattr(lifecycle, "sleep", release_during_wait)
+    try:
+        for _ in range(600):
+            if blocked.exists():
+                break
+            time.sleep(0.05)
+        assert blocked.exists() and not (job / "DONE").exists()
+        request = env.request("printf '%s' --resume > /artifacts/resumed.txt", auth=False)
+        assert lifecycle.run(request) == 0
+        assert waited
+        assert (env.artifact / "resumed.txt").read_text() == "--resume"
+        assert json.loads((env.factory / "machine.json").read_text())["job"] == 2
+        assert "already running; attaching" not in (env.factory / "launcher.log").read_text()
+    finally:
+        release.touch()
+        stop_guest(guest)
+
+
+@pytest.mark.parametrize("boot_marker", [None, "previous-kernel-boot"])
+def test_guest_boot_wait_is_bounded_and_rejects_a_stale_marker(
+    env: Environment, monkeypatch: pytest.MonkeyPatch, boot_marker: str | None
+) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == 0
+    marker = env.guest_root / "artifacts/.factory/booted"
+    if boot_marker is None:
+        marker.unlink(missing_ok=True)
+    else:
+        marker.write_text(boot_marker)
+    monkeypatch.setattr(transport, "_GUEST_BOOT_POLLS", 2, raising=False)
+    lifecycle = env.lifecycle(env.manifest("run-2"))
+
+    def no_sleep(_seconds: float) -> None:
+        pass
+
+    monkeypatch.setattr(lifecycle, "sleep", no_sleep)
+    assert lifecycle.run(env.request("true", auth=False)) == EXIT_TRANSPORT
+    assert "guest did not finish booting" in (env.factory / "launcher.log").read_text()
+
+
+def test_legacy_guest_does_not_wait_for_a_boot_marker(env: Environment) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request("true", auth=False)) == 0
+    record = json.loads((env.factory / "machine.json").read_text())
+    machine = env.api.machines[record["id"]]
+    machine["config"]["init"] = {"exec": ["bash", "-c", "# legacy init"]}  # type: ignore[index]
+    machine["state"] = "stopped"
+    env.flyctl_log.write_text("")
+    (env.guest_root / "artifacts/.factory/booted").unlink(missing_ok=True)
+    assert env.lifecycle(env.manifest("run-2")).run(env.request("true", auth=False)) == 0
+    commands = [c["argv"][-1] for c in env.flyctl_calls() if c["argv"][:2] == ["ssh", "console"]]
+    assert not any("/artifacts/.factory/booted" in command for command in commands)
 
 
 def test_expected_checkpoint_missing_is_a_lost_machine_but_unexpected_is_not(
