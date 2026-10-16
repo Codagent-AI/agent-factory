@@ -670,8 +670,25 @@ attempts are never preempted or moved when Priority changes; each attempt takes
 its lane from the card's Priority when it is reserved. Kinds are independent: a
 High fix never holds an eval.
 
-So two evals run together only when the lower one is already running when the
-higher one arrives, and then only until the lower one's current repetition ends.
+Shared slots come first. `[slots]` in shared configuration gives each kind a
+number of attempts that run together whatever their lanes; an unlisted kind has
+1, which leaves only the lane rules. The shipped configuration sets `eval = 2`:
+while fewer than two eval attempts are unfinished, any eval attempt starts,
+whatever its lane and the running one's, so two Low evals, or a Low and a High,
+run side by side, repetitions included. Once two are unfinished, the lane rules
+above decide: another starts only in a free lane with no busy lane above it. For
+example, with two Low evals running, a Medium eval starts, and then a High one;
+with a Low and a High running, a Medium eval waits.
+
+```toml
+[slots]
+eval = 2
+```
+
+Each cycle publishes `[slots]` to the state database, so the change takes effect
+on the next cycle without a deploy, and manual commands use the same numbers.
+Lowering a count never stops running attempts; new ones wait until the kind is
+back under it.
 
 Status keeps `<kind> slot: free` for idle kinds, or prints
 `<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
@@ -686,7 +703,16 @@ Size host disk and memory for up to three concurrent attempts **per host kind**
 (fix, feature, task), including each attempt's clones, artifacts, model clients,
 and build tools. The existing disk floor, memory, quota, readiness, and job-cap
 holds still bound admission; memory is re-sampled before each sandbox admission.
-Concurrent eval lanes can increase Fly image builds, Machines, and spend.
+With N slots a kind can reach N + 2 attempts at once (N in the lowest busy lane,
+one in each lane above), so `eval = 2` allows up to four evals and more Fly image
+builds, Machines, and spend. Raise a host kind's count only after sizing the Mac
+for it.
+
+Shared slots can put two attempts in one lane, so in lane mode the per-lane
+SQLite index is not unique; the reservation gate, inside an immediate
+transaction, enforces the limit. A release from before shared slots keeps this
+index, shows only one holder per lane in `status`, and admits nothing into a lane
+that already has one.
 
 Rollback past lanes goes through `scripts/deploy.sh`. It refuses while any kind
 has more than one unfinished attempt. Pause, let attempts settle or cancel claims

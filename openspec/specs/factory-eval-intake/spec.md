@@ -342,24 +342,34 @@ A deploy or rollback SHALL NOT change a claim's frozen inputs or the reports ren
 
 ### Requirement: Fill eval Priority lanes
 
-Eval selection SHALL fill the eval kind's Priority lanes (see `factory-claim-lifecycle`). The factory SHALL admit an eligible eval only into the lane of its Priority, only while that lane is free and no eval attempt occupies a higher lane. An eval that cannot start because its lane or a higher lane is busy SHALL stay in Ready and SHALL NOT prevent selection of a later eligible eval whose lane can take it. The next repetition or recovery attempt of an eval claim that has started an attempt SHALL follow the same rule: it SHALL wait while an eval attempt occupies a higher lane. The other admission controls still apply to it: the window, pause, quota, readiness, and the job cap.
+Eval selection SHALL fill the eval kind's Priority lanes (see `factory-claim-lifecycle`), after the eval kind's shared slots (`[slots] eval`, 2 in the shipped configuration). While fewer eval attempts are unfinished than the shared slots, the factory SHALL admit an eligible eval attempt into the lane of its Priority whatever lanes the unfinished eval attempts occupy, including a second attempt in the same lane. Otherwise the factory SHALL admit an eligible eval attempt only into the lane of its Priority, only while no unfinished eval attempt occupies that lane or a higher lane. An eval that cannot start SHALL stay in Ready and SHALL NOT prevent selection of a later eligible eval that can start. The next repetition or recovery attempt of an eval claim that has started an attempt SHALL follow the same rule. The other admission controls still apply to it: the window, pause, quota, readiness, and the job cap.
 
-#### Scenario: Start a higher eval beside a running lower eval
+#### Scenario: Run any two evals together
 
-- **WHEN** a Low eval repetition is running and an eligible High eval sits in Ready
-- **THEN** the factory admits the High eval into the High eval lane, and the Low repetition continues
+- **WHEN** evals have two shared slots, a Low eval repetition is running and an eligible Low eval sits in Ready
+- **THEN** the factory admits the second Low eval into the Low eval lane, and both run
 
-#### Scenario: Hold a new lower eval while a higher eval runs
+#### Scenario: Run a lower eval beside a higher eval
 
-- **WHEN** a High eval repetition is running and an eligible Medium eval sits in Ready with the Medium eval lane free
-- **THEN** the factory does not admit the Medium eval until no eval attempt occupies the High lane
+- **WHEN** evals have two shared slots, a High eval repetition is the only unfinished eval attempt and an eligible Medium eval sits in Ready
+- **THEN** the factory admits the Medium eval into the Medium eval lane, and the High repetition continues
 
-#### Scenario: Hold a lower eval's repetitions while a higher eval runs
+#### Scenario: Start a higher eval past two
 
-- **WHEN** a Low eval claim has finished repetition 1 of three, and a High eval repetition is running
-- **THEN** the Low claim's repetition 2 waits until no eval attempt occupies the High or Medium lane, then starts in the Low eval lane
+- **WHEN** evals have two shared slots, two Low eval repetitions are running and an eligible High eval sits in Ready
+- **THEN** the factory admits the High eval into the High eval lane, and both Low repetitions continue
 
-#### Scenario: Queue a second eval of the same Priority
+#### Scenario: Hold a lower eval past two while a higher eval runs
 
-- **WHEN** a High eval repetition is running and a second eligible High eval sits in Ready
-- **THEN** the second High eval waits until the High eval lane is free
+- **WHEN** evals have two shared slots, a Low and a High eval repetition are running and an eligible Medium eval sits in Ready
+- **THEN** the factory does not admit the Medium eval until fewer than two eval attempts are unfinished or no eval attempt occupies the High lane
+
+#### Scenario: Continue a lower eval's repetitions beside a higher eval
+
+- **WHEN** evals have two shared slots, a Low eval claim has finished repetition 1 of three, and a High eval repetition is the only unfinished eval attempt
+- **THEN** the Low claim's repetition 2 starts in the Low eval lane beside it
+
+#### Scenario: Queue a third eval of the same Priority
+
+- **WHEN** evals have two shared slots, two High eval repetitions are running, and a third eligible High eval sits in Ready
+- **THEN** the third High eval waits until fewer than two eval attempts are unfinished

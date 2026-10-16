@@ -594,7 +594,14 @@ def _observe_fly(
             _supervise_fly(store, run, plan, limits)
             return
         if launcher_missing and result.result is None:
-            _finish_fly_launcher_exit(store, run, plan)
+            # The launcher may have collected the result and exited after the read above.
+            late = _load_result(
+                _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+            ).result
+            if late is not None:
+                store.finish_run(run_id, execution_status=_result_status(late), result=late)
+            else:
+                _finish_fly_launcher_exit(store, run, plan)
             return
         timeout = _timeout(now, started, last_progress, limits)
         cancelling = run.cancellation_requested

@@ -103,6 +103,7 @@ def cycle(state: Path, config_path: Path) -> None:
         closing(ClaimStore(state, job_cap=shared.job_cap)) as store,
         _watch_finally(store, client, shared, local, config_path, token_provider) as view,
     ):
+        store.set_lane_slots(shared.slots)
         controller = Controller(
             store,
             client,

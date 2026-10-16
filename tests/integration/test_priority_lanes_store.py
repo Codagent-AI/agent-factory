@@ -188,3 +188,37 @@ def test_unrecognized_lane_holds_every_lane(tmp_path: Path, value: str) -> None:
                 store.reserve_run(other.id, "one", lane=lane, reason="initial", evidence_path="/e")
             assert error.value.cause == "legacy"
         assert store.lane_decision("eval", "low").allowed
+
+
+def test_shared_slots_survive_the_old_lane_index(tmp_path: Path) -> None:
+    with closing(ClaimStore(tmp_path / "db")) as store:
+        store._ensure_lane_column()
+        store._connection.execute("DROP INDEX one_nonterminal_run_per_kind")
+        # The unique index an earlier release created, which held every lane to one.
+        store._connection.execute(
+            "CREATE UNIQUE INDEX one_nonterminal_run_per_lane ON run(kind, lane) "
+            "WHERE status IN ('reserved', 'running', 'observing')"
+        )
+        store.enable_lanes()
+        assert store.lane_mode() == "lanes"
+        store.set_lane_slots({"eval": 2})
+        claims = [
+            store.create_claim(ClaimDraft("o/r", n, f"I{n}", f"P{n}", kind, "fp", {}))
+            for n, kind in enumerate(["eval", "eval", "eval", "fix", "fix"])
+        ]
+        store.reserve_run(claims[0].id, "rep-1", lane="low", reason="initial", evidence_path="/e")
+        store.reserve_run(claims[1].id, "rep-1", lane="low", reason="initial", evidence_path="/e")
+        with pytest.raises(LaneBusy) as error:
+            store.reserve_run(
+                claims[2].id, "rep-1", lane="low", reason="initial", evidence_path="/e"
+            )
+        assert error.value.cause == "lane-busy"
+        assert len(store.lane_occupancy("eval").holders["low"]) == 2
+        store.reserve_run(claims[3].id, "fix", lane="low", reason="initial", evidence_path="/e")
+        with pytest.raises(LaneBusy):
+            store.reserve_run(claims[4].id, "fix", lane="low", reason="initial", evidence_path="/e")
+        # A later [slots] change reaches the gate without restarting anything.
+        store.set_lane_slots({"eval": 2, "fix": 2})
+        store.reserve_run(claims[4].id, "fix", lane="low", reason="initial", evidence_path="/e")
+        store.set_lane_slots({})
+        assert store.lane_slots("eval") == 1

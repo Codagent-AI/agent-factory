@@ -245,3 +245,43 @@ def test_cancellation_stops_without_a_snapshot(tmp_path: Path) -> None:
         assert finished is not None and finished.status == "cancelled"
     finally:
         store.close()
+
+
+def test_result_collected_as_the_launcher_exits_is_not_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory import supervisor
+
+    collected = {"evaluation_status": "pending-human-review", "delivery": "verified"}
+    real = supervisor._load_result  # pyright: ignore[reportPrivateUsage]
+    calls: list[object] = []
+
+    def racing(artifact: str, **kwargs: str) -> object:
+        loaded = real(artifact, **kwargs)
+        if not calls:
+            root = Path(artifact)
+            # The launcher collects the result and exits just after this read.
+            (root / "result.json").write_text(json.dumps(collected), encoding="utf-8")
+            (root / "guest-exit-code").write_text("0\n", encoding="utf-8")
+            launcher = cast(FakeBackend, calls_backend[0]).launcher
+            launcher.kill()
+            launcher.wait()
+        calls.append(loaded)
+        return loaded
+
+    calls_backend: list[object] = []
+    original_init = FakeBackend.__init__
+
+    def recording_init(self: FakeBackend, *args: object, **kwargs: object) -> None:
+        original_init(self, *args, **kwargs)  # type: ignore[arg-type]
+        calls_backend.append(self)
+
+    monkeypatch.setattr(FakeBackend, "__init__", recording_init)
+    monkeypatch.setattr(supervisor, "_load_result", racing)
+    _, run_id, store = _observe(tmp_path, cancel=False)
+    try:
+        finished = store.get_run(run_id)
+        assert finished is not None and finished.status == "completed"
+        assert finished.result == collected
+    finally:
+        store.close()

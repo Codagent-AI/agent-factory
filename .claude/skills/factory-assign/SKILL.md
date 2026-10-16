@@ -25,7 +25,7 @@ The tick admits a card when all of the following hold (`work_kinds/*/handler.py`
 - **Eval**: an open issue in `[routing] eval_source` (`agent-evals`) with native type **Eval** and an author who has write permission. The card needs Owner=factory and Status=Ready, and the body must parse: exactly one fenced eval TOML block with supported keys. The `eval-request` label is routing's trigger, not an admission gate. Still add it, because it is the documented convention.
 - **Feature**: an open issue in a configured feature target repository, with native type **Feature**, no `needs-input` label, an author with write, maintain, or admin permission, and Owner=factory and Status=Ready. Check the live release's feature targets and handler before changing a card. The `blocked` label and GitHub blocked-by relationship do not veto admission; keep a dependent feature in Backlog until its prerequisite has landed, even if Owner=factory.
 - **Task**: an open writer-authored issue in a fix target with native type **Task**, no `needs-input` label, Owner=factory and Status=Ready. The shared `[task]` section must enable admission. A Task only reaches the factory when moved to Ready; it is not routed automatically.
-- **All kinds**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the card's Priority lane and every higher lane of its kind are free, and the kind's readiness checks pass (disk floor, credentials, Fly). Each tick reserves at most one attempt per kind. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
+- **All kinds**: the factory is not paused, the admission window is open (evals use `[schedule]`; fixes are always open unless `[fix] schedule` is set), the card's Priority lane and every higher lane of its kind are free (or fewer attempts of its kind are running than its `[slots]` count), and the kind's readiness checks pass (disk floor, credentials, Fly). Each tick reserves at most one attempt per kind. It takes cards in order of Priority, then newest created, so a higher-ranked Ready card of the same kind goes first.
 - **Earlier claims**: an active claim is reused. A settled fix starts again when its card returns to Ready. A settled eval starts again when its parsed eval settings change (edits to prose or formatting do not count), even with its Verdict still set; with unchanged settings, only once its Verdict is cleared. Ask Paul before clearing a Verdict.
 
 ## 1. Choose the kind
@@ -68,7 +68,7 @@ It uses Paul's `gh` login for the type, labels, and Priority, and the Factory Ap
 PATH=~/.agent-factory/releases/current/.venv/bin:$PATH agent-factory --config ~/.agent-factory/config.toml status | grep -E '^(paused|lanes:|lane wait:|(eval|fix|feature|task) (slot|lane)|readiness|quota|admission window)'
 ```
 
-If the factory is paused, the card's lane or a higher lane of its kind is busy, a `readiness:<kind>` line reports a failure, or the admission window is closed, say so. The card waits in Ready and is admitted once the condition clears. A tick will not help, so stop here and report.
+If the factory is paused, the card's lane or a higher lane of its kind is busy (only once its kind's `[slots]` count is running), a `readiness:<kind>` line reports a failure, or the admission window is closed, say so. The card waits in Ready and is admitted once the condition clears. A tick will not help, so stop here and report.
 
 ## 4. Tick and confirm
 
@@ -99,8 +99,10 @@ If it was not admitted, run one more tick at most. Then diagnose from the check 
 Each kind runs at most one attempt per Priority lane: High (Urgent and High),
 Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
 of the same kind, including the next repetition, retry, resume, or review round of
-a claim already under way. The rules, sizing, and rollback procedure are in
-"Priority lanes" in `docs/operations.md`.
+a claim already under way. Shared `[slots]` lets a kind first run that many
+attempts together, whatever their lanes (`eval = 2`; unlisted kinds have 1), and
+the lane rules decide only past that number.
+The rules, sizing, and rollback procedure are in "Priority lanes" in `docs/operations.md`.
 
 Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
 `<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;

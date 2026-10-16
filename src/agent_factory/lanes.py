@@ -2,6 +2,7 @@
 
 PRIORITIES = ("urgent", "high", "medium", "low")
 LANES = ("high", "medium", "low")
+KINDS = ("eval", "fix", "feature", "task")
 
 
 def lane_for(priority: str | None) -> str:

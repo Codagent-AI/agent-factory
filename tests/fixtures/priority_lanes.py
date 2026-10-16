@@ -99,7 +99,12 @@ class Board:
 
 class Site:
     def __init__(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, lanes: bool = True
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        lanes: bool = True,
+        slots: str = "",
     ) -> None:
         self.shared_path = tmp_path / "shared.toml"
         self.shared_path.write_text(
@@ -113,6 +118,7 @@ repository = "example/work"
 [feature]
 [task]
 """
+            + (f"[slots]\n{slots}\n" if slots else "")
         )
         self.config = tmp_path / "local.toml"
         self.config.write_text(

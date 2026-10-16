@@ -74,14 +74,14 @@ SHALL NOT derive a terminal time from run completion times.
 
 ### Requirement: Prevent overlapping execution
 
-The factory SHALL run work of each kind (eval, fix, feature, and task) in three Priority lanes: High, Medium, and Low, in that order from highest to lowest. The High lane takes Urgent and High cards, the Medium lane takes Medium cards, and the Low lane takes Low cards and cards with no Priority. The factory SHALL execute at most one attempt per work kind and lane at a time across the service and manual execution commands. An attempt is unfinished, and occupies its lane, while it is reserved, running, or observing. The factory SHALL reserve an attempt of kind K in lane P only when both of these hold:
+The factory SHALL run work of each kind (eval, fix, feature, and task) in three Priority lanes: High, Medium, and Low, in that order from highest to lowest. The High lane takes Urgent and High cards, the Medium lane takes Medium cards, and the Low lane takes Low cards and cards with no Priority. The factory SHALL execute at most one attempt per work kind and lane at a time across the service and manual execution commands, except within a kind's shared slots. An attempt is unfinished, and occupies its lane, while it is reserved, running, or observing. Each kind SHALL have a number of shared slots, set per kind by `[slots]` in shared configuration, with 1 for a kind it does not list. The factory SHALL reserve an attempt of a kind in any lane while fewer unfinished attempts of that kind exist than its shared slots and none of them predates lanes. Each cycle SHALL make the configured numbers available to every reservation path. Otherwise it SHALL reserve an attempt of kind K in lane P only when both of these hold:
 
 - no unfinished attempt of K occupies lane P;
 - no unfinished attempt of K occupies a lane higher than P.
 
 The rule SHALL apply to every reservation: a new admission, an eval's next repetition, a recovery attempt after a technical failure, a relaunch after a pre-suite failure, a resume after `needs-input`, and a review round. The factory SHALL NOT stop, pause, or move a running attempt because higher-priority work arrives or because its card's Priority changes. Lanes of different kinds SHALL be independent: an attempt of one kind SHALL NOT block or free a lane of another kind.
 
-Lane enforcement SHALL be atomic in SQLite for every reservation path: the resident service, `tick`, manual execution commands, review rounds, and blocked-claim resumes. Two paths SHALL NOT both reserve the same lane, and no path SHALL reserve an attempt past a busy higher lane. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of any kind. A blocked fix, feature, or task claim SHALL NOT occupy a lane. Status and pause controls SHALL remain usable while execution is active.
+Lane enforcement SHALL be atomic in SQLite for every reservation path: the resident service, `tick`, manual execution commands, review rounds, and blocked-claim resumes. Two paths SHALL NOT together exceed the rule above: outside a kind's shared slots they SHALL NOT both reserve the same lane, and no path SHALL reserve an attempt past a busy higher lane. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of any kind. A blocked fix, feature, or task claim SHALL NOT occupy a lane. Status and pause controls SHALL remain usable while execution is active.
 
 Wherever another requirement refers to a kind's execution slot, it means the lane the attempt would occupy. Such a slot is free for an attempt when that attempt could be reserved under the rule above. A kind's slots are all free when no unfinished attempt of that kind exists in any lane. Releasing a kind's slot means releasing the lane the attempt occupied.
 
@@ -556,12 +556,12 @@ When it reserves an attempt, the factory SHALL assign the attempt's lane from th
 
 ### Requirement: Hold continuations behind a higher lane
 
-The factory SHALL hold an attempt that continues a claim already under way exactly as it holds a new start. While an attempt of the same kind occupies a higher lane, no attempt SHALL start in a lower lane, whether it is the claim's first attempt, an eval's next repetition, a recovery attempt, a relaunch after a pre-suite failure, a resume, or a review round. An attempt already running SHALL keep running. The held claim SHALL keep its completed repetitions, recovery budget, and frozen inputs, and SHALL continue when no attempt of its kind occupies a higher lane and its own lane is free.
+The factory SHALL hold an attempt that continues a claim already under way exactly as it holds a new start. Outside a kind's shared slots, while an attempt of the same kind occupies a higher lane, no attempt SHALL start in a lower lane, whether it is the claim's first attempt, an eval's next repetition, a recovery attempt, a relaunch after a pre-suite failure, a resume, or a review round. An attempt already running SHALL keep running. The held claim SHALL keep its completed repetitions, recovery budget, and frozen inputs, and SHALL continue when the lane rule admits it: when fewer attempts of its kind are unfinished than its shared slots, or when no attempt of its kind occupies a higher lane and its own lane is free.
 
 #### Scenario: Hold an eval's next repetition while a higher eval runs
 
-- **WHEN** a Low eval claim finished repetition 1 of three, a High eval attempt is running, and the Low eval lane is free
-- **THEN** repetition 2 of the Low claim does not start until no eval attempt occupies the High or Medium lane
+- **WHEN** evals have two shared slots, a Low eval claim finished repetition 1 of three, a High and a Medium eval attempt are running, and the Low eval lane is free
+- **THEN** repetition 2 of the Low claim does not start until fewer than two eval attempts are unfinished, or no eval attempt occupies the High or Medium lane
 
 #### Scenario: Hold a retry after a technical failure while a higher lane runs
 
