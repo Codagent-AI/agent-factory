@@ -43,8 +43,11 @@ jobs:
         run: |
           iostat -w 5 > iostat.log &
           sampler=$!
+          top -l 0 -s 10 -o cpu -n 15 -stats pid,command,cpu,time > top.log &
+          topper=$!
           status=0
           uv run pytest --durations=20 || status=$?
-          kill "$sampler"
+          kill "$sampler" "$topper"
           cat iostat.log
+          grep -E '^[0-9]+ ' top.log | awk '{c = $2; for (i = 3; i < NF - 1; i++) c = c "_" $i; cpu[c] += $(NF - 1)} END {for (c in cpu) printf "%8.1f %s\n", cpu[c], c}' | sort -rn | head -40
           exit "$status"
