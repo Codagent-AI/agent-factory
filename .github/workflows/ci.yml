@@ -46,10 +46,13 @@ jobs:
         run: |
           sudo mdutil -a -i off
           device="$(hdiutil attach -nomount ram://2097152 | awk '{print $1}')"
-          diskutil erasevolume APFS FactoryTests "$device"
-          touch /Volumes/FactoryTests/.metadata_never_index
-          mkdir /Volumes/FactoryTests/tmp
-          echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
+          newfs_hfs -v FactoryTests "$device"
+          mkdir "$RUNNER_TEMP/ram"
+          # nobrowse keeps Finder from showing, and so watching, the volume.
+          diskutil mount -mountOptions nobrowse -mountPoint "$RUNNER_TEMP/ram" "$device"
+          sudo mdutil -i off "$RUNNER_TEMP/ram"
+          mkdir "$RUNNER_TEMP/ram/tmp"
+          echo "TMPDIR=$RUNNER_TEMP/ram/tmp" >> "$GITHUB_ENV"
 
       - name: Test
         run: uv run pytest --durations=20
