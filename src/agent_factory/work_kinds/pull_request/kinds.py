@@ -96,6 +96,7 @@ FEATURE_STAGED_FILES = (
     "annotate-pr.py",
     "task-compliance-gate.py",
     "mark-later-commits.py",
+    "pr_description.py",
     "check-contract.sh",
     "record-outcome.sh",
 )

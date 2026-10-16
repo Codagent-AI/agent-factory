@@ -17,7 +17,11 @@ import html
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(os.environ["MARKER"]).parent))
+from pr_description import fit
 
 payload = json.loads(os.environ["PAYLOAD"])
 review = json.loads(Path(payload["review_file"]).read_text())
@@ -109,7 +113,14 @@ def rebuilt(original: str) -> str:
     if review.get("base_head"):
         command.append(review["base_head"])
     subprocess.run(command, check=False)
-    return updated.open(newline="").read()
+    with updated.open(newline="") as source:
+        text = source.read()
+    try:
+        text = fit(text)
+    except Exception as error:
+        print(f"could not fit the proposal in the description: {error}", file=sys.stderr)
+    updated.write_text(text, newline="")
+    return text
 
 
 # newline="" keeps a description's CRLF line endings as they are on both sides.

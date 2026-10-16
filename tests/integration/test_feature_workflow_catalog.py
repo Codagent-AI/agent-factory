@@ -398,3 +398,19 @@ def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None
         "what remedy a human would need to approve",
     ):
         assert phrase in prompt, phrase
+
+
+def test_proposal_helper_is_staged_for_feature_and_review(tmp_path: Path) -> None:
+    """INT-006: both publication paths receive the exact packaged shared helper."""
+    from agent_factory.work_kinds.pull_request import launch
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+    assert "pr_description.py" in FEATURE_STAGED_FILES
+    assert "pr_description.py" in launch.REVIEW_WORKFLOW_SCRIPTS
+    for index, (contract, kind) in enumerate(
+        ((FEATURE.default_contract, FEATURE), (launch.REVIEW_CONTRACT, FIX))
+    ):
+        staged = launch.stage_workflow(tmp_path / str(index), contract, kind)
+        assert (staged / "pr_description.py").read_bytes() == (
+            PACKAGE / "pr_description.py"
+        ).read_bytes()
