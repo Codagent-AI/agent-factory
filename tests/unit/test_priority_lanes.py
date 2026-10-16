@@ -45,3 +45,20 @@ def test_priority_lanes_documented_once() -> None:
         assert "<kind> lane <lane>:" in section and "lane wait:" in section, path
         # The pointer replaces the copied rules, sizing, and rollback text.
         assert "Rollback past lanes" not in text, path
+
+
+def test_slots_config() -> None:
+    from agent_factory.config import ConfigurationError, SharedConfig
+
+    text = Path("config/codagent.toml").read_text()
+    assert SharedConfig.from_toml(text).slots == {"eval": 2}
+    without = text[: text.index("\n[slots]")]
+    assert SharedConfig.from_toml(without).slots == {}
+    assert SharedConfig.from_toml(without + "\n[slots]\nfix = 3\n").slots == {"fix": 3}
+    for bad, message in (
+        ("bug = 2", "not a work kind"),
+        ("eval = 0", ">= 1"),
+        ("task = true", ">= 1"),
+    ):
+        with pytest.raises(ConfigurationError, match=message):
+            SharedConfig.from_toml(without + f"\n[slots]\n{bad}\n")

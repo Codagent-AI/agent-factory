@@ -1203,7 +1203,7 @@ def _slot_lines(store: ClaimStore) -> list[str]:
         lanes = [lane for lane in LANES if lane in occupancy.holders]
         busy = (["all"] if occupancy.legacy else []) + lanes
         lines.append(f"{kind} slot: busy ({', '.join(busy)})" if busy else f"{kind} slot: free")
-        for run in occupancy.legacy + [occupancy.holders[lane] for lane in lanes]:
+        for run in occupancy.legacy + [r for lane in lanes for r in occupancy.holders[lane]]:
             claim = store.get_claim(run.claim_id)
             if claim is not None:
                 lane = run.lane or "all (pre-lane attempt)"

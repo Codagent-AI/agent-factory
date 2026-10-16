@@ -32,6 +32,14 @@ class NonterminalRunError(RuntimeError):
     """A run is already reserving the factory's one execution slot."""
 
 
+# Shared slots can put two attempts in one lane, so in lane mode the reservation gate,
+# inside an immediate transaction, is the only limit and this index is not unique.
+_LANE_INDEX = (
+    "CREATE INDEX IF NOT EXISTS one_nonterminal_run_per_lane "
+    "ON run(kind, lane) WHERE status IN ('reserved', 'running', 'observing')"
+)
+
+
 @dataclass(frozen=True)
 class JobCapState:
     count: int
@@ -117,7 +125,7 @@ class LaneDecision:
 @dataclass(frozen=True)
 class LaneOccupancy:
     mode: str
-    holders: dict[str, Run]
+    holders: dict[str, list[Run]]
     legacy: list[Run]
 
 
@@ -202,10 +210,13 @@ class ClaimStore:
         self._ensure_lane_column()
         with self._transaction():
             self._connection.execute("DROP INDEX IF EXISTS one_nonterminal_run_per_kind")
-            self._connection.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS one_nonterminal_run_per_lane "
-                "ON run(kind, lane) WHERE status IN ('reserved', 'running', 'observing')"
-            )
+            row = self._connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='one_nonterminal_run_per_lane'"
+            ).fetchone()
+            if row is not None and "UNIQUE" in cast(str, row[0]).upper():
+                self._connection.execute("DROP INDEX one_nonterminal_run_per_lane")
+            self._connection.execute(_LANE_INDEX)
 
     def restore_kind_guard(self, check_only: bool) -> list[Run]:
         with self._transaction(immediate=not check_only):
@@ -227,11 +238,21 @@ class ClaimStore:
 
     def lane_occupancy(self, kind: str) -> LaneOccupancy:
         runs = self.nonterminal_runs(kind=kind)
-        return LaneOccupancy(
-            self.lane_mode(),
-            {r.lane: r for r in runs if r.lane is not None},
-            [r for r in runs if r.lane is None],
-        )
+        holders: dict[str, list[Run]] = {}
+        for run in runs:
+            if run.lane is not None:
+                holders.setdefault(run.lane, []).append(run)
+        return LaneOccupancy(self.lane_mode(), holders, [r for r in runs if r.lane is None])
+
+    def set_lane_slots(self, slots: Mapping[str, int]) -> None:
+        """Publish `[slots]` so every reservation path, manual commands included, uses it."""
+        if (self.get_setting("lanes", "slots") or {}) != dict(slots):
+            self.set_setting("lanes", "slots", dict(slots))
+
+    def lane_slots(self, kind: str) -> int:
+        """Attempts of a kind that run together whatever their lanes; past this, lanes decide."""
+        value = (self.get_setting("lanes", "slots") or {}).get(kind, 1)
+        return value if isinstance(value, int) and value >= 1 else 1
 
     def lane_decision(self, kind: str, lane: str) -> LaneDecision:
         if lane not in LANES:
@@ -242,6 +263,8 @@ class ClaimStore:
         for run in active:
             if run.lane is None:
                 return LaneDecision(False, "legacy", run)
+        if len(active) < self.lane_slots(kind):
+            return LaneDecision(True)
         for run in active:
             if run.lane == lane:
                 return LaneDecision(False, "lane-busy", run)

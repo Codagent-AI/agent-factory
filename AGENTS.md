@@ -231,8 +231,10 @@ To take an issue from handoff to a reviewed PR (assign, watch, answer
 Each kind runs at most one attempt per Priority lane: High (Urgent and High),
 Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
 of the same kind, including the next repetition, retry, resume, or review round of
-a claim already under way. The rules, sizing, and rollback procedure are in
-"Priority lanes" in `docs/operations.md`.
+a claim already under way. Shared `[slots]` lets a kind first run that many
+attempts together, whatever their lanes (`eval = 2`; unlisted kinds have 1), and
+the lane rules decide only past that number.
+The rules, sizing, and rollback procedure are in "Priority lanes" in `docs/operations.md`.
 
 Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
 `<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;

@@ -462,6 +462,21 @@ def _job_cap_config(raw: object) -> JobCapConfig:
     return JobCapConfig(**values)
 
 
+def _slots_config(raw: object) -> dict[str, int]:
+    """Attempts of each kind that run together whatever their Priority lanes."""
+    from agent_factory.lanes import KINDS
+
+    table = _table(raw if raw is not None else {}, "slots")
+    slots: dict[str, int] = {}
+    for kind, value in table.items():
+        if kind not in KINDS:
+            raise ConfigurationError(f"slots.{kind} is not a work kind ({', '.join(KINDS)})")
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ConfigurationError(f"slots.{kind} must be an integer >= 1")
+        slots[kind] = value
+    return slots
+
+
 def _watch_config(raw: object) -> WatchConfig:
     if raw is None:
         return WatchConfig()
@@ -520,6 +535,7 @@ class SharedConfig:
     watch: WatchConfig = field(default_factory=WatchConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     job_cap: JobCapConfig = field(default_factory=JobCapConfig)
+    slots: Mapping[str, int] = field(default_factory=dict[str, int])
 
     @classmethod
     def from_file(cls, path: Path) -> SharedConfig:
@@ -606,6 +622,7 @@ class SharedConfig:
             watch=_watch_config(document.get("watch")),
             notify=_notify_config(document.get("notify")),
             job_cap=_job_cap_config(document.get("job_cap")),
+            slots=_slots_config(document.get("slots")),
         )
 
 

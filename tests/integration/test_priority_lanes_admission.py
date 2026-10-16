@@ -21,7 +21,7 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         value.store.close()
 
 
-@pytest.mark.parametrize("kind", ["fix", "feature", "task", "eval"])
+@pytest.mark.parametrize("kind", ["fix", "feature", "task"])
 def test_escalation_holds_and_independent_kinds(site: Site, kind: str) -> None:
     site.card(1, "Low", kind)
     (low,) = site.tick()
@@ -43,41 +43,99 @@ def test_escalation_holds_and_independent_kinds(site: Site, kind: str) -> None:
     assert {wait["cause"] for wait in waits.values()} == {"lane-busy"}
     assert all(number not in site.prepared for number in (4, 5, 6, 8))
     assert {r.id for r in site.store.nonterminal_runs(kind=kind)} == {low.id, medium.id, high.id}
-    verdict = "ready-for-human-review" if kind == "eval" else None
-    site.finish(low, verdict=verdict)
-    site.finish(medium, verdict=verdict)
-    # The busy High lane holds new lower starts and an eval's next repetition alike.
+    site.finish(low)
+    site.finish(medium)
+    # The busy High lane holds new lower starts.
     assert site.tick() == []
     assert site.store.lane_decision(kind, "low").cause == "higher-lane"
     assert site.store.lane_decision(kind, "medium").cause == "higher-lane"
-    site.finish(high, verdict=verdict)
+    site.finish(high)
     (urgent,) = site.tick()
     # Urgent shares the High lane and is ranked ahead of the waiting High card.
     assert urgent.lane == "high"
     assert site.store.get_claim(urgent.claim_id).issue_number == 8  # type: ignore[union-attr]
 
 
-def test_eval_continuation_and_reprioritization(site: Site) -> None:
+@pytest.fixture
+def slots_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest):
+    value = Site(tmp_path, monkeypatch, slots=f"{request.param} = 2")
+    try:
+        yield value
+    finally:
+        value.store.close()
+
+
+@pytest.mark.parametrize("slots_site", ["eval", "fix"], indirect=True)
+def test_shared_slots_then_lanes(slots_site: Site) -> None:
+    from agent_factory.operations import _slot_lines
+
+    site = slots_site
+    kind = next(iter(site.shared.slots))
+    repo = "example/evals" if kind == "eval" else "example/work"
+    verdict = "ready-for-human-review" if kind == "eval" else None
+    site.card(1, "Low", kind)
+    (first,) = site.tick()
+    site.card(2, "High", kind)
+    (second,) = site.tick()
+    site.finish(first, verdict=verdict)
+    site.finish(second, verdict=verdict)
+    site.board.cards.clear()
+    # Any two attempts of the kind run together, whatever their lanes.
+    site.card(3, "Low", kind)
+    (a,) = site.tick()
+    site.card(4, "Low", kind)
+    (b,) = site.tick()
+    assert [a.lane, b.lane] == ["low", "low"]
+    site.card(5, "Low", kind)
+    assert site.tick() == []
+    assert site.store.get_settings_by_prefix("lane-wait", "")[f"{repo}:5"]["cause"] == ("lane-busy")
+    # Past two, the lane rules let higher Priority in.
+    site.card(6, "Medium", kind)
+    (medium,) = site.tick()
+    site.card(7, "High", kind)
+    (high,) = site.tick()
+    assert [medium.lane, high.lane] == ["medium", "high"]
+    assert len(site.store.nonterminal_runs(kind=kind)) == 4
+    site.card(8, "Medium", kind)
+    assert site.tick() == []
+    assert 5 not in site.prepared and 8 not in site.prepared
+    lines = _slot_lines(site.store)
+    assert f"{kind} slot: busy (high, medium, low)" in lines
+    assert sum(line.startswith(f"{kind} lane low: ") for line in lines) == 2
+    # Other kinds keep one slot.
+    other = "fix" if kind == "eval" else "eval"
+    assert site.store.lane_slots(other) == 1
+
+
+@pytest.mark.parametrize("slots_site", ["eval"], indirect=True)
+def test_eval_continuation_and_reprioritization(slots_site: Site) -> None:
+    site = slots_site
     low_card = site.card(1, "Low", "eval")
     (low,) = site.tick()
-    site.card(2, "High", "eval")
+    site.card(2, "Low", "eval")
+    (other,) = site.tick()
+    site.card(3, "High", "eval")
     (high,) = site.tick()
     site.finish(low, verdict="ready-for-human-review")
+    # Both shared slots are taken, so the next repetition follows the lane rules.
+    assert site.tick() == []
+    assert site.store.get_settings_by_prefix("lane-wait", "")["example/evals:1"]["cause"] == (
+        "lane-busy"
+    )
+    low_card_index = site.board.cards.index(low_card)
+    site.board.cards[low_card_index] = replace(low_card, priority="Medium")
     assert site.tick() == []
     assert (
         site.store.get_settings_by_prefix("lane-wait", "")["example/evals:1"]["cause"]
         == "higher-lane"
     )
-    low_card_index = site.board.cards.index(low_card)
-    site.board.cards[low_card_index] = replace(low_card, priority="Medium")
-    assert site.tick() == []
-    site.board.cards[low_card_index] = replace(low_card, priority="Urgent")
     site.board.cards.remove(next(c for c in site.board.cards if c.source.number == 2))
-    site.finish(high, verdict="ready-for-human-review")
+    site.finish(other, verdict="ready-for-human-review")
     (second,) = site.tick()
     assert second.claim_id == low.claim_id and second.unit_key == "rep-2"
-    assert second.lane == "high"
+    assert second.lane == "medium"
     assert site.store.get_run(low.id).lane == "low"  # type: ignore[union-attr]
+    assert site.store.get_run(high.id).status == "running"  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("planning", [False, True])
