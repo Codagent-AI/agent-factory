@@ -8,6 +8,11 @@ behind a shell client that costs about 4 ms. The client sends its arguments,
 whether GH_TOKEN is set, and the standard input of a call that passes `--input`
 over a Unix socket, then replays the answer's standard output, standard error, and
 exit status. Calls run one at a time.
+
+The source sees its own `sys` (arguments, standard input and output, `exit`) and an
+`os` whose environment holds only GH_TOKEN, and only whether it is set. Other modules
+it imports are the test process's own, so a stand-in must read the environment
+through `os.environ` directly.
 """
 
 from __future__ import annotations
@@ -89,24 +94,29 @@ class ScriptServer:
 
     def _answer(self, connection: socket.socket) -> None:
         with connection:
-            data = b""
-            while True:
-                fields = data.split(b"\0")
-                if len(fields) > 2 and len(fields) >= int(fields[1] or 0) + 4:
-                    break
-                chunk = connection.recv(65536)
-                if not chunk:
-                    return
-                data += chunk
-            count = int(fields[1])
-            arguments = [field.decode() for field in fields[2 : 2 + count]]
-            body = fields[2 + count].decode()
-            with self._lock:
-                status, output, error = self._run(arguments, body, token=fields[0] == b"1")
-            reply = (
-                f"printf '%s' {_quoted(output)}; printf '%s' {_quoted(error)} >&2; exit {status}"
-            )
-            connection.sendall(reply.encode())
+            try:
+                reply = self._reply(connection)
+            except Exception:  # noqa: BLE001 - shown to the test as the stand-in's failure
+                reply = f"printf '%s' {_quoted(traceback.format_exc())} >&2; exit 1"
+            if reply is not None:
+                connection.sendall(reply.encode())
+
+    def _reply(self, connection: socket.socket) -> str | None:
+        data = b""
+        while True:
+            fields = data.split(b"\0")
+            if len(fields) > 2 and len(fields) >= int(fields[1] or 0) + 4:
+                break
+            chunk = connection.recv(65536)
+            if not chunk:
+                return None
+            data += chunk
+        count = int(fields[1])
+        arguments = [field.decode() for field in fields[2 : 2 + count]]
+        body = fields[2 + count].decode()
+        with self._lock:
+            status, output, error = self._run(arguments, body, token=fields[0] == b"1")
+        return f"printf '%s' {_quoted(output)}; printf '%s' {_quoted(error)} >&2; exit {status}"
 
     def _run(self, arguments: list[str], body: str, *, token: bool) -> tuple[int, str, str]:
         output, error = io.StringIO(), io.StringIO()

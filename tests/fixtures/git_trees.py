@@ -3,8 +3,8 @@
 A journey harness creates about a dozen repositories with some forty git commands
 before its first tick. The repositories are the same for every test, so each
 worker builds them once into a private directory and copies the tree into each
-test's directory. The copies are independent; remotes and other paths that name
-the build directory are rewritten to name the test's directory.
+test's directory. The copies are independent: every path that names the build
+directory is rewritten to name the test's directory.
 """
 
 from __future__ import annotations
@@ -17,8 +17,6 @@ from pathlib import Path
 from typing import cast
 
 _BUILT: dict[str, tuple[Path, object]] = {}
-# Git files that record another repository's absolute path.
-_PATH_FILES = ("config", "FETCH_HEAD")
 
 
 def copy_built[T](key: str, build: Callable[[Path], T], destination: Path) -> T:
@@ -34,11 +32,14 @@ def copy_built[T](key: str, build: Callable[[Path], T], destination: Path) -> T:
         _BUILT[key] = (root, value)
     root, value = _BUILT[key]
     shutil.copytree(root, destination, symlinks=True, dirs_exist_ok=True)
-    old, new = str(root), str(destination)
-    for name in _PATH_FILES:
-        for path in destination.rglob(name):
-            if path.is_file():
-                text = path.read_text()
-                if old in text:
-                    path.write_text(text.replace(old, new))
+    # Remotes, alternates, worktree links, and reflogs record absolute paths. Object
+    # files are compressed, so they cannot hold the path in plain text.
+    old, new = str(root).encode(), str(destination).encode()
+    for path in destination.rglob("*"):
+        in_objects = "objects" in path.relative_to(destination).parts
+        if (in_objects and path.name != "alternates") or not path.is_file():
+            continue
+        content = path.read_bytes()
+        if old in content:
+            path.write_bytes(content.replace(old, new))
     return cast(T, value)
