@@ -45,3 +45,27 @@ def hermetic_tools(
         # instead of reaching the network. Unlike an insteadOf redirect, this leaves the
         # URLs that git reports unchanged.
         monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Spread the end-to-end journeys evenly through the collection.
+
+    xdist hands each worker a contiguous slice of the collection, and `tests/e2e` sorts
+    first, so one worker received every journey and ran them one after another while
+    the others finished early. Spacing them evenly gives each worker its share without
+    running several journeys at once, which overloads a small CI runner.
+    """
+    journeys = [item for item in items if item.nodeid.startswith("tests/e2e/")]
+    others = [item for item in items if not item.nodeid.startswith("tests/e2e/")]
+    if not journeys or not others:
+        return
+    spread: list[pytest.Item] = []
+    step = len(others) / len(journeys)
+    remaining = iter(others)
+    for index, journey in enumerate(journeys):
+        spread.append(journey)
+        spread.extend(
+            next(remaining) for _ in range(round((index + 1) * step) - round(index * step))
+        )
+    spread.extend(remaining)
+    items[:] = spread
