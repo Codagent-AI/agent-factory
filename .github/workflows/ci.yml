@@ -50,7 +50,7 @@ jobs:
           sudo mdutil -i off /Volumes/FactoryTests
           sudo mkdir -p /Volumes/FactoryTests/.fseventsd
           sudo touch /Volumes/FactoryTests/.fseventsd/no_log
-          diskutil unmount /Volumes/FactoryTests
+          diskutil unmount force /Volumes/FactoryTests
           diskutil mount FactoryTests
           mkdir /Volumes/FactoryTests/tmp
           echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
