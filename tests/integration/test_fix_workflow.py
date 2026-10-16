@@ -147,7 +147,7 @@ def test_implement_group_records_completion_only_after_finalization() -> None:
     group = _step_block(text, "implement")
     assert group.index("- id: seed-implement-completed\n") < group.index("- id: implement-fix\n")
     step_ids = re.findall(r"^      - id: (.+)$", group, re.MULTILINE)
-    assert step_ids[-2:] == ["annotate-pr", "mark-implement-completed"]
+    assert step_ids[-3:] == ["annotate-pr", "refresh-loc", "mark-implement-completed"]
     mark = _step_block(group, "mark-implement-completed")
     assert "command: printf 'passed'" in mark
     assert "capture: implement_completed" in mark
@@ -943,3 +943,14 @@ def test_installed_runner_loads_a_merged_config_with_both_profile_sets(tmp_path:
     missing = run("absent")
     assert missing.returncode != 0
     assert "does not exist" in missing.stdout + missing.stderr
+
+
+def test_refresh_loc_directly_follows_annotation_and_is_best_effort() -> None:
+    group = _step_block(_workflow_text(), "implement")
+    steps = re.findall(r"^      - id: (.+)$", group, re.MULTILINE)
+    assert steps[steps.index("annotate-pr") + 1] == "refresh-loc"
+    block = _step_block(group, "refresh-loc")
+    assert "continue_on_failure: true" in block
+    assert "script: count-loc.py" in block
+    assert "mode: refresh-pr" in block
+    assert 'artifact_dir: "{{artifact_dir}}"' in block

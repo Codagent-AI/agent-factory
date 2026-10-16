@@ -22,7 +22,7 @@ from agent_factory.work_kinds.pull_request.kinds import FIX, PullRequestKind, re
 
 WORKFLOW_NAME = FIX.workflow_name
 WORKFLOW_FILE = FIX.workflow_file
-WORKFLOW_SCRIPTS = tuple(name for name in FIX.staged_files if name.endswith(".sh"))
+WORKFLOW_SCRIPTS = tuple(name for name in FIX.staged_files if name.endswith((".sh", ".py")))
 REVIEW_CONTRACT = "factory-review/1"
 REVIEW_WORKFLOW_NAME = "factory-review"
 REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
@@ -35,6 +35,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "record-review-triage.sh",
     "record-review-outcome.sh",
     "review-description.sh",
+    "count-loc.py",
     "mark-later-commits.py",
     "factory-task-guard-v1.0.yaml",
     "task-scope-floor.py",
