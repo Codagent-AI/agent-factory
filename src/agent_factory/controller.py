@@ -23,6 +23,7 @@ from agent_factory.store import (
     ClaimDraft,
     ClaimStore,
     JobCapReached,
+    LaneBusy,
     Run,
 )
 from agent_factory.work_kinds.base import Classification, Feedback, WorkKindHandler
@@ -201,7 +202,9 @@ class Controller:
             return None
         return accepted
 
-    def reserve_next(self, claim_id: str, *, readiness: Callable[[], str | None]) -> Run | None:
+    def reserve_next(
+        self, claim_id: str, *, lane: str, readiness: Callable[[], str | None]
+    ) -> Run | None:
         """Reserve exactly one ready work unit after all launch-time controls pass."""
         with advisory_lock(self._store.path, "admission"):
             claim = self._required_claim(claim_id)
@@ -230,8 +233,11 @@ class Controller:
                     claim.id,
                     next_unit,
                     reason=reason,
+                    lane=lane,
                     evidence_path=str(self._artifact_root / f"{claim.id}-{next_unit}"),
                 )
+            except LaneBusy:
+                return None
             except JobCapReached as error:
                 from agent_factory.job_cap import hold_claim
 

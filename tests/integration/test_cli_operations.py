@@ -160,7 +160,9 @@ def test_cli_pause_resume_and_status_use_durable_state(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/evals", 7, "I7", "P7", "eval", "x", {}))
-    store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/tmp/evidence")
+    store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     store.close()
 
     command = [sys.executable, "-m", "agent_factory.cli", "--state", str(state)]
@@ -178,7 +180,9 @@ def test_cli_status_all_lists_every_saved_claim(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = store.create_claim(ClaimDraft("example/work", 9, "I9", "P9", "fix", "x", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     store.finish_run(run.id, execution_status="completed", result={})
     store.set_claim_lifecycle(claim.id, "settled", {"verdict": "failed"})
     store.set_cleanup(claim.id, {"review_observed": True, "complete": True})

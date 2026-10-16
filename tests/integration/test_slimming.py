@@ -59,13 +59,17 @@ def _eval_claim(tmp_path: Path, store: ClaimStore) -> tuple[Claim, Path]:
 
 
 def _finish(store: ClaimStore, claim: Claim, evidence: Path, status: str = "completed") -> str:
-    run = store.reserve_run(claim.id, claim.kind, reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, claim.kind, lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status=status, result={})
     return run.id
 
 
 def _finish_rep(store: ClaimStore, claim: Claim, evidence: Path) -> None:
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="completed", result={})
 
 
@@ -115,7 +119,7 @@ def test_running_claim_is_untouched(tmp_path: Path) -> None:
     local = _local(tmp_path)
     claim, clones, evidence = _fix_claim(tmp_path, store)
     _finish(store, claim, evidence, status="failed")
-    store.reserve_run(claim.id, "fix", reason="recovery", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="recovery", evidence_path=str(evidence))
 
     slimming.sweep(store, local, datetime.now(UTC))
 
@@ -197,7 +201,9 @@ def test_slimming_is_idempotent_and_picks_up_new_runs(tmp_path: Path) -> None:
     assert _get(store, claim.id).cleanup["slimmed"] == marked
 
     _write(evidence, "attempt-2/audit-def/snapshot/runner-source/main.go")
-    second = store.reserve_run(claim.id, "fix", reason="review", evidence_path=str(evidence))
+    second = store.reserve_run(
+        claim.id, "fix", lane="low", reason="review", evidence_path=str(evidence)
+    )
     store.finish_run(second.id, execution_status="completed", result={})
     slimming.sweep(store, local, datetime.now(UTC))
 

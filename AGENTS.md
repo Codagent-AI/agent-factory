@@ -225,3 +225,17 @@ To take an issue from handoff to a reviewed PR (assign, watch, answer
 ## Session notifications
 
 `codagent-github-project` records the creating Claude session on an issue; `factory-assign` replaces that marker at handoff. One session is tracked per issue. When a claim stops with a pull request, needs-input, failure, settled eval, cancellation, or a card that is no longer queued, the resident waits for the settle period and any service watcher dispatch, then sends a short, link-only notice to the recorded live local session. It never changes the claim or issue. Delivery is best effort: ended or unresolvable sessions receive nothing, a renamed-and-reused session name has a small race, and another permission mode may hold a message. See `docs/operations.md` for `[notify]` settings, `doctor`, and `status`.
+
+## Priority lanes
+
+Each kind runs at most one attempt per Priority lane: High (Urgent and High),
+Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
+of the same kind, including the next repetition, retry, resume, or review round of
+a claim already under way. The rules, sizing, and rollback procedure are in
+"Priority lanes" in `docs/operations.md`.
+
+Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
+`<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;
+`lane wait: <repo>#<n> waits for <kind> lane <lane>` naming the holder and the
+cause (`lane-busy`, `higher-lane`, `legacy`, or `kind-mode`); and `lanes: off` when
+the per-kind guard is restored.

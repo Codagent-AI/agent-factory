@@ -31,7 +31,7 @@ An issue counts as progressing while any of these hold:
 - a watch dispatch for that run is pending or launched;
 - that run ended with a PR-READY or FAILURE event (a failed status, or a completed run whose outcome is `failed`) and the watcher has not dispatched it yet (within 25 minutes, which covers FAILURE's grace period);
 - its card is queued: open, Owner=factory, Status=Ready, and no `needs-input` label.
-- someone (not a bot) reviewed or commented on its pull request after the last run finished, so a review round is due. It waits for a free slot like any other run.
+- someone (not a bot) reviewed or commented on its pull request after the last run finished, so a review round is due. It waits for its Priority lane and all higher lanes of its kind to be free.
 
 Each state change prints one line, and each issue prints a `STOPPED` line when it stops. A `WATCH EVENT MISSING` part means the run ended with an event the watcher should have handled, but no dispatch appeared.
 
@@ -55,3 +55,17 @@ PR updates: when the report covers several pull requests, group them under **Mer
 ## Follow-ups
 
 Act only when Paul asks: `factory-pr-review` to review a PR, `factory-triage` to investigate a failure, `factory-assign` to queue an issue, and `agent-factory … watch redispatch <id>` to retry a watcher session.
+
+## Priority lanes
+
+Each kind runs at most one attempt per Priority lane: High (Urgent and High),
+Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
+of the same kind, including the next repetition, retry, resume, or review round of
+a claim already under way. The rules, sizing, and rollback procedure are in
+"Priority lanes" in `docs/operations.md`.
+
+Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
+`<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;
+`lane wait: <repo>#<n> waits for <kind> lane <lane>` naming the holder and the
+cause (`lane-busy`, `higher-lane`, `legacy`, or `kind-mode`); and `lanes: off` when
+the per-kind guard is restored.

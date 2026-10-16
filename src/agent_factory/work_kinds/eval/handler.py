@@ -178,10 +178,10 @@ class EvalHandler:
     ) -> None:
         pass
 
-    def unblock(self, *args: object, **kwargs: object) -> None:
+    def unblock(self, *args: object, lane: str, **kwargs: object) -> None:
         return None
 
-    def review_round(self, *args: object, **kwargs: object) -> None:
+    def review_round(self, *args: object, lane: str, **kwargs: object) -> None:
         return None
 
     def merge_sync(self, *args: object, **kwargs: object) -> None:
