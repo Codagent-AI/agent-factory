@@ -52,7 +52,11 @@ resident's restart. The script:
    skips the runner step with a warning if the checkout is not on `main`, has
    uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
-   it already exists;
+   it already exists. It builds on python.org's signed 3.12
+   (`AGENT_FACTORY_PYTHON` overrides), because macOS ties the resident's Full
+   Disk Access grant to the interpreter's signature, and Homebrew or uv
+   builds lose it on every upgrade. Grant that `Python.app` Full Disk Access
+   once, or macOS keeps asking whether Python may access data from other apps;
 3. pauses the factory and runs `make build` in the runner checkout, which
    updates the host runner that fix and feature runs use. `go build` renames
    the new binary over the old one, so a running attempt keeps its binary and

@@ -71,3 +71,9 @@ def test_deploy_checks_both_sides_of_pause() -> None:
         < script.index('fixture_guard "$executable" "$running" after')
         < script.index('point_at "$executable"')
     )
+
+
+def test_deploy_builds_releases_on_the_signed_python() -> None:
+    script = (GUARD.parent / "deploy.sh").read_text()
+    assert "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12" in script
+    assert 'uv sync -q --frozen ${python_args[@]+"${python_args[@]}"}' in script
