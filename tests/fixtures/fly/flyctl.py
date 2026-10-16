@@ -86,6 +86,8 @@ if args[:2] == ["ssh", "console"]:
     # Local tests have no root privileges; record the real root handoff above,
     # then emulate it with the test process's owner when executing the command.
     command = command.replace("root:root", str(os.getuid()) + ":" + str(os.getgid()))
+    # Root restores archived permissions by default; emulate that as the test user.
+    command = command.replace(" -xf ", " -pxf ")
     done = subprocess.run(["bash", "-c", command], capture_output=True)
     output = done.stdout
     if os.path.exists(ROOT + "/.truncate-tar") and "-cf -" in command:

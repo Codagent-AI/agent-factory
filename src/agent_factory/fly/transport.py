@@ -482,8 +482,8 @@ class FlyTransport:
             raise FlyTransportError(result.stderr.decode(errors="replace").strip() or "sftp failed")
 
     def put_directory(self, local: Path, remote: str, *, exclude: tuple[str, ...] = ()) -> None:
-        """Deliver a directory byte-identically as one tarball, less excluded top-level names."""
-        skipped = {f"./{name}" for name in exclude}
+        """Deliver contents less excluded top-level names, leaving destination metadata alone."""
+        skipped = {".", *(f"./{name}" for name in exclude)}
 
         def keep(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
             return None if member.name in skipped else member
@@ -491,7 +491,9 @@ class FlyTransport:
         with tempfile.TemporaryDirectory() as scratch:
             bundle = Path(scratch) / "bundle.tar"
             with tarfile.open(bundle, "w") as archive:
-                archive.add(local, arcname=".", filter=keep)
+                # Rejecting the root in a recursive add would also skip its children.
+                for child in sorted(local.iterdir()):
+                    archive.add(child, arcname=f"./{child.name}", filter=keep)
             staged = f"/tmp/factory-bundle-{os.getpid()}.tar"
             self.put_file(bundle, staged)
         target = shlex.quote(remote)
