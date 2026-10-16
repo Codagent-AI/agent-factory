@@ -487,12 +487,23 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
         == EXIT_MACHINE_LOST
     )
 
+    env.artifact.chmod(0o700)
+    artifacts.chmod(0o775)
+    guest_metadata = artifacts.stat()
     resume = env.manifest("run-3", expect_checkpoint=True, seed_checkpoint=True)
     code = env.lifecycle(resume).run(
-        env.request("cat /artifacts/run-state.json > /artifacts/seen-state.json", auth=False)
+        env.request(
+            "cat /artifacts/run-state.json > /artifacts/seen-state.json && "
+            "mkdir /artifacts/evidence && touch /artifacts/evidence/ok",
+            auth=False,
+        )
     )
 
     assert code == 0
+    assert artifacts.stat().st_mode == guest_metadata.st_mode
+    assert artifacts.stat().st_uid == guest_metadata.st_uid
+    assert artifacts.stat().st_gid == guest_metadata.st_gid
+    assert (env.artifact / "evidence/ok").is_file()
     record = json.loads((env.factory / "machine.json").read_text())
     assert record["id"] != first["id"] and record["job"] == 2
     assert {"id": first["id"], "disposal": "gone"} in record["history"]
