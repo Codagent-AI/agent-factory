@@ -113,7 +113,7 @@ Each requested repetition SHALL run with the same accepted settings and revision
 
 ### Requirement: Resume through the suite's supported interface
 
-The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed. Under Fly execution, resume SHALL run only inside the repetition's surviving Machine; a missing Machine, or a Machine without a checkpoint it was known to have created, SHALL follow the lost-Machine outcome in `factory-fly-execution` rather than the corrupt-state scenario below, while a surviving Machine whose attempt verifiably stopped before checkpoint creation follows the fresh-retry scenario below inside that Machine.
+The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed. Under Fly execution, resume SHALL run only inside the repetition's surviving Machine, except for an operator resume of an infrastructure-settled claim (below); a missing Machine, or a Machine without a checkpoint it was known to have created, SHALL follow the lost-Machine outcome in `factory-fly-execution` rather than the corrupt-state scenario below, while a surviving Machine whose attempt verifiably stopped before checkpoint creation follows the fresh-retry scenario below inside that Machine.
 
 #### Scenario: Resume compatible saved work
 
@@ -136,6 +136,20 @@ The factory SHALL resume interrupted `and-scene` work with a valid checkpoint th
 - **WHEN** the suite rejects resume because saved evidence or score-affecting inputs do not match
 - **THEN** the factory preserves the diagnostic and existing evidence and applies its technical-failure policy
 - **AND** it does not bypass the checks or substitute new inputs
+
+### Requirement: Resume an infrastructure-settled claim on operator request
+
+An operator SHALL be able to continue an eval claim that settled with verdict `infra-error` through `agent-factory resume-eval <claim>`, with `--dry-run` reporting the per-repetition plan without writing state. The command SHALL refuse a claim that is not an eval, is not settled, settled with another verdict, still has an unfinished attempt, or has released its worktrees, and SHALL refuse when a repetition that ended on an infrastructure failure has no collected checkpoint (`run-state.json` with an integer `schema_version`) in its artifact directory. A granted resume SHALL keep every repetition that settled with a result, continue each infrastructure-failed repetition once with `--resume` from its artifact directory, start each never-started repetition, and return the claim to waiting so it re-enters admission through its card under the ordinary lane, window, quota, and job-cap rules. The resumed attempt SHALL then follow the ordinary technical-retry and recovery rules. Under Fly execution, when the repetition's recorded Machine no longer exists, the resumed attempt SHALL create a replacement Machine, seed its artifact directory from the host's collected checkpoint (never the host-managed `.factory` tree), and build a fresh claim image when cleanup already deleted the claim's recorded image. Changing settings or clearing the Verdict SHALL still request a fresh claim.
+
+#### Scenario: Resume a claim with completed, infrastructure-failed, and unstarted repetitions
+
+- **WHEN** rep-1 completed, rep-2 exhausted its recovery on infrastructure failures with a collected checkpoint, rep-3 never started, the claim settled `infra-error`, and an operator runs `resume-eval`
+- **THEN** rep-2 continues with `--resume` from its artifact directory, rep-3 then starts, rep-1 is not rerun, and the claim settles again with a new handoff event
+
+#### Scenario: Refuse a resume without a collected checkpoint
+
+- **WHEN** an infrastructure-failed repetition has no usable `run-state.json` in its artifact directory
+- **THEN** `resume-eval` reports the refusal and the claim stays settled
 
 ### Requirement: Record the evaluated environment accurately
 

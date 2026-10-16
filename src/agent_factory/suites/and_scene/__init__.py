@@ -389,6 +389,7 @@ class AndSceneAdapter:
         recovery: bool,
         pre_checkpoint_proven: bool = False,
         expect_checkpoint: bool = False,
+        seed_checkpoint: bool = False,
         claim_id: str = "",
         run_id: str = "",
         unit_key: str = "",
@@ -455,6 +456,7 @@ class AndSceneAdapter:
                         self._fly,
                         self._total_seconds,
                         expect_checkpoint,
+                        seed_checkpoint=seed_checkpoint,
                     ),
                     sort_keys=True,
                 ),
@@ -746,6 +748,8 @@ def _fly_manifest(
     fly: FlyLocalConfig | None,
     total_seconds: int,
     expect_checkpoint: bool,
+    *,
+    seed_checkpoint: bool = False,
 ) -> dict[str, object]:
     from agent_factory.fly.transport import image_repository
 
@@ -789,6 +793,10 @@ def _fly_manifest(
             "artifacts": "/artifacts",
         },
     }
+    if seed_checkpoint:
+        # Only an operator resume of a settled repetition may seed a replacement
+        # Machine from the host's collected checkpoint.
+        manifest["seed_checkpoint"] = True
     if "validator" in revisions:
         sources = frozen.get("sources")
         source = (

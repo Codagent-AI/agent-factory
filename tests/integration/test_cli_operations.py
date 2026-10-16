@@ -205,3 +205,35 @@ def test_cli_all_flag_is_rejected_on_commands_other_than_status(tmp_path: Path) 
     command = [sys.executable, "-m", "agent_factory.cli", "--state", str(state)]
     tick = subprocess.run([*command, "tick", "--all"], check=False, capture_output=True, text=True)
     assert tick.returncode != 0
+
+
+def test_cli_resume_eval_dry_run_writes_nothing_then_grants_once(tmp_path: Path) -> None:
+    from tests.integration.test_recovery_attempt_selection import infra_settled_claim
+
+    state = tmp_path / "state.sqlite3"
+    store = ClaimStore(state)
+    claim_id, ids = infra_settled_claim(store, tmp_path)
+    store.close()
+    before = state.read_bytes()
+    command = [sys.executable, "-m", "agent_factory.cli", "--state", str(state), "resume-eval"]
+
+    dry = subprocess.run(
+        [*command, claim_id[:8], "--dry-run"], capture_output=True, text=True, check=False
+    )
+    assert dry.returncode == 0, dry.stderr
+    assert f"rep-1: keep (settled by run {ids['rep-1']})" in dry.stdout
+    assert f"rep-2: resume from the collected checkpoint of run {ids['rep-2']}" in dry.stdout
+    assert "rep-3: start (never started)" in dry.stdout
+    assert state.read_bytes() == before
+
+    granted = subprocess.run([*command, claim_id], capture_output=True, text=True, check=False)
+    assert granted.returncode == 0, granted.stderr
+    assert "example/evals#125 returns to Ready" in granted.stdout
+    store = ClaimStore(state)
+    claim = store.get_claim(claim_id)
+    store.close()
+    assert claim is not None and claim.lifecycle == "waiting"
+
+    again = subprocess.run([*command, claim_id], capture_output=True, text=True, check=False)
+    assert again.returncode == 2
+    assert "not settled" in again.stdout
