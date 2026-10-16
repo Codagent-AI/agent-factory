@@ -37,7 +37,9 @@ from agent_factory.suites.and_scene import ReadinessError, bounded_quota_deadlin
 if TYPE_CHECKING:
     from agent_factory.fly.backend import FlyMachineBackend
 
-_POLL_SECONDS = 0.05
+# How often a supervisor observes its run. The test suite lengthens it to spare CPU on
+# small CI runners; the service never sets it.
+_POLL_SECONDS = float(os.environ.get("AGENT_FACTORY_SUPERVISOR_POLL_SECONDS", "0.05"))
 _PROGRESS_HEARTBEAT_SECONDS = 5.0
 
 

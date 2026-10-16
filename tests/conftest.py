@@ -45,6 +45,10 @@ def hermetic_tools(
         # instead of reaching the network. Unlike an insteadOf redirect, this leaves the
         # URLs that git reports unchanged.
         monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    # Supervisors started by a test observe their run five times a second rather than
+    # twenty: each observation probes the process with `ps`, and several journeys keep
+    # runs in flight at once on a 3-vCPU CI runner.
+    monkeypatch.setenv("AGENT_FACTORY_SUPERVISOR_POLL_SECONDS", "0.2")
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
