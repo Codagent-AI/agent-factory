@@ -74,14 +74,14 @@ SHALL NOT derive a terminal time from run completion times.
 
 ### Requirement: Prevent overlapping execution
 
-The factory SHALL run work of each kind (eval, fix, feature, and task) in Priority lanes, one lane per Project Priority level: Urgent, High, Medium, and Low, in that order from highest to lowest. The factory SHALL execute at most one attempt per work kind and lane at a time across the service and manual execution commands. An attempt is unfinished, and occupies its lane, while it is reserved, running, or observing. The factory SHALL reserve a new start of kind K in lane P only when both of these hold:
+The factory SHALL run work of each kind (eval, fix, feature, and task) in three Priority lanes: High, Medium, and Low, in that order from highest to lowest. The High lane takes Urgent and High cards, the Medium lane takes Medium cards, and the Low lane takes Low cards and cards with no Priority. The factory SHALL execute at most one attempt per work kind and lane at a time across the service and manual execution commands. An attempt is unfinished, and occupies its lane, while it is reserved, running, or observing. The factory SHALL reserve an attempt of kind K in lane P only when both of these hold:
 
 - no unfinished attempt of K occupies lane P;
 - no unfinished attempt of K occupies a lane higher than P.
 
-A continuation, defined in "Classify new starts and continuations", SHALL require only that its own lane is free. The factory SHALL NOT stop, pause, or move a running attempt because higher-priority work arrives or because its card's Priority changes. Lanes of different kinds SHALL be independent: an attempt of one kind SHALL NOT block or free a lane of another kind.
+The rule SHALL apply to every reservation: a new admission, an eval's next repetition, a recovery attempt after a technical failure, a relaunch after a pre-suite failure, a resume after `needs-input`, and a review round. The factory SHALL NOT stop, pause, or move a running attempt because higher-priority work arrives or because its card's Priority changes. Lanes of different kinds SHALL be independent: an attempt of one kind SHALL NOT block or free a lane of another kind.
 
-Lane enforcement SHALL be atomic in SQLite for every reservation path: the resident service, `tick`, manual execution commands, review rounds, and blocked-claim resumes. Two paths SHALL NOT both reserve the same lane, and no path SHALL reserve a new start past a busy higher lane. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of any kind. A blocked fix, feature, or task claim SHALL NOT occupy a lane. Status and pause controls SHALL remain usable while execution is active.
+Lane enforcement SHALL be atomic in SQLite for every reservation path: the resident service, `tick`, manual execution commands, review rounds, and blocked-claim resumes. Two paths SHALL NOT both reserve the same lane, and no path SHALL reserve an attempt past a busy higher lane. The factory SHALL reconcile saved execution records with surviving processes, containers, and evidence before dispatching new work of any kind. A blocked fix, feature, or task claim SHALL NOT occupy a lane. Status and pause controls SHALL remain usable while execution is active.
 
 Wherever another requirement refers to a kind's execution slot, it means the lane the attempt would occupy. Such a slot is free for an attempt when that attempt could be reserved under the rule above. A kind's slots are all free when no unfinished attempt of that kind exists in any lane. Releasing a kind's slot means releasing the lane the attempt occupied.
 
@@ -121,17 +121,17 @@ Wherever another requirement refers to a kind's execution slot, it means the lan
 #### Scenario: Hold lower priorities while a higher one runs
 
 - **WHEN** a High fix attempt is running, the Low and Medium lanes are free, and eligible Low and Medium bugs sit in Ready
-- **THEN** neither the Low nor the Medium bug starts until no fix attempt occupies the High or Urgent lane
+- **THEN** neither the Low nor the Medium bug starts until no fix attempt occupies the High lane
 
 #### Scenario: Keep one attempt per priority level
 
 - **WHEN** a High fix attempt is running and a second High bug becomes eligible
 - **THEN** the second High bug waits until the High lane is free
 
-#### Scenario: Urgent holds every lower lane
+#### Scenario: Urgent shares the High lane
 
-- **WHEN** an Urgent task attempt is running and eligible High, Medium, and Low tasks sit in Ready with their lanes free
-- **THEN** none of them starts until the Urgent attempt finishes
+- **WHEN** an Urgent task attempt is running and eligible High, Medium, and Low tasks sit in Ready
+- **THEN** none of them starts until the Urgent attempt finishes, and the High task then starts in the High lane
 
 #### Scenario: Do not preempt running work
 
@@ -140,7 +140,7 @@ Wherever another requirement refers to a kind's execution slot, it means the lan
 
 #### Scenario: A higher lane of another kind does not block
 
-- **WHEN** an Urgent fix attempt is running and an eligible Low eval sits in Ready with the eval lanes free
+- **WHEN** a High fix attempt is running and an eligible Low eval sits in Ready with the eval lanes free
 - **THEN** the Low eval starts
 
 #### Scenario: Concurrent reservations for one lane
@@ -532,7 +532,12 @@ Issue closure SHALL cancel only claims with unfinished execution. A settled fix 
 
 ### Requirement: Assign each attempt a Priority lane
 
-When it reserves an attempt, the factory SHALL assign the attempt's lane from the card's current Project Priority. A card whose Priority is unset, or is not one of Urgent, High, Medium, or Low, SHALL use the Low lane. The factory SHALL record the lane on the attempt when it reserves it. The attempt SHALL keep that lane until it finishes, whatever later happens to the card's Priority. Each later attempt of the same claim SHALL take its lane from the card's Priority when that attempt is reserved.
+When it reserves an attempt, the factory SHALL assign the attempt's lane from the card's current Project Priority. An Urgent or High card SHALL use the High lane and a Medium card the Medium lane. A Low card, and a card whose Priority is unset or is not one of Urgent, High, Medium, or Low, SHALL use the Low lane. Within a lane, queue order SHALL rank Urgent ahead of High and an explicit Low ahead of an unset or unknown Priority. The factory SHALL record the lane on the attempt when it reserves it. The attempt SHALL keep that lane until it finishes, whatever later happens to the card's Priority. Each later attempt of the same claim SHALL take its lane from the card's Priority when that attempt is reserved.
+
+#### Scenario: Urgent work runs in the High lane
+
+- **WHEN** an eligible Urgent bug and an eligible High bug sit in Ready while the fix lanes are free
+- **THEN** the Urgent bug's attempt starts in the High lane, and the High bug waits for that lane
 
 #### Scenario: Unprioritized work runs in the Low lane
 
@@ -546,47 +551,36 @@ When it reserves an attempt, the factory SHALL assign the attempt's lane from th
 
 #### Scenario: A later attempt follows the new Priority
 
-- **WHEN** a Low eval claim finishes a repetition, its card is changed to High, and the High eval lane is free
+- **WHEN** a Low eval claim finishes a repetition, its card is changed to High, and no eval attempt occupies the High lane
 - **THEN** its next repetition is reserved in the High lane
 
-### Requirement: Classify new starts and continuations
+### Requirement: Hold continuations behind a higher lane
 
-The factory SHALL treat every reservation as a new start unless it is a continuation. A reservation SHALL be a continuation only when the same claim already has an attempt that actually started in its current execution episode. An attempt that was only reserved, and failed before launch, SHALL NOT count as started. A claim's execution episode SHALL begin at each of these:
+The factory SHALL hold an attempt that continues a claim already under way exactly as it holds a new start. While an attempt of the same kind occupies a higher lane, no attempt SHALL start in a lower lane, whether it is the claim's first attempt, an eval's next repetition, a recovery attempt, a relaunch after a pre-suite failure, a resume, or a review round. An attempt already running SHALL keep running. The held claim SHALL keep its completed repetitions, recovery budget, and frozen inputs, and SHALL continue when no attempt of its kind occupies a higher lane and its own lane is free.
 
-- its admission or fresh re-admission;
-- its unblock after `needs-input`;
-- the admission of a review round.
-
-The factory SHALL decide the classification from the claim's saved run history inside the same atomic step that reserves the attempt. It SHALL NOT take it from a caller's request or from the claim's lifecycle alone. A claim that is active or waiting but has not started an attempt in its current episode SHALL be a new start. That includes a claim held by a preparation or readiness failure before its first launch.
-
-#### Scenario: Continue an eval while a higher eval runs
+#### Scenario: Hold an eval's next repetition while a higher eval runs
 
 - **WHEN** a Low eval claim finished repetition 1 of three, a High eval attempt is running, and the Low eval lane is free
-- **THEN** repetition 2 of the Low claim starts in the Low lane
+- **THEN** repetition 2 of the Low claim does not start until no eval attempt occupies the High or Medium lane
 
-#### Scenario: Retry a running issue after a technical failure
+#### Scenario: Hold a retry after a technical failure while a higher lane runs
 
 - **WHEN** a Low fix attempt that started fails technically while a High fix attempt runs, and recovery budget remains
-- **THEN** the retry starts in the Low lane once that lane is free, without waiting for the High attempt
+- **THEN** the retry starts in the Low lane only after the High attempt finishes, and its recovery budget is unchanged by the wait
 
-#### Scenario: A claim that never launched is a new start
+#### Scenario: A claim that never launched waits for a higher lane
 
 - **WHEN** a Low bug was accepted and its preparation failed a readiness check before any attempt started, and a High fix attempt is now running
 - **THEN** the Low claim's first attempt does not start until no fix attempt occupies a higher lane
 
-#### Scenario: A pre-launch failure keeps the new-start category
-
-- **WHEN** a Low claim's first reserved attempt failed during planning before launch, and a High fix attempt is now running
-- **THEN** the Low claim's next attempt is still a new start and waits for the higher lane to clear
-
-#### Scenario: An unblocked claim is a new start
+#### Scenario: An unblocked claim waits for a higher lane
 
 - **WHEN** a Medium feature claim blocked for `needs-input` is unblocked while a High feature attempt runs
-- **THEN** its resumed attempt does not start until no feature attempt occupies a higher lane
+- **THEN** its resumed attempt does not start until no feature attempt occupies the High lane
 
 ### Requirement: Hold every lane for attempts that predate lanes
 
-An unfinished attempt with no recorded lane SHALL occupy every lane of its kind until it finishes. That covers an attempt that was unfinished when the factory upgraded to lanes, and an attempt reserved by a release without lanes. While it is unfinished, no other attempt of that kind SHALL start, either a new start or a continuation. Adding lanes to an existing database SHALL keep every claim, run, and setting. Lanes SHALL take effect when the resident of a release with lanes starts. Until then, a release with lanes that opens the database, for example its `doctor` during a deploy, SHALL leave the per-kind guard in place. It SHALL leave the database openable by the previous release and by supervisors still running from it, and those supervisors SHALL be able to keep recording their attempts' progress and results.
+An unfinished attempt with no recorded lane SHALL occupy every lane of its kind until it finishes. That covers an attempt that was unfinished when the factory upgraded to lanes, and an attempt reserved by a release without lanes. While it is unfinished, no other attempt of that kind SHALL start. Adding lanes to an existing database SHALL keep every claim, run, and setting. Lanes SHALL take effect when the resident of a release with lanes starts. Until then, a release with lanes that opens the database, for example its `doctor` during a deploy, SHALL leave the per-kind guard in place. It SHALL leave the database openable by the previous release and by supervisors still running from it, and those supervisors SHALL be able to keep recording their attempts' progress and results.
 
 #### Scenario: Upgrade while a fix runs
 

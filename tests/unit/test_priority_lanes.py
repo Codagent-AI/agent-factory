@@ -1,10 +1,8 @@
-from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from agent_factory.lanes import LANES, lane_for, rank
-from agent_factory.store import ClaimDraft, ClaimStore, classify_reservation
+from agent_factory.lanes import LANES, lane_for, priority_rank, rank
 
 
 @pytest.mark.parametrize("lane", LANES)
@@ -14,39 +12,36 @@ def test_vocabulary(lane: str) -> None:
     assert rank(lane) == LANES.index(lane)
 
 
+def test_three_lanes_with_urgent_in_high() -> None:
+    assert LANES == ("high", "medium", "low")
+    for value in ("Urgent", "urgent", " URGENT "):
+        assert lane_for(value) == "high"
+    # Urgent still ranks ahead of High in the queue.
+    assert priority_rank("Urgent") < priority_rank("High") < priority_rank("Medium")
+
+
 @pytest.mark.parametrize("value", [None, "", "unknown"])
 def test_unknown_occupies_low(value: str | None) -> None:
     assert lane_for(value) == "low"
+    # Unset and unknown values still rank after an explicit Low.
+    assert priority_rank(value) > priority_rank("Low")
 
 
-def test_episode_classification(tmp_path: Path) -> None:
-    with_store = ClaimStore(tmp_path / "state.sqlite3")
-    try:
-        claim = with_store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
-        run = with_store.reserve_run(
-            claim.id, "one", lane="low", reason="initial", evidence_path="/e"
-        )
-        started = replace(run, started_at="2026-01-01")
-        planning = replace(run, result={"failure_stage": "pre-suite"})
-        assert classify_reservation([], "initial") == "start"
-        assert classify_reservation([run], "recovery") == "start"
-        assert classify_reservation([planning], "initial") == "start"
-        assert classify_reservation([started], "recovery") == "continuation"
-        assert classify_reservation([started], "initial") == "continuation"  # eval repetition 2
-        for reason in ("review", "unblock"):
-            assert classify_reservation([started], reason) == "start"
-            episode = replace(run, reason=reason)
-            retry = replace(episode, result={"failure_stage": "pre-suite"})
-            assert classify_reservation([started, retry], reason) == "start"
-            launched = replace(retry, started_at="2026-01-02")
-            assert classify_reservation([started, launched], reason) == "continuation"
-            # A later planning failure folds into that same, already-started episode.
-            assert classify_reservation([started, launched, retry], reason) == "continuation"
-            assert classify_reservation([started, episode], "recovery") == "start"
-            assert classify_reservation([started, launched, retry], "quota") == "continuation"
-            # Another review/unblock after a successful episode is a fresh start.
-            assert (
-                classify_reservation([started, replace(episode, started_at="x")], reason) == "start"
-            )
-    finally:
-        with_store.close()
+def test_priority_lanes_documented_once() -> None:
+    full = Path("docs/operations.md").read_text()
+    assert "## Priority lanes" in full
+    for text in ("Urgent, then High", "Low, then cards with no or unknown Priority"):
+        assert text in full
+    assert "four concurrent" not in full
+    for path in (
+        "AGENTS.md",
+        ".claude/skills/factory-assign/SKILL.md",
+        ".claude/skills/factory-status/SKILL.md",
+        ".claude/skills/factory-watch/SKILL.md",
+    ):
+        text = Path(path).read_text()
+        section = text[text.index("## Priority lanes") :]
+        assert '"Priority lanes" in `docs/operations.md`' in section, path
+        assert "<kind> lane <lane>:" in section and "lane wait:" in section, path
+        # The pointer replaces the copied rules, sizing, and rollback text.
+        assert "Rollback past lanes" not in text, path

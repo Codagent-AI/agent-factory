@@ -33,31 +33,28 @@ def test_escalation_holds_and_independent_kinds(site: Site, kind: str) -> None:
     site.card(4, "High", kind)
     site.card(5, "Low", kind)
     site.card(6, "Medium", kind)
+    site.card(8, "Urgent", kind)
     other_kind = "eval" if kind != "eval" else "fix"
     site.card(7, "Low", other_kind)
     (other,) = site.tick()
     assert other.kind == other_kind
     waits = site.store.get_settings_by_prefix("lane-wait", "")
-    assert len(waits) == 3
+    assert len(waits) == 4
     assert {wait["cause"] for wait in waits.values()} == {"lane-busy"}
-    assert all(number not in site.prepared for number in (4, 5, 6))
-    site.card(8, "Urgent", kind)
+    assert all(number not in site.prepared for number in (4, 5, 6, 8))
+    assert {r.id for r in site.store.nonterminal_runs(kind=kind)} == {low.id, medium.id, high.id}
+    verdict = "ready-for-human-review" if kind == "eval" else None
+    site.finish(low, verdict=verdict)
+    site.finish(medium, verdict=verdict)
+    # The busy High lane holds new lower starts and an eval's next repetition alike.
+    assert site.tick() == []
+    assert site.store.lane_decision(kind, "low").cause == "higher-lane"
+    assert site.store.lane_decision(kind, "medium").cause == "higher-lane"
+    site.finish(high, verdict=verdict)
     (urgent,) = site.tick()
-    assert urgent.lane == "urgent"
-    assert {r.id for r in site.store.nonterminal_runs(kind=kind)} == {
-        low.id,
-        medium.id,
-        high.id,
-        urgent.id,
-    }
-    site.finish(low, verdict="ready-for-human-review" if kind == "eval" else None)
-    site.finish(medium, verdict="ready-for-human-review" if kind == "eval" else None)
-    if kind != "eval":
-        assert site.tick() == []
-    else:
-        (continuation,) = site.tick()
-        assert continuation.claim_id == medium.claim_id and continuation.lane == "medium"
-    assert site.store.lane_decision(kind, "low", None, "initial").cause == "higher-lane"
+    # Urgent shares the High lane and is ranked ahead of the waiting High card.
+    assert urgent.lane == "high"
+    assert site.store.get_claim(urgent.claim_id).issue_number == 8  # type: ignore[union-attr]
 
 
 def test_eval_continuation_and_reprioritization(site: Site) -> None:
@@ -66,15 +63,21 @@ def test_eval_continuation_and_reprioritization(site: Site) -> None:
     site.card(2, "High", "eval")
     (high,) = site.tick()
     site.finish(low, verdict="ready-for-human-review")
-    (second,) = site.tick()
-    assert second.claim_id == low.claim_id and second.unit_key == "rep-2" and second.lane == "low"
-    assert site.store.get_run(high.id).status == "running"  # type: ignore[union-attr]
+    assert site.tick() == []
+    assert (
+        site.store.get_settings_by_prefix("lane-wait", "")["example/evals:1"]["cause"]
+        == "higher-lane"
+    )
     low_card_index = site.board.cards.index(low_card)
+    site.board.cards[low_card_index] = replace(low_card, priority="Medium")
+    assert site.tick() == []
     site.board.cards[low_card_index] = replace(low_card, priority="Urgent")
-    assert site.store.get_run(second.id).lane == "low"  # type: ignore[union-attr]
-    site.finish(second, verdict="ready-for-human-review")
-    (third,) = site.tick()
-    assert third.unit_key == "rep-3" and third.lane == "urgent"
+    site.board.cards.remove(next(c for c in site.board.cards if c.source.number == 2))
+    site.finish(high, verdict="ready-for-human-review")
+    (second,) = site.tick()
+    assert second.claim_id == low.claim_id and second.unit_key == "rep-2"
+    assert second.lane == "high"
+    assert site.store.get_run(low.id).lane == "low"  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("planning", [False, True])
@@ -336,7 +339,7 @@ def test_legacy_holder_blocks_every_lane(site: Site) -> None:
 
 
 @pytest.mark.parametrize("kind", ["fix", "feature", "task"])
-def test_technical_recovery_continues_beside_higher_lane(site: Site, kind: str) -> None:
+def test_technical_recovery_waits_for_higher_lane(site: Site, kind: str) -> None:
     from agent_factory.controller import AttemptResult
 
     site.card(1, "Low", kind)
@@ -345,10 +348,15 @@ def test_technical_recovery_continues_beside_higher_lane(site: Site, kind: str) 
     (high,) = site.tick()
     site.controller.record_result(low.id, AttemptResult("failed", None, {"reason": "technical"}))
     site.store.set_setting("consumed-results", low.id, {"complete": True})
+    assert site.tick() == []
+    assert (
+        site.store.get_settings_by_prefix("lane-wait", "")["example/work:1"]["cause"]
+        == "higher-lane"
+    )
+    site.finish(high)
     (recovery,) = site.tick()
     assert recovery.reason == "recovery" and recovery.claim_id == low.claim_id
     assert recovery.lane == "low"
-    assert site.store.get_run(high.id).status == "running"  # type: ignore[union-attr]
 
 
 def test_memory_is_resampled_before_each_kind_reservation(site: Site) -> None:

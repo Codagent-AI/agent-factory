@@ -1,10 +1,14 @@
 """Priority vocabulary shared by board ranking and durable lane occupancy."""
 
-LANES = ("urgent", "high", "medium", "low")
+PRIORITIES = ("urgent", "high", "medium", "low")
+LANES = ("high", "medium", "low")
 
 
 def lane_for(priority: str | None) -> str:
+    """Urgent shares the High lane; unset and unknown values use the Low lane."""
     value = priority.strip().lower() if priority is not None else "low"
+    if value == "urgent":
+        return "high"
     return value if value in LANES else "low"
 
 
@@ -14,8 +18,8 @@ def rank(lane: str) -> int:
 
 def priority_rank(name: str | None) -> int:
     if not name:
-        return len(LANES)
+        return len(PRIORITIES)
     try:
-        return LANES.index(name.strip().lower())
+        return PRIORITIES.index(name.strip().lower())
     except ValueError:
-        return len(LANES)
+        return len(PRIORITIES)

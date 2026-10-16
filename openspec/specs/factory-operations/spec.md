@@ -1643,12 +1643,12 @@ A release that supports lanes SHALL establish lane enforcement when its resident
 
 ### Requirement: Document Priority lanes
 
-The operations documentation, `AGENTS.md`, and the repository's `factory-status`, `factory-assign`, and `factory-watch` skills SHALL describe Priority lanes. They SHALL explain:
+The operations documentation SHALL hold the one full description of Priority lanes. `AGENTS.md` and the repository's `factory-status`, `factory-assign`, and `factory-watch` skills SHALL point to that section instead of copying it, and SHALL keep only the status lines each one reads. The operations documentation SHALL explain:
 
-- that each work kind runs at most one attempt per Priority level, Urgent, High, Medium, and Low, and that unprioritized work uses the Low lane;
+- that each work kind runs at most one attempt in each of three lanes: High (Urgent and High), Medium, and Low (Low and unprioritized work);
 - that a higher-priority start never waits for lower-priority work, and that new lower-priority work of the same kind does not start while higher-priority work runs;
 - that running work is never preempted or moved by a Priority change;
-- that a claim already under way continues its repetitions and retries in its lane, while admissions, resumes, and review rounds are new starts;
+- that a higher lane also holds the next repetition, retry, resume, and review round of a lower-lane claim already under way;
 - how status shows each kind's lanes and why work waits;
 - that attempts reserved before the upgrade hold their whole kind until they finish;
 - the disk and memory the machine needs when several lanes of the host kinds run together, and that the existing disk, memory, quota, readiness, and job-cap holds still bound admission;

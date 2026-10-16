@@ -61,7 +61,7 @@ def test_upgrade_downgrade(tmp_path: Path) -> None:
                     claim.id, "next", reason="recovery", lane="medium", evidence_path="/e"
                 )
             assert error.value.cause == "legacy"
-        assert store.lane_decision("task", "low", None, "initial").allowed
+        assert store.lane_decision("task", "low").allowed
         raw.execute(OLD_FINISH, ("completed", "{}", "2026-01-02", "legacy-0"))
         low = store.reserve_run(
             claims[0].id, "next", reason="initial", lane="low", evidence_path="/e"

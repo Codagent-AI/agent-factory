@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from agent_factory.config import JobCapConfig
+from agent_factory.lanes import LANES
 from agent_factory.store import ClaimDraft, ClaimStore, LaneBusy
 
 WORKER = """
@@ -119,7 +120,7 @@ def test_serializable_reservations(tmp_path: Path, pair: str) -> None:
                     assert {"cause": "lane-busy"} in results
                 elif pair == "high-first":
                     assert "id" in results[0] and results[1] == {"cause": "higher-lane"}
-                elif pair in {"continuation", "low-first"}:
+                elif pair == "low-first":
                     assert all("id" in result for result in results)
                 else:
                     assert "id" in results[0]
@@ -149,15 +150,15 @@ def test_gate_cause_selection(tmp_path: Path) -> None:
     with closing(ClaimStore(tmp_path / "db")) as store:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
         holder = store.reserve_run(
-            claim.id, "one", lane="high", reason="initial", evidence_path="/e"
+            claim.id, "one", lane="medium", reason="initial", evidence_path="/e"
         )
-        assert store.lane_decision("fix", "urgent", None, "initial").cause == "kind-mode"
+        assert store.lane_decision("fix", "high").cause == "kind-mode"
         store.enable_lanes()
-        assert store.lane_decision("fix", "high", None, "initial").cause == "lane-busy"
-        assert store.lane_decision("fix", "low", None, "initial").cause == "higher-lane"
-        assert store.lane_decision("fix", "urgent", None, "initial").allowed
+        assert store.lane_decision("fix", "medium").cause == "lane-busy"
+        assert store.lane_decision("fix", "low").cause == "higher-lane"
+        assert store.lane_decision("fix", "high").allowed
         store._connection.execute("UPDATE run SET lane=NULL WHERE id=?", (holder.id,))  # pyright: ignore[reportPrivateUsage]
-        for lane in ("urgent", "high", "medium", "low"):
+        for lane in LANES:
             with pytest.raises(LaneBusy) as error:
                 store.reserve_run(
                     claim.id, "next", lane=lane, reason="recovery", evidence_path="/e"
@@ -180,10 +181,10 @@ def test_unrecognized_lane_holds_every_lane(tmp_path: Path, value: str) -> None:
         occupancy = store.lane_occupancy("fix")
         assert occupancy.holders == {}
         assert [run.id for run in occupancy.legacy] == [holder.id]
-        for lane in ("urgent", "high", "medium", "low"):
-            decision = store.lane_decision("fix", lane, other.id, "initial")
+        for lane in LANES:
+            decision = store.lane_decision("fix", lane)
             assert (decision.allowed, decision.cause) == (False, "legacy")
             with pytest.raises(LaneBusy) as error:
                 store.reserve_run(other.id, "one", lane=lane, reason="initial", evidence_path="/e")
             assert error.value.cause == "legacy"
-        assert store.lane_decision("eval", "low", None, "initial").allowed
+        assert store.lane_decision("eval", "low").allowed

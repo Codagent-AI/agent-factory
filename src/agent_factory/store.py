@@ -11,12 +11,12 @@ import shutil
 import sqlite3
 import time
 import uuid
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal, cast
+from typing import cast
 
 from agent_factory.config import JobCapConfig
 from agent_factory.lanes import LANES, rank
@@ -128,29 +128,6 @@ class LaneBusy(NonterminalRunError):
         super().__init__(f"{cause}: {holder.kind} run {holder.id} holds the lane")
 
 
-def classify_reservation(runs: Sequence[Run], reason: str) -> Literal["start", "continuation"]:
-    """Classify chronological history, folding pre-suite retries into their episode."""
-    if not runs:
-        return "start"
-    episodes = {"review", "unblock"}
-    latest = runs[-1]
-    retry = latest.reason == reason and latest.result.get("failure_stage") == "pre-suite"
-    if reason in episodes and not retry:
-        return "start"
-    start = 0
-    for index in range(len(runs) - 1, -1, -1):
-        if runs[index].reason in episodes:
-            start = index
-            while (
-                start > 0
-                and runs[start - 1].reason == runs[start].reason
-                and runs[start - 1].result.get("failure_stage") == "pre-suite"
-            ):
-                start -= 1
-            break
-    return "continuation" if any(r.started_at is not None for r in runs[start:]) else "start"
-
-
 @dataclass(frozen=True)
 class Event:
     key: str
@@ -256,9 +233,7 @@ class ClaimStore:
             [r for r in runs if r.lane is None],
         )
 
-    def lane_decision(
-        self, kind: str, lane: str, claim_id: str | None, reason: str
-    ) -> LaneDecision:
+    def lane_decision(self, kind: str, lane: str) -> LaneDecision:
         if lane not in LANES:
             raise ValueError(f"invalid lane: {lane}")
         active = self.nonterminal_runs(kind=kind)
@@ -270,23 +245,16 @@ class ClaimStore:
         for run in active:
             if run.lane == lane:
                 return LaneDecision(False, "lane-busy", run)
-        rows = (
-            self._connection.execute(
-                "SELECT * FROM run WHERE claim_id = ? ORDER BY created_at, rowid", (claim_id,)
-            ).fetchall()
-            if claim_id is not None
-            else []
-        )
-        if classify_reservation([_run(row) for row in rows], reason) == "start":
-            higher = [r for r in active if r.lane is not None and rank(r.lane) < rank(lane)]
-            if higher:
-                return LaneDecision(
-                    False, "higher-lane", min(higher, key=lambda r: rank(r.lane or "low"))
-                )
+        # A higher lane holds every lower attempt of the kind, continuations included.
+        higher = [r for r in active if r.lane is not None and rank(r.lane) < rank(lane)]
+        if higher:
+            return LaneDecision(
+                False, "higher-lane", min(higher, key=lambda r: rank(r.lane or "low"))
+            )
         return LaneDecision(True)
 
-    def _lane_gate(self, kind: str, lane: str, claim_id: str, reason: str) -> None:
-        decision = self.lane_decision(kind, lane, claim_id, reason)
+    def _lane_gate(self, kind: str, lane: str) -> None:
+        decision = self.lane_decision(kind, lane)
         if not decision.allowed and decision.holder is not None:
             raise LaneBusy(decision.cause or "lane-busy", decision.holder)
 
@@ -670,7 +638,7 @@ class ClaimStore:
             if claim_row is None:
                 raise KeyError(claim_id)
             kind = cast(str, claim_row["kind"])
-            self._lane_gate(kind, lane, claim_id, reason)
+            self._lane_gate(kind, lane)
             cap_state = self.job_cap_state(datetime.now(UTC))
             if cap_state.reached:
                 raise JobCapReached(cap_state)

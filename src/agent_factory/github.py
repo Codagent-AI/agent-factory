@@ -19,13 +19,13 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from agent_factory.config import ProjectConfig
-from agent_factory.lanes import LANES, priority_rank
+from agent_factory.lanes import PRIORITIES, priority_rank
 from agent_factory.routing import ProjectItem, SourceItem
 
 WRITER_PERMISSIONS = frozenset({"write", "maintain", "admin"})
 """Effective repository permissions that may hand work to the factory."""
 
-_PRIORITY_ORDER = LANES
+_PRIORITY_ORDER = PRIORITIES
 
 
 class GitHubApiError(RuntimeError):

@@ -117,7 +117,7 @@ def process_blocked_claim(
     )
     if handler.gesture(claim, card, eligible) != "unblock":
         return None
-    decision = store.lane_decision(handler.kind, lane, claim.id, "unblock")
+    decision = store.lane_decision(handler.kind, lane)
     if not decision.allowed:
         if decision.holder is not None:
             store.set_setting(

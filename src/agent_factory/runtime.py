@@ -225,11 +225,9 @@ def cycle(state: Path, config_path: Path) -> None:
         reserved_kinds: set[str] = set()
         lane_waits: dict[str, dict[str, object]] = {}
 
-        def record_lane_wait(
-            card: ProjectQueueItem, kind: str, claim_id: str | None, reason: str
-        ) -> bool:
+        def record_lane_wait(card: ProjectQueueItem, kind: str, claim_id: str | None) -> bool:
             lane = lane_for(card.priority)
-            decision = store.lane_decision(kind, lane, claim_id, reason)
+            decision = store.lane_decision(kind, lane)
             if not decision.allowed and decision.holder is not None:
                 candidate = controller.handler(kind)
                 claim = store.get_claim(claim_id) if claim_id else None
@@ -336,7 +334,7 @@ def cycle(state: Path, config_path: Path) -> None:
                         and reentry_handler.window(local).allows_admission(now)
                         and refreshed.outcome.get("waiting_review")
                     ):
-                        record_lane_wait(card, current.kind, current.id, "review")
+                        record_lane_wait(card, current.kind, current.id)
                     if (
                         current.lifecycle == "blocked"
                         and current.outcome.get("blocked_by") != "review"
@@ -386,14 +384,9 @@ def cycle(state: Path, config_path: Path) -> None:
                 existing = store.claims_for_item(snapshot.project_item_id)
                 fresh = bool(existing and handler.gesture(existing[-1], card, []) == "fresh")
                 selected = controller.select_existing(snapshot, fresh=fresh)
-                next_reason = "initial"
-                if selected is not None:
-                    _, next_reason = handler.next_unit(selected, store.runs_for_claim(selected.id))
                 ready = not paused and handler.window(local).allows_admission(now)
                 if ready:
-                    ready = record_lane_wait(
-                        card, handler.kind, selected.id if selected else None, next_reason
-                    )
+                    ready = record_lane_wait(card, handler.kind, selected.id if selected else None)
                 ready = ready and handler.kind not in reserved_kinds
                 if not ready:
                     continue
@@ -402,9 +395,9 @@ def cycle(state: Path, config_path: Path) -> None:
                 try:
                     cap_state = store.job_cap_state(now)
                     if cap_state.reached:
-                        # Reuse the selection and reason from the admission lane check.
+                        # Reuse the selection from the admission lane check.
                         if not record_lane_wait(
-                            card, handler.kind, selected.id if selected else None, next_reason
+                            card, handler.kind, selected.id if selected else None
                         ):
                             continue
                         if selected is not None:
@@ -479,12 +472,12 @@ def cycle(state: Path, config_path: Path) -> None:
                 try:
                     if handler.needs_sandbox_memory(local) and not sandbox_memory().available:
                         continue
-                    if not record_lane_wait(card, handler.kind, claim.id, next_reason):
+                    if not record_lane_wait(card, handler.kind, claim.id):
                         continue
                     preparation = handler.prepare(claim)
                     run = controller.reserve_next(claim.id, lane=lane, readiness=lambda: None)
                     if run is None:
-                        record_lane_wait(card, handler.kind, claim.id, next_reason)
+                        record_lane_wait(card, handler.kind, claim.id)
                         # Preparation may have settled the claim (an earlier attempt's PR was
                         # found); present that immediately rather than on the next poll.
                         _report(store, controller, client, shared, card, claim.id, handler)

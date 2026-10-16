@@ -650,15 +650,28 @@ Delivery depends on Claude Code's local, undocumented `~/.claude/sessions/<pid>.
 
 ## Priority lanes
 
-Priority lanes allow one unfinished attempt per kind at each level: Urgent, High,
-Medium, and Low. Unset or unknown Priority uses Low for occupancy, but sorts after
-explicit Low. Higher-priority starts can run beside lower work; new lower work
-waits while a higher lane of the same kind is busy. Running attempts are never
-preempted or moved when Priority changes. The next attempt uses the card's current
-Priority. Repetitions and retries of a claim that actually started in its current
-episode are continuations and need only their own lane. Admissions, fresh claims,
-unblocks, and review rounds are new starts. A claim that never launched is also a
-new start.
+Each work kind (eval, fix, feature, task) has three lanes, and each lane runs at
+most one unfinished attempt at a time:
+
+| Lane   | Cards                                  |
+| ------ | -------------------------------------- |
+| High   | Urgent, then High                      |
+| Medium | Medium                                 |
+| Low    | Low, then cards with no or unknown Priority |
+
+Within a lane, Urgent is admitted before High, and explicit Low before an unset
+Priority. A higher lane starts at once beside lower work. While a higher lane of
+the same kind is busy, no lower-lane attempt of that kind starts: not a new
+admission, and not the next attempt of a claim already under way (an eval's next
+repetition, a recovery after a crash or technical failure, a relaunch after a
+pre-suite failure, a resume after `needs-input`, or a review round). A held claim
+keeps its completed repetitions, recovery budget, and frozen inputs. Running
+attempts are never preempted or moved when Priority changes; each attempt takes
+its lane from the card's Priority when it is reserved. Kinds are independent: a
+High fix never holds an eval.
+
+So two evals run together only when the lower one is already running when the
+higher one arrives, and then only until the lower one's current repetition ends.
 
 Status keeps `<kind> slot: free` for idle kinds, or prints
 `<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
@@ -669,7 +682,7 @@ they finish. `lanes: off` means the per-kind guard is restored. Only resident
 startup or `agent-factory --config <local.toml> lanes enable` enables lanes;
 `tick`, `doctor`, and `status` never change mode.
 
-Size host disk and memory for up to four concurrent attempts **per host kind**
+Size host disk and memory for up to three concurrent attempts **per host kind**
 (fix, feature, task), including each attempt's clones, artifacts, model clients,
 and build tools. The existing disk floor, memory, quota, readiness, and job-cap
 holds still bound admission; memory is re-sampled before each sandbox admission.

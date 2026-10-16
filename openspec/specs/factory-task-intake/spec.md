@@ -82,7 +82,7 @@ Selection SHALL rank eligible tasks by the Project Priority field, highest first
 #### Scenario: Admit a higher task beside a running lower task
 
 - **WHEN** a Low task attempt is running and an eligible Urgent task sits in Ready
-- **THEN** the factory admits the Urgent task into the Urgent task lane, and the Low attempt continues
+- **THEN** the factory admits the Urgent task into the High task lane, and the Low attempt continues
 
 #### Scenario: Hold lower tasks while a higher task runs
 

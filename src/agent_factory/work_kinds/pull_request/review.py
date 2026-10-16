@@ -141,7 +141,7 @@ def process_review_claim(
     can_start = not (
         not admission_available
         or store.is_paused()
-        or not store.lane_decision(handler.kind, lane, claim.id, "review").allowed
+        or not store.lane_decision(handler.kind, lane).allowed
         or not memory_available
         or not handler.window(local).allows_admission(now)
         or not readiness()
