@@ -13,7 +13,7 @@ import pytest
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.suites.and_scene import SourceRepositories
+from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 from agent_factory.work_kinds.eval.handler import Resolution
 
@@ -169,7 +169,6 @@ def test_pinned_fixture_argv_across_launch_and_recovery_plans(
         FIXTURE_REPOSITORY,
         AndSceneAdapter,
         GitWorktreeManager,
-        PreparedWorktrees,
     )
 
     sources, revisions = _sources(tmp_path)
@@ -257,7 +256,6 @@ def test_requested_workflow_argv_across_launch_and_recovery_plans(
     from agent_factory.suites.and_scene import (
         AndSceneAdapter,
         GitWorktreeManager,
-        PreparedWorktrees,
         ReadinessError,
     )
 
@@ -444,6 +442,95 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
     (artifact / "candidate.json").write_text("{}", encoding="utf-8")
     with pytest.raises(RecoveryStateError, match="missing"):
         adapter.plan(frozen, worktrees, artifact, recovery=True)
+
+
+@pytest.mark.parametrize(
+    ("execution", "expect_checkpoint", "checkpoint", "candidate", "error"),
+    [
+        ("fly", True, None, False, None),
+        ("fly", True, None, True, None),
+        ("docker", True, None, False, "without proof of pre-checkpoint stop"),
+        ("fly", False, None, False, "without proof of pre-checkpoint stop"),
+        ("fly", True, "not json", False, "saved suite checkpoint is corrupt"),
+        ("fly", True, "{}", False, "saved suite checkpoint is incompatible"),
+    ],
+)
+def test_recovery_with_uncollected_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution: str,
+    expect_checkpoint: bool,
+    checkpoint: str | None,
+    candidate: bool,
+    error: str | None,
+) -> None:
+    from agent_factory.suites.and_scene import RecoveryStateError
+
+    adapter, worktrees, frozen = recovery_adapter_setup(tmp_path, monkeypatch, execution)
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    if checkpoint is not None:
+        (artifact / "run-state.json").write_text(checkpoint)
+    if candidate:
+        (artifact / "candidate.json").write_text("{}")
+    if error is not None:
+        with pytest.raises(RecoveryStateError, match=error):
+            adapter.plan(
+                frozen,
+                worktrees,
+                artifact,
+                recovery=True,
+                expect_checkpoint=expect_checkpoint,
+                pre_checkpoint_proven=False,
+            )
+        return
+
+    plan = adapter.plan(
+        frozen,
+        worktrees,
+        artifact,
+        recovery=True,
+        expect_checkpoint=expect_checkpoint,
+        pre_checkpoint_proven=False,
+    )
+
+    assert plan.resume is True
+    assert "--resume" in plan.argv
+    manifest = json.loads((artifact / ".factory" / "manifest.json").read_text())
+    assert manifest["expect_checkpoint"] is True
+
+
+def recovery_adapter_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str = "fly"
+) -> tuple[AndSceneAdapter, PreparedWorktrees, dict[str, object]]:
+    from agent_factory.config import FlyLocalConfig
+    from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees
+
+    sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", f"https://example.invalid/{source.name}.git")
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n")
+    monkeypatch.setattr("agent_factory.fly.launcher.executable", lambda: "/fake/launcher")
+
+    def dry_run_ready(_self: AndSceneAdapter, _worktrees: PreparedWorktrees) -> str | None:
+        return None
+
+    monkeypatch.setattr(AndSceneAdapter, "_fly_dry_run", dry_run_ready)
+    adapter = AndSceneAdapter(
+        environment_file=environment,
+        execution=execution,
+        fly=FlyLocalConfig("factory", "registry.fly.io/factory:base", tmp_path / "fly-token"),
+    )
+    worktrees = PreparedWorktrees("claim", sources.runner, sources.skills, sources.evals, sources)
+    frozen: dict[str, object] = {
+        "suite": "and-scene",
+        "settings": {
+            "roles": {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+        },
+        "revisions": revisions,
+    }
+    return adapter, worktrees, frozen
 
 
 def test_adapter_reads_suite_outcomes_and_renders_only_reviewable_handoffs(tmp_path: Path) -> None:

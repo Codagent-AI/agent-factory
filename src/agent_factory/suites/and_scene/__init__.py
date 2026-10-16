@@ -411,7 +411,9 @@ class AndSceneAdapter:
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
-        resume = self._recovery_mode(artifact, recovery, pre_checkpoint_proven)
+        resume = self._recovery_mode(
+            artifact, recovery, pre_checkpoint_proven, expect_checkpoint=expect_checkpoint
+        )
         run_script = (worktrees.evals / _REQUIRED_EVAL_FILES[0]).resolve()
         arguments = [
             str(run_script),
@@ -606,7 +608,14 @@ class AndSceneAdapter:
         # A recognized limit with no parseable reset gets the documented bounded fallback.
         return reference + timedelta(seconds=fallback_seconds)
 
-    def _recovery_mode(self, artifact: Path, recovery: bool, pre_checkpoint_proven: bool) -> bool:
+    def _recovery_mode(
+        self,
+        artifact: Path,
+        recovery: bool,
+        pre_checkpoint_proven: bool,
+        *,
+        expect_checkpoint: bool = False,
+    ) -> bool:
         if not recovery:
             return False
         state = artifact / "run-state.json"
@@ -620,6 +629,10 @@ class AndSceneAdapter:
             checkpoint = cast(Mapping[str, object], saved)
             if not isinstance(checkpoint.get("schema_version"), int):
                 raise RecoveryStateError("saved suite checkpoint is incompatible")
+            return True
+        if self._execution == "fly" and expect_checkpoint:
+            # The checkpoint lives on the Machine and may not have been collected.
+            # The launcher checks it there and treats its absence as a lost Machine.
             return True
         if any((artifact / marker).exists() for marker in _CANDIDATE_MARKERS):
             raise RecoveryStateError(
