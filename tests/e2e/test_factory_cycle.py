@@ -15,6 +15,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
+from tests.fixtures.git_trees import copy_built
 from tests.fixtures.network import NO_GITHUB
 from tests.fixtures.stub_server import ScriptServer
 
@@ -66,8 +67,35 @@ def _serve(source: str, executable: Path) -> str:
     return ScriptServer(source, str(executable)).client()
 
 
-def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
+def _source_repositories(root: Path, suite: str) -> None:
+    """The evals, runner, and skills repositories; `copy_built` copies them per test."""
     prefix = "evals/agent-runner/and-scene/"
+    _repo(
+        root / "evals",
+        {
+            prefix + "run.sh": suite,
+            prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
+            **{
+                prefix + "lib/" + name + ".mjs": "// fixture"
+                for name in ("phases", "outcomes", "result")
+            },
+        },
+    )
+    _repo(
+        root / "runner",
+        {
+            "scripts/sandbox-run.sh": "#!/bin/sh\n# --docker-run-arg\n",
+            "docker/dev/Dockerfile": 'FROM alpine\nUSER nobody\nWORKDIR /workspace\nCMD ["sh"]\n',
+            "workflows/core/implement-change-v1.0.yaml": "# fixture",
+        },
+    )
+    # The shared config may pin eval defaults to a non-main runner branch.
+    _git(root / "runner", "push", "--quiet", "origin", "HEAD:refs/heads/dev")
+    _git(root / "runner", "fetch", "--quiet", "origin")
+    _repo(root / "skills", {"README.md": "fixture"})
+
+
+def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
     suite = f"""#!{sys.executable}
 import json,pathlib,sys,time
 # Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
@@ -84,29 +112,7 @@ result=({{'evaluation_status':'pending-human-review',
 if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
 (out/'result.json').write_text(json.dumps(result))
 """
-    _repo(
-        tmp_path / "evals",
-        {
-            prefix + "run.sh": suite,
-            prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
-            **{
-                prefix + "lib/" + name + ".mjs": "// fixture"
-                for name in ("phases", "outcomes", "result")
-            },
-        },
-    )
-    _repo(
-        tmp_path / "runner",
-        {
-            "scripts/sandbox-run.sh": "#!/bin/sh\n# --docker-run-arg\n",
-            "docker/dev/Dockerfile": 'FROM alpine\nUSER nobody\nWORKDIR /workspace\nCMD ["sh"]\n',
-            "workflows/core/implement-change-v1.0.yaml": "# fixture",
-        },
-    )
-    # The shared config may pin eval defaults to a non-main runner branch.
-    _git(tmp_path / "runner", "push", "--quiet", "origin", "HEAD:refs/heads/dev")
-    _git(tmp_path / "runner", "fetch", "--quiet", "origin")
-    _repo(tmp_path / "skills", {"README.md": "fixture"})
+    copy_built("factory-cycle-setup", lambda root: _source_repositories(root, suite), tmp_path)
     text = Path("config/codagent.toml").read_text()
     (tmp_path / "shared.toml").write_text(text)
     shared = SharedConfig.from_toml(text)

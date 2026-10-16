@@ -17,6 +17,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore, Run
+from tests.fixtures.git_trees import copy_built
 from tests.fixtures.network import NO_GITHUB
 from tests.fixtures.stub_server import ScriptServer
 
@@ -240,6 +241,49 @@ p.write_text(json.dumps(s)); print(json.dumps(result))
 """
 
 
+def _harness_repositories(root: Path) -> tuple[str, str, str, str]:
+    """The repositories every harness starts from; `copy_built` copies them per test."""
+    target_sha = _repo(
+        root / "work",
+        {"README.md": "fixture\n", "lib.py": "def add(a, b):\n    return a - b\n"},
+    )
+    runner_sha = _repo(
+        root / "runner",
+        {
+            "scripts/sandbox-run.sh": SANDBOX,
+            "workflows/core/finalize-pr-v1.0.yaml": 'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n',
+            "workflows/core/implement-change-v1.0.yaml": "# fixture",
+        },
+    )
+    skills_sha = _repo(root / "skills", {"README.md": "fixture"})
+    validator_sha = _repo(root / "agent-validator", {"dist/index.js": "#!/bin/sh\necho fixture\n"})
+    (root / "agent-validator/dist/index.js").write_text(
+        f"#!/bin/sh\necho '{validator_sha[:7]} fixture'\n"
+    )
+    prefix = "evals/agent-runner/and-scene/"
+    _repo(
+        root / "evals",
+        {
+            prefix + "run.sh": "#!/bin/sh\nexit 0\n",
+            prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
+            **{
+                prefix + "lib/" + n + ".mjs": "// fixture" for n in ("phases", "outcomes", "result")
+            },
+        },
+    )
+    origin = root / "work-origin.git"
+    mirrors = root / "factory" / "mirrors"
+    mirrors.mkdir(parents=True)
+    subprocess.run(
+        ["git", "clone", "--quiet", "--mirror", str(origin), str(mirrors / "example__work.git")],
+        check=True,
+    )
+    working = root / "working"
+    subprocess.run(["git", "clone", "--quiet", str(origin), str(working)], check=True)
+    _git(working, "checkout", "-q", "-b", "dev")
+    return target_sha, runner_sha, skills_sha, validator_sha
+
+
 class Harness:
     # Budget for real Git/CLI subprocesses in the parallel E2E suite.
     cli_timeout: float = 90
@@ -256,54 +300,10 @@ class Harness:
         self.root = tmp_path / "factory"
         self.execution = execution
         self.kind = kind
-        self.target_sha = _repo(
-            tmp_path / "work",
-            {"README.md": "fixture\n", "lib.py": "def add(a, b):\n    return a - b\n"},
-        )
+        shas = copy_built("fix-cycle-harness", _harness_repositories, tmp_path)
+        self.target_sha, self.runner_sha, self.skills_sha, self.validator_sha = shas
         self.origin = tmp_path / "work-origin.git"
-        self.runner_sha = _repo(
-            tmp_path / "runner",
-            {
-                "scripts/sandbox-run.sh": SANDBOX,
-                "workflows/core/finalize-pr-v1.0.yaml": 'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n',
-                "workflows/core/implement-change-v1.0.yaml": "# fixture",
-            },
-        )
-        self.skills_sha = _repo(tmp_path / "skills", {"README.md": "fixture"})
-        self.validator_sha = _repo(
-            tmp_path / "agent-validator", {"dist/index.js": "#!/bin/sh\necho fixture\n"}
-        )
-        (tmp_path / "agent-validator/dist/index.js").write_text(
-            f"#!/bin/sh\necho '{self.validator_sha[:7]} fixture'\n"
-        )
-        prefix = "evals/agent-runner/and-scene/"
-        _repo(
-            tmp_path / "evals",
-            {
-                prefix + "run.sh": "#!/bin/sh\nexit 0\n",
-                prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
-                **{
-                    prefix + "lib/" + n + ".mjs": "// fixture"
-                    for n in ("phases", "outcomes", "result")
-                },
-            },
-        )
-        mirrors = self.root / "mirrors"
-        mirrors.mkdir(parents=True)
-        subprocess.run(
-            [
-                "git",
-                "clone",
-                "--quiet",
-                "--mirror",
-                str(self.origin),
-                str(mirrors / "example__work.git"),
-            ],
-            check=True,
-        )
         self.working = tmp_path / "working"
-        subprocess.run(["git", "clone", "--quiet", str(self.origin), str(self.working)], check=True)
-        _git(self.working, "checkout", "-q", "-b", "dev")
         shared_text = Path("config/codagent.toml").read_text()
         shared_text = shared_text[: shared_text.index("[fix]")] + (
             '[fix]\ncontract = "factory-fix/1"\n[fix.branches]\nrunner = "main"\nskills = "main"\n'

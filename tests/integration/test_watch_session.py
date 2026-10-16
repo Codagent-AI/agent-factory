@@ -65,7 +65,15 @@ def test_session_stages_and_launches_with_no_token_in_environment(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     runner = bin_dir / "agent-runner"
-    runner.write_text("#!/bin/sh\nexit 1\n")
+    # The session's wrapper removes the clone when the Runner exits, so the stand-in
+    # waits until the test has inspected the staged clone.
+    release = tmp_path / "release-runner"
+    runner.write_text(
+        "#!/bin/sh\nwaited=0\n"
+        f"while [ ! -e '{release}' ] && [ $waited -lt 600 ]; do\n"
+        "  sleep 0.05; waited=$((waited + 1))\ndone\n"
+        "exit 1\n"
+    )
     runner.chmod(0o755)
     monkeypatch.setenv("PATH", str(bin_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("GH_TOKEN", "must-not-pass")
@@ -139,6 +147,7 @@ def test_session_stages_and_launches_with_no_token_in_environment(
         assert "must-not-pass" not in wrapper
         assert ("-m agent_factory.audit host" in wrapper) is audit_enabled
         assert (clone / ".agent-runner" / "workflows" / "factory-watch-v3.0.yaml").is_file()
+        release.touch()
         for _ in range(100):
             if (evidence / "exit.json").is_file():
                 break
