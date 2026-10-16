@@ -41,6 +41,24 @@ deadline() {
   printf '%s\n' "$value"
 }
 
+write_manifest() {
+  local directory="$1"
+  # One real tab-separated line per file: path, size, mtime. GNU find does it in
+  # a single process; the loop is the portable fallback. Neither stat flavour
+  # expands "\t" in a format, so tabs come from printf. Runner scratch
+  # folders are temporary work, not evidence.
+  (cd "$ARTIFACTS" && {
+    find . -path './.factory/staging' -prune -o \
+      -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
+    find . -path './.factory/staging' -prune -o \
+      -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -print | while IFS= read -r file; do
+      size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
+      mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
+      printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
+    done
+  }) | sort >"$directory/files.txt"
+}
+
 # Deadline enforcement cannot wait for the suite job to return.  Jobs run in
 # their own session; this supervisor remains alive to preserve DONE evidence.
 watchdog() {
@@ -66,6 +84,24 @@ watchdog() {
 boot_deadline="$(deadline)"
 if [ "$boot_deadline" -gt "$(date +%s)" ]; then rm -f "$ARTIFACTS/.factory/deadline-expired"; fi
 
+# No job process survives a Machine stop; never reuse its process group or script.
+rm -f "$ARTIFACTS/.factory/active-job-pgid"
+job=1
+while [ -e "$ARTIFACTS/.factory/job/$job/DONE" ]; do job=$((job + 1)); done
+directory="$ARTIFACTS/.factory/job/$job"
+if [ -e "$directory/start" ]; then
+  # Match a job terminated by SIGTERM: 128 + 15.
+  interrupted_exit_code=143
+  printf '%s\n' "$interrupted_exit_code" >"$directory/exit-code"
+  printf '%s\n' 'Job interrupted by a Machine restart; not rerun.' >>"$directory/job.log"
+  write_manifest "$directory"
+  touch "$directory/DONE"
+fi
+
+# SSH can be available before the artifact walk finishes. Publish readiness only
+# after DONE. Bind it to this kernel boot because the artifact disk persists.
+(cat /proc/sys/kernel/random/boot_id 2>/dev/null || printf local) >"$ROOT/artifacts/.factory/booted"
+
 watchdog &
 watchdog_pid=$!
 trap 'kill "$watchdog_pid" 2>/dev/null || true' EXIT
@@ -87,20 +123,7 @@ while :; do
     status=$?
     rm -f "$ARTIFACTS/.factory/active-job-pgid"
     printf '%s\n' "$status" >"$directory/exit-code"
-    # One real tab-separated line per file: path, size, mtime. GNU find does it in
-    # a single process; the loop is the portable fallback. Neither stat flavour
-    # expands "\t" in a format, so tabs come from printf. Runner scratch
-    # folders are temporary work, not evidence.
-    (cd "$ARTIFACTS" && {
-      find . -path './.factory/staging' -prune -o \
-        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
-      find . -path './.factory/staging' -prune -o \
-        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -print | while IFS= read -r file; do
-        size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
-        mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
-        printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
-      done
-    }) | sort >"$directory/files.txt"
+    write_manifest "$directory"
     touch "$directory/DONE"
     [ -e "$ARTIFACTS/.factory/deadline-expired" ] && exit 1
     continue
