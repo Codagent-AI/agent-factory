@@ -33,6 +33,10 @@ _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 # The dry run only parses arguments; a harness that stalls must not stall readiness.
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
+_ACCEPTS_CROSSCHECK = re.compile(r"^[ \t]*--crosscheck-cli\)", re.MULTILINE)
+# Suite role order. `crosscheck` is optional: claims frozen before it keep three roles.
+_ROLES = ("lead", "crosscheck", "implementor", "tester")
+_OPTIONAL_ROLES = frozenset({"crosscheck"})
 _REQUIRED_EVAL_FILES = (
     "evals/agent-runner/and-scene/run.sh",
     "evals/agent-runner/and-scene/human-review.sh",
@@ -215,11 +219,23 @@ class AndSceneAdapter:
         return commands
 
     def readiness(
-        self, worktrees: PreparedWorktrees, *, pinned: Collection[str] = ()
+        self,
+        worktrees: PreparedWorktrees,
+        *,
+        pinned: Collection[str] = (),
+        roles: Collection[str] = (),
     ) -> str | None:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
+        if "crosscheck" in roles and not _ACCEPTS_CROSSCHECK.search(
+            (worktrees.evals / _REQUIRED_EVAL_FILES[0]).read_text(encoding="utf-8")
+        ):
+            harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+            return (
+                f"selected and-scene harness {harness_commit[:12]} does not accept "
+                "--crosscheck-cli, which this claim's frozen crosscheck profile needs"
+            )
         for entry in inputs.EVAL_INPUTS:
             if entry.name not in pinned or not entry.suite_flags:
                 continue
@@ -252,8 +268,6 @@ class AndSceneAdapter:
                 return (
                     "selected Agent Runner sandbox launcher lacks repeated --docker-run-arg support"
                 )
-        if not (worktrees.runner / "workflows/core/implement-change-v1.0.yaml").is_file():
-            return "selected Agent Runner revision lacks the and-scene implementation workflow"
         if not self._environment_file.is_file():
             return f"candidate delivery environment file is unavailable: {self._environment_file}"
         try:
@@ -271,6 +285,19 @@ class AndSceneAdapter:
             return "factory Fly launcher is not installed alongside the running factory"
         run_script = worktrees.evals / _REQUIRED_EVAL_FILES[0]
         harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+        # A harness that accepts crosscheck may require it, and it adds a mount.
+        crosscheck = (
+            (
+                "--crosscheck-cli",
+                "codex",
+                "--crosscheck-model",
+                "default",
+                "--crosscheck-effort",
+                "medium",
+            )
+            if _ACCEPTS_CROSSCHECK.search(run_script.read_text(encoding="utf-8"))
+            else ()
+        )
         with tempfile.TemporaryDirectory(prefix="factory-fly-readiness-") as temporary:
             artifact = Path(temporary) / "artifact"
             manifest = artifact / ".factory" / "manifest.json"
@@ -282,6 +309,7 @@ class AndSceneAdapter:
                         "worktrees": {
                             "runner": str(worktrees.runner),
                             "skills": str(worktrees.skills),
+                            "evals": str(worktrees.evals),
                         },
                         "git_common_dirs": [
                             _git_common_dir(worktrees.runner),
@@ -308,15 +336,16 @@ class AndSceneAdapter:
                 str(artifact),
                 "--env-file",
                 str(self._environment_file),
-                # A claude lead with codex implementor and tester is the widest auth
-                # shape the harness emits, and the only one that orders the mount
-                # flags claude-first. Anything narrower cannot catch grammar drift.
+                # A claude lead with codex crosscheck, implementor, and tester is the
+                # widest auth shape the harness emits, and the only one that orders the
+                # mount flags claude-first. Anything narrower cannot catch grammar drift.
                 "--lead-cli",
                 "claude",
                 "--lead-model",
                 "default",
                 "--lead-effort",
                 "medium",
+                *crosscheck,
                 "--implementor-cli",
                 "codex",
                 "--implementor-model",
@@ -376,13 +405,13 @@ class AndSceneAdapter:
             if not isinstance(revision, str) or not _SHA.fullmatch(revision):
                 raise ReadinessError(f"accepted {entry.name} revision is not a full commit SHA")
             arguments_by_input.extend(entry.suite_arguments(revision))
-        readiness = self.readiness(worktrees, pinned=revisions.keys())
+        settings = _settings(frozen)
+        roles = _roles(settings)
+        readiness = self.readiness(worktrees, pinned=revisions.keys(), roles=roles.keys())
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
         resume = self._recovery_mode(artifact, recovery, pre_checkpoint_proven)
-        settings = _settings(frozen)
-        roles = _roles(settings)
         run_script = (worktrees.evals / _REQUIRED_EVAL_FILES[0]).resolve()
         arguments = [
             str(run_script),
@@ -396,14 +425,19 @@ class AndSceneAdapter:
             "--env-file",
             str(self._environment_file),
         ]
-        for role in ("lead", "implementor", "tester"):
-            cli, model, effort = _profile(roles[role], role)
+        for role, profile in roles.items():
+            cli, model, effort = _profile(profile, role)
             arguments.extend(
                 (f"--{role}-cli", cli, f"--{role}-model", model, f"--{role}-effort", effort)
             )
         arguments.extend(arguments_by_input)
         if settings.get("skip_validator") is True:
             arguments.append("--skip-validator")
+        workflow = settings.get("workflow")
+        if workflow is not None:
+            if not isinstance(workflow, str) or not inputs.WORKFLOW.fullmatch(workflow):
+                raise ReadinessError("accepted workflow is not a logical workflow reference")
+            arguments.extend(("--workflow", workflow))
         if resume:
             arguments.append("--resume")
         if self._execution == "fly":
@@ -805,8 +839,10 @@ def _roles(settings: Mapping[str, object]) -> Mapping[str, str]:
         raise ReadinessError("claim has no frozen role profiles")
     roles = cast(Mapping[str, object], raw)
     result: dict[str, str] = {}
-    for role in ("lead", "implementor", "tester"):
+    for role in _ROLES:
         profile = roles.get(role)
+        if profile is None and role in _OPTIONAL_ROLES:
+            continue
         if not isinstance(profile, str):
             raise ReadinessError(f"claim has no frozen {role} profile")
         result[role] = profile
@@ -970,7 +1006,9 @@ def bounded_quota_deadline(artifact: Path, *, now: float) -> float | None:
     except OSError as error:
         raise ReadinessError(f"suite quota log cannot be read: {error.strerror}") from error
     matches = re.findall(
-        r"^Claude (?:lead|implementor|tester|null) quota reached; waiting until "
+        # Older harnesses print `null` for an unattributed wait; newer ones `unattributed`.
+        r"^Claude (?:lead|crosscheck|implementor|tester|unattributed|null) quota reached; "
+        r"waiting until "
         r"(\S+) before resuming Agent Runner$",
         tail,
         re.MULTILINE,

@@ -64,6 +64,10 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
     prefix = "evals/agent-runner/and-scene/"
     suite = f"""#!{sys.executable}
 import json,pathlib,sys,time
+# Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
+ACCEPTS = '''
+    --crosscheck-cli)
+'''
 args=sys.argv
 out=pathlib.Path(args[args.index('--artifact-dir')+1]);out.mkdir(parents=True,exist_ok=True)
 (out/'run-state.json').write_text(json.dumps({{'schema_version':1}}))

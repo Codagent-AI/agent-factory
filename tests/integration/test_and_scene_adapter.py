@@ -246,6 +246,70 @@ def test_pinned_fixture_argv_across_launch_and_recovery_plans(
                 manifest.pop("artifact_dir")
             assert pinned_manifest == default_manifest
             assert "fixture" not in pinned_manifest["commits"]
+            assert pinned_manifest["worktrees"]["evals"] == str(worktrees.evals)
+
+
+@pytest.mark.parametrize("execution", ["docker", "fly"])
+def test_requested_workflow_argv_across_launch_and_recovery_plans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str
+) -> None:
+    from agent_factory.config import FlyLocalConfig
+    from agent_factory.suites.and_scene import (
+        AndSceneAdapter,
+        GitWorktreeManager,
+        PreparedWorktrees,
+        ReadinessError,
+    )
+
+    sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", f"https://example.invalid/{source.name}.git")
+    worktrees = GitWorktreeManager(tmp_path / "factory", sources).prepare("claim", revisions)
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n", encoding="utf-8")
+    if execution == "fly":
+
+        def dry_run_ready(_self: AndSceneAdapter, _worktrees: PreparedWorktrees) -> str | None:
+            return None
+
+        monkeypatch.setattr("agent_factory.fly.launcher.executable", lambda: "/fake/launcher")
+        monkeypatch.setattr(AndSceneAdapter, "_fly_dry_run", dry_run_ready)
+    fly = FlyLocalConfig("factory", "registry.fly.io/factory:base", tmp_path / "fly-token")
+    adapter = AndSceneAdapter(
+        environment_file=environment, execution=execution, fly=fly if execution == "fly" else None
+    )
+    roles = {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+
+    def frozen_with(settings: dict[str, object]) -> dict[str, object]:
+        return {"suite": "and-scene", "settings": settings, "revisions": revisions}
+
+    standard = frozen_with({"roles": roles})
+    selected = frozen_with({"roles": roles, "workflow": "core:orchestrated-implement-change"})
+
+    for name, recovery, checkpoint in (("initial", False, False), ("resume", True, True)):
+        argv: dict[str, tuple[str, ...]] = {}
+        for variant, frozen in (("standard", standard), ("selected", selected)):
+            artifact = tmp_path / name
+            if checkpoint:
+                artifact.mkdir(exist_ok=True)
+                (artifact / "run-state.json").write_text(
+                    json.dumps({"schema_version": 1}), encoding="utf-8"
+                )
+            argv[variant] = adapter.plan(frozen, worktrees, artifact, recovery=recovery).argv
+        assert "--workflow" not in argv["standard"]
+        assert argv["selected"].count("--workflow") == 1
+        index = argv["selected"].index("--workflow")
+        assert argv["selected"][index + 1] == "core:orchestrated-implement-change"
+        assert argv["selected"][:index] + argv["selected"][index + 2 :] == argv["standard"]
+        assert ("--resume" in argv["selected"]) is checkpoint
+
+    with pytest.raises(ReadinessError, match="workflow"):
+        adapter.plan(
+            frozen_with({"roles": roles, "workflow": "--dry-run"}),
+            worktrees,
+            tmp_path / "invalid",
+            recovery=False,
+        )
 
 
 def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_worktrees(

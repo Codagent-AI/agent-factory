@@ -72,6 +72,37 @@ def test_eval_request_applies_canonical_role_override(role: str) -> None:
     assert request.settings["roles"] == {**defaults().roles, role: profile}
 
 
+def test_eval_request_workflow_is_optional_validated_and_score_affecting() -> None:
+    standard = parse_request("```eval\nrepetitions = 2\n```", defaults())
+    orchestrated = parse_request(
+        "```eval\nrepetitions = 2\nworkflow = 'core:orchestrated-implement-change'\n```",
+        defaults(),
+    )
+    planned = parse_request(
+        "```eval\nrepetitions = 2\nworkflow = 'core:plan-and-implement-change'\n```",
+        defaults(),
+    )
+
+    assert "workflow" not in standard.settings
+    assert orchestrated.settings["workflow"] == "core:orchestrated-implement-change"
+    assert len({standard.fingerprint, orchestrated.fingerprint, planned.fingerprint}) == 3
+    frozen = orchestrated.freeze(
+        {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, suite="and-scene"
+    ).payload
+    assert frozen["settings"] == orchestrated.settings
+    for value in (
+        "''",
+        "true",
+        "'orchestrated-implement-change'",
+        "'Core:orchestrated'",
+        "'core:orchestrated:v1'",
+        "'workflows/core/orchestrated-implement-change-v1.0.yaml'",
+        "'-core:orchestrated'",
+    ):
+        with pytest.raises(ValueError, match="workflow must be a logical Agent Runner workflow"):
+            parse_request(f"```eval\nworkflow = {value}\n```", defaults())
+
+
 def test_sqlite_claim_history_retry_budget_and_holds_survive_restart(tmp_path: Path) -> None:
     database = tmp_path / "factory.sqlite3"
     claim = ClaimStore(database).create_claim(

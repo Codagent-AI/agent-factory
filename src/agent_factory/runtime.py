@@ -473,6 +473,9 @@ def cycle(state: Path, config_path: Path) -> None:
                     )
                 if claim is None or claim.lifecycle in {"settled", "cancelled", "superseded"}:
                     continue
+                if _has_unconsumed_result(store, claim):
+                    # The next tick's _consume_results presents this attempt's own outcome.
+                    continue
                 try:
                     if handler.needs_sandbox_memory(local) and not sandbox_memory().available:
                         continue
@@ -783,6 +786,14 @@ def _should_cancel(claim: Claim) -> bool:
 def _presents_card(claim: Claim, *, issue_state: str) -> bool:
     """A claim cancelled by closure stops owning the card once its issue is reopened."""
     return not (claim.lifecycle == "cancelled" and issue_state.lower() != "closed")
+
+
+def _has_unconsumed_result(store: ClaimStore, claim: Claim) -> bool:
+    return any(
+        run.status not in NONTERMINAL_RUN_STATUSES
+        and not store.get_setting("consumed-results", run.id)
+        for run in store.runs_for_claim(claim.id)
+    )
 
 
 def _consume_results(

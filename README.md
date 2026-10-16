@@ -61,14 +61,18 @@ comments before reposting, so a lost GitHub response never reruns work or
 duplicates activity.
 
 The shipped eval parser supports the configured Runner/Skills refs, complete
-role profiles, `skip_validator`, and a positive `repetitions` count. Defaults
+`lead`, `crosscheck`, `implementor`, and `tester` role profiles,
+`skip_validator`, a positive `repetitions` count, an and-scene `fixture_ref`,
+and an optional Agent Runner `workflow` (for example
+`core:orchestrated-implement-change`; omitted, the suite's default runs). Defaults
 are applied solely while a new claim is frozen. The snapshot used by its parser
 contract is kept in `tests/fixtures/eval-request.md` with its source revision.
 
 The pinned `and-scene` integration, suite prerequisites, companion wrapper
 revision, retained review-command lifetime, and safe storage cleanup procedure
 are documented in [suite integration](docs/suite-integration.md). In particular,
-the configured harness is a deployment commit—not a branch or the sibling
+the configured harness is a branch (`eval.harness_ref`, default `main`) that
+Factory resolves to a commit at each claim's admission, not the sibling
 checkout currently open on the Mac.
 
 ## Planned stack

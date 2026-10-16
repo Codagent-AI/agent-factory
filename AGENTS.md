@@ -52,7 +52,11 @@ resident's restart. The script:
    skips the runner step with a warning if the checkout is not on `main`, has
    uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
-   it already exists;
+   it already exists. It builds on python.org's signed 3.12
+   (`AGENT_FACTORY_PYTHON` overrides), because macOS ties the resident's Full
+   Disk Access grant to the interpreter's signature, and Homebrew or uv
+   builds lose it on every upgrade. Grant that `Python.app` Full Disk Access
+   once, or macOS keeps asking whether Python may access data from other apps;
 3. pauses the factory and runs `make build` in the runner checkout, which
    updates the host runner that fix and feature runs use. `go build` renames
    the new binary over the old one, so a running attempt keeps its binary and
@@ -121,8 +125,12 @@ validator's end-to-end tests. Commit any pin through a PR.
   Rolling back to a release without first-parent checkpoint reading may choose
   a checkpoint from merged target history; inspect recently resumed claims and
   re-admit affected ones before rollback.
-- The eval judge model is not set here. Agent Evals uses the Codex CLI default
-  (`codex-default`), so it changes with the CLI version.
+- The eval judge models are not set here. Agent Evals pins its judging panel
+  (`cross-family-panel-v2`: two `claude-sonnet-5-5` samples and `gpt-6.1-sol`,
+  with `claude-opus-5-5` deciding, all at high effort) in
+  `evals/agent-runner/and-scene/lib/judge-profile.mjs`, so judging changes
+  only when the harness commit changes. Judging needs Claude auth as well as
+  Codex auth, and runs on Fly for Fly evals.
 
 ## Task pull requests
 
@@ -189,6 +197,14 @@ terminal eval loses its candidate `node_modules`. See
 - `gh pr merge --delete-branch` reports an error after merging, because `main`
   is checked out in Paul's checkout. Merge without it, then run
   `git push origin --delete <branch>`.
+- Paul's `gh` login often hits GitHub's GraphQL secondary rate limit ("API rate
+  limit already exceeded") while `gh api rate_limit` still shows points left.
+  Board reads (`gh project item-list`), `factory-watch`, `assign.py`, and
+  `gh pr merge` all use GraphQL, so polling the board every few seconds makes
+  it worse; poll no faster than once a minute. REST still works meanwhile:
+  read a PR with `gh api repos/OWNER/REPO/pulls/N`, and merge with
+  `gh api -X PUT repos/OWNER/REPO/pulls/N/merge -f merge_method=merge -f sha=<head>`
+  (the `sha` does what `--match-head-commit` does).
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
 

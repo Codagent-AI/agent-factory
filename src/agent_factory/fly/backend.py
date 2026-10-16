@@ -133,7 +133,7 @@ class FlyMachineBackend:
         )
         if any(
             str(roles.get(role, "")).startswith("claude:")
-            for role in ("lead", "implementor", "tester")
+            for role in ("lead", "crosscheck", "implementor", "tester")
         ):
             try:
                 login = resolve_claude_login([local.credentials.suite_environment])

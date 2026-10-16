@@ -13,6 +13,9 @@ from urllib.parse import urlsplit
 from agent_factory.suites.and_scene.errors import ReadinessError
 
 FIXTURE_REPOSITORY = "https://github.com/Codagent-AI/and-scene.git"
+# The shape run.sh accepts for `--workflow`: a logical Agent Runner `namespace:name`
+# reference. A request that omits `workflow` runs the suite's default workflow.
+WORKFLOW = re.compile(r"[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*")
 
 
 def _resolve(checkout: Path | None, ref: str) -> str:

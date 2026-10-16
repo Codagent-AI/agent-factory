@@ -31,20 +31,29 @@ def _assert_golden(path: Path, actual: object, *, capture: str = "CAPTURE_EVAL_G
 
 
 @pytest.mark.parametrize(
-    ("shape", "body", "execution", "validator", "fixture"),
+    ("shape", "body", "execution", "validator", "fixture", "crosscheck"),
     [
-        ("default_docker", "repetitions = 1", "docker", False, False),
-        ("combined_fly", 'fixture_ref = "main"', "fly", True, True),
+        ("default_docker", "repetitions = 1", "docker", False, False, False),
+        ("combined_fly", 'fixture_ref = "main"', "fly", True, True, False),
+        # Claims admitted once the defaults carry the crosscheck role.
+        ("crosscheck_docker", "repetitions = 1", "docker", False, False, True),
     ],
 )
 def test_frozen_and_reporting_golden(
-    tmp_path: Path, shape: str, body: str, execution: str, validator: bool, fixture: bool
+    tmp_path: Path,
+    shape: str,
+    body: str,
+    execution: str,
+    validator: bool,
+    fixture: bool,
+    crosscheck: bool,
 ) -> None:
     defaults = EvalDefaults(
         "main",
         "main",
         {
             "lead": "claude:default:medium",
+            **({"crosscheck": "codex:default:high"} if crosscheck else {}),
             "implementor": "codex:default:medium",
             "tester": "codex:default:medium",
         },
@@ -122,14 +131,20 @@ def test_report_golden(tmp_path: Path, shape: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("execution", "fixture", "validator"),
+    ("execution", "fixture", "validator", "crosscheck"),
     [
-        ("docker", False, False),
-        ("fly", True, True),
+        ("docker", False, False, False),
+        ("fly", True, True, False),
+        ("docker", False, False, True),
     ],
 )
 def test_suite_plan_golden(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str, fixture: bool, validator: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution: str,
+    fixture: bool,
+    validator: bool,
+    crosscheck: bool,
 ) -> None:
     from agent_factory.config import FlyLocalConfig
     from agent_factory.suites.and_scene import (
@@ -150,7 +165,10 @@ def test_suite_plan_golden(
         _git(source, "remote", "add", "origin", str(source))
     script = sources.evals / "evals/agent-runner/and-scene/run.sh"
     script.write_text(
-        "#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\nesac\n", encoding="utf-8"
+        "#!/bin/sh\ncase $1 in\n --fixture-ref) ;;\n --repo) ;;\n"
+        + (" --crosscheck-cli) ;;\n" if crosscheck else "")
+        + "esac\n",
+        encoding="utf-8",
     )
     _git(sources.evals, "add", ".")
     _git(sources.evals, "commit", "-m", "fixture flags")
@@ -161,7 +179,14 @@ def test_suite_plan_golden(
         "version": 1,
         "suite": "and-scene",
         "settings": {
-            "roles": {role: "codex:model:medium" for role in ("lead", "implementor", "tester")},
+            "roles": {
+                role: "codex:model:medium"
+                for role in (
+                    ("lead", "crosscheck", "implementor", "tester")
+                    if crosscheck
+                    else ("lead", "implementor", "tester")
+                )
+            },
             "skip_validator": False,
         },
         "revisions": {**revisions, **({"fixture": "f" * 40} if fixture else {})},
@@ -213,7 +238,8 @@ def test_suite_plan_golden(
     normalized = json.loads(
         json.dumps(actual).replace(str(tmp_path), "<tmp>").replace(claim.id, "<claim>")
     )
-    path = GOLDENS / f"plan_{execution}_{fixture}{'_validator' if validator else ''}.json"
+    suffix = f"{'_validator' if validator else ''}{'_crosscheck' if crosscheck else ''}"
+    path = GOLDENS / f"plan_{execution}_{fixture}{suffix}.json"
     _assert_golden(path, normalized)
     recovery_plans: dict[str, object] = {}
     for name, checkpoint in (("retry", False), ("resume", True)):
@@ -246,9 +272,7 @@ def test_suite_plan_golden(
     recovery_normalized = json.loads(
         json.dumps(recovery_plans).replace(str(tmp_path), "<tmp>").replace(claim.id, "<claim>")
     )
-    recovery_path = GOLDENS / (
-        f"recovery_{execution}_{fixture}{'_validator' if validator else ''}.json"
-    )
+    recovery_path = GOLDENS / f"recovery_{execution}_{fixture}{suffix}.json"
     _assert_golden(recovery_path, recovery_normalized, capture="CAPTURE_EVAL_RECOVERY_GOLDENS")
     assert manager.remove(worktrees) == {}
     store.close()
