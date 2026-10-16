@@ -43,8 +43,9 @@ jobs:
         # The tests create many short-lived files and executables. On the hosted runner,
         # Spotlight and other system services reacting to them took a large share of
         # the 3 vCPUs the tests need.
+        # Only this volume's indexing is turned off: turning it off everywhere can take a
+        # minute on the runner.
         run: |
-          sudo mdutil -a -i off
           device="$(hdiutil attach -nomount ram://2097152 | awk '{print $1}')"
           diskutil erasevolume APFS FactoryTests "$device"
           sudo mdutil -i off /Volumes/FactoryTests
