@@ -481,8 +481,20 @@ class FlyTransport:
         if result.returncode:
             raise FlyTransportError(result.stderr.decode(errors="replace").strip() or "sftp failed")
 
-    def put_directory(self, local: Path, remote: str, *, exclude: tuple[str, ...] = ()) -> None:
-        """Deliver a directory byte-identically as one tarball, less excluded top-level names."""
+    def put_directory(
+        self,
+        local: Path,
+        remote: str,
+        *,
+        exclude: tuple[str, ...] = (),
+        contents_only: bool = False,
+    ) -> None:
+        """Deliver a directory byte-identically as one tarball, less excluded top-level names.
+
+        ``contents_only`` leaves the target directory's own entry out of the archive. Tar
+        extracting as root restores a ``.`` entry's owner and mode onto the target, which
+        would hand an existing guest-owned directory to the host's user.
+        """
         skipped = {f"./{name}" for name in exclude}
 
         def keep(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
@@ -491,7 +503,11 @@ class FlyTransport:
         with tempfile.TemporaryDirectory() as scratch:
             bundle = Path(scratch) / "bundle.tar"
             with tarfile.open(bundle, "w") as archive:
-                archive.add(local, arcname=".", filter=keep)
+                if contents_only:
+                    for child in sorted(local.iterdir()):
+                        archive.add(child, arcname=f"./{child.name}", filter=keep)
+                else:
+                    archive.add(local, arcname=".", filter=keep)
             staged = f"/tmp/factory-bundle-{os.getpid()}.tar"
             self.put_file(bundle, staged)
         target = shlex.quote(remote)
@@ -725,7 +741,10 @@ class Lifecycle:
             else []
         )
         entries = sorted(path.name for path in artifact_dir.iterdir() if path.name != ".factory")
-        self.transport.put_directory(artifact_dir, "/artifacts", exclude=(".factory",))
+        # /artifacts belongs to the guest's user; only its contents come from the host.
+        self.transport.put_directory(
+            artifact_dir, "/artifacts", exclude=(".factory",), contents_only=True
+        )
         targets = [f"/artifacts/{shlex.quote(name)}" for name in entries]
         done = [f"/artifacts/.factory/job/{job}" for job in jobs]
         steps = [
