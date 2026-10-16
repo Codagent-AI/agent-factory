@@ -64,6 +64,10 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
     prefix = "evals/agent-runner/and-scene/"
     suite = f"""#!{sys.executable}
 import json,pathlib,sys,time
+# Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
+ACCEPTS = '''
+    --crosscheck-cli)
+'''
 args=sys.argv
 out=pathlib.Path(args[args.index('--artifact-dir')+1]);out.mkdir(parents=True,exist_ok=True)
 (out/'run-state.json').write_text(json.dumps({{'schema_version':1}}))
@@ -295,8 +299,7 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        # A tick runs several probes, each with its own 15-second deadline.
-        # Allow their combined subprocess startup cost on a busy test host.
+        # A whole tick can exceed one probe deadline when subprocess startup is slow.
         timeout=60,
     )
     if expected_error is None:

@@ -47,6 +47,10 @@ REVIEWABLE: dict[str, object] = {
 # waits for the test to hand it its result.
 _RUN_SH = f"""#!{sys.executable}
 import os, subprocess, sys
+# Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
+ACCEPTS = '''
+    --crosscheck-cli)
+'''
 args = sys.argv[1:]
 def option(name):
     return args[args.index(name) + 1]
@@ -258,7 +262,7 @@ class Factory:
             env=self.env,
             capture_output=True,
             text=True,
-            # A whole tick includes several separately bounded readiness probes.
+            # A whole tick can exceed one probe deadline when subprocess startup is slow.
             timeout=60,
         )
         assert done.returncode == 0, done.stderr

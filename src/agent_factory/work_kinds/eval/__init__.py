@@ -16,8 +16,10 @@ if TYPE_CHECKING:
     from agent_factory.work_kinds.eval.handler import EvalHandler as EvalHandler
 
 _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
-_ROLES = frozenset({"lead", "implementor", "tester"})
-_KEYS = frozenset({"lead", "implementor", "tester", "skip_validator", "repetitions"})
+# Eval role profiles in suite role order. `crosscheck` reviews planned tasks.
+ROLES = ("lead", "crosscheck", "implementor", "tester")
+_ROLES = frozenset(ROLES)
+_KEYS = _ROLES | {"skip_validator", "repetitions", "workflow"}
 
 
 def _accepted_keys() -> frozenset[str]:
@@ -137,6 +139,13 @@ def _validate_overrides(overrides: Mapping[str, object], defaults: EvalDefaults)
             _profile(overrides[role], role)
     if "skip_validator" in overrides and not isinstance(overrides["skip_validator"], bool):
         raise ValueError("skip_validator must be a boolean")
+    if "workflow" in overrides and not (
+        isinstance(overrides["workflow"], str) and inputs.WORKFLOW.fullmatch(overrides["workflow"])
+    ):
+        raise ValueError(
+            "workflow must be a logical Agent Runner workflow reference such as "
+            "core:orchestrated-implement-change"
+        )
     repetitions = overrides.get("repetitions", defaults.repetitions)
     if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
         raise ValueError("repetitions must be a positive integer")
@@ -163,6 +172,7 @@ __all__ = [
     "EvalHandler",
     "FrozenSpec",
     "ParsedRequest",
+    "ROLES",
     "parse_request",
 ]
 

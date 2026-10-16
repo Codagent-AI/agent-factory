@@ -55,7 +55,7 @@ from agent_factory.work_kinds.base import (
     mapping,
     providers_from_roles,
 )
-from agent_factory.work_kinds.eval import EvalDefaults, ParsedRequest, parse_request
+from agent_factory.work_kinds.eval import ROLES, EvalDefaults, ParsedRequest, parse_request
 
 
 @dataclass(frozen=True)
@@ -104,7 +104,13 @@ class EvalHandler:
         defaults = EvalDefaults(
             str(values.get("agent_runner_ref", "main")),
             str(values.get("agent_skills_ref", "main")),
-            {role: str(values.get(role, "")) for role in ("lead", "implementor", "tester")},
+            # An unconfigured crosscheck stays absent rather than freezing an empty
+            # profile; doctor holds eval admission until the default is complete.
+            {
+                role: str(values.get(role, ""))
+                for role in ROLES
+                if role != "crosscheck" or role in values
+            },
             bool(values.get("skip_validator", False)),
             shared.eval.repetitions,
             execution=local.eval_execution,
@@ -313,7 +319,7 @@ class EvalHandler:
         failures = [check.detail for check in auth if not check.available]
         if failures:
             raise ReadinessError("; ".join(failures))
-        reason = self.adapter.readiness(worktrees, pinned=revisions.keys())
+        reason = self.adapter.readiness(worktrees, pinned=revisions.keys(), roles=roles.keys())
         if reason:
             raise ReadinessError(reason)
         return Preparation(worktrees=worktrees)

@@ -348,6 +348,7 @@ class JobRequest:
     environment: str
     codex_auth: bool
     claude_auth: bool
+    deliveries: tuple[tuple[Path, str], ...] = ()
 
 
 class FlyTransport:
@@ -855,15 +856,25 @@ class Lifecycle:
     def _deliver(self, request: JobRequest, deadline: int, job: int) -> None:
         directory = f"/artifacts/.factory/job/{job}"
         credentials = self._resolved_credentials
+        delivery_targets = " ".join(shlex.quote(target) for _, target in request.deliveries)
         # One ssh round trip prepares every target, so the uploads need none each.
         self.transport.command(
-            "rm -rf /eval-input /host-home /run/factory/env && "
+            f"rm -rf /eval-input /host-home /run/factory/env {delivery_targets} && "
             f"mkdir -p /run/factory /var/lib/factory /host-home/codex /host-home/claude "
             f"{directory} && chmod 711 /run/factory /host-home && rm -f {directory}/job.sh && "
             f"printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
         if request.input_dir is not None:
             self.transport.put_directory(request.input_dir, "/eval-input")
+        for source, target in request.deliveries:
+            self.transport.put_directory(source, target)
+        if request.deliveries:
+            # Tar preserves host ownership and modes. Keep harness code root-owned,
+            # readable by the job user, and unwritable even if the host allowed it.
+            self.transport.command(
+                f"chown -R -h -P root:root {delivery_targets} && "
+                f"chmod -R a+rX,go-w {delivery_targets}"
+            )
         for path, target in credentials:
             self.transport.put_file(path, f"/host-home/{target}", prepare=False)
         if self._claude_login.kind == "keychain":
