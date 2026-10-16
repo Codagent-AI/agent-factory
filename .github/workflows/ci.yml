@@ -44,7 +44,7 @@ jobs:
           iostat -w 5 > iostat.log &
           sampler=$!
           status=0
-          uv run pytest -v --durations=0 --durations-min=0.3 || status=$?
+          uv run pytest --durations=20 || status=$?
           kill "$sampler"
           cat iostat.log
           exit "$status"

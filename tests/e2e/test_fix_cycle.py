@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -17,6 +18,7 @@ import pytest
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore, Run
 from tests.fixtures.network import NO_GITHUB
+from tests.fixtures.stub_server import ScriptServer
 
 REPOSITORY = "example/work"
 FIX_TOKEN = "fix-token-value"
@@ -113,6 +115,19 @@ if script.strip() == 'crash':
 (out / ('review-outcome.json' if args[1] == 'factory-review' else args[1].removeprefix('factory-') + '-outcome.json')).write_text(script)
 """
 
+# Answers the Runner readiness probes, which every tick makes, without starting Python;
+# RUNNER itself, beside it, handles the runs.
+RUNNER_PROBES = """#!/bin/sh
+case "$1" in
+  -version) echo 'stub-runner 1.0'; exit 0 ;;
+  -validate) exit 0 ;;
+esac
+if [ "$1" = run ] && [ "$2" = --help ]; then
+  echo 'Usage: agent-runner run <workflow> [--session-dir <path>] [--param key=value]'; exit 0
+fi
+exec {python} {runner} "$@"
+"""
+
 CODEX = """#!/bin/sh
 case "$1 $2" in
   "plugin list") echo '[{"name": "codagent"}]' ;;
@@ -133,7 +148,8 @@ exit 0
 
 
 def _gh_stub(board: Path, bot_login: str) -> str:
-    return f"""#!{sys.executable}
+    """The GitHub stand-in's source, which the harness's ScriptServer runs for each call."""
+    return f"""
 import json, os, re, sys, pathlib
 p = pathlib.Path({str(board)!r}); s = json.loads(p.read_text()); args = sys.argv[1:]
 if args[:2] == ['auth', 'status']:
@@ -433,20 +449,24 @@ fix_environment = "{tmp_path / "fix.env"}"
         )
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
+        self.gh = ScriptServer(_gh_stub(self.board, self.shared.bot_login), str(bin_dir / "gh"))
         for name, content in {
-            "gh": _gh_stub(self.board, self.shared.bot_login),
+            "gh": self.gh.client(),
             "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
             "docker": DOCKER,
             "codex": CODEX,
             "cursor": "#!/bin/sh\nexit 0",
             # Readiness probes must never reach the developer's own CLIs.
             "claude": "#!/bin/sh\nexit 0",
-            "agent-runner": RUNNER,
+            "agent-runner": RUNNER_PROBES.format(
+                python=shlex.quote(sys.executable), runner=shlex.quote(str(bin_dir / "runner.py"))
+            ),
             "jq": "#!/bin/sh\nexit 0",
         }.items():
             script = bin_dir / name
             script.write_text(content)
             script.chmod(0o755)
+        (bin_dir / "runner.py").write_text(RUNNER)
         (bin_dir / "agent-validator").symlink_to(tmp_path / "agent-validator/dist/index.js")
         (tmp_path / "agent-validator/dist/index.js").chmod(0o755)
         self.env = {

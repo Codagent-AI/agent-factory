@@ -16,6 +16,7 @@ import pytest
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
 from tests.fixtures.network import NO_GITHUB
+from tests.fixtures.stub_server import ScriptServer
 
 # Readiness probes answer from this stand-in rather than the developer's installed Runner.
 HERMETIC_RUNNER = """#!/bin/sh
@@ -58,6 +59,11 @@ def _repo(path: Path, files: dict[str, str]) -> str:
     # no-fetch harness resolution sees the same state a genuinely cloned checkout would.
     _git(path, "fetch", "--quiet", "origin")
     return _git(path, "rev-parse", "HEAD")
+
+
+def _serve(source: str, executable: Path) -> str:
+    """Serve a GitHub stand-in's source from this process; return its shell client."""
+    return ScriptServer(source, str(executable)).client()
 
 
 def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
@@ -179,7 +185,7 @@ suite_environment = "{tmp_path / "suite.env"}"
     board.write_text(json.dumps({"items": [item], "fields": fields, "comments": []}))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    gh = f"""#!{sys.executable}
+    gh = f"""
 import json,sys,pathlib
 p=pathlib.Path({str(board)!r});s=json.loads(p.read_text());args=sys.argv
 body=json.load(sys.stdin) if '--input' in args else {{}}
@@ -205,7 +211,7 @@ else: raise Exception('Unexpected gh request '+repr(args))
 p.write_text(json.dumps(s));print(json.dumps(result))
 """
     for name, content in {
-        "gh": gh,
+        "gh": _serve(gh, bin_dir / "gh"),
         "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
         "docker": (
             "#!/bin/sh\n"
