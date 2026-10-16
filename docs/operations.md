@@ -57,6 +57,18 @@ cause is understood, or let the deadline reconciler remove it. A lost Machine
 costs that repetition and is never automatically rerun or presented as a
 product result. If every repetition is lost, the claim is `infra-error`.
 
+A claim that settled `infra-error` only because its infrastructure failed can be
+continued. Run `agent-factory --config <local.toml> resume-eval <claim id or
+unique prefix> --dry-run` to see, per repetition, what would be kept, resumed
+from its collected checkpoint, or started; it writes nothing. Without
+`--dry-run` the claim returns to waiting: its card goes back to Ready on the
+next cycle and its lane admits it like any other recovery. Each infrastructure-failed
+repetition resumes once with `--resume` and then follows the ordinary
+retry rules; repetitions never started then run; completed ones keep their
+results. When the repetition's Machine is gone, the resumed attempt seeds a new
+Machine from the collected checkpoint and rebuilds the claim image if cleanup
+deleted it. A repetition with no collected `run-state.json` cannot be resumed.
+
 On a recognized Codex quota hold Factory stops, rather than destroys, the
 Machine and refreshes its deadline from the reset time and admission window.
 When execution becomes eligible it starts the same Machine and verifies the
