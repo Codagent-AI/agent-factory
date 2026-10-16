@@ -171,7 +171,8 @@ def _build_working_clone(clone: Path, *, timeout: float = 300) -> str | None:
             timed_out = True
             break
         _drain_ready_output(output_selector, timeout=min(0.1, remaining))
-    with suppress(ProcessLookupError):
+    # macOS answers EPERM rather than ESRCH when only zombies remain in the group.
+    with suppress(ProcessLookupError, PermissionError):
         os.killpg(build.pid, signal.SIGKILL)
     if timed_out:
         build.wait()

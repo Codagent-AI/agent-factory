@@ -197,6 +197,26 @@ def test_failed_build_streams_output_and_reports_only_a_bounded_tail(tmp_path: P
     assert len(reason) < 5000
 
 
+def test_build_reports_its_result_when_the_finished_group_refuses_the_kill(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    (clone / "Makefile").write_text(
+        "build:\n\t@printf 'tail-marker\\n' >&2; false\n", encoding="utf-8"
+    )
+
+    def refuse(pid: int, sig: int) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(sync.os, "killpg", refuse)
+
+    reason = sync._build_working_clone(clone)  # pyright: ignore[reportPrivateUsage]
+
+    assert reason is not None
+    assert "tail-marker" in reason
+
+
 def test_build_output_tail_discards_older_bytes() -> None:
     bounded_output = getattr(sync, "_BoundedOutput", None)
     assert bounded_output is not None
