@@ -106,8 +106,11 @@ sess = pathlib.Path(session); sess.mkdir(parents=True, exist_ok=True)
 (out / 'cwd.txt').write_text(os.getcwd())
 (out / 'git-user.txt').write_text(subprocess.run(['git', 'config', '--get', 'user.name'], capture_output=True, text=True).stdout)
 (out / 'started').touch()
+beat = 0.0
 while not (out / 'finish').exists():
-    (sess / 'state.json').write_text(str(time.time()))
+    # Session progress twice a second, well inside any inactivity limit.
+    if time.monotonic() - beat >= .5:
+        (sess / 'state.json').write_text(str(time.time())); beat = time.monotonic()
     time.sleep(.02)
 script = (out / 'finish').read_text()
 if script.strip() == 'crash':
