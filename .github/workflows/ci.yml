@@ -40,4 +40,4 @@ jobs:
         run: uv run pyright
 
       - name: Test
-        run: uv run pytest --durations=40
+        run: uv run pytest -v --durations=0 --durations-min=0.3
