@@ -1182,3 +1182,74 @@ eval_handler.plan_attempt = fail_plan
         assert claim.outcome["verdict"] == "infra-error"
     finally:
         store.close()
+
+
+def test_resume_eval_continues_an_infra_settled_claim_without_rerunning_completed_work(
+    tmp_path: Path,
+) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = data["items"][0]["content"]["body"].replace(
+        "repetitions=1", "repetitions=3"
+    )
+    board.write_text(json.dumps(data))
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+
+    def next_run() -> Any:
+        for _ in range(3):
+            _cli(config, env, "tick")
+            runs = store.nonterminal_runs()
+            if runs:
+                return runs[0]
+        raise AssertionError("no attempt started")
+
+    infra = json.dumps({"evaluation_status": "failed", "failure": {"reason": "Machine stopped"}})
+    try:
+        rep1 = next_run()
+        _finish(store, Path(rep1.evidence_path))
+        rep2 = next_run()
+        assert rep2.unit_key == "rep-2"
+        _finish(store, Path(rep2.evidence_path), infra)
+        (Path(rep2.evidence_path) / "finish").unlink()
+        recovery = next_run()
+        assert recovery.reason == "recovery"
+        _finish(store, Path(recovery.evidence_path), infra)
+        _cli(config, env, "tick")
+        claim = store.get_claim(rep1.claim_id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "infra-error"
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+
+        (Path(rep2.evidence_path) / "finish").unlink()
+        command = [sys.executable, "-m", "agent_factory.cli", "--config", str(config)]
+        resumed = subprocess.run(
+            [*command, "resume-eval", claim.id], env=env, capture_output=True, text=True
+        )
+        assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+
+        resume = next_run()
+        assert (resume.unit_key, resume.reason) == ("rep-2", "resume")
+        assert "--resume" in resume.plan["argv"]
+        assert resume.evidence_path == rep2.evidence_path
+        _finish(store, Path(resume.evidence_path))
+        rep3 = next_run()
+        assert (rep3.unit_key, rep3.reason) == ("rep-3", "initial")
+        _finish(store, Path(rep3.evidence_path))
+        _cli(config, env, "tick")
+
+        claim = store.get_claim(claim.id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "pending-human-review"
+        assert [run.unit_key for run in store.runs_for_claim(claim.id)].count("rep-1") == 1
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+        comments = [comment["body"] for comment in json.loads(board.read_text())["comments"]]
+        assert any("An operator resumed this evaluation" in body for body in comments)
+        assert any("aggregate verdict is pending-human-review" in body for body in comments)
+    finally:
+        for run in store.nonterminal_runs():
+            _finish(store, Path(run.evidence_path))
+        store.close()
