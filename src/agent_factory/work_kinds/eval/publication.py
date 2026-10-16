@@ -3,6 +3,9 @@
 Human review is optional. A repetition's automated results are captured as soon
 as its attempt is consumed; when a review later writes ``human-review.json`` into
 the same run directory, the changed snapshot is committed again on a later tick.
+
+A failed save is retried after a growing delay rather than on every tick, because
+each attempt uploads every curated file again. A changed snapshot is tried at once.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, Protocol, cast
 
@@ -33,6 +37,9 @@ _RESULTS_DIRECTORIES = {"and-scene": "evals/agent-runner/and-scene/results"}
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # A captured run whose files are not all in place yet; it is retried, never finalized.
 _WAITING: Literal["waiting"] = "waiting"
+# A failed save waits before it is tried again, doubling per failure up to the cap.
+_RETRY_FIRST = timedelta(minutes=5)
+_RETRY_CAP = timedelta(hours=6)
 
 
 class ResultsClient(Protocol):
@@ -41,8 +48,17 @@ class ResultsClient(Protocol):
     ) -> str | None: ...
 
 
-def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: SharedConfig) -> None:
+def publish_eval_results(
+    store: ClaimStore,
+    client: ResultsClient,
+    shared: SharedConfig,
+    now: datetime | None = None,
+) -> None:
     """Commit every captured repetition whose snapshot changed since it was last committed."""
+    now = now or datetime.now(UTC)
+    # After one failed save the rest wait for a later tick: the cause (a refused
+    # ref update, auth) usually fails every save, and each try re-uploads every file.
+    halted = False
     repository = shared.eval.results_repository
     directory = _RESULTS_DIRECTORIES.get(shared.eval.suite)
     if repository is None or directory is None:
@@ -70,6 +86,10 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
             signature = _signature(Path(run.evidence_path))
             if recorded.get("signature") == signature:
                 continue
+            failure = _failure(recorded, now)
+            if halted or (failure is not None and failure.get("signature") == signature):
+                pending = True
+                continue
             snapshot = _snapshot(run)
             if snapshot == _WAITING:
                 pending = pending or not terminal
@@ -81,7 +101,17 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
                 b"".join(name.encode() + b"\0" + files[name] for name in sorted(files))
             ).hexdigest()
             if recorded.get("digest") == digest:
-                store.set_setting("eval-publication", run.id, {**recorded, "signature": signature})
+                saved = {key: value for key, value in recorded.items() if key != "failure"}
+                store.set_setting("eval-publication", run.id, {**saved, "signature": signature})
+                continue
+            if failure is not None and failure.get("digest") == digest:
+                # Same content behind a touched directory: it keeps waiting.
+                store.set_setting(
+                    "eval-publication",
+                    run.id,
+                    {**recorded, "failure": {**failure, "signature": signature}},
+                )
+                pending = True
                 continue
             reviewed = REVIEW_FILE in files
             try:
@@ -92,14 +122,38 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
                     f"chore: record and-scene eval {run_id}",
                 )
             except GitHubApiError as error:
+                previous = recorded.get("failure")
+                attempts = 1
+                if isinstance(previous, Mapping):
+                    previous_failure = cast(Mapping[str, object], previous)
+                    count = previous_failure.get("attempts")
+                    if previous_failure.get("digest") == digest and isinstance(count, int):
+                        attempts = count + 1
+                retry_at = now + _retry_delay(attempts)
+                store.set_setting(
+                    "eval-publication",
+                    run.id,
+                    {
+                        **recorded,
+                        "failure": {
+                            "digest": digest,
+                            "signature": signature,
+                            "attempts": attempts,
+                            "failed_at": now.isoformat(),
+                            "retry_at": retry_at.isoformat(),
+                        },
+                    },
+                )
                 store.record_event(
                     claim.id,
                     f"{run.unit_key}:results-failed:{digest[:12]}",
                     f"{run.unit_key} results could not be saved to {repository} ({error}); "
-                    "the factory retries on each tick. Confirm the GitHub App has "
-                    f"`contents: write` on {repository} and that `{branch}` accepts its pushes.",
+                    f"the factory retries after a growing delay, next at {retry_at.isoformat()}. "
+                    f"Confirm the GitHub App has `contents: write` on {repository} and that "
+                    f"`{branch}` accepts its pushes.",
                 )
                 pending = True
+                halted = True
                 continue
             store.set_setting(
                 "eval-publication",
@@ -118,6 +172,32 @@ def publish_eval_results(store: ClaimStore, client: ResultsClient, shared: Share
             )
         if done and not pending:
             store.set_cleanup(claim.id, {**claim.cleanup, "results_final": True})
+
+
+def _retry_delay(attempts: int) -> timedelta:
+    """Doubles per failed attempt; the cap bounds it before it could overflow."""
+    delay = _RETRY_FIRST
+    for _ in range(attempts - 1):
+        if delay >= _RETRY_CAP:
+            break
+        delay *= 2
+    return min(delay, _RETRY_CAP)
+
+
+def _failure(recorded: Mapping[str, object], now: datetime) -> Mapping[str, object] | None:
+    """The run's last failed save while its retry delay has not passed; else None."""
+    failure = recorded.get("failure")
+    if not isinstance(failure, Mapping):
+        return None
+    values = cast(Mapping[str, object], failure)
+    retry_at = values.get("retry_at")
+    if not isinstance(retry_at, str):
+        return None
+    try:
+        due = datetime.fromisoformat(retry_at)
+    except ValueError:
+        return None
+    return values if now < due else None
 
 
 def _signature(artifact: Path) -> list[list[object]]:

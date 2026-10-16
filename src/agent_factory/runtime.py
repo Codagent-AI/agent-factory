@@ -130,7 +130,7 @@ def cycle(state: Path, config_path: Path) -> None:
             datetime.now(local.schedule.timezone),
         )
         # Results are captured whether or not anyone reviews them; a failure is
-        # reported on the item and retried next tick, never blocking the cycle.
+        # reported on the item and retried after a growing delay, never blocking the cycle.
         publish_eval_results(store, client, shared)
         # Feedback and reconciliation also work while paused or outside the window.
         now = datetime.now(local.schedule.timezone)

@@ -5,17 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from agent_factory.config import SharedConfig
-from agent_factory.github import GitHubApiError
+from agent_factory.github import GitHubApiError, GitHubHttpError
 from agent_factory.store import Claim, ClaimDraft, ClaimStore, Run
 from agent_factory.work_kinds.eval.publication import publish_eval_results
 
 CONFIG = Path(__file__).resolve().parents[2] / "config" / "codagent.toml"
 RESULTS = "evals/agent-runner/and-scene/results"
+START = datetime(2026, 10, 3, 12, 0, tzinfo=UTC)
 CURATED = (
     "result.json",
     "report.html",
@@ -37,10 +40,12 @@ class Commit:
 class RecordingClient:
     commits: list[Commit] = field(default_factory=lambda: list[Commit]())
     failure: Exception | None = None
+    attempts: int = 0
 
     def commit_files(
         self, repository: str, branch: str, files: Mapping[str, bytes], message: str
     ) -> str | None:
+        self.attempts += 1
         if self.failure is not None:
             raise self.failure
         self.commits.append(Commit(repository, branch, dict(files), message))
@@ -100,6 +105,18 @@ def _finished(
     if consumed:
         store.set_setting("consumed-results", run.id, {"complete": True})
     return claim, run, artifact
+
+
+def _publication(store: ClaimStore, run: Run) -> dict[str, object]:
+    recorded = store.get_setting("eval-publication", run.id)
+    assert recorded is not None
+    return recorded
+
+
+def _failure(store: ClaimStore, run: Run) -> dict[str, object]:
+    failure = _publication(store, run).get("failure")
+    assert isinstance(failure, dict)
+    return cast(dict[str, object], failure)
 
 
 def _finalize_review(artifact: Path) -> None:
@@ -217,15 +234,99 @@ def test_a_failed_commit_is_reported_once_and_retried_on_a_later_tick(
     claim, _, _ = _finished(store, tmp_path)
     client = RecordingClient(failure=GitHubApiError("gh api request failed"))
 
-    publish_eval_results(store, client, _shared())
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START)
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=6))
     failures = [event for event in _events(store, claim) if "could not be saved" in event]
 
     assert len(failures) == 1
     assert "contents: write" in failures[0]
+    assert "next at 2026-10-03T12:05:00+00:00" in failures[0]
     client.failure = None
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=30))
     assert len(client.commits) == 1
+    assert client.attempts == 3
+
+
+def test_a_failed_save_backs_off_exponentially_up_to_a_cap(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    _, run, _ = _finished(store, tmp_path)
+    client = RecordingClient(failure=GitHubHttpError(422))
+    now = START
+    publish_eval_results(store, client, _shared(), now)
+    delays: list[timedelta] = []
+    for _ in range(50):
+        due = datetime.fromisoformat(str(_failure(store, run)["retry_at"]))
+        delays.append(due - now)
+        publish_eval_results(store, client, _shared(), due - timedelta(seconds=1))
+        now = due
+        publish_eval_results(store, client, _shared(), now)
+
+    minutes = [int(delay.total_seconds() // 60) for delay in delays]
+    assert minutes == [5, 10, 20, 40, 80, 160, 320] + [360] * 43
+    assert client.attempts == 51
+    assert _failure(store, run)["attempts"] == 51
+
+
+def test_the_retry_delay_survives_a_restart(store: ClaimStore, tmp_path: Path) -> None:
+    _, run, _ = _finished(store, tmp_path)
+    client = RecordingClient(failure=GitHubHttpError(422))
+    publish_eval_results(store, client, _shared(), START)
+    # A fresh store on the same database stands in for a restarted resident.
+    reopened = ClaimStore(tmp_path / "state.sqlite3")
+    try:
+        publish_eval_results(reopened, client, _shared(), START + timedelta(minutes=4))
+        assert client.attempts == 1
+        client.failure = None
+        publish_eval_results(reopened, client, _shared(), START + timedelta(minutes=5))
+        assert len(client.commits) == 1
+        assert "failure" not in _publication(reopened, run)
+    finally:
+        reopened.close()
+
+
+def test_one_failed_save_holds_the_other_repetitions_until_a_later_tick(
+    store: ClaimStore, tmp_path: Path
+) -> None:
+    claim, _, _ = _finished(store, tmp_path)
+    _finished(store, tmp_path, "rep-2")
+    _finished(store, tmp_path, "rep-3")
+    _mark_done(store, claim)
+    client = RecordingClient(failure=GitHubHttpError(422))
+
+    publish_eval_results(store, client, _shared(), START)
+    assert client.attempts == 1
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=1))
+    assert client.attempts == 2
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None and reloaded.cleanup.get("results_final") is not True
+
+    client.failure = None
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=2))
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=10))
+    assert len(client.commits) == 3
+    reloaded = store.get_claim(claim.id)
+    assert reloaded is not None and reloaded.cleanup.get("results_final") is True
+
+
+def test_a_changed_snapshot_is_retried_at_once(store: ClaimStore, tmp_path: Path) -> None:
+    _, run, artifact = _finished(store, tmp_path)
+    client = RecordingClient(failure=GitHubHttpError(422))
+    publish_eval_results(store, client, _shared(), START)
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=1))
+    assert client.attempts == 1
+    # Touching the directory without changing content keeps the delay.
+    (artifact / "report.html").write_text("report.html body", encoding="utf-8")
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=2))
+    assert client.attempts == 1
+
+    client.failure = None
+    _finalize_review(artifact)
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=3))
+
+    assert len(client.commits) == 1
+    assert any(path.endswith("/human-review.json") for path in client.commits[0].files)
+    assert "failure" not in _publication(store, run)
 
 
 @pytest.mark.parametrize("review", ['{"complete": false, "answers": [1]}', '{"complete": tr'])
@@ -309,10 +410,10 @@ def test_a_done_claim_keeps_retrying_until_its_results_are_saved(
     claim, _, _ = _finished(store, tmp_path)
     _mark_done(store, claim)
     client = RecordingClient(failure=GitHubApiError("gh api request failed"))
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START)
 
     client.failure = None
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=5))
 
     assert len(client.commits) == 1
 
@@ -370,11 +471,11 @@ def test_a_cancelled_claims_failed_commit_is_still_retried(
 ) -> None:
     claim, _, _ = _finished(store, tmp_path)
     client = RecordingClient(failure=GitHubApiError("gh api request failed"))
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START)
     store.set_claim_lifecycle(claim.id, "cancelled", {})
 
     client.failure = None
-    publish_eval_results(store, client, _shared())
+    publish_eval_results(store, client, _shared(), START + timedelta(minutes=5))
 
     assert len(client.commits) == 1
 

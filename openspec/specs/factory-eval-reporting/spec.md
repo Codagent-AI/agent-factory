@@ -158,7 +158,7 @@ review, invent human ratings, or assign an official pass.
 
 ### Requirement: Capture finished repetition results in the eval repository
 
-When `eval.results_repository` is configured, the factory SHALL commit each consumed repetition whose suite result is ready for human review or a conclusive product result to that repository's configured results branch, whether or not it is ever human-reviewed. For `and-scene`, the commit SHALL contain only the suite's curated files (`result.json`, `report.html`, `ambiguity-ledger.json`, `implementation.diff`, `artifact-manifest.json`, and `human-review.json` once present) under `evals/agent-runner/and-scene/results/<run-id>/`, and SHALL NOT include logs, session state, or credentials. A repetition missing any required curated file SHALL NOT be committed as a partial record. Harness failures SHALL NOT be captured. The factory SHALL link each commit on the eval issue, SHALL commit a repetition again only when its curated files change, and SHALL report a failed commit on the issue once per snapshot and retry it on later cycles without blocking the cycle. The branch update SHALL be a fast-forward that never overwrites a concurrent push.
+When `eval.results_repository` is configured, the factory SHALL commit each consumed repetition whose suite result is ready for human review or a conclusive product result to that repository's configured results branch, whether or not it is ever human-reviewed. For `and-scene`, the commit SHALL contain only the suite's curated files (`result.json`, `report.html`, `ambiguity-ledger.json`, `implementation.diff`, `artifact-manifest.json`, and `human-review.json` once present) under `evals/agent-runner/and-scene/results/<run-id>/`, and SHALL NOT include logs, session state, or credentials. A repetition missing any required curated file SHALL NOT be committed as a partial record. Harness failures SHALL NOT be captured. The factory SHALL link each commit on the eval issue, SHALL commit a repetition again only when its curated files change, and SHALL report a failed commit on the issue once per snapshot and retry it on later cycles without blocking the cycle. A failed snapshot SHALL be retried only after a delay that starts at five minutes and doubles per failure up to six hours, kept across restarts; a changed snapshot MAY be tried at once, and after one failed commit the factory SHALL leave the cycle's remaining commits for a later cycle. The branch update SHALL be a fast-forward that never overwrites a concurrent push.
 
 #### Scenario: Capture an unreviewed repetition
 
@@ -173,7 +173,7 @@ When `eval.results_repository` is configured, the factory SHALL commit each cons
 #### Scenario: Results commit is refused
 
 - **WHEN** the results commit fails, for example because the App lacks write access
-- **THEN** the factory reports the failure on the eval issue once and retries on later cycles
+- **THEN** the factory reports the failure on the eval issue once and retries on later cycles after a growing delay
 
 ### Requirement: Apply aggregate board verdicts without hiding partial results
 
