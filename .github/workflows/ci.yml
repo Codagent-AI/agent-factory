@@ -39,5 +39,19 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
+      - name: Exec probe (temporary)
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, tempfile, time
+          d = tempfile.mkdtemp()
+          for i in range(5):
+              p = f"{d}/s{i}"
+              open(p, "w").write("#!/bin/sh\nexit 0\n")
+              os.chmod(p, 0o755)
+              s = time.time(); subprocess.run([p]); a = time.time() - s
+              s = time.time(); subprocess.run([p]); b = time.time() - s
+              print(f"new exec {a*1000:.1f} ms, again {b*1000:.1f} ms")
+          PY
+
       - name: Test
-        run: uv run pytest
+        run: uv run pytest --durations=40
