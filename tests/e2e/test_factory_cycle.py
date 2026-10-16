@@ -15,6 +15,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
+from tests.fixtures.executables import install
 from tests.fixtures.git_trees import copy_built
 from tests.fixtures.network import NO_GITHUB
 from tests.fixtures.stub_server import ScriptServer
@@ -62,9 +63,9 @@ def _repo(path: Path, files: dict[str, str]) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def _serve(source: str, executable: Path) -> str:
-    """Serve a GitHub stand-in's source from this process; return its shell client."""
-    return ScriptServer(source, str(executable)).client()
+def _serve(source: str, executable: Path) -> None:
+    """Serve a GitHub stand-in's source from this process through ``executable``."""
+    ScriptServer(source, str(executable)).install(executable)
 
 
 def _source_repositories(root: Path, suite: str) -> None:
@@ -216,8 +217,8 @@ elif '/labels' in endpoint: result=[]
 else: raise Exception('Unexpected gh request '+repr(args))
 p.write_text(json.dumps(s));print(json.dumps(result))
 """
+    _serve(gh, bin_dir / "gh")
     for name, content in {
-        "gh": _serve(gh, bin_dir / "gh"),
         "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
         "docker": (
             "#!/bin/sh\n"
@@ -232,9 +233,7 @@ p.write_text(json.dumps(s));print(json.dumps(result))
         "claude": "#!/bin/sh\nexit 0",
         "agent-runner": HERMETIC_RUNNER,
     }.items():
-        script = bin_dir / name
-        script.write_text(content)
-        script.chmod(0o755)
+        install(bin_dir / name, content)
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **NO_GITHUB}
     return config, board, environment, shared
 
@@ -1060,24 +1059,21 @@ def _add_bug_card(board: Path, shared: SharedConfig, *, repository: str, item_id
 
 def _make_docker_fail(config: Path) -> None:
     bin_dir = config.parent / "bin"
-    docker = bin_dir / "docker"
-    docker.write_text("#!/bin/sh\nexit 1\n")
-    docker.chmod(0o755)
+    install(bin_dir / "docker", "#!/bin/sh\nexit 1\n")
 
 
 def _make_docker_memory_scarce(config: Path) -> None:
     """Docker itself is up (`docker info`/`docker system` succeed) but reports too little RAM."""
     bin_dir = config.parent / "bin"
-    docker = bin_dir / "docker"
-    docker.write_text(
+    install(
+        bin_dir / "docker",
         "#!/bin/sh\n"
         'if [ "$1" = "system" ]; then echo "{}"\n'
         'elif [ "$1" = "info" ]; then echo 1073741824\n'
         'elif [ "$1" = "stats" ]; then printf ""\n'
         "fi\n"
-        "exit 0\n"
+        "exit 0\n",
     )
-    docker.chmod(0o755)
 
 
 def _set_fix_execution(config: Path, *, execution: str) -> None:

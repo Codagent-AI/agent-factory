@@ -17,6 +17,7 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimDraft, ClaimStore, Run
+from tests.fixtures.executables import install
 from tests.fixtures.git_trees import copy_built
 from tests.fixtures.network import NO_GITHUB
 from tests.fixtures.stub_server import ScriptServer
@@ -129,7 +130,7 @@ esac
 if [ "$1" = run ] && [ "$2" = --help ]; then
   echo 'Usage: agent-runner run <workflow> [--session-dir <path>] [--param key=value]'; exit 0
 fi
-exec {python} {runner} "$@"
+exec {python} "${{0%/*}}/runner.py" "$@"
 """
 
 CODEX = """#!/bin/sh
@@ -453,22 +454,18 @@ fix_environment = "{tmp_path / "fix.env"}"
         bin_dir = tmp_path / "bin"
         bin_dir.mkdir()
         self.gh = ScriptServer(_gh_stub(self.board, self.shared.bot_login), str(bin_dir / "gh"))
+        self.gh.install(bin_dir / "gh")
         for name, content in {
-            "gh": self.gh.client(),
             "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
             "docker": DOCKER,
             "codex": CODEX,
             "cursor": "#!/bin/sh\nexit 0",
             # Readiness probes must never reach the developer's own CLIs.
             "claude": "#!/bin/sh\nexit 0",
-            "agent-runner": RUNNER_PROBES.format(
-                python=shlex.quote(sys.executable), runner=shlex.quote(str(bin_dir / "runner.py"))
-            ),
+            "agent-runner": RUNNER_PROBES.format(python=shlex.quote(sys.executable)),
             "jq": "#!/bin/sh\nexit 0",
         }.items():
-            script = bin_dir / name
-            script.write_text(content)
-            script.chmod(0o755)
+            install(bin_dir / name, content)
         (bin_dir / "runner.py").write_text(RUNNER)
         (bin_dir / "agent-validator").symlink_to(tmp_path / "agent-validator/dist/index.js")
         (tmp_path / "agent-validator/dist/index.js").chmod(0o755)

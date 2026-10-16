@@ -38,6 +38,7 @@ def test_marked_fix_notifies_once_through_tick(tmp_path: Path) -> None:
         json.dumps({"sessionId": SESSION, "name": "test-session", "pid": pid, "procStart": start})
     )
     fake = tmp_path / "bin" / "claude"
+    fake.unlink()  # A shared stand-in: replace it rather than rewrite it.
     fake.write_text(
         "#!/usr/bin/env python3\nimport json,sys\nfrom pathlib import Path\n"
         "if sys.argv[1:3] == ['auth','status']: print('ok'); sys.exit(0)\n"

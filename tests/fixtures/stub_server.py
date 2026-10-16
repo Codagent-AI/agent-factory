@@ -25,13 +25,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
+from tests.fixtures.executables import install
+
+# The same for every stand-in, so it can be installed as a shared file: the socket's
+# path is in a file beside the executable.
 _CLIENT = """#!/bin/sh
 # Stand-in client: the program runs in the test process (tests/fixtures/stub_server.py).
+read -r socket < "${0%/*}/.${0##*/}.socket" || exit 1
 input=
 for argument; do [ "$argument" = --input ] && input=1; done
-reply=$({{ printf '%s\\0' "${{GH_TOKEN:+1}}" "$#" "$@"; [ -z "$input" ] || cat; printf '\\0'; }} |
-  nc -U {socket}) || exit 1
-[ -n "$reply" ] || {{ echo "stand-in server did not answer" >&2; exit 1; }}
+reply=$({ printf '%s\\0' "${GH_TOKEN:+1}" "$#" "$@"; [ -z "$input" ] || cat; printf '\\0'; } |
+  nc -U "$socket") || exit 1
+[ -n "$reply" ] || { echo "stand-in server did not answer" >&2; exit 1; }
 eval "$reply"
 """
 
@@ -66,9 +71,10 @@ class ScriptServer:
         threading.Thread(target=self._serve, daemon=True).start()
         self._finalizer = weakref.finalize(self, _close, self._socket, self._directory)
 
-    def client(self) -> str:
-        """The shell script to install as the stand-in executable."""
-        return _CLIENT.format(socket=_quoted(str(self.socket_path)))
+    def install(self, executable: Path) -> None:
+        """Install the stand-in's shell client at ``executable``."""
+        (executable.parent / f".{executable.name}.socket").write_text(f"{self.socket_path}\n")
+        install(executable, _CLIENT)
 
     def close(self) -> None:
         self._finalizer()
