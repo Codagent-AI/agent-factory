@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from pathlib import Path
 from typing import cast
+
+import pytest
 
 from agent_factory.controller import ExecutionPlan
 from agent_factory.store import ClaimDraft, ClaimStore
@@ -61,6 +64,34 @@ def test_recovery_uses_the_previous_attempt_of_its_own_repetition(tmp_path: Path
         assert adapter.calls[0]["expect_checkpoint"] is True
     finally:
         store.close()
+
+
+def test_fly_recovery_resumes_checkpoint_not_yet_collected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.integration.test_and_scene_adapter import recovery_adapter_setup
+
+    adapter, worktrees, frozen = recovery_adapter_setup(tmp_path, monkeypatch)
+    artifact = tmp_path / "artifact"
+    with closing(ClaimStore(tmp_path / "state.sqlite3")) as store:
+        claim = store.create_claim(ClaimDraft("example/evals", 1, "I1", "P1", "eval", "fp", frozen))
+        prior = store.reserve_run(
+            claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+        )
+        store.mark_running(prior.id, {})
+        store.update_progress(prior.id, {"checkpoint_seen": True})
+        store.finish_run(prior.id, execution_status="interrupted", result={})
+        recovery = store.reserve_run(
+            claim.id, "rep-1", lane="low", reason="recovery", evidence_path=str(artifact)
+        )
+
+        plan = plan_attempt(store, adapter, claim, recovery, worktrees)
+
+    assert not (artifact / "run-state.json").exists()
+    assert plan.resume is True
+    assert "--resume" in plan.argv
+    manifest = json.loads((artifact / ".factory" / "manifest.json").read_text())
+    assert manifest["expect_checkpoint"] is True
 
 
 def infra_settled_claim(store: ClaimStore, root: Path) -> tuple[str, dict[str, str]]:
