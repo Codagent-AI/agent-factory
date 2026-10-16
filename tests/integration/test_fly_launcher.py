@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tarfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -467,8 +468,20 @@ def test_harness_delivery_is_refreshed_readable_and_not_handed_to_job(env: Envir
 
 
 def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoint(
-    env: Environment,
+    env: Environment, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    bundles: list[list[str]] = []
+    put_file = transport.FlyTransport.put_file
+
+    def record_bundle(
+        self: transport.FlyTransport, local: Path, remote: str, **kwargs: Any
+    ) -> None:
+        if remote.startswith("/tmp/factory-bundle-"):
+            with tarfile.open(local) as archive:
+                bundles.append(archive.getnames())
+        put_file(self, local, remote, **kwargs)
+
+    monkeypatch.setattr(transport.FlyTransport, "put_file", record_bundle)
     assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
     first = json.loads((env.factory / "machine.json").read_text())
     job_log = (env.factory / "job/1/job.log").read_bytes()
@@ -502,6 +515,11 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
     assert not (artifacts / ".factory/machine.json").exists()
     assert "seeding a new Machine" in (env.factory / "launcher.log").read_text()
     assert record["seed"] == "done"
+    # Root's tar restores a "." entry's owner and mode onto /artifacts, taking it from
+    # the guest's user (EACCES on mkdir /artifacts/evidence); the seed must not carry one.
+    seeded = next(names for names in bundles if "./run-state.json" in names)
+    assert "." not in seeded and "./" not in seeded
+    assert not any(name.startswith("./.factory") for name in seeded)
 
     # A launcher that died mid-seed leaves it pending; the next one adopting the
     # replacement Machine seeds again before checking the checkpoint.
