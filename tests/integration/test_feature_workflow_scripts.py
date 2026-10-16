@@ -13,6 +13,7 @@ import pytest
 
 from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
 from agent_factory.work_kinds.pull_request.outcome import read_interpreted_outcome
+from tests.fixtures.git_trees import copy_built
 from tests.integration.test_fix_workflow import shell_templates, single_quoted_placeholders
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
@@ -29,6 +30,12 @@ def git(repo: Path, *args: str) -> str:
 
 
 def repository(tmp_path: Path) -> tuple[Path, Path]:
+    """A clone at `repo` of a bare `remote.git`, with one commit on main, both pushed."""
+    copy_built("feature-workflow-repository", _build_repository, tmp_path)
+    return tmp_path / "repo", tmp_path / "remote.git"
+
+
+def _build_repository(tmp_path: Path) -> None:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
     remote.mkdir()
@@ -43,7 +50,6 @@ def repository(tmp_path: Path) -> tuple[Path, Path]:
     git(repo, "commit", "-m", "initial")
     git(repo, "remote", "add", "origin", str(remote))
     git(repo, "push", "-u", "origin", "main")
-    return repo, remote
 
 
 # Like gh with a token that cannot read org Projects: `gh pr edit` fails because it
@@ -781,6 +787,7 @@ def test_annotate_pr_reports_why_the_description_update_failed(tmp_path: Path) -
             "PATH": f"{tmp_path}:{os.environ['PATH']}",
             "GH_BODY": str(tmp_path / "body.md"),
             "GH_API_ERROR": "HTTP 422: body is too long (maximum is 65536 characters)",
+            "FACTORY_ANNOTATE_RETRY_SECONDS": "0",
         },
         text=True,
         capture_output=True,
@@ -1536,7 +1543,12 @@ def test_annotation_retries_transient_pr_edit_failure(tmp_path: Path) -> None:
             "openspec/changes/archive/2026-09-25-change",
         ],
         cwd=repo,
-        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_COUNT": str(count)},
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "GH_COUNT": str(count),
+            "FACTORY_ANNOTATE_RETRY_SECONDS": "0",
+        },
         text=True,
         capture_output=True,
     )

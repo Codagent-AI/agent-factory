@@ -32,6 +32,7 @@ from tests.e2e.test_factory_cycle import (
     _repo,  # pyright: ignore[reportPrivateUsage]
     _setup,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.fixtures.executables import install
 from tests.fixtures.fly.api import FakeMachinesApi
 from tests.fixtures.fly.flyctl import write_guest_flyctl
 from tests.fixtures.fly.guest import start_guest
@@ -228,9 +229,7 @@ class Factory:
             bin_dir, self.roots, tmp_path / "flyctl.log", tmp_path / "none", per_machine=True
         )
         # HOME is a fixture home, so the real Claude CLI would report no login.
-        claude = bin_dir / "claude"
-        claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        claude.chmod(0o755)
+        install(bin_dir / "claude", "#!/bin/sh\nexit 0\n")
         launcher = bin_dir / "agent-factory-fly-launcher"
         launcher.write_text(_LAUNCHER.format(python=sys.executable, url=api.base_url))
         launcher.chmod(0o755)

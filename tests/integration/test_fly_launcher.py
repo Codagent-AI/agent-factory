@@ -233,10 +233,24 @@ def test_mismatched_machine_is_never_adopted_or_destroyed(env: Environment) -> N
     assert not env.flyctl_log.exists()  # nothing was delivered
 
 
-def test_recovery_resumes_in_the_same_machine_with_a_fresh_deadline(env: Environment) -> None:
+class _ClockLater:
+    """The time module with its wall clock read a few seconds ahead."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+    @staticmethod
+    def time() -> float:
+        return time.time() + 5
+
+
+def test_recovery_resumes_in_the_same_machine_with_a_fresh_deadline(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
     first = json.loads((env.factory / "machine.json").read_text())
-    time.sleep(1.1)
+    # The recovery starts later than the first attempt, without waiting for the clock.
+    monkeypatch.setattr(transport, "time", _ClockLater())
 
     recovery = env.manifest("run-2", expect_checkpoint=True)
     code = env.lifecycle(recovery).run(env.request("echo resumed > /artifacts/resumed.txt"))

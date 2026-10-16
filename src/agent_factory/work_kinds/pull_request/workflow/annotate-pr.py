@@ -2,6 +2,7 @@
 """Render review attention into the existing feature pull request description."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -20,6 +21,9 @@ LATER_COMMITS_TITLE = "Commits after acceptance"
 # The "Review first" section shows at most this many orange items; the rest are collapsed.
 ORANGE_SHOWN = 5
 REVIEW_BOT = "coderabbitai[bot]"
+# The wait before the first retry of the description update; the second waits twice as
+# long. Tests shorten it with this variable; the service never sets it.
+RETRY_SECONDS = float(os.environ.get("FACTORY_ANNOTATE_RETRY_SECONDS", "1"))
 BOT_REVIEW_TITLE = "No CodeRabbit review of the final head"
 
 
@@ -446,7 +450,7 @@ def main() -> None:
         error = result.stderr.strip() or f"gh exited with status {result.returncode}"
         print(error, file=sys.stderr)
         if attempt < 2:
-            time.sleep(attempt + 1)
+            time.sleep(RETRY_SECONDS * (attempt + 1))
     else:
         raise SystemExit(f"could not update the description of pull request #{number}: {error}")
 

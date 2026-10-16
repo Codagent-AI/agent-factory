@@ -8,11 +8,12 @@ import os
 import re
 import time
 from collections.abc import Callable, Mapping
+from functools import cache
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, OpenerDirector, Request, build_opener
 
 
 class _RefuseRedirects(HTTPRedirectHandler):
@@ -23,7 +24,11 @@ class _RefuseRedirects(HTTPRedirectHandler):
         return None
 
 
-_OPENER = build_opener(_RefuseRedirects)
+@cache
+def _opener() -> OpenerDirector:
+    # Built on first use: the HTTPS handler loads the system certificates, about 10 ms
+    # that every factory process importing this module would otherwise spend.
+    return build_opener(_RefuseRedirects)
 
 
 class FlyApiError(RuntimeError):
@@ -158,7 +163,7 @@ class FlyMachinesClient:
         # other failure is reported at once.
         for attempt in range(_RATE_LIMIT_ATTEMPTS):
             try:
-                with _OPENER.open(request, timeout=timeout) as response:
+                with _opener().open(request, timeout=timeout) as response:
                     raw = response.read()
                     return cast(
                         Mapping[str, object] | list[object] | None,
@@ -331,7 +336,7 @@ class FlyMachinesClient:
         request = self._registry_request(f"{self.registry_base_url}{path}", "GET")
         request.add_header("Accept", ", ".join(_MANIFEST_MEDIA_TYPES))
         try:
-            with _OPENER.open(request, timeout=20) as response:
+            with _opener().open(request, timeout=20) as response:
                 digest = response.headers.get("Docker-Content-Digest")
         except HTTPError as error:
             raise _http_error(path, error) from error
@@ -357,7 +362,7 @@ class FlyMachinesClient:
             visited.add(url)
             request = self._registry_request(url, "GET")
             try:
-                with _OPENER.open(request, timeout=20) as response:
+                with _opener().open(request, timeout=20) as response:
                     data: object = json.loads(response.read())
                     link = response.headers.get("Link")
             except HTTPError as error:
@@ -401,7 +406,7 @@ class FlyMachinesClient:
         path = f"/v2/{repo}/manifests/{digest}"
         request = self._registry_request(f"{self.registry_base_url}{path}", "DELETE")
         try:
-            with _OPENER.open(request, timeout=20) as response:
+            with _opener().open(request, timeout=20) as response:
                 return response.status in (200, 202)
         except HTTPError as error:
             if error.code == 404:
