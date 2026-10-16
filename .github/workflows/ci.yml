@@ -39,10 +39,21 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
-      - name: Stop Spotlight indexing
-        # The tests create many short-lived files. On the hosted runner, Spotlight
-        # indexing them took a large share of the 3 vCPUs the tests need.
-        run: sudo mdutil -a -i off
+      - name: Keep test files on an unindexed RAM disk
+        # The tests create many short-lived files and executables. On the hosted runner,
+        # Spotlight and the file-event log reacting to them took a large share of the
+        # 3 vCPUs the tests need.
+        run: |
+          sudo mdutil -a -i off
+          device="$(hdiutil attach -nomount ram://2097152 | awk '{print $1}')"
+          diskutil erasevolume APFS FactoryTests "$device"
+          sudo mdutil -i off /Volumes/FactoryTests
+          sudo mkdir -p /Volumes/FactoryTests/.fseventsd
+          sudo touch /Volumes/FactoryTests/.fseventsd/no_log
+          diskutil unmount /Volumes/FactoryTests
+          diskutil mount "$device"
+          mkdir /Volumes/FactoryTests/tmp
+          echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
 
       - name: Test
         run: |
