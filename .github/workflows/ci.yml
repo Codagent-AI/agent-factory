@@ -39,6 +39,11 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
+      - name: Stop Spotlight indexing
+        # The tests create many short-lived files. On the hosted runner, Spotlight
+        # indexing them took a large share of the 3 vCPUs the tests need.
+        run: sudo mdutil -a -i off
+
       - name: Test
         run: |
           iostat -w 5 > iostat.log &
