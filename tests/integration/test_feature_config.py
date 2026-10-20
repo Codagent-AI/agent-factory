@@ -108,6 +108,7 @@ def test_removed_feature_section_still_allows_existing_claim_review_round(tmp_pa
         client,  # pyright: ignore[reportArgumentType]
         feature,
         current,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path,
         now=datetime(2099, 1, 2, tzinfo=UTC),

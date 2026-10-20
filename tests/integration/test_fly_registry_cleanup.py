@@ -20,7 +20,9 @@ def _claim(
 ) -> tuple[str, str]:
     claim = store.create_claim(ClaimDraft("example/repo", 1, "I1", "P1", "eval", "fp", {}))
     tag = f"claim-{claim.id[:12]}"
-    run = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.update_progress(
         run.id, {"image_build": {"repository": "registry.fly.io/app", "tag": tag, "digest": digest}}
     )
@@ -133,7 +135,9 @@ def test_older_build_and_untagged_live_digest_are_visible_skips(tmp_path: Path) 
     token.write_text("secret")
     with closing(ClaimStore(tmp_path / "state.sqlite3")) as store, FakeMachinesApi() as api:
         claim_id, tag = _claim(store, tmp_path, older)
-        run = store.reserve_run(claim_id, "rep-2", reason="initial", evidence_path=str(tmp_path))
+        run = store.reserve_run(
+            claim_id, "rep-2", lane="low", reason="initial", evidence_path=str(tmp_path)
+        )
         store.update_progress(
             run.id,
             {"image_build": {"repository": "registry.fly.io/app", "tag": tag, "digest": newer}},
@@ -200,7 +204,9 @@ def test_registry_gates_no_build_and_reopened_store_idempotence(tmp_path: Path) 
         reconcile_claim_image(store, empty, client, datetime.now(UTC))
         assert not api.requests and "registry" not in store.get_claim(empty.id).cleanup  # type: ignore[union-attr]
         claim_id, tag = _claim(store, tmp_path, digest)
-        run = store.reserve_run(claim_id, "rep-2", reason="retry", evidence_path=str(tmp_path))
+        run = store.reserve_run(
+            claim_id, "rep-2", lane="low", reason="retry", evidence_path=str(tmp_path)
+        )
         store.update_progress(
             run.id,
             {"image_build": {"repository": "registry.fly.io/app", "tag": tag, "digest": digest}},

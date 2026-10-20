@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 
@@ -16,7 +17,9 @@ from agent_factory.controller import (
     ClaimPresentation,
     ExecutionPlan,
     RequestSnapshot,
+    advisory_lock,
 )
+from agent_factory.fly.registry_cleanup import image_deleted
 from agent_factory.fly.transport import resolve_claude_login
 from agent_factory.github import WRITER_PERMISSIONS, GitHubClient, IssueComment, ProjectQueueItem
 from agent_factory.operations import Diagnostic, model_authentication
@@ -62,6 +65,129 @@ from agent_factory.work_kinds.eval import ROLES, EvalDefaults, ParsedRequest, pa
 class Resolution:
     revisions: dict[str, str]
     sources: dict[str, str]
+
+
+# An operator's grant to continue a claim that settled only because of an infrastructure
+# failure. Keyed by claim id, it names the run each resumable repetition continues from.
+RESUME_NAMESPACE = "eval-resume"
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """What an operator resume would do, per repetition: keep, resume, or start."""
+
+    claim_id: str
+    units: dict[str, tuple[str, str | None]] = field(default_factory=lambda: {})
+    refusal: str | None = None
+
+    def describe(self) -> str:
+        if self.refusal is not None:
+            return f"cannot resume {self.claim_id}: {self.refusal}"
+        lines = [f"resume {self.claim_id}:"]
+        for unit, (action, run_id) in self.units.items():
+            detail = {
+                "keep": f"keep (settled by run {run_id})",
+                "resume": f"resume from the collected checkpoint of run {run_id}",
+                "start": "start (never started)",
+            }[action]
+            lines.append(f"  {unit}: {detail}")
+        return "\n".join(lines)
+
+
+def plan_resume(store: ClaimStore, claim: Claim | None) -> ResumePlan:
+    """Decide, without writing, whether and how a settled eval claim can continue."""
+    if claim is None:
+        return ResumePlan("", refusal="no such claim")
+    plan = ResumePlan(claim.id)
+    if claim.kind != "eval":
+        return replace(plan, refusal=f"it is a {claim.kind} claim, not an eval")
+    if claim.lifecycle != "settled":
+        return replace(plan, refusal=f"it is {claim.lifecycle}, not settled")
+    if claim.outcome.get("verdict") != "infra-error":
+        return replace(
+            plan,
+            refusal=f"it settled with verdict {claim.outcome.get('verdict')}, not infra-error",
+        )
+    if claim.cleanup.get("complete") is True:
+        return replace(plan, refusal="its worktrees and evidence were already released")
+    runs = store.runs_for_claim(claim.id)
+    if any(run.status in NONTERMINAL_RUN_STATUSES for run in runs):
+        return replace(plan, refusal="it still has an unfinished attempt")
+    units: dict[str, tuple[str, str | None]] = {}
+    for number in range(1, _unit_count(claim) + 1):
+        key = f"rep-{number}"
+        unit_runs = [run for run in runs if run.unit_key == key]
+        if not unit_runs:
+            units[key] = ("start", None)
+            continue
+        latest = unit_runs[-1]
+        infra = latest.status in {"failed", "interrupted"} and (
+            _run_needs_recovery(latest) or _machine_lost(latest.result)
+        )
+        if not infra:
+            if latest.status in {"completed", "failed"}:
+                units[key] = ("keep", latest.id)
+                continue
+            return replace(plan, refusal=f"{key} ended {latest.status}; it cannot be resumed")
+        if not _usable_checkpoint(Path(latest.evidence_path)):
+            return replace(
+                plan,
+                refusal=f"{key} has no usable collected checkpoint in {latest.evidence_path}",
+            )
+        units[key] = ("resume", latest.id)
+    if not any(action != "keep" for action, _ in units.values()):
+        return replace(plan, units=units, refusal="every repetition already settled")
+    return replace(plan, units=units)
+
+
+def grant_resume(store: ClaimStore, claim_id: str, *, now: datetime) -> ResumePlan:
+    """Reopen an infra-settled eval claim so the factory continues its repetitions.
+
+    Admission takes the same lock, so the resident never reserves against a half-made
+    grant. The claim waits on its Ready card for its lane like any other recovery.
+    """
+    with advisory_lock(store.path, "admission"):
+        plan = plan_resume(store, store.get_claim(claim_id))
+        if plan.refusal is not None:
+            return plan
+        claim = cast(Claim, store.get_claim(claim_id))
+        resumed = {unit: run for unit, (action, run) in plan.units.items() if action == "resume"}
+        started = [unit for unit, (action, _) in plan.units.items() if action == "start"]
+        kept = [unit for unit, (action, _) in plan.units.items() if action == "keep"]
+        parts = [
+            *(f"{unit} resumes from its checkpoint" for unit in resumed),
+            *(f"{unit} starts" for unit in started),
+            *(f"{unit} keeps its result" for unit in kept),
+        ]
+        # The claim leaves settled last: until then a failed grant can simply be retried.
+        store.record_event(
+            claim.id,
+            f"operator-resume:{now.isoformat()}",
+            "An operator resumed this evaluation after an infrastructure failure: "
+            + "; ".join(parts)
+            + ".",
+        )
+        store.set_setting(
+            RESUME_NAMESPACE,
+            claim.id,
+            {
+                "units": resumed,
+                "granted_at": now.isoformat(),
+                "previous_outcome": dict(claim.outcome),
+            },
+        )
+        store.set_claim_lifecycle(claim.id, "waiting", {"verdict": "infra-error"})
+        return plan
+
+
+def _usable_checkpoint(evidence: Path) -> bool:
+    try:
+        saved = json.loads((evidence / "run-state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and isinstance(
+        cast(dict[str, object], saved).get("schema_version"), int
+    )
 
 
 class EvalHandler:
@@ -178,10 +304,10 @@ class EvalHandler:
     ) -> None:
         pass
 
-    def unblock(self, *args: object, **kwargs: object) -> None:
+    def unblock(self, *args: object, lane: str, **kwargs: object) -> None:
         return None
 
-    def review_round(self, *args: object, **kwargs: object) -> None:
+    def review_round(self, *args: object, lane: str, **kwargs: object) -> None:
         return None
 
     def merge_sync(self, *args: object, **kwargs: object) -> None:
@@ -326,6 +452,7 @@ class EvalHandler:
 
     def next_unit(self, claim: Claim, runs: Sequence[Run]) -> tuple[str | None, str]:
         count = _unit_count(claim)
+        resumed = self._resumed_units(claim)
         for number in range(1, count + 1):
             key = f"rep-{number}"
             unit_runs = [run for run in runs if run.unit_key == key]
@@ -334,6 +461,10 @@ class EvalHandler:
             latest = unit_runs[-1]
             if latest.status in NONTERMINAL_RUN_STATUSES:
                 return None, "initial"
+            if resumed.get(key) == latest.id:
+                # An operator resume continues this repetition from its checkpoint once;
+                # the new attempt then follows the ordinary retry and recovery rules.
+                return key, "resume"
             if latest.status == "deferred":
                 return key, "quota"
             if latest.result.get("failure_stage") == "pre-suite":
@@ -341,6 +472,15 @@ class EvalHandler:
             if _run_needs_recovery(latest) and latest.reason != "recovery":
                 return key, "recovery"
         return None, "initial"
+
+    def _resume_grant(self, claim: Claim) -> dict[str, object] | None:
+        if self._store is None:
+            return None
+        return self._store.get_setting(RESUME_NAMESPACE, claim.id)
+
+    def _resumed_units(self, claim: Claim) -> dict[str, object]:
+        grant = self._resume_grant(claim)
+        return dict(mapping(grant.get("units"))) if grant else {}
 
     def plan(self, claim: Claim, run: Run, preparation: Preparation) -> ExecutionPlan:
         if self._store is None or self.adapter is None or preparation.worktrees is None:
@@ -450,8 +590,11 @@ class EvalHandler:
             f"{str(run.result.get('reason', 'machine lost'))}."
             for run in losses
         )
+        grant = self._resume_grant(claim)
         return Outcome(
             verdict,
+            # A resumed claim settles again; its new handoff must not be deduplicated.
+            event_key=f"handoff:{grant.get('granted_at')}" if grant else "handoff",
             event_body=f"All repetitions settled; aggregate verdict is {verdict}." + loss_text,
         )
 
@@ -662,12 +805,16 @@ def plan_attempt(
             and latest is not None
             and latest.progress.get("checkpoint_seen") is True
         ),
+        seed_checkpoint=run.reason == "resume",
     )
     backend = backend_for(plan)
     if backend is not None and backend.name == "fly-machine":
         digest = _claim_image_digest(
-            [candidate for candidate in store.runs_for_claim(claim.id) if candidate.id != run.id]
+            [candidate for candidate in store.runs_for_claim(claim.id) if candidate.id != run.id],
+            mapping(claim.cleanup.get("registry")),
         )
+        if run.reason == "resume":
+            _retire_deleted_image_record(Path(run.evidence_path), claim)
         if digest:
             manifest_path = Path(run.evidence_path) / ".factory" / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -683,7 +830,25 @@ def plan_attempt(
     )
 
 
-def _claim_image_digest(runs: Sequence[Run]) -> str | None:
+def _retire_deleted_image_record(evidence: Path, claim: Claim) -> None:
+    """Keep the launcher from reusing this repetition's image once cleanup deleted it."""
+    record = evidence / ".factory" / "image-build.json"
+    try:
+        built = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    digest = cast(dict[str, object], built).get("digest") if isinstance(built, dict) else None
+    if isinstance(digest, str) and image_deleted(
+        mapping(claim.cleanup.get("registry")).get(digest)
+    ):
+        record.replace(record.with_name("image-build.deleted.json"))
+
+
+def _claim_image_digest(
+    runs: Sequence[Run], registry: Mapping[str, object] | None = None
+) -> str | None:
+    """The newest image an earlier attempt built, unless cleanup already deleted it."""
+    registry = registry or {}
     for run in reversed(runs):
         record = run.progress.get("image_build")
         if not isinstance(record, Mapping):
@@ -701,7 +866,9 @@ def _claim_image_digest(runs: Sequence[Run]) -> str | None:
             else None
         )
         if isinstance(digest, str) and digest.startswith("sha256:"):
-            return digest
+            # A settled claim's image is deleted from the registry; a resumed claim
+            # builds a fresh one rather than pinning a manifest Fly can no longer pull.
+            return None if image_deleted(registry.get(digest)) else digest
     return None
 
 

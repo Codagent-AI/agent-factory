@@ -6,7 +6,7 @@ import json
 import socket
 import ssl
 from email.message import Message
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from threading import Thread
 from urllib.error import HTTPError, URLError
@@ -20,6 +20,7 @@ from agent_factory.github import (
     InstallationTokenProvider,
     SubprocessGhRunner,
 )
+from tests.fixtures.network import LoopbackHTTPServer
 
 
 def _signed_jwt(*args: object) -> str:
@@ -51,7 +52,7 @@ def test_installation_exchange_sends_bearer_header_and_caches_token(
         def log_message(self, format: str, *args: object) -> None:
             pass
 
-    server = HTTPServer(("127.0.0.1", 0), GitHubEndpoint)
+    server = LoopbackHTTPServer(("127.0.0.1", 0), GitHubEndpoint)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
 

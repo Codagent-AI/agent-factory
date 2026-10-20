@@ -50,7 +50,9 @@ def _enable_at(store: ClaimStore, when: datetime) -> None:
 
 
 def _settle_pr(store: ClaimStore, claim_id: str, reason: str) -> str:
-    run = store.reserve_run(claim_id, "one", reason=reason, evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        claim_id, "one", lane="low", reason=reason, evidence_path="/tmp/evidence"
+    )
     store.finish_run(run.id, execution_status="completed", result={"outcome": "pull-request"})
     store.set_claim_lifecycle(claim_id, "settled", {"outcome": "pull-request"})
     return run.id
@@ -138,9 +140,13 @@ def test_details_link_only_the_runs_own_reporting_comment(tmp_path: Path) -> Non
     store = ClaimStore(tmp_path / "state.sqlite3")
     try:
         claim = store.create_claim(ClaimDraft("o/r", 12, "I", "P", "feature", "fp", {}))
-        old = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/e")
+        old = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/e"
+        )
         store.finish_run(old.id, execution_status="completed", result={"outcome": "needs-input"})
-        run = store.reserve_run(claim.id, "one", reason="unblock", evidence_path="/tmp/e")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="unblock", evidence_path="/tmp/e"
+        )
         store.finish_run(run.id, execution_status="completed", result={"outcome": "needs-input"})
         store._set_reporting(
             claim.id,

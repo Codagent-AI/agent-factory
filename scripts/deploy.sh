@@ -36,7 +36,16 @@
 # ~/Library/LaunchAgents/com.codagent.agent-factory.plist),
 # AGENT_FACTORY_RUNNER_CHECKOUT (default: [repositories] agent_runner in the
 # local configuration), AGENT_FACTORY_VALIDATOR_CHECKOUT (default:
-# [repositories] agent_validator, or a sibling of agent_runner).
+# [repositories] agent_validator, or a sibling of agent_runner),
+# AGENT_FACTORY_PYTHON (default: python.org's 3.12 framework build when it is
+# installed).
+#
+# Python: the resident is the process macOS charges for every file its jobs
+# touch, so it needs Full Disk Access. macOS keys that grant on the
+# interpreter's code signature. Homebrew and uv Pythons are ad hoc signed, so
+# each new build loses the grant and the "access data from other apps" prompt
+# returns. python.org's build is Developer ID signed, so one grant to its
+# Python.app survives upgrades. Without it, uv picks its default interpreter.
 set -euo pipefail
 
 build_runner=true
@@ -80,6 +89,7 @@ source "$(dirname "$0")/slots.sh"
 source "$(dirname "$0")/validator.sh"
 # shellcheck source=scripts/fixture-guard.sh
 source "$(dirname "$0")/fixture-guard.sh"
+source "$(dirname "$0")/lane-guard.sh"
 
 # Everything that can fail without changing the deployment happens before the pause.
 if [[ ! -d $base/.git ]]; then
@@ -91,6 +101,13 @@ sha=$(git -C "$base" rev-parse -q --verify "$ref^{commit}") || die "unknown ref:
 short=${sha:0:12}
 release=$releases/$short
 executable=$release/.venv/bin/agent-factory
+python=${AGENT_FACTORY_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12}
+python_args=()
+if [[ -x $python ]]; then
+  python_args=(--python "$python")
+else
+  warn "$python not found; building on uv's default Python, which loses Full Disk Access on every upgrade"
+fi
 
 runner=${AGENT_FACTORY_RUNNER_CHECKOUT:-}
 if [[ -z $runner ]]; then
@@ -123,13 +140,14 @@ else
     git -C "$base" worktree prune
   fi
   git -C "$base" worktree add -q --detach "$release" "$sha"
-  (cd "$release" && uv sync -q --frozen) || die "uv sync failed in $release; nothing is deployed"
+  (cd "$release" && uv sync -q --frozen ${python_args[@]+"${python_args[@]}"}) || die "uv sync failed in $release; nothing is deployed"
   [[ -x $executable ]] || die "uv sync did not produce $executable; nothing is deployed"
   touch "$release/.release-complete"
   say "built release $short ($ref) at $release"
 fi
 
 fixture_guard "$executable" "$running" before
+lane_guard before
 "$running" --config "$config" pause >/dev/null
 say "paused the factory"
 
@@ -167,12 +185,15 @@ point_at() {
   plutil -lint -s "$plist"
   sed -i '' "s#^shared_config = .*#shared_config = \"$shared\"#" "$config"
 }
+lane_guard restore
+lane_pointers_moved=true
 point_at "$executable" "$release/config/codagent.toml"
 say "LaunchAgent and shared_config point at release $short"
 
 if ! doctor_output=$(PATH=$release/.venv/bin:$PATH "$executable" --config "$config" doctor 2>&1); then
   grep -v ': OK' <<<"$doctor_output" >&2 || true
   point_at "$running" "$previous_shared"
+  lane_pointers_moved=false
   die "doctor failed; the LaunchAgent and shared_config point at the previous release again, and the factory stays paused"
 fi
 say "doctor passed"
@@ -183,6 +204,7 @@ for _ in $(seq 60); do
   sleep 1
 done
 launchctl print "$domain/$label" >/dev/null 2>&1 && die "the LaunchAgent did not unload; the factory stays paused"
+trap - EXIT
 launchctl bootstrap "$domain" "$plist"
 launchctl print "$domain/$label" | grep -q "program = $executable" \
   || die "the reloaded LaunchAgent does not run $executable; the factory stays paused"

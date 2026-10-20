@@ -481,12 +481,33 @@ class FlyTransport:
         if result.returncode:
             raise FlyTransportError(result.stderr.decode(errors="replace").strip() or "sftp failed")
 
-    def put_directory(self, local: Path, remote: str) -> None:
-        """Deliver a directory byte-identically as one tarball."""
+    def put_directory(
+        self,
+        local: Path,
+        remote: str,
+        *,
+        exclude: tuple[str, ...] = (),
+        contents_only: bool = False,
+    ) -> None:
+        """Deliver a directory byte-identically as one tarball, less excluded top-level names.
+
+        ``contents_only`` leaves the target directory's own entry out of the archive. Tar
+        extracting as root restores a ``.`` entry's owner and mode onto the target, which
+        would hand an existing guest-owned directory to the host's user.
+        """
+        skipped = {f"./{name}" for name in exclude}
+
+        def keep(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            return None if member.name in skipped else member
+
         with tempfile.TemporaryDirectory() as scratch:
             bundle = Path(scratch) / "bundle.tar"
             with tarfile.open(bundle, "w") as archive:
-                archive.add(local, arcname=".")
+                if contents_only:
+                    for child in sorted(local.iterdir()):
+                        archive.add(child, arcname=f"./{child.name}", filter=keep)
+                else:
+                    archive.add(local, arcname=".", filter=keep)
             staged = f"/tmp/factory-bundle-{os.getpid()}.tar"
             self.put_file(bundle, staged)
         target = shlex.quote(remote)
@@ -615,6 +636,11 @@ class Lifecycle:
         machine_id, deadline = self._claim()
         self.transport.machine_id = machine_id
         self._stage = "delivery"
+        if read_record(self.record_path).get("seed") == "pending":
+            # Durable until it completes, so a relaunch that adopts the replacement
+            # Machine seeds it again rather than resuming from a partial checkpoint.
+            self._seed(request.artifact_dir)
+            self._update_record({"seed": "done"})
         job, running = self._next_job()
         if running:
             # A launcher for this same attempt died after starting the job.
@@ -666,6 +692,18 @@ class Lifecycle:
                     return self._create(
                         [*_history(record), {"id": recorded_id, "disposal": "gone"}]
                     )
+                if self._seeds_checkpoint():
+                    # An operator resumed a settled repetition whose Machine was already
+                    # destroyed; its collected checkpoint seeds a replacement Machine.
+                    _log(
+                        self.factory,
+                        f"recorded Machine {recorded_id} is gone; "
+                        "seeding a new Machine from the collected checkpoint",
+                    )
+                    return self._create(
+                        [*_history(record), {"id": recorded_id, "disposal": "gone"}],
+                        seed=True,
+                    )
                 raise MachineLostError(f"recorded Machine {recorded_id} no longer exists")
             if not _owned(machine, self._stable_metadata(record)):
                 # Never adopt or terminate a Machine that is not provably ours.
@@ -683,7 +721,52 @@ class Lifecycle:
             return recorded_id, deadline
         return self._create(_history(record))
 
-    def _create(self, history: list[object]) -> tuple[str, int]:
+    def _seeds_checkpoint(self) -> bool:
+        return (
+            self.manifest.get("seed_checkpoint") is True
+            and (self.factory.parent / "run-state.json").is_file()
+        )
+
+    def _seed(self, artifact_dir: Path) -> None:
+        """Copy the collected checkpoint into a replacement Machine's empty /artifacts.
+
+        The host's ``.factory`` tree stays host-managed. Each job the gone Machine ran
+        is marked done on the new one, so the next job gets a new number and neither
+        overwrites the earlier job's collected evidence nor resumes its log offset.
+        """
+        jobs_root = self.factory / "job"
+        jobs = (
+            sorted(int(path.name) for path in jobs_root.iterdir() if path.name.isdigit())
+            if jobs_root.is_dir()
+            else []
+        )
+        entries = sorted(path.name for path in artifact_dir.iterdir() if path.name != ".factory")
+        # /artifacts belongs to the guest's user; only its contents come from the host.
+        self.transport.put_directory(
+            artifact_dir, "/artifacts", exclude=(".factory",), contents_only=True
+        )
+        targets = [f"/artifacts/{shlex.quote(name)}" for name in entries]
+        done = [f"/artifacts/.factory/job/{job}" for job in jobs]
+        steps = [
+            'owner="$(stat -c %u:%g /artifacts/.factory/job 2>/dev/null '
+            '|| stat -f %u:%g /artifacts/.factory/job)"'
+        ]
+        if done:
+            steps.append(
+                "mkdir -p "
+                + " ".join(done)
+                + " && touch "
+                + " ".join(f"{path}/DONE" for path in done)
+            )
+        if targets or done:
+            steps.append(f'chown -R -h -P "$owner" {" ".join([*targets, *done])}')
+        self.transport.command(" && ".join(steps))
+        _log(
+            self.factory,
+            f"seeded {len(entries)} collected entries; earlier jobs {jobs or 'none'} marked done",
+        )
+
+    def _create(self, history: list[object], *, seed: bool = False) -> tuple[str, int]:
         from agent_factory.fly.guest import guest_init_script
 
         deadline = self._fresh_deadline()
@@ -719,6 +802,7 @@ class Lifecycle:
                 "deadline": deadline,
                 "created_at": datetime.now(UTC).isoformat(),
                 "history": history,
+                **({"seed": "pending"} if seed else {}),
             },
         )
         verified = self.client.get_machine(machine_id)

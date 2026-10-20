@@ -39,5 +39,19 @@ jobs:
       - name: Typecheck
         run: uv run pyright
 
+      - name: Keep test files on an unindexed RAM disk
+        # The tests create many short-lived files and executables. On the hosted runner,
+        # Spotlight and other system services reacting to them took a large share of
+        # the 3 vCPUs the tests need.
+        # Turning indexing off everywhere can take most of a minute, so it finishes in the
+        # background while the tests start; the RAM disk's is off before they do.
+        run: |
+          (sudo mdutil -a -i off > "$RUNNER_TEMP/mdutil.log" 2>&1 &)
+          device="$(hdiutil attach -nomount ram://2097152 | awk '{print $1}')"
+          diskutil erasevolume APFS FactoryTests "$device"
+          sudo mdutil -i off /Volumes/FactoryTests
+          mkdir /Volumes/FactoryTests/tmp
+          echo "TMPDIR=/Volumes/FactoryTests/tmp" >> "$GITHUB_ENV"
+
       - name: Test
-        run: uv run pytest
+        run: uv run pytest --durations=20

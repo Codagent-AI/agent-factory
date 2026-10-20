@@ -54,14 +54,14 @@ The factory SHALL prepare factory-owned clean Git worktrees for the accepted Run
 
 ### Requirement: Invoke the suite with accepted execution settings
 
-For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. Under Docker execution the integration SHALL support the selected suite's Codex, Claude, and Cursor role adapters; under Fly execution it SHALL support Codex and Claude only. It SHALL pass the accepted `skip_validator` setting to the suite. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The suite SHALL run in one sandbox per repetition in the configured execution mode, with the controller and supervisor on the host. Under Docker a recovery attempt SHALL reuse the repetition's artifacts through a new container; under Fly it SHALL reuse the repetition's surviving Machine as defined in `factory-fly-execution`. Controller restart SHALL preserve verified surviving execution in every mode. Under Docker, integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments; under Fly it SHALL verify that the pinned harness invokes the factory's launcher with an argument set the launcher supports. The launcher SHALL accept the harness's credential-mount flags in any order, because the harness emits them in role order and that order varies with the configured role CLIs. The Fly compatibility check SHALL exercise a role selection that produces the widest credential-mount shape the harness can emit, so that an ordering or grammar mismatch is detected before model execution rather than during an attempt. Missing compatibility SHALL be exposed as an actionable readiness problem before model execution.
+For `and-scene`, the factory SHALL invoke `evals/agent-runner/and-scene/run.sh` from the retained harness worktree using its agent-execution mode. It SHALL supply the pinned Runner and Skills worktree paths, complete lead/implementor/tester profiles, the complete crosscheck profile when the claim's frozen settings include one, the repetition's artifact directory, and required environment-file paths through the suite's supported interface. Under Docker execution the integration SHALL support the selected suite's Codex, Claude, and Cursor role adapters; under Fly execution it SHALL support Codex and Claude only. It SHALL pass the accepted `skip_validator` setting to the suite. When the claim's frozen settings include `workflow`, it SHALL pass that value to the suite as `--workflow`; otherwise it SHALL pass no workflow argument and the suite runs its default workflow. The factory SHALL use the suite's existing workflow and execution behavior rather than implement a second evaluator. The suite SHALL run in one sandbox per repetition in the configured execution mode, with the controller and supervisor on the host. Under Docker a recovery attempt SHALL reuse the repetition's artifacts through a new container; under Fly it SHALL reuse the repetition's surviving Machine as defined in `factory-fly-execution`. Controller restart SHALL preserve verified surviving execution in every mode. Under Docker, integration SHALL verify the selected Runner sandbox launcher supports required mounts and arguments; under Fly it SHALL verify that the pinned harness invokes the factory's launcher with an argument set the launcher supports. The launcher SHALL accept the harness's credential-mount flags in any order, because the harness emits them in role order and that order varies with the configured role CLIs. The Fly compatibility check SHALL exercise a role selection that produces the widest credential-mount shape the harness can emit, including a crosscheck profile when the pinned harness accepts one, so that an ordering or grammar mismatch is detected before model execution rather than during an attempt. Missing compatibility SHALL be exposed as an actionable readiness problem before model execution.
 
-Selected-suite readiness SHALL be verified before execution. Calibration SHALL remain an optional suite-maintainer diagnostic; the factory SHALL NOT require a calibration receipt or pass removed calibration-record arguments. Unavailable prerequisites SHALL follow the readiness-hold behavior in `factory-claim-lifecycle`.
+Selected-suite readiness SHALL be verified before execution. Readiness SHALL NOT check for any particular Agent Runner workflow file, workflow name, or workflow step; the suite selects and verifies its evaluated workflow in its own preflight, before any model call. Calibration SHALL remain an optional suite-maintainer diagnostic; the factory SHALL NOT require a calibration receipt or pass removed calibration-record arguments. Unavailable prerequisites SHALL follow the readiness-hold behavior in `factory-claim-lifecycle`.
 
 #### Scenario: Launch an accepted repetition
 
 - **WHEN** the claim is eligible and its prerequisites are available
-- **THEN** the suite receives the saved role profiles, component worktree paths, artifact directory, environment paths, and validator setting
+- **THEN** the suite receives the saved role profiles, including the crosscheck profile when one is frozen, component worktree paths, artifact directory, environment paths, and validator setting
 - **AND** the invocation uses the retained harness version
 
 #### Scenario: Launch with Cursor role profiles
@@ -80,6 +80,22 @@ Selected-suite readiness SHALL be verified before execution. Calibration SHALL r
 - **WHEN** the eval kind runs under Fly execution and the pinned harness would invoke the launcher with an argument the launcher does not support
 - **THEN** no Machine is created, eval admission is held, and the readiness problem names the unsupported argument and the harness commit
 
+#### Scenario: Launch a claim frozen before the crosscheck role
+
+- **WHEN** a claim admitted before configured eval defaults included `crosscheck` has no frozen crosscheck profile
+- **THEN** the factory invokes its retained harness with only the lead, implementor, and tester profiles, as before
+- **AND** it does not add a crosscheck profile from current defaults
+
+#### Scenario: Pinned harness does not accept a frozen crosscheck profile
+
+- **WHEN** a claim's frozen settings include a crosscheck profile but its retained harness does not accept `--crosscheck-cli`
+- **THEN** no evaluation starts, eval admission is held, and the readiness problem names the crosscheck option and the harness commit
+
+#### Scenario: Runner revision lacks the suite's default workflow
+
+- **WHEN** the selected Agent Runner revision does not contain the workflow the suite evaluates
+- **THEN** factory readiness does not inspect Runner workflow files, and the suite's preflight rejects the revision before any model call
+
 ### Requirement: Isolate repetitions with stable identities
 
 Each requested repetition SHALL run with the same accepted settings and revisions but its own globally distinct, Git-ref-safe suite run identity and artifact directory. For `and-scene`, the artifact-directory basename SHALL include claim and repetition identity because the suite uses that identity in candidate branch names. Recovery attempts for the same repetition SHALL reuse its suite identity and artifact directory while retaining distinct execution-attempt records.
@@ -97,7 +113,7 @@ Each requested repetition SHALL run with the same accepted settings and revision
 
 ### Requirement: Resume through the suite's supported interface
 
-The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed. Under Fly execution, resume SHALL run only inside the repetition's surviving Machine; a missing Machine, or a Machine without a checkpoint it was known to have created, SHALL follow the lost-Machine outcome in `factory-fly-execution` rather than the corrupt-state scenario below, while a surviving Machine whose attempt verifiably stopped before checkpoint creation follows the fresh-retry scenario below inside that Machine.
+The factory SHALL resume interrupted `and-scene` work with a valid checkpoint through the suite's `--resume` interface using saved inputs and the artifact directory, subject to the lifecycle recovery budget. When reconciliation establishes that an attempt stopped before creating a checkpoint and before candidate execution, the factory SHALL retry without `--resume` using the same repetition identity, inputs, artifact directory, and remaining retry budget. A corrupt checkpoint or missing state alongside evidence of execution SHALL NOT authorize a fresh start. It SHALL respect the suite's checks of input revisions, settings, candidate identity, and evidence. A rejected resume SHALL NOT be bypassed by silently changing inputs, discarding evidence, or starting a fresh evaluation under the same repetition identity. Completed repetitions SHALL remain completed. Under Fly execution, resume SHALL run only inside the repetition's surviving Machine, except for an operator resume of an infrastructure-settled claim (below); a missing Machine, or a Machine without a checkpoint it was known to have created, SHALL follow the lost-Machine outcome in `factory-fly-execution` rather than the corrupt-state scenario below, while a surviving Machine whose attempt verifiably stopped before checkpoint creation follows the fresh-retry scenario below inside that Machine.
 
 #### Scenario: Resume compatible saved work
 
@@ -120,6 +136,20 @@ The factory SHALL resume interrupted `and-scene` work with a valid checkpoint th
 - **WHEN** the suite rejects resume because saved evidence or score-affecting inputs do not match
 - **THEN** the factory preserves the diagnostic and existing evidence and applies its technical-failure policy
 - **AND** it does not bypass the checks or substitute new inputs
+
+### Requirement: Resume an infrastructure-settled claim on operator request
+
+An operator SHALL be able to continue an eval claim that settled with verdict `infra-error` through `agent-factory resume-eval <claim>`, with `--dry-run` reporting the per-repetition plan without writing state. The command SHALL refuse a claim that is not an eval, is not settled, settled with another verdict, still has an unfinished attempt, or has released its worktrees, and SHALL refuse when a repetition that ended on an infrastructure failure has no collected checkpoint (`run-state.json` with an integer `schema_version`) in its artifact directory. A granted resume SHALL keep every repetition that settled with a result, continue each infrastructure-failed repetition once with `--resume` from its artifact directory, start each never-started repetition, and return the claim to waiting so it re-enters admission through its card under the ordinary lane, window, quota, and job-cap rules. The resumed attempt SHALL then follow the ordinary technical-retry and recovery rules. Under Fly execution, when the repetition's recorded Machine no longer exists, the resumed attempt SHALL create a replacement Machine, seed its artifact directory from the host's collected checkpoint (never the host-managed `.factory` tree), and build a fresh claim image when cleanup already deleted the claim's recorded image. Changing settings or clearing the Verdict SHALL still request a fresh claim.
+
+#### Scenario: Resume a claim with completed, infrastructure-failed, and unstarted repetitions
+
+- **WHEN** rep-1 completed, rep-2 exhausted its recovery on infrastructure failures with a collected checkpoint, rep-3 never started, the claim settled `infra-error`, and an operator runs `resume-eval`
+- **THEN** rep-2 continues with `--resume` from its artifact directory, rep-3 then starts, rep-1 is not rerun, and the claim settles again with a new handoff event
+
+#### Scenario: Refuse a resume without a collected checkpoint
+
+- **WHEN** an infrastructure-failed repetition has no usable `run-state.json` in its artifact directory
+- **THEN** `resume-eval` reports the refusal and the claim stays settled
 
 ### Requirement: Record the evaluated environment accurately
 

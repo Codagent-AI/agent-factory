@@ -389,6 +389,7 @@ class AndSceneAdapter:
         recovery: bool,
         pre_checkpoint_proven: bool = False,
         expect_checkpoint: bool = False,
+        seed_checkpoint: bool = False,
         claim_id: str = "",
         run_id: str = "",
         unit_key: str = "",
@@ -411,7 +412,9 @@ class AndSceneAdapter:
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
-        resume = self._recovery_mode(artifact, recovery, pre_checkpoint_proven)
+        resume = self._recovery_mode(
+            artifact, recovery, pre_checkpoint_proven, expect_checkpoint=expect_checkpoint
+        )
         run_script = (worktrees.evals / _REQUIRED_EVAL_FILES[0]).resolve()
         arguments = [
             str(run_script),
@@ -433,6 +436,11 @@ class AndSceneAdapter:
         arguments.extend(arguments_by_input)
         if settings.get("skip_validator") is True:
             arguments.append("--skip-validator")
+        workflow = settings.get("workflow")
+        if workflow is not None:
+            if not isinstance(workflow, str) or not inputs.WORKFLOW.fullmatch(workflow):
+                raise ReadinessError("accepted workflow is not a logical workflow reference")
+            arguments.extend(("--workflow", workflow))
         if resume:
             arguments.append("--resume")
         if self._execution == "fly":
@@ -450,6 +458,7 @@ class AndSceneAdapter:
                         self._fly,
                         self._total_seconds,
                         expect_checkpoint,
+                        seed_checkpoint=seed_checkpoint,
                     ),
                     sort_keys=True,
                 ),
@@ -601,7 +610,14 @@ class AndSceneAdapter:
         # A recognized limit with no parseable reset gets the documented bounded fallback.
         return reference + timedelta(seconds=fallback_seconds)
 
-    def _recovery_mode(self, artifact: Path, recovery: bool, pre_checkpoint_proven: bool) -> bool:
+    def _recovery_mode(
+        self,
+        artifact: Path,
+        recovery: bool,
+        pre_checkpoint_proven: bool,
+        *,
+        expect_checkpoint: bool = False,
+    ) -> bool:
         if not recovery:
             return False
         state = artifact / "run-state.json"
@@ -615,6 +631,10 @@ class AndSceneAdapter:
             checkpoint = cast(Mapping[str, object], saved)
             if not isinstance(checkpoint.get("schema_version"), int):
                 raise RecoveryStateError("saved suite checkpoint is incompatible")
+            return True
+        if self._execution == "fly" and expect_checkpoint:
+            # The checkpoint lives on the Machine and may not have been collected.
+            # The launcher checks it there and treats its absence as a lost Machine.
             return True
         if any((artifact / marker).exists() for marker in _CANDIDATE_MARKERS):
             raise RecoveryStateError(
@@ -741,6 +761,8 @@ def _fly_manifest(
     fly: FlyLocalConfig | None,
     total_seconds: int,
     expect_checkpoint: bool,
+    *,
+    seed_checkpoint: bool = False,
 ) -> dict[str, object]:
     from agent_factory.fly.transport import image_repository
 
@@ -784,6 +806,10 @@ def _fly_manifest(
             "artifacts": "/artifacts",
         },
     }
+    if seed_checkpoint:
+        # Only an operator resume of a settled repetition may seed a replacement
+        # Machine from the host's collected checkpoint.
+        manifest["seed_checkpoint"] = True
     if "validator" in revisions:
         sources = frozen.get("sources")
         source = (

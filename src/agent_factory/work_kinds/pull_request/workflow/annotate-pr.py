@@ -2,13 +2,19 @@
 """Render review attention into the existing feature pull request description."""
 
 import json
+import os
 import re
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
+
+if TYPE_CHECKING:
+    from agent_factory.work_kinds.pull_request.workflow import pr_description
+else:
+    import pr_description
 
 
 def command(*args: str) -> str:
@@ -20,6 +26,9 @@ LATER_COMMITS_TITLE = "Commits after acceptance"
 # The "Review first" section shows at most this many orange items; the rest are collapsed.
 ORANGE_SHOWN = 5
 REVIEW_BOT = "coderabbitai[bot]"
+# The wait before the first retry of the description update; the second waits twice as
+# long. Tests shorten it with this variable; the service never sets it.
+RETRY_SECONDS = float(os.environ.get("FACTORY_ANNOTATE_RETRY_SECONDS", "1"))
 BOT_REVIEW_TITLE = "No CodeRabbit review of the final head"
 
 
@@ -382,6 +391,12 @@ def main() -> None:
             ]
         )
     lines.extend([loc, ""])
+    try:
+        proposal = (archive / "proposal.md").read_text()
+    except (OSError, UnicodeDecodeError):
+        lines.extend([pr_description.UNAVAILABLE, ""])
+    else:
+        lines.extend([*pr_description.render(proposal, f"{prefix}/proposal.md"), ""])
     if hidden or flags["yellow"]:
         lines.extend([f"<details><summary>{others}</summary>", ""])
         for tier, icon, items in (("orange", "🟠", hidden), ("yellow", "🟡", flags["yellow"])):
@@ -452,6 +467,10 @@ def main() -> None:
     marked = subprocess.run(marker_command, check=False)
     if marked.returncode != 0:
         print("could not mark items later commits may have fixed", file=sys.stderr)
+    try:
+        body.write_text(pr_description.fit(body.read_text()))
+    except Exception as error:
+        print(f"could not fit the proposal in the description: {error}", file=sys.stderr)
     # The REST update, not `gh pr edit`: that also reads the pull request's project
     # items, which a token without org Projects access cannot do once the PR is on a board.
     edit = [
@@ -472,7 +491,7 @@ def main() -> None:
         error = result.stderr.strip() or f"gh exited with status {result.returncode}"
         print(error, file=sys.stderr)
         if attempt < 2:
-            time.sleep(attempt + 1)
+            time.sleep(RETRY_SECONDS * (attempt + 1))
     else:
         raise SystemExit(f"could not update the description of pull request #{number}: {error}")
 

@@ -108,7 +108,9 @@ def _make_eval_tree(root: Path, claim_id: str, *, rep: int, unknown: str = "futu
 
 
 def _reserve_and_finish(store: ClaimStore, claim_id: str, unit_key: str, evidence: Path) -> None:
-    run = store.reserve_run(claim_id, unit_key, reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim_id, unit_key, lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="completed", result={})
 
 
@@ -158,7 +160,7 @@ def test_first_done_observation_writes_marker_and_removes_nothing(tmp_path: Path
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
     now = datetime.now(UTC)
 
@@ -176,7 +178,7 @@ def test_nothing_removed_before_retention_period_elapses(tmp_path: Path) -> None
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -285,7 +287,7 @@ def test_a_claim_never_visited_is_never_pruned(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
 
     claim = _get(store, claim.id)
@@ -301,7 +303,7 @@ def test_nonterminal_run_leaves_evidence_untouched(tmp_path: Path) -> None:
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
     _reserve_and_finish(store, claim.id, "fix", evidence)
     # A second attempt is still reserved (non-terminal).
-    store.reserve_run(claim.id, "fix", reason="recovery", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="recovery", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -318,7 +320,7 @@ def test_pending_reporting_event_leaves_evidence_untouched(tmp_path: Path) -> No
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
     store.record_event(claim.id, "handoff", "pending report")
     start = datetime.now(UTC)
@@ -336,7 +338,7 @@ def test_pending_delivery_failure_leaves_evidence_untouched(tmp_path: Path) -> N
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     _settle_with_cleanup_complete(store, claim.id)
     store.record_delivery_failure(claim.id, "handoff", RuntimeError("delivery boom"))
     start = datetime.now(UTC)
@@ -357,7 +359,9 @@ def test_session_dir_inside_the_attempt_directory_is_pruned(tmp_path: Path) -> N
     session_dir = evidence / "attempt-1" / "custom-session"
     session_dir.mkdir()
     (session_dir / "state.json").write_text("x")
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="completed", result={"session_dir": str(session_dir)})
     _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
@@ -377,7 +381,9 @@ def test_session_dir_outside_the_evidence_tree_is_never_deleted(tmp_path: Path) 
     outside = tmp_path / "not-evidence"
     outside.mkdir()
     (outside / "do-not-delete.txt").write_text("precious")
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="completed", result={"session_dir": str(outside)})
     _settle_with_cleanup_complete(store, claim.id)
     start = datetime.now(UTC)
@@ -396,7 +402,9 @@ def test_incomplete_sync_leaves_evidence_untouched(tmp_path: Path, kind: str) ->
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", kind, "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    run = store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, kind, lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -420,7 +428,7 @@ def test_incomplete_cleanup_on_a_settled_claim_leaves_evidence_untouched(tmp_pat
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence))
     store.set_cleanup(claim.id, {"review_observed": True, "complete": False})
     start = datetime.now(UTC)
     retention.reconcile(store, local, _get(store, claim.id), "Done", start)
@@ -512,7 +520,9 @@ def test_cancelled_claim_prunes_after_release_complete(tmp_path: Path) -> None:
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="cancelled", result={"reason": "cancelled"})
     store.set_claim_lifecycle(claim.id, "cancelled", {"verdict": "cancelled"})
     start = datetime.now(UTC)
@@ -560,7 +570,9 @@ def test_session_dir_equal_to_the_attempt_directory_never_removes_the_attempt(
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(
         run.id,
         execution_status="completed",
@@ -601,7 +613,9 @@ def test_cancelled_claim_with_a_recorded_pr_prunes_without_a_sync(tmp_path: Path
     local = _local(tmp_path)
     claim = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "fix", "fp", {}))
     evidence = _make_fix_tree(tmp_path / "factory" / "artifacts", claim.id, attempt=1)
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(
         run.id,
         execution_status="cancelled",
@@ -634,7 +648,9 @@ def test_new_run_reopens_pruning_and_keeps_prior_removal_record(tmp_path: Path) 
             "retention": {"removed": ["old-path"], "pruned_at": "old"},
         },
     )
-    review = store.reserve_run(claim.id, "fix", reason="review", evidence_path=str(first))
+    review = store.reserve_run(
+        claim.id, "fix", lane="low", reason="review", evidence_path=str(first)
+    )
     reopened = _get(store, claim.id)
     assert "pruned_at" not in _retention(reopened)
     assert _retention(reopened)["removed"] == ["old-path"]

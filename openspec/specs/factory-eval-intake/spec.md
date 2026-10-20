@@ -38,9 +38,9 @@ Execution admission SHALL identify an evaluation card by its native issue type, 
 
 ### Requirement: Interpret one evaluation configuration per request
 
-The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `implementor`, `tester`, `skip_validator`, and `repetitions`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean; `fixture_ref`, when supplied, SHALL be a non-empty TOML string. Omitted settings SHALL use configured defaults. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
+The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `crosscheck`, `implementor`, `tester`, `skip_validator`, `repetitions`, and `workflow`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean; `fixture_ref`, when supplied, SHALL be a non-empty TOML string; `workflow`, when supplied, SHALL be a TOML string naming a logical Agent Runner workflow in the suite's `namespace:name` form, each part lowercase letters, digits, and hyphens starting with a letter or digit (for example `core:orchestrated-implement-change`). When `workflow` is omitted, the suite SHALL run its own default workflow; configuration SHALL supply no default for it. Omitted settings SHALL use configured defaults; the configured eval defaults SHALL include a complete `crosscheck` profile, which the `and-scene` suite requires for the agent that reviews planned tasks. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
 
-When the eval kind is configured for Fly execution, a request whose effective lead, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
+When the eval kind is configured for Fly execution, a request whose effective lead, crosscheck, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
 
 Request-level revision selection SHALL apply to Agent Runner, Agent Skills, and the and-scene fixture. `fixture_ref` names an and-scene branch, tag, or commit for the suite's fixture. When it is omitted, the suite SHALL use the fixture its pinned harness selects, as before this change; configuration SHALL supply no default for it. The `agent-evals` harness SHALL follow the configured harness branch (default `main`); request-level selection of harness revisions remains unsupported. Recording the resolved harness commit SHALL identify the test environment used for the result.
 
@@ -51,6 +51,27 @@ Repetitions SHALL be a positive integer. An optional configured maximum SHALL re
 - **WHEN** a valid block supplies a Runner ref and a complete lead profile while omitting other settings
 - **THEN** those supplied settings replace their respective defaults
 - **AND** all omitted settings retain their configured defaults
+
+#### Scenario: Override the crosscheck profile
+
+- **WHEN** a valid block supplies `crosscheck = "claude:claude-opus-5-5:high"` and omits every other setting
+- **THEN** the request is valid, its effective crosscheck profile is the supplied triple, and all other settings retain their configured defaults
+
+#### Scenario: Select the evaluated workflow
+
+- **WHEN** a valid block supplies `workflow = "core:orchestrated-implement-change"`
+- **THEN** the request is valid, its frozen settings record that workflow, and its request fingerprint differs from the same request without it
+- **AND** each repetition, retry, and resume passes `--workflow core:orchestrated-implement-change` to the suite under both Docker and Fly execution
+
+#### Scenario: Reject a malformed workflow
+
+- **WHEN** a block supplies `workflow` as a non-string TOML value or a string that is not a `namespace:name` logical reference, such as a workflow file path
+- **THEN** the request is invalid, stays in Ready with `needs-input`, the comment states that `workflow` must be a logical Agent Runner workflow reference, and no evaluation starts
+
+#### Scenario: Omit the crosscheck profile
+
+- **WHEN** a valid block does not supply `crosscheck`
+- **THEN** the request's effective crosscheck profile is the configured eval default
 
 #### Scenario: Supply invalid execution settings
 
@@ -318,3 +339,37 @@ A deploy or rollback SHALL NOT change a claim's frozen inputs or the reports ren
   rolled back
 - **THEN** its recorded settings, revisions, sources, and request fingerprint are unchanged, and
   its `Refs` field, frozen-inputs comment, and repetition reports are the same as before
+
+### Requirement: Fill eval Priority lanes
+
+Eval selection SHALL fill the eval kind's Priority lanes (see `factory-claim-lifecycle`), after the eval kind's shared slots (`[slots] eval`, 2 in the shipped configuration). While fewer eval attempts are unfinished than the shared slots, the factory SHALL admit an eligible eval attempt into the lane of its Priority whatever lanes the unfinished eval attempts occupy, including a second attempt in the same lane. Otherwise the factory SHALL admit an eligible eval attempt only into the lane of its Priority, only while no unfinished eval attempt occupies that lane or a higher lane. An eval that cannot start SHALL stay in Ready and SHALL NOT prevent selection of a later eligible eval that can start. The next repetition or recovery attempt of an eval claim that has started an attempt SHALL follow the same rule. The other admission controls still apply to it: the window, pause, quota, readiness, and the job cap.
+
+#### Scenario: Run any two evals together
+
+- **WHEN** evals have two shared slots, a Low eval repetition is running and an eligible Low eval sits in Ready
+- **THEN** the factory admits the second Low eval into the Low eval lane, and both run
+
+#### Scenario: Run a lower eval beside a higher eval
+
+- **WHEN** evals have two shared slots, a High eval repetition is the only unfinished eval attempt and an eligible Medium eval sits in Ready
+- **THEN** the factory admits the Medium eval into the Medium eval lane, and the High repetition continues
+
+#### Scenario: Start a higher eval past two
+
+- **WHEN** evals have two shared slots, two Low eval repetitions are running and an eligible High eval sits in Ready
+- **THEN** the factory admits the High eval into the High eval lane, and both Low repetitions continue
+
+#### Scenario: Hold a lower eval past two while a higher eval runs
+
+- **WHEN** evals have two shared slots, a Low and a High eval repetition are running and an eligible Medium eval sits in Ready
+- **THEN** the factory does not admit the Medium eval until fewer than two eval attempts are unfinished or no eval attempt occupies the High lane
+
+#### Scenario: Continue a lower eval's repetitions beside a higher eval
+
+- **WHEN** evals have two shared slots, a Low eval claim has finished repetition 1 of three, and a High eval repetition is the only unfinished eval attempt
+- **THEN** the Low claim's repetition 2 starts in the Low eval lane beside it
+
+#### Scenario: Queue a third eval of the same Priority
+
+- **WHEN** evals have two shared slots, two High eval repetitions are running, and a third eligible High eval sits in Ready
+- **THEN** the third High eval waits until fewer than two eval attempts are unfinished

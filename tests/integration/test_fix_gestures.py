@@ -191,6 +191,7 @@ def test_writer_comment_after_decline_removes_label_and_reserves_unblock(tmp_pat
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=__import__("datetime").datetime(2026, 1, 3, tzinfo=__import__("datetime").UTC),
@@ -229,6 +230,7 @@ def test_bot_comment_alone_changes_nothing(tmp_path: Path) -> None:
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -262,6 +264,7 @@ def test_non_writer_comment_changes_nothing(tmp_path: Path) -> None:
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -293,6 +296,7 @@ def test_comment_before_decline_is_not_eligible(tmp_path: Path) -> None:
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -318,6 +322,7 @@ def test_drag_to_ready_without_comment_unblocks(tmp_path: Path) -> None:
         _local(),
         _card("Ready"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -334,7 +339,7 @@ def test_slot_busy_leaves_claim_blocked(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim_id = _blocked_claim(store)
     other = store.create_claim(ClaimDraft("example/work", 999, "I999", "P999", "fix", "fp2", {}))
-    store.reserve_run(other.id, "fix", reason="initial", evidence_path="/tmp/other")
+    store.reserve_run(other.id, "fix", lane="low", reason="initial", evidence_path="/tmp/other")
     client = FakeGitHub([], {})
     handler = _handler(store)
     claim = store.get_claim(claim_id)
@@ -349,6 +354,7 @@ def test_slot_busy_leaves_claim_blocked(tmp_path: Path) -> None:
         _local(),
         _card("Ready"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -425,6 +431,7 @@ def test_comment_after_decline_is_eligible_across_iso8601_offset_notations(tmp_p
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -466,6 +473,7 @@ def test_blocked_claim_with_unparsable_declined_at_is_never_unblocked_by_comment
         _local(),
         _card("Running"),
         reloaded,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -492,6 +500,7 @@ def test_comment_with_missing_timestamp_is_not_eligible(tmp_path: Path) -> None:
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -528,6 +537,7 @@ def test_permission_lookup_failure_for_one_author_does_not_abort_the_scan(tmp_pa
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -570,6 +580,7 @@ def _process(store: ClaimStore, client: FakeGitHub, claim_id: str, tmp_path: Pat
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -634,6 +645,7 @@ def test_without_memory_headroom_an_eligible_claim_is_reconciled_but_not_relaunc
         _local(),
         _card("Running"),
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -682,6 +694,7 @@ def test_losing_the_slot_race_after_preparing_discards_the_fresh_clones(tmp_path
             _local(),
             _card("Running"),
             claim,
+            lane="low",
             bot_login="example-factory[bot]",
             artifact_root=tmp_path / "artifacts",
             now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -759,6 +772,7 @@ def test_clone_removal_failure_after_a_lost_slot_race_is_reported(tmp_path: Path
             _local(),
             _card("Running"),
             claim,
+            lane="low",
             bot_login="example-factory[bot]",
             artifact_root=tmp_path / "artifacts",
             now=dt.datetime(2026, 1, 3, tzinfo=dt.UTC),
@@ -821,7 +835,9 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
     claim = store.create_claim(
         ClaimDraft("example/work", 64, "I64", "P64", "fix", "fp", {"contract": "factory-fix/1"})
     )
-    older = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path))
+    older = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(older.id, {"pid": 1})
     store.finish_run(
         older.id,
@@ -836,7 +852,9 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
             },
         },
     )
-    run = store.reserve_run(claim.id, "fix", reason="unblock", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="unblock", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {"pid": 1})
     store.finish_run(
         run.id,
@@ -880,6 +898,7 @@ def test_review_intake_reads_the_pr_from_the_latest_run_when_the_outcome_lacks_i
         client,  # pyright: ignore[reportArgumentType]
         handler,
         settled,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
@@ -924,7 +943,7 @@ def _settled_claim_with_pr(store: ClaimStore, roles: Mapping[str, str] | None = 
             },
         )
     )
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path="/tmp/e")
+    run = store.reserve_run(claim.id, "fix", lane="low", reason="initial", evidence_path="/tmp/e")
     store.mark_running(run.id, {"pid": 1})
     store.finish_run(
         run.id,
@@ -977,6 +996,7 @@ def test_review_round_readiness_failure_holds_the_claim_in_review(tmp_path: Path
         client,  # pyright: ignore[reportArgumentType]
         handler,
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),
@@ -1064,6 +1084,7 @@ def _admit_review(
         client,  # pyright: ignore[reportArgumentType]
         handler,
         claim,
+        lane="low",
         bot_login="example-factory[bot]",
         artifact_root=tmp_path / "artifacts",
         now=datetime.datetime(2099, 1, 2, tzinfo=datetime.UTC),

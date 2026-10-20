@@ -15,7 +15,10 @@ import pytest
 
 from agent_factory.config import SharedConfig
 from agent_factory.store import ClaimStore
+from tests.fixtures.executables import install
+from tests.fixtures.git_trees import copy_built
 from tests.fixtures.network import NO_GITHUB
+from tests.fixtures.stub_server import ScriptServer
 
 # Readiness probes answer from this stand-in rather than the developer's installed Runner.
 HERMETIC_RUNNER = """#!/bin/sh
@@ -60,8 +63,40 @@ def _repo(path: Path, files: dict[str, str]) -> str:
     return _git(path, "rev-parse", "HEAD")
 
 
-def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
+def _serve(source: str, executable: Path) -> None:
+    """Serve a GitHub stand-in's source from this process through ``executable``."""
+    ScriptServer(source, str(executable)).install(executable)
+
+
+def _source_repositories(root: Path, suite: str) -> None:
+    """The evals, runner, and skills repositories; `copy_built` copies them per test."""
     prefix = "evals/agent-runner/and-scene/"
+    _repo(
+        root / "evals",
+        {
+            prefix + "run.sh": suite,
+            prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
+            **{
+                prefix + "lib/" + name + ".mjs": "// fixture"
+                for name in ("phases", "outcomes", "result")
+            },
+        },
+    )
+    _repo(
+        root / "runner",
+        {
+            "scripts/sandbox-run.sh": "#!/bin/sh\n# --docker-run-arg\n",
+            "docker/dev/Dockerfile": 'FROM alpine\nUSER nobody\nWORKDIR /workspace\nCMD ["sh"]\n',
+            "workflows/core/implement-change-v1.0.yaml": "# fixture",
+        },
+    )
+    # The shared config may pin eval defaults to a non-main runner branch.
+    _git(root / "runner", "push", "--quiet", "origin", "HEAD:refs/heads/dev")
+    _git(root / "runner", "fetch", "--quiet", "origin")
+    _repo(root / "skills", {"README.md": "fixture"})
+
+
+def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
     suite = f"""#!{sys.executable}
 import json,pathlib,sys,time
 # Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
@@ -78,29 +113,7 @@ result=({{'evaluation_status':'pending-human-review',
 if (out/'finish').read_text(): result=json.loads((out/'finish').read_text())
 (out/'result.json').write_text(json.dumps(result))
 """
-    _repo(
-        tmp_path / "evals",
-        {
-            prefix + "run.sh": suite,
-            prefix + "human-review.sh": "#!/bin/sh\nexit 0\n",
-            **{
-                prefix + "lib/" + name + ".mjs": "// fixture"
-                for name in ("phases", "outcomes", "result")
-            },
-        },
-    )
-    _repo(
-        tmp_path / "runner",
-        {
-            "scripts/sandbox-run.sh": "#!/bin/sh\n# --docker-run-arg\n",
-            "docker/dev/Dockerfile": 'FROM alpine\nUSER nobody\nWORKDIR /workspace\nCMD ["sh"]\n',
-            "workflows/core/implement-change-v1.0.yaml": "# fixture",
-        },
-    )
-    # The shared config may pin eval defaults to a non-main runner branch.
-    _git(tmp_path / "runner", "push", "--quiet", "origin", "HEAD:refs/heads/dev")
-    _git(tmp_path / "runner", "fetch", "--quiet", "origin")
-    _repo(tmp_path / "skills", {"README.md": "fixture"})
+    copy_built("factory-cycle-setup", lambda root: _source_repositories(root, suite), tmp_path)
     text = Path("config/codagent.toml").read_text()
     (tmp_path / "shared.toml").write_text(text)
     shared = SharedConfig.from_toml(text)
@@ -179,7 +192,7 @@ suite_environment = "{tmp_path / "suite.env"}"
     board.write_text(json.dumps({"items": [item], "fields": fields, "comments": []}))
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    gh = f"""#!{sys.executable}
+    gh = f"""
 import json,sys,pathlib
 p=pathlib.Path({str(board)!r});s=json.loads(p.read_text());args=sys.argv
 body=json.load(sys.stdin) if '--input' in args else {{}}
@@ -204,8 +217,8 @@ elif '/labels' in endpoint: result=[]
 else: raise Exception('Unexpected gh request '+repr(args))
 p.write_text(json.dumps(s));print(json.dumps(result))
 """
+    _serve(gh, bin_dir / "gh")
     for name, content in {
-        "gh": gh,
         "openssl": "#!/bin/sh\ncat >/dev/null\nprintf signature",
         "docker": (
             "#!/bin/sh\n"
@@ -220,9 +233,7 @@ p.write_text(json.dumps(s));print(json.dumps(result))
         "claude": "#!/bin/sh\nexit 0",
         "agent-runner": HERMETIC_RUNNER,
     }.items():
-        script = bin_dir / name
-        script.write_text(content)
-        script.chmod(0o755)
+        install(bin_dir / name, content)
     environment = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", **NO_GITHUB}
     return config, board, environment, shared
 
@@ -299,8 +310,8 @@ urllib.request.urlopen = token_response
         env=environment,
         capture_output=True,
         text=True,
-        # A whole tick can exceed one probe deadline when subprocess startup is slow.
-        timeout=60,
+        # Ten parallel workers can slow the real Git/CLI subprocess chain.
+        timeout=90,
     )
     if expected_error is None:
         assert done.returncode == 0, done.stderr
@@ -795,7 +806,7 @@ def test_active_claim_clears_and_can_redeliver_the_same_verdict(tmp_path: Path) 
     )
 
     store.reserve_run(
-        claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "artifacts")
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "artifacts")
     )
     store.set_claim_lifecycle(claim.id, "active", {})
     _cli(config, env, "tick")
@@ -1048,24 +1059,21 @@ def _add_bug_card(board: Path, shared: SharedConfig, *, repository: str, item_id
 
 def _make_docker_fail(config: Path) -> None:
     bin_dir = config.parent / "bin"
-    docker = bin_dir / "docker"
-    docker.write_text("#!/bin/sh\nexit 1\n")
-    docker.chmod(0o755)
+    install(bin_dir / "docker", "#!/bin/sh\nexit 1\n")
 
 
 def _make_docker_memory_scarce(config: Path) -> None:
     """Docker itself is up (`docker info`/`docker system` succeed) but reports too little RAM."""
     bin_dir = config.parent / "bin"
-    docker = bin_dir / "docker"
-    docker.write_text(
+    install(
+        bin_dir / "docker",
         "#!/bin/sh\n"
         'if [ "$1" = "system" ]; then echo "{}"\n'
         'elif [ "$1" = "info" ]; then echo 1073741824\n'
         'elif [ "$1" = "stats" ]; then printf ""\n'
         "fi\n"
-        "exit 0\n"
+        "exit 0\n",
     )
-    docker.chmod(0o755)
 
 
 def _set_fix_execution(config: Path, *, execution: str) -> None:
@@ -1181,4 +1189,75 @@ eval_handler.plan_attempt = fail_plan
         assert claim.lifecycle == "settled"
         assert claim.outcome["verdict"] == "infra-error"
     finally:
+        store.close()
+
+
+def test_resume_eval_continues_an_infra_settled_claim_without_rerunning_completed_work(
+    tmp_path: Path,
+) -> None:
+    config, board, env, shared = _setup(tmp_path)
+    data = json.loads(board.read_text())
+    data["items"][0]["content"]["body"] = data["items"][0]["content"]["body"].replace(
+        "repetitions=1", "repetitions=3"
+    )
+    board.write_text(json.dumps(data))
+    store = ClaimStore(tmp_path / "factory/state.sqlite3")
+
+    def next_run() -> Any:
+        for _ in range(3):
+            _cli(config, env, "tick")
+            runs = store.nonterminal_runs()
+            if runs:
+                return runs[0]
+        raise AssertionError("no attempt started")
+
+    infra = json.dumps({"evaluation_status": "failed", "failure": {"reason": "Machine stopped"}})
+    try:
+        rep1 = next_run()
+        _finish(store, Path(rep1.evidence_path))
+        rep2 = next_run()
+        assert rep2.unit_key == "rep-2"
+        _finish(store, Path(rep2.evidence_path), infra)
+        (Path(rep2.evidence_path) / "finish").unlink()
+        recovery = next_run()
+        assert recovery.reason == "recovery"
+        _finish(store, Path(recovery.evidence_path), infra)
+        _cli(config, env, "tick")
+        claim = store.get_claim(rep1.claim_id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "infra-error"
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+
+        (Path(rep2.evidence_path) / "finish").unlink()
+        command = [sys.executable, "-m", "agent_factory.cli", "--config", str(config)]
+        resumed = subprocess.run(
+            [*command, "resume-eval", claim.id], env=env, capture_output=True, text=True
+        )
+        assert resumed.returncode == 0, resumed.stdout + resumed.stderr
+
+        resume = next_run()
+        assert (resume.unit_key, resume.reason) == ("rep-2", "resume")
+        assert "--resume" in resume.plan["argv"]
+        assert resume.evidence_path == rep2.evidence_path
+        _finish(store, Path(resume.evidence_path))
+        rep3 = next_run()
+        assert (rep3.unit_key, rep3.reason) == ("rep-3", "initial")
+        _finish(store, Path(rep3.evidence_path))
+        _cli(config, env, "tick")
+
+        claim = store.get_claim(claim.id)
+        assert claim is not None and claim.lifecycle == "settled"
+        assert claim.outcome["verdict"] == "pending-human-review"
+        assert [run.unit_key for run in store.runs_for_claim(claim.id)].count("rep-1") == 1
+        assert _field_value(board, shared.project.status.id) == shared.project.status.option(
+            "review"
+        )
+        comments = [comment["body"] for comment in json.loads(board.read_text())["comments"]]
+        assert any("An operator resumed this evaluation" in body for body in comments)
+        assert any("aggregate verdict is pending-human-review" in body for body in comments)
+    finally:
+        for run in store.nonterminal_runs():
+            _finish(store, Path(run.evidence_path))
         store.close()

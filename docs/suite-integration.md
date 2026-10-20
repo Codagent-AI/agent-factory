@@ -18,7 +18,8 @@ records the resolved commit on the claim; the recorded commit, not the branch
 name, is the comparability key across nights. Before deploying a harness branch
 change, verify the branch's tip contains the automated-outcome (score-failure)
 contract, calibration-gate removal, linked-worktree metadata mounts, Cursor
-session persistence, and the `tester` role interface — `doctor` reports the
+session persistence, the `tester` role interface, and the
+`--crosscheck-cli/-model/-effort` options — `doctor` reports the
 commit the configured branch resolves to, but it does not fetch and it does
 not prove that commit carries these behaviors. The configured role names are
 `lead`, `crosscheck`, `implementor`, and `tester`; their defaults are complete

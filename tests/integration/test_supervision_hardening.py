@@ -50,9 +50,13 @@ def test_tick_replaces_only_running_or_observing_watchers(
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     claim = _claim(store)
-    reserved = store.reserve_run(claim, "rep-1", reason="initial", evidence_path="/tmp/reserved")
+    reserved = store.reserve_run(
+        claim, "rep-1", lane="low", reason="initial", evidence_path="/tmp/reserved"
+    )
     store.finish_run(reserved.id, execution_status="failed", result={})
-    running = store.reserve_run(claim, "rep-1", reason="recovery", evidence_path="/tmp/running")
+    running = store.reserve_run(
+        claim, "rep-1", lane="low", reason="recovery", evidence_path="/tmp/running"
+    )
     store.mark_running(running.id, {"pid": 0, "start": "unknown"})
     calls: list[tuple[str, Path | None]] = []
 
@@ -75,7 +79,9 @@ def test_tick_replaces_only_running_or_observing_watchers(
 def test_resume_does_not_spawn_a_second_live_watcher(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
-    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     watcher = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(10)"])
     try:
         start = process_start_identity(watcher.pid)
@@ -91,7 +97,7 @@ def test_valid_result_waits_for_owned_process_exit(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "e")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "e")
     )
     plan = _plan(
         tmp_path,
@@ -117,7 +123,7 @@ def test_invalid_result_is_preserved_as_failed_execution(tmp_path: Path) -> None
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "e")
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path / "e")
     )
     plan = _plan(
         tmp_path,
@@ -133,7 +139,9 @@ def test_invalid_result_is_preserved_as_failed_execution(tmp_path: Path) -> None
 def test_invalid_persisted_plan_is_reported_without_crashing_watcher(tmp_path: Path) -> None:
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
-    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path="/tmp/evidence")
+    run = store.reserve_run(
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path="/tmp/evidence"
+    )
     error: RuntimeError | None = None
     try:
         supervise(state, run.id, run.launch_nonce)
@@ -156,7 +164,9 @@ def test_late_container_is_discovered_when_wrapper_exits(
     artifact = tmp_path / "artifacts"
     artifact.mkdir()
     store = ClaimStore(tmp_path / "state.sqlite3")
-    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(artifact))
+    run = store.reserve_run(
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(artifact)
+    )
     store.mark_running(run.id, {"pid": 123, "start": "x"})
     plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"sandbox": "docker"}, False)
     identity_states = iter(["alive", "missing", "missing"])
@@ -250,7 +260,9 @@ def test_unchanged_quota_log_is_not_reparsed_each_poll(
     from agent_factory.backends import docker as docker_backend
 
     store = ClaimStore(tmp_path / "state.sqlite3")
-    run = store.reserve_run(_claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path))
+    run = store.reserve_run(
+        _claim(store), "rep-1", lane="low", reason="initial", evidence_path=str(tmp_path)
+    )
     store.mark_running(run.id, {"pid": 123, "start": "x"})
     plan = ExecutionPlan((), str(tmp_path), {}, (), (), {"suite": "and-scene"}, False)
     states = iter(["alive", "alive", "alive", "missing"])
@@ -298,7 +310,11 @@ def test_immediate_exit_reaps_child_and_releases_execution_slot(tmp_path: Path) 
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+        _claim(store),
+        "rep-1",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "artifact"),
     )
     plan = _plan(tmp_path, "raise SystemExit(2)\n")
     pids: list[int] = []
@@ -326,7 +342,11 @@ def test_immediate_exit_preserves_suite_result(tmp_path: Path) -> None:
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+        _claim(store),
+        "rep-1",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "artifact"),
     )
     plan = _plan(
         tmp_path,
@@ -354,7 +374,11 @@ def test_immediate_exit_retains_slot_when_container_discovery_is_uncertain(tmp_p
 
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+        _claim(store),
+        "rep-1",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "artifact"),
     )
     plan = _plan(tmp_path, "raise SystemExit(2)\n")
     plan = replace(plan, ownership_hints={**plan.ownership_hints, "sandbox": "docker"})
@@ -462,7 +486,9 @@ def test_host_attempt_progresses_through_the_session_directory_then_times_out_by
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
-    run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        _claim(store), "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     started = time.monotonic()
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(0.8, 30, 30))
     try:
@@ -496,7 +522,9 @@ def test_cancelling_a_host_attempt_kills_the_runner_stand_in_and_its_child(
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
     state = tmp_path / "state.sqlite3"
     store = ClaimStore(state)
-    run = store.reserve_run(_claim(store), "fix", reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        _claim(store), "fix", lane="low", reason="initial", evidence_path=str(evidence)
+    )
     watcher = launch_supervisor(state, run.id, plan, SupervisionLimits(30, 60, 60))
     try:
         _wait_file(evidence / "script.pid")  # written after child.pid
@@ -535,7 +563,11 @@ def test_launched_process_keeps_the_login_identity(
     monkeypatch.setenv("UNRELATED_SECRET", "leak")
     store = ClaimStore(tmp_path / "state.sqlite3")
     run = store.reserve_run(
-        _claim(store), "rep-1", reason="initial", evidence_path=str(tmp_path / "artifact")
+        _claim(store),
+        "rep-1",
+        lane="low",
+        reason="initial",
+        evidence_path=str(tmp_path / "artifact"),
     )
     plan = _plan(
         tmp_path,

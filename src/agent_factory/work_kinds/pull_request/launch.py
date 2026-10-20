@@ -37,6 +37,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "review-description.sh",
     "count-loc.py",
     "mark-later-commits.py",
+    "pr_description.py",
     "factory-task-guard-v1.0.yaml",
     "task-scope-floor.py",
     "record-scope.sh",

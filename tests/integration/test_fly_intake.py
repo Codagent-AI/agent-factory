@@ -621,7 +621,11 @@ def test_admission_defers_terminal_result_finished_after_consumption(
             assert claim is not None
             with site.store() as store:
                 run = store.reserve_run(
-                    claim.id, "rep-1", reason="initial", evidence_path=str(tmp_path / "result")
+                    claim.id,
+                    "rep-1",
+                    lane="low",
+                    reason="initial",
+                    evidence_path=str(tmp_path / "result"),
                 )
                 store.mark_running(run.id, {})
                 store.finish_run(run.id, execution_status="completed", result={})

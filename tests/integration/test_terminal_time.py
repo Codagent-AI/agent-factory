@@ -28,7 +28,9 @@ def test_terminal_time_reopen_and_backfill(tmp_path: Path) -> None:
             claim.id, {"complete": True, "retention": {"pruned_at": "old", "removed": ["old"]}}
         )
         assert store.get_claim(claim.id).cleanup["terminal_at"] == clock  # type: ignore[union-attr]
-        run = store.reserve_run(claim.id, "fix", reason="review", evidence_path=str(tmp_path))
+        run = store.reserve_run(
+            claim.id, "fix", lane="low", reason="review", evidence_path=str(tmp_path)
+        )
         store.set_claim_lifecycle(claim.id, "active", {})
         reopened = store.get_claim(claim.id)
         assert reopened is not None
@@ -39,7 +41,7 @@ def test_terminal_time_reopen_and_backfill(tmp_path: Path) -> None:
         store.set_claim_lifecycle(claim.id, "settled", {})
         assert store.get_claim(claim.id).cleanup["terminal_at"] != "old"  # type: ignore[union-attr]
         same_state = store.reserve_run(
-            claim.id, "fix", reason="follow-up", evidence_path=str(tmp_path)
+            claim.id, "fix", lane="low", reason="follow-up", evidence_path=str(tmp_path)
         )
         store.set_preparation(claim.id, {"clones": {}})
         store.finish_run(same_state.id, execution_status="completed", result={})
@@ -64,7 +66,7 @@ def test_terminal_time_reopen_and_backfill(tmp_path: Path) -> None:
         store.set_preparation(legacy.id, {})
         assert terminal_time(store, store.get_claim(legacy.id)).isoformat() == historical.updated_at  # type: ignore[arg-type]
         followup = store.reserve_run(
-            legacy.id, "fix", reason="follow-up", evidence_path=str(tmp_path)
+            legacy.id, "fix", lane="low", reason="follow-up", evidence_path=str(tmp_path)
         )
         assert "terminal_at_backfilled" not in store.get_claim(legacy.id).cleanup  # type: ignore[union-attr]
         store.finish_run(followup.id, execution_status="completed", result={})

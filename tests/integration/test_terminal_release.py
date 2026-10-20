@@ -49,7 +49,9 @@ def test_off_board_cancelled_claim_releases_every_attempt_and_keeps_other_files(
     mirror.mkdir(parents=True)
     (mirror / "HEAD").write_text("keep")
     store.set_preparation(claim.id, {"clones": {"target": str(claim_dir / "2")}})
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "ev"))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "ev")
+    )
     credential = tmp_path / "factory" / "private" / run.id / "token"
     credential.parent.mkdir(parents=True)
     credential.write_text("private")
@@ -164,7 +166,9 @@ def test_settled_open_pr_waits_for_age_and_merged_pr_waits_for_sync(tmp_path: Pa
 def test_pending_report_and_machine_hold_block_terminal_release(tmp_path: Path) -> None:
     store = ClaimStore(tmp_path / "state.sqlite3")
     claim = store.create_claim(ClaimDraft("example/repo", 2, "I2", "P2", "fix", "fp", {}))
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "ev"))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "ev")
+    )
     store.update_progress(run.id, {"machine": {"id": "m"}})
     store.finish_run(run.id, execution_status="cancelled", result={})
     store.set_claim_lifecycle(claim.id, "cancelled", {})
@@ -381,7 +385,9 @@ def test_done_without_review_releases_when_reporting_is_delivered(
     claim = store.create_claim(ClaimDraft("example/repo", 15, "I15", "P15", kind, "fp", {}))
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    run = store.reserve_run(claim.id, kind, reason="initial", evidence_path=str(evidence))
+    run = store.reserve_run(
+        claim.id, kind, lane="low", reason="initial", evidence_path=str(evidence)
+    )
     store.finish_run(run.id, execution_status="passed", result={})
     store.set_claim_lifecycle(claim.id, "settled", {})
     root = tmp_path / "clones" / claim.id
@@ -558,7 +564,9 @@ def test_nonterminal_and_delivery_gates_keep_owned_clones(
     claim = store.create_claim(ClaimDraft("example/repo", 13, "I13", "P13", "fix", "fp", {}))
     root = tmp_path / "clones" / claim.id
     root.mkdir(parents=True)
-    run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(tmp_path / "ev"))
+    run = store.reserve_run(
+        claim.id, "fix", lane="low", reason="initial", evidence_path=str(tmp_path / "ev")
+    )
     if run_state == "running":
         store.mark_running(run.id, {})
     elif run_state == "observing":

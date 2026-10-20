@@ -32,6 +32,7 @@ from tests.e2e.test_factory_cycle import (
     _repo,  # pyright: ignore[reportPrivateUsage]
     _setup,  # pyright: ignore[reportPrivateUsage]
 )
+from tests.fixtures.executables import install
 from tests.fixtures.fly.api import FakeMachinesApi
 from tests.fixtures.fly.flyctl import write_guest_flyctl
 from tests.fixtures.fly.guest import start_guest
@@ -228,9 +229,7 @@ class Factory:
             bin_dir, self.roots, tmp_path / "flyctl.log", tmp_path / "none", per_machine=True
         )
         # HOME is a fixture home, so the real Claude CLI would report no login.
-        claude = bin_dir / "claude"
-        claude.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        claude.chmod(0o755)
+        install(bin_dir / "claude", "#!/bin/sh\nexit 0\n")
         launcher = bin_dir / "agent-factory-fly-launcher"
         launcher.write_text(_LAUNCHER.format(python=sys.executable, url=api.base_url))
         launcher.chmod(0o755)
@@ -519,7 +518,7 @@ def test_terminal_registry_retry_does_not_block_overdue_machine_disposal(factory
     _wait(lambda: factory.run(run.id).status == "completed", factory)
     other = store.create_claim(ClaimDraft("example/evals", 9, "I9", "P9", "eval", "fp", {}))
     other_run = store.reserve_run(
-        other.id, "rep-1", reason="initial", evidence_path=str(factory.roots / "other")
+        other.id, "rep-1", lane="low", reason="initial", evidence_path=str(factory.roots / "other")
     )
     store.finish_run(other_run.id, execution_status="cancelled", result={})
     store.set_claim_lifecycle(other.id, "cancelled", {})

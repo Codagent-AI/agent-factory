@@ -57,6 +57,18 @@ cause is understood, or let the deadline reconciler remove it. A lost Machine
 costs that repetition and is never automatically rerun or presented as a
 product result. If every repetition is lost, the claim is `infra-error`.
 
+A claim that settled `infra-error` only because its infrastructure failed can be
+continued. Run `agent-factory --config <local.toml> resume-eval <claim id or
+unique prefix> --dry-run` to see, per repetition, what would be kept, resumed
+from its collected checkpoint, or started; it writes nothing. Without
+`--dry-run` the claim returns to waiting: its card goes back to Ready on the
+next cycle and its lane admits it like any other recovery. Each infrastructure-failed
+repetition resumes once with `--resume` and then follows the ordinary
+retry rules; repetitions never started then run; completed ones keep their
+results. When the repetition's Machine is gone, the resumed attempt seeds a new
+Machine from the collected checkpoint and rebuilds the claim image if cleanup
+deleted it. A repetition with no collected `run-state.json` cannot be resumed.
+
 On a recognized Codex quota hold Factory stops, rather than destroys, the
 Machine and refreshes its deadline from the reset time and admission window.
 When execution becomes eligible it starts the same Machine and verifies the
@@ -195,8 +207,8 @@ resolves and records its own harness commit at admission, independent of what
 `doctor` last reported.
 
 `status` is also read-only. It reports saved pause state, one block per work
-kind (`eval slot: ...` / `fix slot: free`) naming that kind's holder or
-reporting it free, why a kind is waiting (window, pause, per-kind readiness, a
+kind (`eval slot: busy (high, low)` / `fix slot: free`) with lane lines
+naming every holder or reporting the kind free, why a kind is waiting (window, pause, per-kind readiness, a
 provider quota hold naming which kinds it blocks, memory, or disk), blocked fix
 claims with their decline reason, pending merge syncs with their last failure
 reason, unfinished reporting, and cleanup errors. It prints a next permitted
@@ -209,7 +221,7 @@ With `[feature]` configured, `doctor` adds `feature-host`: it checks the feature
 roles, including `crosscheck` CLI authentication, the packaged feature and
 define workflows, the installed Runner's `core/verify-change`, the shared fix
 credential, and the feature disk floor. A target without `openspec/` is listed
-as informational. `status` always shows `feature slot: free` or its holder,
+as informational. `status` always shows `feature slot: free` or a busy summary with lane holders,
 and lists feature claims even if `[feature]` is later removed. Removing that
 section stops new handoffs and admissions while existing claims continue to
 be reported, synced, cleaned up, and pruned.
@@ -256,6 +268,32 @@ the older release. The older release cannot accept `fixture_ref`; if a pinned
 evaluation is still needed, stay on a fixture-capable release. A new request
 without the key evaluates only the default fixture. A hand rollback or a
 deploy with an older script bypasses the refusal.
+
+Before rolling back to a release without inline proposal regions, list open factory
+feature pull requests whose description contains `<!-- agent-factory:proposal:start `.
+For each one, settle or cancel its open review claim and request no review rounds until
+the factory runs a release with proposal-region support again. A writer may instead
+remove the region, from its start marker through its matching end marker, by hand
+before requesting a round on the older release; the artifact links remain. Older
+scripts can read quoted report lines as real evidence and publish without the size
+check. No deploy guard enforces this rule; containment is operational.
+
+### Selecting the evaluated workflow
+
+Add `workflow = "<namespace>:<name>"` to the request's fenced `eval` TOML
+block, for example `workflow = "core:orchestrated-implement-change"`, to
+evaluate an Agent Runner workflow other than the suite default
+(`core:plan-and-implement-change`). The factory passes it to the and-scene
+`run.sh` as `--workflow` under Docker and Fly. A malformed value, such as a
+file path, is an invalid request. The value is part of the frozen settings, so
+changing it requests a new claim, and the frozen-inputs comment shows it. The
+pinned Agent Runner revision must define the workflow; the suite checks that
+and the workflow's required parameters at launch. Results from a non-default
+workflow are not comparable with default-workflow results.
+
+A release without this setting ignores a frozen `workflow` and runs the suite
+default, with no refusal from `scripts/deploy.sh`. Before rolling back past
+it, let each unfinished claim that requested a workflow settle or cancel it.
 
 ### Feature pull requests
 
@@ -635,3 +673,77 @@ The optional shared `[notify]` section has `enabled = false` by default and requ
 `doctor` adds a `notify` group when enabled. It checks `claude`, `ps`, Claude authentication and needed CLI flags, and the readable `~/.claude/sessions` registry; an empty registry is informational. `status` shows enabled state, running sessions, today's launch count and known cost, and the last 24 hours' visible outcomes (`sent`, `no-session`, `failed`, or `budget-exhausted`). `unmarked` stops are stored but hidden. A failed readiness check blocks only notifier launch, and the stop records `failed`.
 
 Delivery depends on Claude Code's local, undocumented `~/.claude/sessions/<pid>.json` layout and cross-session messaging. The registry's adjacent `.key` files are never read. An ended, renamed-and-reused, or unresolvable session can receive nothing; the seconds-long name reuse race remains even though the sender resolves twice and confirms one matching name through `ListAgents`. A receiver in another permission mode may hold the message. The notifier uses the Claude CLI directly with only `ListAgents` and `SendMessage`, a minimal environment, and no GitHub token. Its result reflects the sender's `SendMessage` call, not whether the recipient consumed a held message.
+
+## Priority lanes
+
+Each work kind (eval, fix, feature, task) has three lanes, and each lane runs at
+most one unfinished attempt at a time:
+
+| Lane   | Cards                                  |
+| ------ | -------------------------------------- |
+| High   | Urgent, then High                      |
+| Medium | Medium                                 |
+| Low    | Low, then cards with no or unknown Priority |
+
+Within a lane, Urgent is admitted before High, and explicit Low before an unset
+Priority. A higher lane starts at once beside lower work. While a higher lane of
+the same kind is busy, no lower-lane attempt of that kind starts: not a new
+admission, and not the next attempt of a claim already under way (an eval's next
+repetition, a recovery after a crash or technical failure, a relaunch after a
+pre-suite failure, a resume after `needs-input`, or a review round). A held claim
+keeps its completed repetitions, recovery budget, and frozen inputs. Running
+attempts are never preempted or moved when Priority changes; each attempt takes
+its lane from the card's Priority when it is reserved. Kinds are independent: a
+High fix never holds an eval.
+
+Shared slots come first. `[slots]` in shared configuration gives each kind a
+number of attempts that run together whatever their lanes; an unlisted kind has
+1, which leaves only the lane rules. The shipped configuration sets `eval = 2`:
+while fewer than two eval attempts are unfinished, any eval attempt starts,
+whatever its lane and the running one's, so two Low evals, or a Low and a High,
+run side by side, repetitions included. Once two are unfinished, the lane rules
+above decide: another starts only in a free lane with no busy lane above it. For
+example, with two Low evals running, a Medium eval starts, and then a High one;
+with a Low and a High running, a Medium eval waits.
+
+```toml
+[slots]
+eval = 2
+```
+
+Each cycle publishes `[slots]` to the state database, so the change takes effect
+on the next cycle without a deploy, and manual commands use the same numbers.
+Lowering a count never stops running attempts; new ones wait until the kind is
+back under it.
+
+Status keeps `<kind> slot: free` for idle kinds, or prints
+`<kind> slot: busy (high, medium, low)` with one `<kind> lane <priority>:` holder
+and progress line per attempt. Lane wait lines name the requested lane, the
+blocking holder, and the cause (busy lane, higher lane, legacy holder, or kind
+mode). Pre-upgrade attempts have no lane and hold every lane of their kind until
+they finish. `lanes: off` means the per-kind guard is restored. Only resident
+startup or `agent-factory --config <local.toml> lanes enable` enables lanes;
+`tick`, `doctor`, and `status` never change mode.
+
+Size host disk and memory for up to three concurrent attempts **per host kind**
+(fix, feature, task), including each attempt's clones, artifacts, model clients,
+and build tools. The existing disk floor, memory, quota, readiness, and job-cap
+holds still bound admission; memory is re-sampled before each sandbox admission.
+With N slots a kind can reach N + 2 attempts at once (N in the lowest busy lane,
+one in each lane above), so `eval = 2` allows up to four evals and more Fly image
+builds, Machines, and spend. Raise a host kind's count only after sizing the Mac
+for it.
+
+Shared slots can put two attempts in one lane, so in lane mode the per-lane
+SQLite index is not unique; the reservation gate, inside an immediate
+transaction, enforces the limit. A release from before shared slots keeps this
+index, shows only one holder per lane in `status`, and admits nothing into a lane
+that already has one.
+
+Rollback past lanes goes through `scripts/deploy.sh`. It refuses while any kind
+has more than one unfinished attempt. Pause, let attempts settle or cancel claims
+until every kind has at most one unfinished attempt, then deploy the older
+release. The script restores the per-kind index after pausing. Failure before the
+old resident's removal is confirmed restores the live pointers and re-enables
+lanes; failure after removal keeps the per-kind guard. A hand rollback, or an
+older deploy script, bypasses both the refusal and guard restoration.

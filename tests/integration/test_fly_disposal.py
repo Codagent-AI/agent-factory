@@ -137,7 +137,9 @@ collection_grace_seconds = {GRACE_SECONDS}
     ) -> tuple[Run, str]:
         """A terminal attempt whose Machine the fake API still holds, as after collection."""
         artifact = self.artifacts / f"{claim.id}-{unit_key}"
-        run = self.store.reserve_run(claim.id, unit_key, reason=reason, evidence_path=str(artifact))
+        run = self.store.reserve_run(
+            claim.id, unit_key, lane="low", reason=reason, evidence_path=str(artifact)
+        )
         self.machines += 1
         machine_id = f"machine-{self.machines}"
         nonce = f"nonce-{self.machines}"
@@ -470,7 +472,9 @@ def test_reconciliation_counts_a_live_attempts_machine_as_known(cycle: Cycle) ->
     # record; that Machine is the store's own and must not be reported as unknown.
     now = int(time.time())
     claim = cycle.claim()
-    run = cycle.store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="unused")
+    run = cycle.store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="unused"
+    )
     cycle.store.mark_running(run.id, {})
     cycle.store.update_progress(
         run.id, {"machine": {"id": "machine-live", "state": "alive", "deadline_epoch": now + 3600}}

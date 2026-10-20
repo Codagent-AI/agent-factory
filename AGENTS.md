@@ -52,7 +52,11 @@ resident's restart. The script:
    skips the runner step with a warning if the checkout is not on `main`, has
    uncommitted changes, or has commits not on `origin/main`;
 2. builds the release for the ref (a worktree plus `uv sync --frozen`), unless
-   it already exists;
+   it already exists. It builds on python.org's signed 3.12
+   (`AGENT_FACTORY_PYTHON` overrides), because macOS ties the resident's Full
+   Disk Access grant to the interpreter's signature, and Homebrew or uv
+   builds lose it on every upgrade. Grant that `Python.app` Full Disk Access
+   once, or macOS keeps asking whether Python may access data from other apps;
 3. pauses the factory and runs `make build` in the runner checkout, which
    updates the host runner that fix and feature runs use. `go build` renames
    the new binary over the old one, so a running attempt keeps its binary and
@@ -121,8 +125,12 @@ validator's end-to-end tests. Commit any pin through a PR.
   Rolling back to a release without first-parent checkpoint reading may choose
   a checkpoint from merged target history; inspect recently resumed claims and
   re-admit affected ones before rollback.
-- The eval judge model is not set here. Agent Evals uses the Codex CLI default
-  (`codex-default`), so it changes with the CLI version.
+- The eval judge models are not set here. Agent Evals pins its judging panel
+  (`cross-family-panel-v2`: two `claude-sonnet-5-5` samples and `gpt-6.1-sol`,
+  with `claude-opus-5-5` deciding, all at high effort) in
+  `evals/agent-runner/and-scene/lib/judge-profile.mjs`, so judging changes
+  only when the harness commit changes. Judging needs Claude auth as well as
+  Codex auth, and runs on Fly for Fly evals.
 
 ## Task pull requests
 
@@ -189,6 +197,14 @@ terminal eval loses its candidate `node_modules`. See
 - `gh pr merge --delete-branch` reports an error after merging, because `main`
   is checked out in Paul's checkout. Merge without it, then run
   `git push origin --delete <branch>`.
+- Paul's `gh` login often hits GitHub's GraphQL secondary rate limit ("API rate
+  limit already exceeded") while `gh api rate_limit` still shows points left.
+  Board reads (`gh project item-list`), `factory-watch`, `assign.py`, and
+  `gh pr merge` all use GraphQL, so polling the board every few seconds makes
+  it worse; poll no faster than once a minute. REST still works meanwhile:
+  read a PR with `gh api repos/OWNER/REPO/pulls/N`, and merge with
+  `gh api -X PUT repos/OWNER/REPO/pulls/N/merge -f merge_method=merge -f sha=<head>`
+  (the `sha` does what `--match-head-commit` does).
 
 See `docs/operations.md` for model authentication, Fly Machines, and storage.
 
@@ -209,3 +225,19 @@ To take an issue from handoff to a reviewed PR (assign, watch, answer
 ## Session notifications
 
 `codagent-github-project` records the creating Claude session on an issue; `factory-assign` replaces that marker at handoff. One session is tracked per issue. When a claim stops with a pull request, needs-input, failure, settled eval, cancellation, or a card that is no longer queued, the resident waits for the settle period and any service watcher dispatch, then sends a short, link-only notice to the recorded live local session. It never changes the claim or issue. Delivery is best effort: ended or unresolvable sessions receive nothing, a renamed-and-reused session name has a small race, and another permission mode may hold a message. See `docs/operations.md` for `[notify]` settings, `doctor`, and `status`.
+
+## Priority lanes
+
+Each kind runs at most one attempt per Priority lane: High (Urgent and High),
+Medium, and Low (Low and unset). A busy higher lane holds every lower-lane attempt
+of the same kind, including the next repetition, retry, resume, or review round of
+a claim already under way. Shared `[slots]` lets a kind first run that many
+attempts together, whatever their lanes (`eval = 2`; unlisted kinds have 1), and
+the lane rules decide only past that number.
+The rules, sizing, and rollback procedure are in "Priority lanes" in `docs/operations.md`.
+
+Status lines: `<kind> slot: free`, or `<kind> slot: busy (<lanes>)` followed by one
+`<kind> lane <lane>: <repo>#<n> <unit> (<status>)` line per holder;
+`lane wait: <repo>#<n> waits for <kind> lane <lane>` naming the holder and the
+cause (`lane-busy`, `higher-lane`, `legacy`, or `kind-mode`); and `lanes: off` when
+the per-kind guard is restored.

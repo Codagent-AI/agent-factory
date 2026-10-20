@@ -43,7 +43,9 @@ def test_container_outlives_launcher_and_decoy_is_untouched(tmp_path: Path) -> N
         state = tmp_path / "state.sqlite3"
         store = ClaimStore(state)
         claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-        run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+        run = store.reserve_run(
+            claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+        )
         plan = ExecutionPlan(
             ("/bin/true",),
             str(tmp_path),
@@ -86,7 +88,9 @@ def test_changed_container_identity_is_held_without_stopping_it(tmp_path: Path) 
         state = tmp_path / "state.sqlite3"
         store = ClaimStore(state)
         claim = store.create_claim(ClaimDraft("example/repo", 1, "I", "P", "fix", "x", {}))
-        run = store.reserve_run(claim.id, "fix", reason="initial", evidence_path=str(evidence))
+        run = store.reserve_run(
+            claim.id, "fix", lane="low", reason="initial", evidence_path=str(evidence)
+        )
         plan = ExecutionPlan(
             ("/bin/true",),
             str(tmp_path),

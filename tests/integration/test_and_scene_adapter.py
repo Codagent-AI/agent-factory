@@ -13,7 +13,7 @@ import pytest
 from agent_factory.controller import AttemptResult, Controller, RequestSnapshot
 from agent_factory.github import IssueComment
 from agent_factory.store import ClaimDraft, ClaimStore
-from agent_factory.suites.and_scene import SourceRepositories
+from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees, SourceRepositories
 from agent_factory.work_kinds.eval import EvalDefaults, EvalHandler
 from agent_factory.work_kinds.eval.handler import Resolution
 
@@ -169,7 +169,6 @@ def test_pinned_fixture_argv_across_launch_and_recovery_plans(
         FIXTURE_REPOSITORY,
         AndSceneAdapter,
         GitWorktreeManager,
-        PreparedWorktrees,
     )
 
     sources, revisions = _sources(tmp_path)
@@ -247,6 +246,68 @@ def test_pinned_fixture_argv_across_launch_and_recovery_plans(
             assert pinned_manifest == default_manifest
             assert "fixture" not in pinned_manifest["commits"]
             assert pinned_manifest["worktrees"]["evals"] == str(worktrees.evals)
+
+
+@pytest.mark.parametrize("execution", ["docker", "fly"])
+def test_requested_workflow_argv_across_launch_and_recovery_plans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str
+) -> None:
+    from agent_factory.config import FlyLocalConfig
+    from agent_factory.suites.and_scene import (
+        AndSceneAdapter,
+        GitWorktreeManager,
+        ReadinessError,
+    )
+
+    sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", f"https://example.invalid/{source.name}.git")
+    worktrees = GitWorktreeManager(tmp_path / "factory", sources).prepare("claim", revisions)
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n", encoding="utf-8")
+    if execution == "fly":
+
+        def dry_run_ready(_self: AndSceneAdapter, _worktrees: PreparedWorktrees) -> str | None:
+            return None
+
+        monkeypatch.setattr("agent_factory.fly.launcher.executable", lambda: "/fake/launcher")
+        monkeypatch.setattr(AndSceneAdapter, "_fly_dry_run", dry_run_ready)
+    fly = FlyLocalConfig("factory", "registry.fly.io/factory:base", tmp_path / "fly-token")
+    adapter = AndSceneAdapter(
+        environment_file=environment, execution=execution, fly=fly if execution == "fly" else None
+    )
+    roles = {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+
+    def frozen_with(settings: dict[str, object]) -> dict[str, object]:
+        return {"suite": "and-scene", "settings": settings, "revisions": revisions}
+
+    standard = frozen_with({"roles": roles})
+    selected = frozen_with({"roles": roles, "workflow": "core:orchestrated-implement-change"})
+
+    for name, recovery, checkpoint in (("initial", False, False), ("resume", True, True)):
+        argv: dict[str, tuple[str, ...]] = {}
+        for variant, frozen in (("standard", standard), ("selected", selected)):
+            artifact = tmp_path / name
+            if checkpoint:
+                artifact.mkdir(exist_ok=True)
+                (artifact / "run-state.json").write_text(
+                    json.dumps({"schema_version": 1}), encoding="utf-8"
+                )
+            argv[variant] = adapter.plan(frozen, worktrees, artifact, recovery=recovery).argv
+        assert "--workflow" not in argv["standard"]
+        assert argv["selected"].count("--workflow") == 1
+        index = argv["selected"].index("--workflow")
+        assert argv["selected"][index + 1] == "core:orchestrated-implement-change"
+        assert argv["selected"][:index] + argv["selected"][index + 2 :] == argv["standard"]
+        assert ("--resume" in argv["selected"]) is checkpoint
+
+    with pytest.raises(ReadinessError, match="workflow"):
+        adapter.plan(
+            frozen_with({"roles": roles, "workflow": "--dry-run"}),
+            worktrees,
+            tmp_path / "invalid",
+            recovery=False,
+        )
 
 
 def test_prepare_claim_keeps_distinct_detached_pins_and_removes_only_recorded_worktrees(
@@ -383,6 +444,95 @@ def test_adapter_builds_safe_accepted_argv_and_only_resumes_valid_checkpoints(
         adapter.plan(frozen, worktrees, artifact, recovery=True)
 
 
+@pytest.mark.parametrize(
+    ("execution", "expect_checkpoint", "checkpoint", "candidate", "error"),
+    [
+        ("fly", True, None, False, None),
+        ("fly", True, None, True, None),
+        ("docker", True, None, False, "without proof of pre-checkpoint stop"),
+        ("fly", False, None, False, "without proof of pre-checkpoint stop"),
+        ("fly", True, "not json", False, "saved suite checkpoint is corrupt"),
+        ("fly", True, "{}", False, "saved suite checkpoint is incompatible"),
+    ],
+)
+def test_recovery_with_uncollected_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    execution: str,
+    expect_checkpoint: bool,
+    checkpoint: str | None,
+    candidate: bool,
+    error: str | None,
+) -> None:
+    from agent_factory.suites.and_scene import RecoveryStateError
+
+    adapter, worktrees, frozen = recovery_adapter_setup(tmp_path, monkeypatch, execution)
+    artifact = tmp_path / "artifact"
+    artifact.mkdir()
+    if checkpoint is not None:
+        (artifact / "run-state.json").write_text(checkpoint)
+    if candidate:
+        (artifact / "candidate.json").write_text("{}")
+    if error is not None:
+        with pytest.raises(RecoveryStateError, match=error):
+            adapter.plan(
+                frozen,
+                worktrees,
+                artifact,
+                recovery=True,
+                expect_checkpoint=expect_checkpoint,
+                pre_checkpoint_proven=False,
+            )
+        return
+
+    plan = adapter.plan(
+        frozen,
+        worktrees,
+        artifact,
+        recovery=True,
+        expect_checkpoint=expect_checkpoint,
+        pre_checkpoint_proven=False,
+    )
+
+    assert plan.resume is True
+    assert "--resume" in plan.argv
+    manifest = json.loads((artifact / ".factory" / "manifest.json").read_text())
+    assert manifest["expect_checkpoint"] is True
+
+
+def recovery_adapter_setup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution: str = "fly"
+) -> tuple[AndSceneAdapter, PreparedWorktrees, dict[str, object]]:
+    from agent_factory.config import FlyLocalConfig
+    from agent_factory.suites.and_scene import AndSceneAdapter, PreparedWorktrees
+
+    sources, revisions = _sources(tmp_path)
+    for source in (sources.runner, sources.skills, sources.evals):
+        _git(source, "remote", "add", "origin", f"https://example.invalid/{source.name}.git")
+    environment = tmp_path / "candidate.env"
+    environment.write_text("CANDIDATE_TOKEN=test\n")
+    monkeypatch.setattr("agent_factory.fly.launcher.executable", lambda: "/fake/launcher")
+
+    def dry_run_ready(_self: AndSceneAdapter, _worktrees: PreparedWorktrees) -> str | None:
+        return None
+
+    monkeypatch.setattr(AndSceneAdapter, "_fly_dry_run", dry_run_ready)
+    adapter = AndSceneAdapter(
+        environment_file=environment,
+        execution=execution,
+        fly=FlyLocalConfig("factory", "registry.fly.io/factory:base", tmp_path / "fly-token"),
+    )
+    worktrees = PreparedWorktrees("claim", sources.runner, sources.skills, sources.evals, sources)
+    frozen: dict[str, object] = {
+        "suite": "and-scene",
+        "settings": {
+            "roles": {role: "codex:model:medium" for role in ("lead", "implementor", "tester")}
+        },
+        "revisions": revisions,
+    }
+    return adapter, worktrees, frozen
+
+
 def test_adapter_reads_suite_outcomes_and_renders_only_reviewable_handoffs(tmp_path: Path) -> None:
     from agent_factory.suites.and_scene import AndSceneAdapter
 
@@ -491,7 +641,7 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     controller.record_result(
         run.id,
@@ -639,7 +789,7 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
         ),
     )
     assert claim is not None
-    run = controller.reserve_next(claim.id, readiness=lambda: None)
+    run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
     assert run is not None
     assert Path(run.evidence_path) == (tmp_path / "artifacts" / f"{claim.id}-rep-1").resolve()
 

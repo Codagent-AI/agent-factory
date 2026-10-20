@@ -68,6 +68,7 @@ def test_count_reset_window_and_lowered_cap(tmp_path: Path) -> None:
             run = store.reserve_run(
                 claim.id,
                 str(age) + str(store._connection.execute("SELECT count(*) FROM run").fetchone()[0]),
+                lane="low",
                 reason="initial",
                 evidence_path="/tmp/e",
             )
@@ -90,7 +91,9 @@ def test_future_dated_attempts_still_count(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     with closing(ClaimStore(tmp_path / "state.sqlite3", job_cap=JobCapConfig(1, 24))) as store:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/e")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/e"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         # The host clock moved back an hour after this attempt was stamped.
         store._connection.execute(
@@ -129,7 +132,7 @@ store = ClaimStore(pathlib.Path(path), job_cap=JobCapConfig(1, 24))
 while not pathlib.Path(gate).exists():
     time.sleep(.001)
 try:
-    store.reserve_run(claim_id, 'one', reason='initial', evidence_path='/tmp/e')
+    store.reserve_run(claim_id, 'one', lane='low', reason='initial', evidence_path='/tmp/e')
 except JobCapReached:
     print('held')
 else:
@@ -162,18 +165,22 @@ def test_default_store_enforces_one_hundred_attempts(tmp_path: Path) -> None:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
         for number in range(100):
             run = store.reserve_run(
-                claim.id, f"unit-{number}", reason="initial", evidence_path="/tmp/e"
+                claim.id, f"unit-{number}", lane="low", reason="initial", evidence_path="/tmp/e"
             )
             store.finish_run(run.id, execution_status="failed", result={})
         with pytest.raises(JobCapReached):
-            store.reserve_run(claim.id, "unit-100", reason="initial", evidence_path="/tmp/e")
+            store.reserve_run(
+                claim.id, "unit-100", lane="low", reason="initial", evidence_path="/tmp/e"
+            )
 
 
 def test_episode_claim_and_card_notices_are_once_per_episode(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     with closing(ClaimStore(tmp_path / "state.sqlite3", job_cap=JobCapConfig(1, 24))) as store:
         claim = store.create_claim(ClaimDraft("o/r", 1, "I", "P", "fix", "fp", {}))
-        run = store.reserve_run(claim.id, "one", reason="initial", evidence_path="/tmp/e")
+        run = store.reserve_run(
+            claim.id, "one", lane="low", reason="initial", evidence_path="/tmp/e"
+        )
         store._connection.execute(
             "UPDATE run SET created_at=? WHERE id=?",
             ((now - timedelta(seconds=1)).isoformat(), run.id),
@@ -265,16 +272,16 @@ def test_preflight_reuses_claim_and_cap_holds_next_eval_repetition(tmp_path: Pat
         assert claim is not None
         assert controller.select_existing(snapshot) == claim
         assert controller.accept(snapshot, resolve=resolve) == claim
-        run = controller.reserve_next(claim.id, readiness=lambda: None)
+        run = controller.reserve_next(claim.id, lane="low", readiness=lambda: None)
         assert run is not None
         controller.record_result(
             run.id, AttemptResult("completed", "ready-for-human-review", {"score": 60})
         )
-        assert controller.reserve_next(claim.id, readiness=lambda: None) is None
+        assert controller.reserve_next(claim.id, lane="low", readiness=lambda: None) is None
         assert len(store.runs_for_claim(claim.id)) == 1
         assert store.get_hold(claim.id, "job-cap") is not None
         store.set_setting("job-cap", "reset", {"at": datetime.now(UTC).isoformat()})
-        assert controller.reserve_next(claim.id, readiness=lambda: None) is not None
+        assert controller.reserve_next(claim.id, lane="low", readiness=lambda: None) is not None
 
 
 def test_blocked_and_review_paths_hold_before_preparing(tmp_path: Path) -> None:
@@ -284,7 +291,9 @@ def test_blocked_and_review_paths_hold_before_preparing(tmp_path: Path) -> None:
 
     with closing(ClaimStore(tmp_path / "state.sqlite3", job_cap=JobCapConfig(1, 24))) as store:
         seed = store.create_claim(ClaimDraft("example/work", 1, "I1", "P1", "eval", "fp", {}))
-        run = store.reserve_run(seed.id, "one", reason="initial", evidence_path="/tmp/e")
+        run = store.reserve_run(
+            seed.id, "one", lane="low", reason="initial", evidence_path="/tmp/e"
+        )
         store.finish_run(run.id, execution_status="failed", result={})
         now = datetime.now(UTC)
         blocked = store.create_claim(
@@ -314,6 +323,7 @@ def test_blocked_and_review_paths_hold_before_preparing(tmp_path: Path) -> None:
                 local,
                 gestures._card("Ready"),
                 current,  # pyright: ignore[reportPrivateUsage]
+                lane="low",
                 bot_login="example-factory[bot]",
                 artifact_root=tmp_path,
                 now=now,
@@ -357,6 +367,7 @@ def test_blocked_and_review_paths_hold_before_preparing(tmp_path: Path) -> None:
                 client,  # pyright: ignore[reportArgumentType]
                 handler,
                 review_claim,
+                lane="low",
                 bot_login="example-factory[bot]",
                 artifact_root=tmp_path,
                 now=now,

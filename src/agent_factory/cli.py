@@ -52,6 +52,10 @@ def main() -> None:
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("tick")
     subcommands.add_parser("honored-revisions")
+    lanes = subcommands.add_parser("lanes").add_subparsers(dest="lanes_command", required=True)
+    lanes.add_parser("supported")
+    lanes.add_parser("enable")
+    lanes.add_parser("downgrade").add_argument("--check", action="store_true")
     pinned = subcommands.add_parser("pinned-claims")
     pinned.add_argument("--revision", required=True)
     status_parser = subcommands.add_parser("status")
@@ -66,9 +70,20 @@ def main() -> None:
     watch_parser = subcommands.add_parser("watch")
     watch_commands = watch_parser.add_subparsers(dest="watch_command", required=True)
     watch_commands.add_parser("redispatch").add_argument("dispatch_id")
+    resume_eval = subcommands.add_parser(
+        "resume-eval",
+        help="continue an eval claim that settled only because of an infrastructure failure",
+    )
+    resume_eval.add_argument("claim_id", help="claim id, or a unique prefix of one")
+    resume_eval.add_argument(
+        "--dry-run", action="store_true", help="show what would happen without writing"
+    )
     resident = subcommands.add_parser("resident")
     resident.add_argument("--poll-seconds", type=_positive_seconds)
     args = parser.parse_args()
+    if args.command == "lanes" and args.lanes_command == "supported":
+        print("priority-lanes")
+        return
     if args.command == "honored-revisions":
         print("\n".join(inputs.honored_revisions()))
         return
@@ -85,7 +100,23 @@ def main() -> None:
         state = local.state_path
     else:
         state = args.state
-    if args.command == "tick":
+    if args.command == "lanes":
+        with closing(
+            ClaimStore(state, read_only=args.lanes_command == "downgrade" and args.check)
+        ) as store:
+            if args.lanes_command == "enable":
+                store.enable_lanes()
+            else:
+                offenders = store.restore_kind_guard(args.check)
+                for run in offenders:
+                    claim = store.get_claim(run.claim_id)
+                    if claim is not None:
+                        print(
+                            f"{run.kind}: {claim.id} {claim.repository}#{claim.issue_number} "
+                            f"{run.lane or 'all'}"
+                        )
+                raise SystemExit(1 if offenders else 0)
+    elif args.command == "tick":
         _tick(state, args.config)
     elif args.command == "pinned-claims":
         with closing(ClaimStore(state, read_only=True)) as store:
@@ -110,6 +141,8 @@ def main() -> None:
         print(new_id)
         if local is None or not SharedConfig.from_file(local.shared_config).watch.enabled:
             print("waits until watching is enabled")
+    elif args.command == "resume-eval":
+        _resume_eval(state, args.claim_id, dry_run=args.dry_run)
     elif args.command == "status":
         print(_status(state, local, include_all=args.all))
     elif args.command == "job-cap":
@@ -133,6 +166,8 @@ def main() -> None:
             store.close()
         print(f"paused: {str(args.command == 'pause').lower()}")
     else:
+        with closing(ClaimStore(state)) as store:
+            store.enable_lanes()
         keep_running = True
 
         def stop(_signum: int, _frame: object) -> None:
@@ -144,6 +179,34 @@ def main() -> None:
         while keep_running:
             _tick(state, args.config)
             time.sleep(_poll_seconds(args.poll_seconds, local))
+
+
+def _resume_eval(state: Path, claim_id: str, *, dry_run: bool) -> None:
+    from agent_factory.work_kinds.eval.handler import grant_resume, plan_resume
+
+    if not state.is_file():
+        raise SystemExit(f"no factory state at {state}")
+    with closing(ClaimStore(state, read_only=dry_run)) as store:
+        matches = [claim for claim in store.all_claims() if claim.id.startswith(claim_id)]
+        if len(matches) != 1:
+            print(f"cannot resume {claim_id}: {len(matches)} claims match")
+            raise SystemExit(2)
+        claim = matches[0]
+        if dry_run:
+            plan = plan_resume(store, claim)
+        else:
+            plan = grant_resume(store, claim.id, now=datetime.now(UTC))
+        print(plan.describe())
+        if plan.refusal is not None:
+            raise SystemExit(2)
+        if dry_run:
+            print("dry run: nothing was written")
+            return
+        print(
+            f"{claim.repository}#{claim.issue_number} returns to Ready on the next cycle "
+            "and continues as its lane allows"
+            + (" (the factory is paused)" if store.is_paused() else "")
+        )
 
 
 def _doctor_diagnostics(config_path: Path) -> list[Diagnostic]:

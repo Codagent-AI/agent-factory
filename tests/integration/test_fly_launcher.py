@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import tarfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -231,10 +233,24 @@ def test_mismatched_machine_is_never_adopted_or_destroyed(env: Environment) -> N
     assert not env.flyctl_log.exists()  # nothing was delivered
 
 
-def test_recovery_resumes_in_the_same_machine_with_a_fresh_deadline(env: Environment) -> None:
+class _ClockLater:
+    """The time module with its wall clock read a few seconds ahead."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+    @staticmethod
+    def time() -> float:
+        return time.time() + 5
+
+
+def test_recovery_resumes_in_the_same_machine_with_a_fresh_deadline(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
     first = json.loads((env.factory / "machine.json").read_text())
-    time.sleep(1.1)
+    # The recovery starts later than the first attempt, without waiting for the clock.
+    monkeypatch.setattr(transport, "time", _ClockLater())
 
     recovery = env.manifest("run-2", expect_checkpoint=True)
     code = env.lifecycle(recovery).run(env.request("echo resumed > /artifacts/resumed.txt"))
@@ -463,3 +479,66 @@ def test_harness_delivery_is_refreshed_readable_and_not_handed_to_job(env: Envir
     assert any("chown -R -h -P root:root /lib/panel-judging" in c for c in commands)
     handover = next(c for c in commands if 'chown -R -h -P "$owner"' in c)
     assert "/lib/panel-judging" not in handover
+
+
+def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoint(
+    env: Environment, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundles: list[list[str]] = []
+    put_file = transport.FlyTransport.put_file
+
+    def record_bundle(
+        self: transport.FlyTransport, local: Path, remote: str, **kwargs: Any
+    ) -> None:
+        if remote.startswith("/tmp/factory-bundle-"):
+            with tarfile.open(local) as archive:
+                bundles.append(archive.getnames())
+        put_file(self, local, remote, **kwargs)
+
+    monkeypatch.setattr(transport.FlyTransport, "put_file", record_bundle)
+    assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
+    first = json.loads((env.factory / "machine.json").read_text())
+    job_log = (env.factory / "job/1/job.log").read_bytes()
+    # The Machine was destroyed after the claim settled; a new one starts empty.
+    env.api.machines.clear()
+    artifacts = env.guest_root / "artifacts"
+    for child in artifacts.iterdir():
+        if child.name != ".factory":
+            subprocess.run(["rm", "-rf", str(child)], check=True)
+    subprocess.run(["rm", "-rf", str(artifacts / ".factory/job/1")], check=True)
+    # Without the operator's grant the gone Machine is still a lost Machine.
+    assert (
+        env.lifecycle(env.manifest("run-2", expect_checkpoint=True)).run(
+            env.request("true", auth=False)
+        )
+        == EXIT_MACHINE_LOST
+    )
+
+    resume = env.manifest("run-3", expect_checkpoint=True, seed_checkpoint=True)
+    code = env.lifecycle(resume).run(
+        env.request("cat /artifacts/run-state.json > /artifacts/seen-state.json", auth=False)
+    )
+
+    assert code == 0
+    record = json.loads((env.factory / "machine.json").read_text())
+    assert record["id"] != first["id"] and record["job"] == 2
+    assert {"id": first["id"], "disposal": "gone"} in record["history"]
+    assert json.loads((env.artifact / "seen-state.json").read_text()) == {"schema_version": 1}
+    # The earlier job's collected evidence and the host-managed tree were not overwritten.
+    assert (env.factory / "job/1/job.log").read_bytes() == job_log
+    assert not (artifacts / ".factory/machine.json").exists()
+    assert "seeding a new Machine" in (env.factory / "launcher.log").read_text()
+    assert record["seed"] == "done"
+    # Root's tar restores a "." entry's owner and mode onto /artifacts, taking it from
+    # the guest's user (EACCES on mkdir /artifacts/evidence); the seed must not carry one.
+    seeded = next(names for names in bundles if "./run-state.json" in names)
+    assert "." not in seeded and "./" not in seeded
+    assert not any(name.startswith("./.factory") for name in seeded)
+
+    # A launcher that died mid-seed leaves it pending; the next one adopting the
+    # replacement Machine seeds again before checking the checkpoint.
+    (env.factory / "machine.json").write_text(json.dumps({**record, "seed": "pending"}))
+    (artifacts / "run-state.json").unlink()
+    retry = env.manifest("run-4", expect_checkpoint=True)
+    assert env.lifecycle(retry).run(env.request("true", auth=False)) == 0
+    assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"

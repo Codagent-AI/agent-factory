@@ -72,6 +72,37 @@ def test_eval_request_applies_canonical_role_override(role: str) -> None:
     assert request.settings["roles"] == {**defaults().roles, role: profile}
 
 
+def test_eval_request_workflow_is_optional_validated_and_score_affecting() -> None:
+    standard = parse_request("```eval\nrepetitions = 2\n```", defaults())
+    orchestrated = parse_request(
+        "```eval\nrepetitions = 2\nworkflow = 'core:orchestrated-implement-change'\n```",
+        defaults(),
+    )
+    planned = parse_request(
+        "```eval\nrepetitions = 2\nworkflow = 'core:plan-and-implement-change'\n```",
+        defaults(),
+    )
+
+    assert "workflow" not in standard.settings
+    assert orchestrated.settings["workflow"] == "core:orchestrated-implement-change"
+    assert len({standard.fingerprint, orchestrated.fingerprint, planned.fingerprint}) == 3
+    frozen = orchestrated.freeze(
+        {"runner": "a" * 40, "skills": "b" * 40, "evals": "c" * 40}, suite="and-scene"
+    ).payload
+    assert frozen["settings"] == orchestrated.settings
+    for value in (
+        "''",
+        "true",
+        "'orchestrated-implement-change'",
+        "'Core:orchestrated'",
+        "'core:orchestrated:v1'",
+        "'workflows/core/orchestrated-implement-change-v1.0.yaml'",
+        "'-core:orchestrated'",
+    ):
+        with pytest.raises(ValueError, match="workflow must be a logical Agent Runner workflow"):
+            parse_request(f"```eval\nworkflow = {value}\n```", defaults())
+
+
 def test_sqlite_claim_history_retry_budget_and_holds_survive_restart(tmp_path: Path) -> None:
     database = tmp_path / "factory.sqlite3"
     claim = ClaimStore(database).create_claim(
@@ -86,23 +117,29 @@ def test_sqlite_claim_history_retry_budget_and_holds_survive_restart(tmp_path: P
         )
     )
     store = ClaimStore(database)
-    first = store.reserve_run(claim.id, "rep-1", reason="initial", evidence_path="/evidence/1")
+    first = store.reserve_run(
+        claim.id, "rep-1", lane="low", reason="initial", evidence_path="/evidence/1"
+    )
     store.finish_run(
         first.id,
         execution_status="completed",
         result={"product_verdict": "ready-for-human-review", "score": 61},
     )
     interrupted = store.reserve_run(
-        claim.id, "rep-2", reason="initial", evidence_path="/evidence/2"
+        claim.id, "rep-2", lane="low", reason="initial", evidence_path="/evidence/2"
     )
     store.finish_run(
         interrupted.id, execution_status="failed", result={"failure": {"owner": "harness"}}
     )
-    retry = store.reserve_run(claim.id, "rep-2", reason="recovery", evidence_path="/evidence/2")
+    retry = store.reserve_run(
+        claim.id, "rep-2", lane="low", reason="recovery", evidence_path="/evidence/2"
+    )
     assert retry.attempt_number == 1
     assert store.recovery_attempts(claim.id, "rep-2") == 1
     with pytest.raises(NonterminalRunError):
-        store.reserve_run(claim.id, "rep-2", reason="initial", evidence_path="/evidence/2")
+        store.reserve_run(
+            claim.id, "rep-2", lane="low", reason="initial", evidence_path="/evidence/2"
+        )
     store.finish_run(retry.id, execution_status="failed", result={"failure": {"owner": "harness"}})
     reset = datetime.now(UTC) + timedelta(hours=5)
     store.set_hold(claim.id, "quota", {"until": reset.isoformat()})

@@ -441,3 +441,19 @@ def test_count_loc_is_staged_and_runs_for_each_workflow(tmp_path: Path) -> None:
         assert result.returncode == 0, result.stderr
         assert "| code | 1 | 1 | 0 | 0 | +1 −0 |" in result.stdout
         assert f"Measured `{base[:12]}..{head[:12]}`" in result.stdout
+
+
+def test_proposal_helper_is_staged_for_feature_and_review(tmp_path: Path) -> None:
+    """INT-006: both publication paths receive the exact packaged shared helper."""
+    from agent_factory.work_kinds.pull_request import launch
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE
+
+    assert "pr_description.py" in FEATURE_STAGED_FILES
+    assert "pr_description.py" in launch.REVIEW_WORKFLOW_SCRIPTS
+    for index, (contract, kind) in enumerate(
+        ((FEATURE.default_contract, FEATURE), (launch.REVIEW_CONTRACT, FIX))
+    ):
+        staged = launch.stage_workflow(tmp_path / str(index), contract, kind)
+        assert (staged / "pr_description.py").read_bytes() == (
+            PACKAGE / "pr_description.py"
+        ).read_bytes()
