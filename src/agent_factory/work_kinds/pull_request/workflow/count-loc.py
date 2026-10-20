@@ -18,28 +18,27 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-EXCLUDE = (
-    "openspec/*",
-    "docs/*",
-    "*.md",
-    "*.mdx",
-    "*.txt",
-    "*.rst",
-    "*.yaml",
-    "*.yml",
-    "*.toml",
-    "*.json",
-    "*.ini",
-    "*.cfg",
-    "*.lock",
-    "go.sum",
-    "go.mod",
-    "LICENSE*",
-    ".github/*",
-    ".validator/*",
-    ".claude/*",
-    "testdata/*",
-)
+EXCLUDE = {
+    "OpenSpec changes": ("openspec/changes/*",),
+    "OpenSpec specs": ("openspec/specs/*",),
+    "docs": ("docs/*", "*.md", "*.mdx", "*.txt", "*.rst", "LICENSE*"),
+    "config/data": (
+        "*.yaml",
+        "*.yml",
+        "*.toml",
+        "*.json",
+        "*.ini",
+        "*.cfg",
+        "*.lock",
+        "go.sum",
+        "go.mod",
+        ".github/*",
+        ".validator/*",
+        ".claude/*",
+        "testdata/*",
+        "openspec/*",
+    ),
+}
 TEST = ("*_test.go", "tests/*", "*/tests/*", "test_*.py", "*_test.py", "*.test.ts", "*.spec.ts")
 START = "<!-- agent-factory:loc -->"
 END = "<!-- agent-factory:loc-end -->"
@@ -60,6 +59,7 @@ class Counts:
     code: Row = field(default_factory=Row)
     tests: Row = field(default_factory=Row)
     merge_base: str = ""
+    excluded: dict[str, Row] = field(default_factory=lambda: {kind: Row() for kind in EXCLUDE})
 
 
 @dataclass
@@ -71,7 +71,7 @@ def classify(path: str) -> str:
     from fnmatch import fnmatchcase
 
     name = path.rsplit("/", 1)[-1]
-    for patterns, kind in ((EXCLUDE, "excluded"), (TEST, "tests")):
+    for kind, patterns in (*EXCLUDE.items(), ("tests", TEST)):
         if any(fnmatchcase(path, p) or fnmatchcase(name, p) for p in patterns):
             return kind
     return "code"
@@ -93,15 +93,28 @@ def unquote_path(path: str) -> str:
 def count(diff_text: str, binary_blobs: set[str] | None = None) -> Counts:
     """Parse hunks, never content lines, using only LF as a patch separator."""
     result = Counts()
-    paths: dict[str, set[str]] = {"code": set(), "tests": set()}
+    rows = {"code": result.code, "tests": result.tests, **result.excluded}
+    paths: dict[str, set[str]] = {kind: set() for kind in rows}
     old_path = new_path = ""
-    in_hunks = binary = False
+    in_hunks = binary = gitlink = False
     for line in diff_text.split("\n"):
         if line.startswith("diff --git "):
             old_path = new_path = ""
-            in_hunks = binary = False
+            in_hunks = binary = gitlink = False
+        elif not in_hunks and line in (
+            "new file mode 160000",
+            "deleted file mode 160000",
+            "old mode 160000",
+            "new mode 160000",
+        ):
+            gitlink = True
         elif not in_hunks and (match := INDEX.match(line)):
+            gitlink = gitlink or match.group(3) == "160000"
             binary = bool(binary_blobs and binary_blobs.intersection(match.group(1, 2)))
+        elif not in_hunks and line.startswith("rename from "):
+            old_path = unquote_path(line[len("rename from ") :])
+        elif not in_hunks and line.startswith("rename to "):
+            new_path = unquote_path(line[len("rename to ") :])
         elif not in_hunks and line.startswith("--- "):
             old_path = unquote_path(line[4:])
         elif not in_hunks and line.startswith("+++ "):
@@ -110,19 +123,19 @@ def count(diff_text: str, binary_blobs: set[str] | None = None) -> Counts:
             in_hunks = True
             path = old_path if new_path == "/dev/null" else new_path
             kind = classify(path)
-            if binary or not path or kind == "excluded":
+            if binary or gitlink or not path:
                 continue
             old, new = (int(value) if value is not None else 1 for value in match.groups())
             if not old and not new:
                 continue
-            row = result.code if kind == "code" else result.tests
+            row = rows[kind]
             modified = min(old, new)
             row.added += new - modified
             row.modified += modified
             row.deleted += old - modified
             paths[kind].add(path)
-    result.code.files = len(paths["code"])
-    result.tests.files = len(paths["tests"])
+    for kind, row in rows.items():
+        row.files = len(paths[kind])
     return result
 
 
@@ -233,8 +246,8 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
             "origin",
             f"+refs/heads/{base_ref}:refs/remotes/origin/{base_ref}",
         )
-        exists, _, _ = run("git", "cat-file", "-e", f"{head_sha}^{{commit}}", env=env)
-        if exists:
+        missing, _, _ = run("git", "cat-file", "-e", f"{head_sha}^{{commit}}", env=env)
+        if missing:
             command("git", "fetch", "--no-tags", "origin", head_sha)
         mb = (
             command("git", "merge-base", f"refs/remotes/origin/{base_ref}", head_sha, env=env)
@@ -254,7 +267,8 @@ def measure(base_ref: str, head_sha: str) -> Counts | Unavailable:
             "--indent-heuristic",
             "--text",
             "--full-index",
-            "--no-renames",
+            "-M",
+            "-l0",
             "--submodule=short",
             "--ignore-submodules=none",
             "--no-color",
@@ -333,11 +347,23 @@ def render(result: Counts | Unavailable, base_ref: str, head: str) -> str:
                 f"| {kind} | {row.files} | {row.added} | {row.modified} | {row.deleted} | "
                 f"+{row.added + row.modified} −{row.deleted + row.modified} |"
             )
+        lines += ["", "| part | files | +/- |", "|---|---|---|"]
+        total = Row()
+        for row in (result.code, result.tests, *result.excluded.values()):
+            total.files += row.files
+            total.added += row.added
+            total.modified += row.modified
+            total.deleted += row.deleted
+        for kind, row in (*result.excluded.items(), ("total", total)):
+            lines.append(
+                f"| {kind} | {row.files} | "
+                f"+{row.added + row.modified} −{row.deleted + row.modified} |"
+            )
         lines += [
             "",
             f"Measured `{result.merge_base[:12]}..{head[:12]}` (merge base with `{base_ref}` "
             "to the pull request head).",
-            "OpenSpec specifications, other documentation, and configuration are excluded.",
+            "Excluded parts are listed separately and do not count as code or tests.",
         ]
     return "\n".join([*lines, END])
 
@@ -391,6 +417,7 @@ def upsert(body: str, section: str) -> str:
                         "|",
                         "Measured ",
                         "OpenSpec ",
+                        "Excluded parts ",
                         "Lines-of-code count unavailable:",
                         "unavailable",
                     )

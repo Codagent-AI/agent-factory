@@ -140,3 +140,11 @@
 - **Decision:** One task covers the script, the three wiring points, staging, tests, and a short note in `docs/operations.md`.
 - **Alternatives considered:** no documentation change (the issue asks to note the exclusions; the PR section itself states them, and the operations note helps an operator tuning the patterns).
 - **Decision-bearing:** no
+
+
+## PR review: Excluded breakdown and rename policy supersede the initial format
+
+- **Decision:** Keep the code/tests table and add a separate files and +/- breakdown for OpenSpec changes, OpenSpec specs, docs, and config/data, plus a total across all parts.
+- **Decision:** Paul's second review supersedes the initial delete-plus-add (`--no-renames`) policy: use `git diff -M` with Git's default similarity threshold. Pure renames count 0/0 with no file; edited renames count only edited lines under their new path's category. The total matches numeric `git diff --numstat -M` additions and deletions over the same merge-base-to-published-head range.
+- **Alternatives considered:** retain delete-plus-add accounting (rejected by Paul's review decision).
+- **Decision-bearing:** yes

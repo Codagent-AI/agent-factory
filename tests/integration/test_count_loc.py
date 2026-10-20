@@ -354,7 +354,7 @@ def test_real_rename_modes_and_binary_conversion(tmp_path: Path) -> None:
     git(repo, "push", "origin", "feature")
     result = invoke(repo, "section", "--base-ref", "main", "--head", head)
     assert result.returncode == 0
-    assert "| code | 2 | 2 | 0 | 2 | +2 −2 |" in result.stdout
+    assert "| code | 0 | 0 | 0 | 0 | +0 −0 |" in result.stdout
 
 
 @pytest.mark.parametrize(("position", "files"), [(7999, 0), (8000, 1)])
@@ -437,7 +437,7 @@ def test_gitlink_count_ignores_local_diff_settings(
     git(repo, "push", "origin", "feature")
     baseline = invoke(repo, "section", "--base-ref", "main", "--head", head)
     assert baseline.returncode == 0, baseline.stderr
-    assert "| code | 1 | 0 | 1 | 0 | +1 −1 |" in baseline.stdout
+    assert "| code | 0 | 0 | 0 | 0 | +0 −0 |" in baseline.stdout
     git(repo, "config", setting, value)
     result = invoke(repo, "section", "--base-ref", "main", "--head", head)
     assert result.returncode == 0, result.stderr
@@ -528,3 +528,82 @@ def test_blob_reads_are_bounded_and_non_interactive(
         assert time.monotonic() - started < 10
     else:
         assert loc.blob_prefix("a" * 40, env) == b"0never"
+
+
+def test_breakdown_total_matches_rename_aware_numstat(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    original = "".join(f"source line {i}\n" for i in range(30))
+    (repo / "source.py").write_text(original)
+    change = repo / "openspec/changes/x/tasks.md"
+    change.parent.mkdir(parents=True)
+    change.write_text("pure rename\n")
+    commit(repo, "base for renames")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", "-b", "feature")
+    renamed = repo / "tests/test_source.py"
+    renamed.parent.mkdir()
+    (repo / "source.py").rename(renamed)
+    renamed.write_text(original.replace("source line 15", "edited line 15"))
+    archive = repo / "openspec/changes/archive/x/tasks.md"
+    archive.parent.mkdir(parents=True)
+    change.rename(archive)
+    for name in (
+        "new.py",
+        "openspec/changes/archive/y/tasks.md",
+        "openspec/specs/x/spec.md",
+        "docs/x.md",
+        "config/codagent.toml",
+    ):
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"new {name}\n")
+    (repo / "binary.py").write_bytes(b"binary\0content\n")
+    head = commit(repo, "changes and renames")
+    git(repo, "push", "origin", "feature")
+    base = git(repo, "merge-base", "origin/main", head)
+    numstat = git(
+        repo,
+        "diff",
+        "--numstat",
+        "-M",
+        "-l0",
+        "--diff-algorithm=myers",
+        "--indent-heuristic",
+        "--no-ext-diff",
+        "--no-textconv",
+        base,
+        head,
+    )
+    added = deleted = files = 0
+    for line in numstat.splitlines():
+        plus, minus, _ = line.split("\t", 2)
+        if plus != "-":
+            added += int(plus)
+            deleted += int(minus)
+            files += bool(int(plus) or int(minus))
+    result = invoke(repo, "section", "--base-ref", "main", "--head", head)
+    assert result.returncode == 0, result.stderr
+    assert "| tests | 1 | 0 | 1 | 0 | +1 −1 |" in result.stdout
+    assert "| OpenSpec changes | 1 | +1 −0 |" in result.stdout
+    assert f"| total | {files} | +{added} −{deleted} |" in result.stdout
+
+
+def test_repository_rename_limit_does_not_change_counts(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    for i in range(3):
+        (repo / f"source{i}.py").write_text("".join(f"file {i} line {j}\n" for j in range(30)))
+    commit(repo, "rename sources")
+    git(repo, "push", "origin", "main")
+    git(repo, "checkout", "-b", "feature")
+    for i in range(3):
+        old = repo / f"source{i}.py"
+        new = repo / f"destination{i}.py"
+        old.rename(new)
+        new.write_text(new.read_text().replace(f"file {i} line 15", f"edited {i} line 15"))
+    head = commit(repo, "edit and rename three files")
+    git(repo, "push", "origin", "feature")
+    baseline = invoke(repo, "section", "--base-ref", "main", "--head", head)
+    assert "| code | 3 | 0 | 3 | 0 | +3 −3 |" in baseline.stdout
+    git(repo, "config", "diff.renameLimit", "1")
+    limited = invoke(repo, "section", "--base-ref", "main", "--head", head)
+    assert limited.stdout == baseline.stdout
