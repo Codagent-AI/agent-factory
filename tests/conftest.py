@@ -33,9 +33,31 @@ def hermetic_bin(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return directory
 
 
+@pytest.fixture(scope="session")
+def git_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Git's default repository template without its sample hooks.
+
+    Git copies about fifteen inert `.sample` hook files into every repository it
+    creates or clones. They were a third of the files the suite wrote, and on the CI
+    runner system services react to every file.
+    """
+    directory = tmp_path_factory.mktemp("git-template")
+    (directory / "info").mkdir()
+    (directory / "info" / "exclude").write_text(
+        "# git ls-files --others --exclude-from=.git/info/exclude\n"
+    )
+    (directory / "description").write_text(
+        "Unnamed repository; edit this file 'description' to name the repository.\n"
+    )
+    return directory
+
+
 @pytest.fixture(autouse=True)
 def hermetic_tools(
-    request: pytest.FixtureRequest, hermetic_bin: Path, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    hermetic_bin: Path,
+    git_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The marker, not a keyword: parametrize ids such as `[docker]` are keywords too.
     node = cast(pytest.Item, request.node)  # pyright: ignore[reportUnknownMemberType]
@@ -45,3 +67,32 @@ def hermetic_tools(
         # instead of reaching the network. Unlike an insteadOf redirect, this leaves the
         # URLs that git reports unchanged.
         monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    monkeypatch.setenv("GIT_TEMPLATE_DIR", str(git_template))
+    # Supervisors started by a test observe their run five times a second rather than
+    # twenty: each observation probes the process with `ps`, and several journeys keep
+    # runs in flight at once on a 3-vCPU CI runner.
+    monkeypatch.setenv("AGENT_FACTORY_SUPERVISOR_POLL_SECONDS", "0.2")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Spread the end-to-end journeys evenly through the collection.
+
+    xdist hands each worker a contiguous slice of the collection, and `tests/e2e` sorts
+    first, so one worker received every journey and ran them one after another while
+    the others finished early. Spacing them evenly gives each worker its share without
+    running several journeys at once, which overloads a small CI runner.
+    """
+    journeys = [item for item in items if item.nodeid.startswith("tests/e2e/")]
+    others = [item for item in items if not item.nodeid.startswith("tests/e2e/")]
+    if not journeys or not others:
+        return
+    spread: list[pytest.Item] = []
+    step = len(others) / len(journeys)
+    remaining = iter(others)
+    for index, journey in enumerate(journeys):
+        spread.append(journey)
+        spread.extend(
+            next(remaining) for _ in range(round((index + 1) * step) - round(index * step))
+        )
+    spread.extend(remaining)
+    items[:] = spread

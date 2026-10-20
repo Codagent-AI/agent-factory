@@ -7,9 +7,11 @@ import socket
 import threading
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import cast
 from urllib.parse import parse_qs, urlsplit
+
+from tests.fixtures.network import LoopbackHTTPServer
 
 
 class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
@@ -41,7 +43,7 @@ class FakeMachinesApi(AbstractContextManager["FakeMachinesApi"]):
         self.list_failures: list[int] = []
         # Machine ids are never reused, as on Fly; a destroyed id stays retired.
         self._created = 0
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._server = LoopbackHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
     @property
