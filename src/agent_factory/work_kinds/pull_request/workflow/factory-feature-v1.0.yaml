@@ -175,6 +175,7 @@ steps:
       change_label: "feature"
       artifact_validation_instruction: "run openspec validate --specs --strict"
       skip_validator: "false"
+      acceptance_fix_scope: "Resolve every high-confidence finding in this change's own implementation, specs, and tests. Do not edit workflow files (.github/workflows or any CI configuration), and do not add CI checks or test suites. Record CI, PR-state, tooling, setup, and environmental problems in the assumptions ledger instead of fixing them."
     continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
   - id: mark-verify-failed
