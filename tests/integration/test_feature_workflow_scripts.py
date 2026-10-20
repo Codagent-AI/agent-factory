@@ -323,6 +323,14 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
     assert "script: record-archive-block.sh" in record
 
 
+def test_feature_verify_narrows_acceptance_fix_scope() -> None:
+    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    verify = feature.split("\n  - id: verify\n", 1)[1].split("\n  - id: ", 1)[0]
+    assert "acceptance_fix_scope:" in verify
+    assert "Do not edit workflow files" in verify
+    assert "assumptions ledger" in verify
+
+
 def test_feature_workflow_shell_placeholders_are_interpolatable() -> None:
     """Runner rejects placeholders within shell single quotes at step execution time."""
     feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
