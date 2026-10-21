@@ -9,10 +9,11 @@ set -eu
 # items those commits may have fixed, or whose linked file is no longer changed by this
 # PR (mark-later-commits.py). Anything finalization or an
 # agent wrote over it is replaced, and kept in pr-description-overwritten.md. A fix pull
-# request's description is left as it is.
+# request's description has only its Lines of code section refreshed. Feature rounds
+# without a saved body also refresh only that section; task rounds leave it unchanged.
 
 payload=$(cat)
-MARKER="$(dirname "$0")/mark-later-commits.py" PAYLOAD="$payload" python3 - <<'PY'
+LOC="$(dirname "$0")/count-loc.py" MARKER="$(dirname "$0")/mark-later-commits.py" PAYLOAD="$payload" python3 - <<'PY'
 import html
 import json
 import os
@@ -25,7 +26,7 @@ from pr_description import fit
 
 payload = json.loads(os.environ["PAYLOAD"])
 review = json.loads(Path(payload["review_file"]).read_text())
-if review.get("kind") != "feature":
+if review.get("kind") not in {"feature", "fix"}:
     raise SystemExit(0)
 number = str(review["pull_request"]["number"])
 artifacts = Path(payload["artifact_dir"])
@@ -96,6 +97,13 @@ def round_section(eol: str) -> list[str]:
     return lines
 
 
+def count_loc(*args: str) -> None:
+    subprocess.run(
+        ["python3", os.environ["LOC"], *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
 def rebuilt(original: str) -> str:
     eol = "\r\n" if "\r\n" in original else "\n"
     section = round_section(eol)
@@ -113,6 +121,7 @@ def rebuilt(original: str) -> str:
     if review.get("base_head"):
         command.append(review["base_head"])
     subprocess.run(command, check=False)
+    count_loc("refresh-file", str(updated), "--number", number)
     with updated.open(newline="") as source:
         text = source.read()
     try:
@@ -121,6 +130,24 @@ def rebuilt(original: str) -> str:
         print(f"could not fit the proposal in the description: {error}", file=sys.stderr)
     updated.write_text(text, newline="")
     return text
+
+
+def failed(error: Exception) -> None:
+    detail = getattr(error, "stderr", None) or error
+    message = f"could not restore the description of pull request #{number}: {detail}"
+    (artifacts / "description-restore-failed").write_text(message + "\n")
+    raise SystemExit(message) from error
+
+
+if review["kind"] == "fix" or (
+    payload["mode"] == "restore" and (not saved.is_file() or not saved.read_bytes().strip())
+):
+    if payload["mode"] == "restore":
+        try:
+            count_loc("refresh-pr", "--number", number, "--artifact-dir", str(artifacts))
+        except (subprocess.CalledProcessError, OSError) as error:
+            failed(error)
+    raise SystemExit(0)
 
 
 # newline="" keeps a description's CRLF line endings as they are on both sides.
@@ -142,9 +169,6 @@ elif saved.is_file() and (original := saved.open(newline="").read()).strip():
                 ],
                 capture_output=True, text=True, check=True,
             )
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError) as error:
-        detail = getattr(error, "stderr", None) or error
-        message = f"could not restore the description of pull request #{number}: {detail}"
-        (artifacts / "description-restore-failed").write_text(message + "\n")
-        raise SystemExit(message) from error
+    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, OSError) as error:
+        failed(error)
 PY

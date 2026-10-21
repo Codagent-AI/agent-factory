@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -2900,6 +2901,128 @@ def test_verify_failure_before_validator_names_simplify_error(tmp_path: Path) ->
     assert outcome["validator"] == {"checks": "failed", "status": "failed"}
 
 
+@pytest.mark.parametrize("crash", [False, True])
+@pytest.mark.parametrize("code", [False, True])
+@pytest.mark.parametrize("base_known", [False, True])
+def test_annotate_pr_reports_published_loc_and_preserves_decision_examples(
+    tmp_path: Path,
+    code: bool,
+    base_known: bool,
+    crash: bool,
+) -> None:
+    """INT-004: feature annotation adds size without changing the attention tiers;
+    a crashed counter still publishes the description with an unavailable section."""
+    import os
+    import shutil
+
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "feature")
+    archive = repo / "openspec/changes/archive/change"
+    archive.mkdir(parents=True)
+    decisions = (
+        Path(__file__).parents[2]
+        / "openspec/changes/archive/2026-10-12-feature-162-cf207692/decisions.md"
+    ).read_text()
+    decisions += (
+        "\n```md\n<!-- agent-factory:loc -->\nexample\n<!-- agent-factory:loc-end -->\n```\n"
+    )
+    (archive / "decisions.md").write_text(decisions)
+    (repo / "readme.md").write_text("excluded\n")
+    if code:
+        (repo / "source.py").write_text("code\n")
+        (repo / "test_source.py").write_text("test\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "feature")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    flags = {
+        "red": [{"title": "Existing red", "detail": "detail", "link": "#evidence"}],
+        "orange": [{"title": "Existing orange", "detail": "detail", "link": "#evidence"}],
+        "yellow": [],
+        "white": [],
+        "accepted_head": head,
+    }
+    (artifacts / "review-attention.json").write_text(json.dumps(flags))
+    (artifacts / "task-compliance.json").write_text(
+        json.dumps(
+            {
+                "result": "not-declared",
+                "base": head,
+                "reviewed_head": head,
+                "tasks_sha256": "hash",
+            }
+        )
+    )
+    issue = tmp_path / "issue.json"
+    issue.write_text(json.dumps({"number": 7, "claim_id": "claim", "title": "Feature"}))
+    pr = json.dumps(
+        [
+            {
+                "number": 9,
+                "url": "https://github.com/o/r/pull/9",
+                "headRefOid": head,
+                **({"baseRefName": "main"} if base_known else {}),
+            }
+        ]
+    )
+    stub = tmp_path / "gh"
+    stub.write_text(
+        GH_STUB.replace(
+            '  echo \'[{"number":9,"url":"https://github.com/o/r/pull/9"}]\'',
+            "  echo '" + pr + "'",
+        )
+    )
+    stub.chmod(0o755)
+    body = tmp_path / "body.md"
+    scripts = Path(str(PACKAGE))
+    if crash:
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        for name in (
+            "annotate-pr.sh",
+            "annotate-pr.py",
+            "mark-later-commits.py",
+            "pr_description.py",
+        ):
+            shutil.copy2(str(PACKAGE / name), scripts / name)
+        (scripts / "count-loc.py").write_text("raise SystemExit(3)\n")
+    result = subprocess.run(
+        [
+            str(scripts / "annotate-pr.sh"),
+            str(artifacts),
+            str(issue),
+            "change",
+            str(archive.relative_to(repo)),
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
+    )
+    assert result.returncode == 0, result.stderr
+    rendered = body.read_text()
+    assert rendered.index("[Test plan]") < rendered.index("### Lines of code")
+    assert decisions in rendered
+    from tests.unit.test_count_loc import loc
+
+    assert sum(text == loc.START for _, _, text in loc.live_lines(rendered)) == 1
+    if crash:
+        assert "count unavailable: the counter failed" in rendered
+    elif base_known:
+        count = 1 if code else 0
+        for kind in ("code", "tests"):
+            assert f"| {kind} | {count} | {count} | 0 | 0 | +{count} −0 |" in rendered
+        assert head[:12] in rendered
+    else:
+        assert "count unavailable: pull request base branch unknown" in rendered
+    updated_flags = json.loads((artifacts / "review-attention.json").read_text())
+    assert updated_flags["red"] == flags["red"]
+    assert updated_flags["orange"] == flags["orange"]
+    assert "### 🔴 Red (1)" in rendered and "### 🟠 Orange (1)" in rendered
+
+
 class ProposalWorkflow:
     """Run staged publication scripts against test-owned git history and GitHub stubs."""
 
@@ -3313,3 +3436,70 @@ def test_review_fit_failure_still_publishes_round_and_marked_commits(tmp_path: P
         line for line in restored.splitlines() if line.startswith("Later commits:")
     )
     assert not (flow.evidence / "description-restore-failed").exists()
+
+
+@pytest.mark.parametrize("near_limit", [False, True])
+def test_loc_refresh_preserves_inline_proposal(
+    tmp_path: Path, near_limit: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from agent_factory.work_kinds.pull_request.workflow import pr_description as pr
+    from tests.unit.test_count_loc import loc
+
+    # Supply published GitHub refs so both scripts render a measured table.
+    reads = (
+        'if [ "$1 $2" = "pr list" ]; then\n'
+        '  printf \'[{"number":9,"url":"https://github.com/o/r/pull/9",'
+        '"baseRefName":"main","headRefOid":"%s"}]\' "$(git rev-parse HEAD)"; exit 0\n'
+        'elif [ "$1" = api ] && [ "$2" = "repos/{owner}/{repo}/pulls/9" ]; then\n'
+        '  printf \'{"base":{"ref":"main"},"head":{"sha":"%s"}}\' '
+        '"$(git rev-parse HEAD)"; exit 0\nfi\n'
+    )
+    monkeypatch.setitem(globals(), "GH_STUB", GH_STUB.replace("#!/bin/sh\n", "#!/bin/sh\n" + reads))
+    monkeypatch.setitem(
+        globals(), "REVIEW_GH_STUB", REVIEW_GH_STUB.replace("#!/bin/sh\n", "#!/bin/sh\n" + reads)
+    )
+    flow = ProposalWorkflow(
+        tmp_path, proposal_text((12000,) * 6) if near_limit else proposal_text()
+    )
+    git(flow.repo, "push", "origin", "HEAD")
+    first = flow.annotate()
+    expected = inline_region(first)
+    if near_limit:
+        assert "omitted for length" in expected.lower()
+    assert pr.measure(first) <= pr.LIMIT
+
+    def check(body: str) -> None:
+        assert inline_region(body) == expected
+        assert body.count(loc.START) == 1
+        assert "| total |" in body
+        assert "unavailable" not in body[body.index(loc.START) : body.index(loc.END)]
+        assert loc.START not in inline_region(body)
+        assert body.index(loc.END) < body.index(expected)
+
+    check(first)
+    # Remove the section so restore must insert it outside the opaque proposal.
+    start = first.index(loc.START)
+    end = first.index(loc.END) + len(loc.END)
+    flow.body_path.write_text(first[:start] + first[end:])
+    flow.save()
+    flow.commit("fix: review refresh")
+    git(flow.repo, "push", "origin", "HEAD")
+    restored = flow.describe("restore")
+    check(restored)
+    # Direct refresh must preserve even the already fitted proposal bytes.
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(flow.review_stage / "count-loc.py"),
+            "refresh-file",
+            str(flow.body_path),
+            "--number",
+            "9",
+        ],
+        cwd=flow.repo,
+        env=flow.env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    check(flow.body_path.read_text())

@@ -282,7 +282,7 @@ def main() -> None:
             "--state",
             "open",
             "--json",
-            "number,url,headRefOid",
+            "number,url,headRefOid,baseRefName",
             "--limit",
             "1",
         )
@@ -365,6 +365,32 @@ def main() -> None:
             "",
         ]
     )
+    # The count is best effort: a crashed counter must not block the description.
+    try:
+        loc = subprocess.check_output(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("count-loc.py")),
+                "section",
+                "--base-ref",
+                str(pr[0].get("baseRefName") or ""),
+                "--head",
+                str(pr[0].get("headRefOid") or ""),
+            ],
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, OSError) as error:
+        print(f"could not count lines of code: {error}", file=sys.stderr)
+        loc = "\n".join(
+            [
+                "<!-- agent-factory:loc -->",
+                "### Lines of code",
+                "",
+                "Lines-of-code count unavailable: the counter failed.",
+                "<!-- agent-factory:loc-end -->",
+            ]
+        )
+    lines.extend([loc, ""])
     try:
         proposal = (archive / "proposal.md").read_text()
     except (OSError, UnicodeDecodeError):

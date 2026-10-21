@@ -169,6 +169,25 @@ The annotation SHALL add these items from the attempt's recorded result, whateve
 - **WHEN** the agent's classification has no item for a `not-run` task-compliance result
 - **THEN** the description still shows exactly one red task-compliance item, and the red count in the description and the comment includes it
 
+### Requirement: Report the lines-of-code count in the feature pull request description
+
+Each time a feature attempt annotates its pull request description, including on every resume that re-annotates it, the description SHALL include the "Lines of code" section defined by `factory-pull-request-size`, placed in the change summary below the links to the archived artifacts, and computed for the pull request's published head at that time. The section SHALL NOT add red, orange, yellow, or white review items, and SHALL NOT change the counts of the "Review first" section.
+
+#### Scenario: Open a feature pull request
+
+- **WHEN** a feature attempt returns `pull-request`
+- **THEN** the description's change summary contains the lines-of-code section for the pull request's published head
+
+#### Scenario: Resume a feature that updates its pull request
+
+- **WHEN** a later attempt on the same feature pushes new commits and re-annotates the pull request
+- **THEN** the description contains one lines-of-code section, counted at the new published head
+
+#### Scenario: Feature with only definition artifacts and docs
+
+- **WHEN** a feature pull request changes only OpenSpec artifacts and documentation
+- **THEN** the section shows zero code and zero tests
+
 ### Requirement: Inline the proposal in the feature pull request description
 
 The feature pull request's description SHALL show the archived change's proposal inline in the change summary, after the links to the archived artifacts and before the collapsed orange and yellow items, so that a reviewer can read the proposal without opening Files Changed or the archived files. The proposal content SHALL be shown expanded, not inside a collapsed section. The proposal's text SHALL be copied verbatim from the archived proposal: the factory SHALL NOT summarize, reword, or generate it, and SHALL change only heading levels, so that every proposal heading nests below the change summary heading. No line of the inlined proposal SHALL equal the change summary heading, so that a review round's section is inserted before the change summary and never inside the proposal.

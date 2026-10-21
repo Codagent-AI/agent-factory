@@ -306,6 +306,10 @@ def run_review_description(
         ' "$PR_BODY" ;; esac\n'
         # `gh pr edit` reads project items, which the factory's token cannot.
         'elif [ "$2" = edit ]; then echo "GraphQL: Resource not accessible" >&2; exit 1\n'
+        'elif [ "$1" = api ] && ! echo "$*" | grep -q PATCH; then\n'
+        "  python3 -c 'import json,sys; "
+        'print(json.dumps({"body": open(sys.argv[1], newline="").read()}))\''
+        ' "$PR_BODY"\n'
         'elif [ "$1" = api ]; then\n'
         '  [ -z "$EDIT_FAILS" ] || { echo "HTTP 403: denied" >&2; exit 1; }\n'
         '  for arg; do case "$arg" in body=@*) cat "${arg#body=@}" > "$PR_BODY" ;; esac; done\n'
@@ -342,7 +346,8 @@ def test_review_round_keeps_the_factory_owned_feature_description(
     rewritten = "## Review update\n\n" + annotated + "\n----\nabc123 commit\n"
     body.write_text(rewritten)
     run_review_description(tmp_path, "restore", kind, body)
-    assert (body.read_text() == annotated) is restored
+    assert body.read_text().startswith(annotated if restored else rewritten)
+    assert body.read_text().count("<!-- agent-factory:loc -->") == 1
     overwritten = tmp_path / "pr-description-overwritten.md"
     assert (overwritten.read_text() == rewritten) if restored else not overwritten.exists()
 
@@ -371,7 +376,13 @@ def test_an_unchanged_crlf_description_is_left_alone(tmp_path: Path) -> None:
     run_review_description(tmp_path, "save", "feature", body)
     run_review_description(tmp_path, "restore", "feature", body)
     assert not (tmp_path / "pr-description-overwritten.md").exists()
-    assert body.read_bytes() == b"**Feature for #2:** Add cleanup\r\n\r\n# Review first\r\n"
+    refreshed = body.read_bytes()
+    assert refreshed.startswith(b"**Feature for #2:** Add cleanup\r\n\r\n# Review first\r\n")
+    assert b"<!-- agent-factory:loc -->" in refreshed
+    assert b"\n" not in refreshed.replace(b"\r\n", b"")
+    run_review_description(tmp_path, "save", "feature", body)
+    run_review_description(tmp_path, "restore", "feature", body)
+    assert body.read_bytes() == refreshed
 
 
 def test_unreadable_gh_output_is_recorded_as_a_failed_restore(tmp_path: Path) -> None:

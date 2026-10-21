@@ -363,6 +363,13 @@ steps:
           printf '%s\n\n%s\n' "$header" "$body" \
             | gh api -X PATCH "repos/{owner}/{repo}/pulls/$number" -F body=@- >/dev/null
 
+      - id: refresh-loc
+        continue_on_failure: true
+        script: count-loc.py
+        script_inputs:
+          mode: refresh-pr
+          artifact_dir: "{{artifact_dir}}"
+
       - id: mark-implement-completed
         command: printf 'passed'
         capture: implement_completed

@@ -12,7 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES, FIX, registered
+from agent_factory.work_kinds.pull_request.kinds import (
+    FEATURE,
+    FEATURE_STAGED_FILES,
+    FIX,
+    registered,
+)
 
 PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
@@ -398,6 +403,44 @@ def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None
         "what remedy a human would need to approve",
     ):
         assert phrase in prompt, phrase
+
+
+def test_count_loc_is_staged_and_runs_for_each_workflow(tmp_path: Path) -> None:
+    from agent_factory.work_kinds.pull_request import launch
+    from agent_factory.work_kinds.pull_request.kinds import FEATURE_STAGED_FILES
+    from tests.integration.test_count_loc import commit
+    from tests.integration.test_feature_workflow_scripts import git, repository
+
+    repo, _ = repository(tmp_path)
+    base = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "feature")
+    (repo / "sample.py").write_text("new\n")
+    head = commit(repo, "feature")
+    git(repo, "push", "origin", "feature")
+    for listing in (
+        FIX.staged_files,
+        FEATURE_STAGED_FILES,
+        launch.REVIEW_WORKFLOW_SCRIPTS,
+        launch.STAGED_FILES,
+    ):
+        assert "count-loc.py" in listing
+    for kind, contract in (
+        (FIX, FIX.default_contract),
+        (FEATURE, FEATURE.default_contract),
+        (FIX, launch.REVIEW_CONTRACT),
+    ):
+        catalog = launch.stage_workflow_into(tmp_path / contract.replace("/", "-"), contract, kind)
+        script = catalog / "count-loc.py"
+        assert script.stat().st_mode & 0o111
+        result = subprocess.run(
+            [str(script), "section", "--base-ref", "main", "--head", head],
+            cwd=repo,
+            text=True,
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "| code | 1 | 1 | 0 | 0 | +1 −0 |" in result.stdout
+        assert f"Measured `{base[:12]}..{head[:12]}`" in result.stdout
 
 
 def test_proposal_helper_is_staged_for_feature_and_review(tmp_path: Path) -> None:

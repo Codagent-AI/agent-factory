@@ -419,6 +419,14 @@ includes the eligible comments as additional input.
 the description and diff, check it against the linked issue, and merge or
 request changes normally. The factory never merges its own fix PRs.
 
+Fix and feature PR descriptions carry a script-computed **Lines of code** section
+with code and tests plus a separate breakdown for OpenSpec changes, living specs,
+docs, and config/data. A total row sums every part. It uses rename detection
+(`git diff -M`): pure renames count 0/0; edited renames count only edited lines
+under the new path’s category. It measures the
+merge base with the PR’s base branch to its published head and refreshes on each
+attempt and review round. The exclusion and test patterns live in `count-loc.py`.
+
 **The merge sync.** After a fix PR merges, Factory fast-forwards the
 operator's configured working clone for that target repository to the merged
 commit, so the operator's local checkout stays current without manual
