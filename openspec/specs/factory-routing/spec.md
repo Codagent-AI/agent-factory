@@ -56,7 +56,7 @@ Routing SHALL verify that the issue author has effective write, maintain, or adm
 
 ### Requirement: Never route bugs to the factory
 
-Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured bug type, whatever the author's repository role or labels. Such an issue SHALL be routed as an untyped issue is: it enters Backlog. When the bug type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule. Routing SHALL recognize no bypass marker for bugs; creating a Bug SHALL NOT start a fix. The only path by which a bug becomes factory work SHALL be the Ready handoff: a writer moves its card to Ready, after which the factory poll verifies the author's permission and sets `Owner=factory`. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence.
+Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured bug type, whatever the author's repository role or labels. Such an issue SHALL be routed as an untyped issue is: it is added with no Status. When the bug type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule. Routing SHALL recognize no bypass marker for bugs; creating a Bug SHALL NOT start a fix. The only path by which a bug becomes factory work SHALL be the Ready handoff: a writer moves its card to Ready, after which the factory poll verifies the author's permission and sets `Owner=factory`. When an issue matches both the eval marker and the bug type, the eval rule SHALL take precedence.
 
 #### Scenario: File a bug as a repository writer
 

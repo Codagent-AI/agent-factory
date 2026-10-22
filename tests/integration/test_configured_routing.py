@@ -204,8 +204,8 @@ def test_unknown_permission_routes_marked_eval_to_backlog_without_owner() -> Non
 
     result = Router(config, github).route(RouteEvent(item()))
 
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-1"].fields == {"status-field": "backlog-option"}
+    assert result.destination == "unset"
+    assert github.items["ISSUE-1"].fields == {}
     assert github.issue_types == {}
 
 
@@ -333,8 +333,8 @@ def test_writer_bug_routes_to_backlog_like_general_work(permission: str, labels:
 
     result = Router(config, github).route(RouteEvent(bug_item(labels=labels)))
 
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+    assert result.destination == "unset"
+    assert github.items["ISSUE-BUG-1"].fields == {}
     assert github.comments["example/work#99"]
 
 
@@ -346,8 +346,8 @@ def test_bug_typed_after_creation_stays_in_backlog() -> None:
 
     result = router.route(RouteEvent(bug_item()))
 
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+    assert result.destination == "unset"
+    assert github.items["ISSUE-BUG-1"].fields == {}
 
 
 def test_writer_move_of_a_bug_to_ready_survives_re_delivery() -> None:
@@ -390,7 +390,7 @@ def test_legacy_hold_bypass_receipt_does_not_change_bug_routing() -> None:
 
     result = Router(config, github).route(RouteEvent(bug_item()))
 
-    assert result.destination == "backlog"
+    assert result.destination == "unset"
     assert github.items["ISSUE-BUG-1"].fields == {
         "owner-field": "human-option",
         "status-field": "backlog-option",
@@ -414,8 +414,8 @@ def test_non_writer_bug_enters_backlog_without_ownership() -> None:
 
     result = Router(config, github).route(RouteEvent(bug_item(author="outsider")))
 
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+    assert result.destination == "unset"
+    assert github.items["ISSUE-BUG-1"].fields == {}
 
 
 def test_pull_request_typed_bug_enters_backlog() -> None:
@@ -424,8 +424,8 @@ def test_pull_request_typed_bug_enters_backlog() -> None:
 
     result = Router(config, github).route(RouteEvent(bug_item(pull_request=True)))
 
-    assert result.destination == "backlog"
-    assert github.items["ISSUE-BUG-1"].fields == {"status-field": "backlog-option"}
+    assert result.destination == "unset"
+    assert github.items["ISSUE-BUG-1"].fields == {}
     assert github.issue_types == {}
 
 

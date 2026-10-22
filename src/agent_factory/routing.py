@@ -96,8 +96,10 @@ class Router:
                     project_item, source, (("owner", "factory"), ("status", "ready"))
                 )
                 return RouteResult("ready" if applied else "preserved", project_item.id)
-        applied = self._initialize(project_item, source, (("status", "backlog"),))
-        return RouteResult("backlog" if applied else "preserved", project_item.id)
+        # No Status: a card routing leaves unset cannot overwrite a Ready that a handoff set
+        # while this run was in flight.
+        applied = self._initialize(project_item, source, ())
+        return RouteResult("unset" if applied else "preserved", project_item.id)
 
     def _ensure_default_priority(self, source: SourceItem) -> None:
         if source.pull_request:

@@ -395,7 +395,7 @@ claims: older releases cannot supervise, report, or sync them.
 
 ## The fix work kind
 
-Filing a Bug-typed issue only adds it to Backlog. A writer hands it to the
+Filing a Bug-typed issue is added with no Status. A writer hands it to the
 factory by moving its card to `Status=Ready` (or with the `factory-assign`
 skill) in a configured source repository; the next factory poll sets
 `Owner=factory`.
