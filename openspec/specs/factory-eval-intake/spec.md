@@ -22,7 +22,7 @@ Execution admission SHALL identify an evaluation card by its native issue type, 
 #### Scenario: Receive an outside contributor's request
 
 - **WHEN** a public-repository contributor without write access creates an issue from the eval template
-- **THEN** routing leaves the request in Backlog without factory ownership, as specified in `factory-routing`
+- **THEN** routing leaves the request with no Status and without factory ownership, as specified in `factory-routing`
 - **AND** execution admission never accepts it even though the template applied the request label
 
 #### Scenario: Recheck permission at execution admission

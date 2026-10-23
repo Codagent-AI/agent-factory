@@ -596,7 +596,7 @@ The change SHALL include the GitHub setup for the Codagent example deployment: a
 
 The board SHALL have Backlog, Ready, Running, Review, and Done Status columns, horizontal groups by native issue Type, no field-based sorting, and views for the eval queue and active factory work. It SHALL expose configured Owner, Refs, and Verdict fields and visible attention labels. Verdict options SHALL support `pending-human-review`, `failed`, `quota-deferred`, and `infra-error`; the factory SHALL never assign `passed`.
 
-The initial eval request source SHALL be `Codagent-AI/agent-evals`. General work from the configured Codagent repositories, Bug-typed issues included, SHALL enter Backlog; eval routing SHALL initialize factory ownership and Ready for authors with the required repository access as defined in `factory-routing`, without a general auto-add rule undoing that routing. Other authors' requests SHALL enter Backlog without factory assignment. The initial general-work repository set SHALL cover agent-runner, agent-skills, agent-validator, agent-plugin, and agent-evals, and SHALL be configurable. Issue/PR closure automation SHALL move associated cards to Done.
+The initial eval request source SHALL be `Codagent-AI/agent-evals`. General work from the configured Codagent repositories, Bug-typed issues included, SHALL be added with no Status (routing never sets Backlog); eval routing SHALL initialize factory ownership and Ready for authors with the required repository access as defined in `factory-routing`, without a general auto-add rule undoing that routing. Other authors' requests SHALL be added with no Status and without factory assignment. The initial general-work repository set SHALL cover agent-runner, agent-skills, agent-validator, agent-plugin, and agent-evals, and SHALL be configurable. Issue/PR closure automation SHALL move associated cards to Done.
 
 Routing and the local controller SHALL authenticate with an organization-owned GitHub App with organization Projects read/write, repository Issues read/write, and Contents, Pull requests, and Metadata read access at minimum. Suite and fix PR operations SHALL use their separate credentials. Installation SHALL cover the configured repositories. App private keys and the fix credential SHALL remain outside version control, with local owner-only file access and Actions secret storage for caller workflows.
 
@@ -604,12 +604,12 @@ Routing and the local controller SHALL authenticate with an organization-owned G
 
 - **WHEN** a user with write, maintain, or admin access to the source repository creates an issue from the eval template
 - **THEN** the configured automation places it in the Project's Ready column with native Eval type and factory ownership without a separate manual handoff
-- **AND** general auto-add behavior does not reset the routed request to Backlog
+- **AND** general auto-add behavior does not reset the routed request
 
 #### Scenario: Add general work
 
 - **WHEN** an ordinary issue or PR is created in a configured source repository without the eval request marker
-- **THEN** it is added to the shared Project in Backlog without becoming a factory request
+- **THEN** it is added to the shared Project with no Status and without becoming a factory request
 
 #### Scenario: Arrange the board manually
 

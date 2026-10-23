@@ -41,18 +41,18 @@ Routing SHALL add an issue to its destination Project if absent and initialize f
 
 ### Requirement: Restrict factory assignment to repository writers
 
-Routing SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository before assigning factory ownership to an eval request. Organization membership, the presence of a request label, or a native issue type alone SHALL NOT satisfy this check. A request from an author without sufficient access SHALL enter Backlog without factory assignment. Failure to establish the author's permission SHALL NOT be treated as authorization. Each work kind's intake SHALL re-verify this permission at execution admission.
+Routing SHALL verify that the issue author has effective write, maintain, or admin permission on its source repository before assigning factory ownership to an eval request. Organization membership, the presence of a request label, or a native issue type alone SHALL NOT satisfy this check. A request from an author without sufficient access SHALL be added with no Status and without factory assignment. Failure to establish the author's permission SHALL NOT be treated as authorization. Each work kind's intake SHALL re-verify this permission at execution admission.
 
 #### Scenario: Receive an outside contributor's request
 
 - **WHEN** a public-repository contributor without write access creates an eval request
-- **THEN** the request enters the Project in Backlog without factory ownership
+- **THEN** the request enters the Project with no Status and without factory ownership
 - **AND** no execution is admitted even though the marker is present
 
 #### Scenario: Fail to establish permission
 
 - **WHEN** the permission lookup for an author fails or returns an unknown value
-- **THEN** routing treats the author as unauthorized and places the issue in Backlog without factory ownership
+- **THEN** routing treats the author as unauthorized and places the issue with no Status and without factory ownership
 
 ### Requirement: Never route bugs to the factory
 
@@ -61,16 +61,16 @@ Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whos
 #### Scenario: File a bug as a repository writer
 
 - **WHEN** a user with the write, maintain, or admin role creates an issue with native Type Bug in a configured source repository
-- **THEN** routing adds it to the Project in Backlog without factory ownership
+- **THEN** routing adds it to the Project with no Status and without factory ownership
 
 #### Scenario: Set the bug type after creation
 
-- **WHEN** an issue routed to Backlog without a native type later gets the Bug type
-- **THEN** the type-change event leaves it in Backlog without factory ownership
+- **WHEN** an issue routed with no Status and without a native type later gets the Bug type
+- **THEN** the type-change event leaves it with no Status and without factory ownership
 
 #### Scenario: Hand a bug to the factory
 
-- **WHEN** a writer moves a Backlog bug's card to Ready
+- **WHEN** a writer moves a bug's card to Ready
 - **THEN** repeated routing preserves that change
 - **AND** the factory poll sets `Owner=factory` and admits it under the fix intake rules
 
@@ -81,12 +81,12 @@ Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whos
 
 ### Requirement: Never route features to the factory
 
-Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured feature type, whatever the author's repository role. Such an issue SHALL be routed as an untyped issue is. When the feature type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule: a card whose Owner and Status still hold the values routing last initialized SHALL return to Backlog, and a card a human has edited since SHALL keep its values. The only path by which a feature becomes factory work SHALL be the Ready handoff defined by `factory-feature-intake`.
+Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured feature type, whatever the author's repository role. Such an issue SHALL be routed as an untyped issue is. When the feature type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule: routing SHALL leave Status unset and a card a human has edited SHALL keep its values. The only path by which a feature becomes factory work SHALL be the Ready handoff defined by `factory-feature-intake`.
 
 #### Scenario: File a feature as a maintainer
 
 - **WHEN** a user with the maintain or admin role creates an issue with native Type Feature in a configured source repository
-- **THEN** routing adds it to the Project in Backlog without factory ownership
+- **THEN** routing adds it to the Project with no Status and without factory ownership
 
 #### Scenario: Retype an edited card as a feature
 
@@ -95,12 +95,12 @@ Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whos
 
 ### Requirement: Never route tasks to the factory
 
-Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured task type (`[routing] task_type`, default `Task`), whatever the author's repository role. Such an issue SHALL be routed as an untyped issue is. When the task type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule: a card whose Owner and Status still hold the values routing last initialized SHALL return to Backlog, and a card a human has edited since SHALL keep its values. The only path by which a task becomes factory work SHALL be the Ready handoff defined by `factory-task-intake`. Eval, bug, and feature routing SHALL be unchanged.
+Routing SHALL NOT initialize `Owner=factory` or `Status=Ready` for an issue whose native Type is the configured task type (`[routing] task_type`, default `Task`), whatever the author's repository role. Such an issue SHALL be routed as an untyped issue is. When the task type is set after the issue was first routed, the type-change event SHALL apply the untyped-issue rule: routing SHALL leave Status unset and a card a human has edited SHALL keep its values. The only path by which a task becomes factory work SHALL be the Ready handoff defined by `factory-task-intake`. Eval, bug, and feature routing SHALL be unchanged.
 
 #### Scenario: File a task as a maintainer
 
 - **WHEN** a user with the maintain or admin role creates an issue with native Type Task in a configured source repository
-- **THEN** routing adds it to the Project in Backlog without factory ownership
+- **THEN** routing adds it to the Project with no Status and without factory ownership
 
 #### Scenario: Retype an edited card as a task
 
