@@ -56,7 +56,7 @@ Repository code, Project schema, and live GitHub state override cached IDs or da
    Before `gh issue create --body-file F`, run `~/.agent-factory/releases/current/.venv/bin/python -m agent_factory.notify.marker stamp F` to record this Claude session. Before every `gh issue edit --body-file F`, save the current issue body in `OLD` and run `~/.agent-factory/releases/current/.venv/bin/python -m agent_factory.notify.marker carry OLD F`. If the marker command fails, note it in one line and continue without a marker. One session is tracked per issue; `factory-assign` replaces this marker when it hands the issue off.
 6. Confirm Project membership. Routing handles configured repositories; add other issues manually.
 7. Set status and ownership deliberately (see Factory handoff below):
-   - Default for new issues: Backlog with Owner human or unset.
+   - Default for new issues: routing leaves Status unset (no Backlog) with Owner unset; set Backlog by hand if you want it there.
    - **Ready is a factory handoff in factory target repositories.** The factory polls Ready cards and takes ownership of any open Bug, Feature, or Task there whose author has write access, even when Owner is human. Do not move such an issue to Ready to mean "near-term human work"; keep it in Backlog and use Priority. Ready as a human-priority signal is safe only in repositories that are not factory targets (for example dot-dev, homebrew-tap).
    - Active human work: Running, then Review.
    - Completed work: close the issue and verify the tracked card reaches Done.
@@ -82,7 +82,7 @@ An executable Factory Eval may require its supported request template, but fill 
 
 The board drives the live Agent Factory. Know what reaches it:
 
-- **Bug, Feature, and Task** are not auto-routed. Creating one, whoever the author, lands it in Backlog and does not start factory work. It reaches the factory only when its card moves to Ready (or via `factory-assign`).
+- **Bug, Feature, and Task** are not auto-routed. Creating one, whoever the author, is added with no Status and does not start factory work. It reaches the factory only when its card moves to Ready (or via `factory-assign`).
 - **Eval** reaches the factory through `eval-request` routing (see Eval rules).
 - `needs-input` on an issue blocks admission; the factory adds it when it needs Paul's answer. Do not remove it unless Paul asks.
 - `blocked` and GitHub blocked-by relationships do **not** stop admission. Keep dependent work in Backlog until its prerequisite lands.

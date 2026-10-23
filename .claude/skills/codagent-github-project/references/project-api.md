@@ -348,11 +348,11 @@ Routing callers are deployed in **agent-evals, agent-runner, agent-skills, agent
 
 | Situation | Current behavior |
 |---|---|
-| Ordinary source issue/PR event | Add missing Project membership and initialize Backlog. Native classification remains on the issue; router does not infer Bug/Feature/Task from prose. |
-| Bug, Feature, or Task | Not routed to the factory, whatever the author's role: it enters Backlog like any ordinary issue, and creating it starts no factory work. Moving the card to Ready (or `factory-assign`) hands it over. |
+| Ordinary source issue/PR event | Add missing Project membership; Status stays unset (routing never sets Backlog). Native classification remains on the issue; router does not infer Bug/Feature/Task from prose. |
+| Bug, Feature, or Task | Not routed to the factory, whatever the author's role: it is added with no Status like any ordinary issue, and creating it starts no factory work. Moving the card to Ready (or `factory-assign`) hands it over. |
 | `agent-evals` issue with `eval-request` label, authored by someone with write/maintain/admin permission | Initialize Owner=factory and Status=Ready. Native Eval type alone is not this routing trigger. |
-| Unknown/insufficient author permission | Backlog without new factory ownership. |
-| Routing retry | A one-time receipt comment preserves later human field changes. This is initialization, not continuous forced reassignment. |
+| Unknown/insufficient author permission | No Status and no new factory ownership. |
+| Routing retry | Routing sets no Status or Owner, so a retry changes nothing a human or handoff set. |
 | Tracked issue/PR closes | Move the Project card to Done. |
 
 For a **candidate Eval**, create native Eval with a descriptive body, no `eval-request` label, and Backlog + human/unset Owner. This avoids a race where a newly created labeled issue is routed to Ready before you move it back.
