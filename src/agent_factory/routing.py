@@ -7,14 +7,9 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import Protocol, cast
 
 from agent_factory.config import SharedConfig
-
-if TYPE_CHECKING:
-    from agent_factory.github import IssueComment
-
-_RECEIPT_PREFIX = "<!-- agent-factory-routing:v1 "
 
 
 @dataclass(frozen=True)
@@ -51,10 +46,6 @@ class RouteResult:
 
 
 class GitHubRoutingClient(Protocol):
-    def get_permission(self, repository: str, login: str) -> str | None: ...
-
-    def set_issue_type(self, repository: str, number: int, issue_type: str) -> None: ...
-
     def find_project_item(self, project_id: str, content_id: str) -> ProjectItem | None: ...
 
     def add_project_item(self, project_id: str, content_id: str) -> ProjectItem: ...
@@ -64,10 +55,6 @@ class GitHubRoutingClient(Protocol):
     ) -> None: ...
 
     def ensure_issue_select_default(self, issue_id: str, field_id: str, option_id: str) -> None: ...
-
-    def list_comment_records(self, repository: str, number: int) -> list[IssueComment]: ...
-
-    def create_comment(self, repository: str, number: int, body: str) -> str | None: ...
 
 
 class Router:
@@ -88,18 +75,9 @@ class Router:
             self._set_status_if_changed(project_item, self._config.project.status.id, "done")
             return RouteResult("done", project_item.id)
 
-        if self._is_eval(source):
-            permission = self._github.get_permission(source.repository, source.author)
-            if permission in {"write", "maintain", "admin"}:
-                self._set_eval_type_if_needed(source)
-                applied = self._initialize(
-                    project_item, source, (("owner", "factory"), ("status", "ready"))
-                )
-                return RouteResult("ready" if applied else "preserved", project_item.id)
-        # No Status: a card routing leaves unset cannot overwrite a Ready that a handoff set
-        # while this run was in flight.
-        applied = self._initialize(project_item, source, ())
-        return RouteResult("unset" if applied else "preserved", project_item.id)
+        # Status stays unset: routing writes nothing that could overwrite a Ready that a
+        # handoff set while this run was in flight.
+        return RouteResult("unset", project_item.id)
 
     def _ensure_default_priority(self, source: SourceItem) -> None:
         if source.pull_request:
@@ -110,112 +88,11 @@ class Router:
             return
         self._github.ensure_issue_select_default(source.id, field_id, option_id)
 
-    def _is_eval(self, source: SourceItem) -> bool:
-        return (
-            source.repository == self._config.routing.eval_source
-            and self._config.routing.eval_label in source.labels
-        )
-
-    def _set_eval_type_if_needed(self, source: SourceItem) -> None:
-        if source.issue_type != self._config.routing.eval_type:
-            self._github.set_issue_type(
-                source.repository, source.number, self._config.routing.eval_type
-            )
-
-    def _initialize(
-        self,
-        item: ProjectItem,
-        source: SourceItem,
-        values: tuple[tuple[str, str], ...],
-    ) -> bool:
-        """Apply routing's initial fields; False when a human edit since routing is preserved."""
-        receipt = self._receipt(source)
-        desired: dict[str, str] = {}
-        for field_name, logical_option in values:
-            field, option = self._field_and_option(field_name, logical_option)
-            desired[field.id] = option
-        receipt_values_raw = receipt.get("values") if receipt is not None else None
-        receipt_values = (
-            cast(dict[str, object], receipt_values_raw)
-            if isinstance(receipt_values_raw, dict)
-            else None
-        )
-        completed = bool(receipt and receipt.get("complete"))
-        if (
-            completed
-            and receipt_values is not None
-            and all(receipt_values.get(field_id) == option for field_id, option in desired.items())
-        ):
-            return True
-        if completed and any(
-            item.fields.get(field_id)
-            != (receipt_values.get(field_id) if receipt_values is not None else None)
-            for field_id in desired
-        ):
-            # A later rule (an authorized eval request) re-initializes only an untouched card;
-            # applying part of it over a human edit would mix human and routing values.
-            return False
-        for field_id, option in desired.items():
-            current = item.fields.get(field_id)
-            prior = receipt_values.get(field_id) if receipt_values is not None else None
-            # Only the value previously recorded by factory is safe to replace on recovery.
-            if current is None or current == prior:
-                self._github.set_single_select_field(
-                    self._config.project.id, item.id, field_id, option
-                )
-                item.fields[field_id] = option
-        self._write_receipt(source, item, desired)
-        return True
-
     def _set_status_if_changed(self, item: ProjectItem, field_id: str, logical_option: str) -> None:
         option = self._config.project.status.option(logical_option)
         if item.fields.get(field_id) != option:
             self._github.set_single_select_field(self._config.project.id, item.id, field_id, option)
             item.fields[field_id] = option
-
-    def _field_and_option(self, field_name: str, option_name: str):
-        if field_name == "status":
-            return self._config.project.status, self._config.project.status.option(option_name)
-        if field_name == "owner":
-            return self._config.project.owner, self._config.project.owner.option(option_name)
-        raise ValueError(f"unsupported routing field: {field_name}")
-
-    def _receipt(self, source: SourceItem) -> dict[str, object] | None:
-        # Only the factory's own comments are receipts; anyone can comment on a public issue,
-        # so a body from another author must never set complete or values.
-        records = self._github.list_comment_records(source.repository, source.number)
-        bot_login = self._config.bot_login.casefold()
-        for comment in reversed(records):
-            # GitHub logins are case-insensitive identifiers.
-            if comment.author.casefold() != bot_login:
-                continue
-            body = comment.body
-            if body.startswith(_RECEIPT_PREFIX) and body.endswith(" -->"):
-                try:
-                    parsed = json.loads(body[len(_RECEIPT_PREFIX) : -4])
-                    if isinstance(parsed, dict):
-                        return cast(dict[str, object], parsed)
-                except json.JSONDecodeError:
-                    continue
-        return None
-
-    def _write_receipt(
-        self,
-        source: SourceItem,
-        item: ProjectItem,
-        initialized: dict[str, str],
-    ) -> None:
-        payload: dict[str, object] = {
-            "project": self._config.project.id,
-            "item": item.id,
-            "values": initialized,
-            "complete": True,
-        }
-        self._github.create_comment(
-            source.repository,
-            source.number,
-            f"{_RECEIPT_PREFIX}{json.dumps(payload, sort_keys=True, separators=(',', ':'))} -->",
-        )
 
 
 def main() -> None:
