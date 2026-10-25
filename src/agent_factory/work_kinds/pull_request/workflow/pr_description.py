@@ -4,6 +4,7 @@
 import hashlib
 import html
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,31 @@ ALL_OMITTED = "_The proposal was omitted for length. Read the [full proposal]({h
 UNAVAILABLE = "_The proposal could not be included inline; open the Proposal link above._"
 HEADING = re.compile(r"^(#{1,6})([ \t].*)$")
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+# Commits the workflow itself makes after acceptance: a phase checkpoint, or the archive of
+# the accepted change. Acceptance ran before the change was archived, as in the Runner's change
+# workflow, so these follow it on every feature pull request.
+BOOKKEEPING_SUBJECT = re.compile(r"^\[(?:factory-feature|archive|commit-plan)\]")
+
+
+def is_bookkeeping(sha: str) -> bool:
+    """Whether a commit is workflow bookkeeping that touches only OpenSpec files."""
+    try:
+        subject = subprocess.run(
+            ["git", "log", "-1", "--format=%s", sha], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        names = subprocess.run(
+            ["git", "show", "--name-only", "--format=", sha],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+    except (subprocess.CalledProcessError, OSError):
+        return False
+    return bool(BOOKKEEPING_SUBJECT.match(subject)) and all(
+        name.startswith("openspec/") for name in names
+    )
 
 
 def token(text: str) -> str:

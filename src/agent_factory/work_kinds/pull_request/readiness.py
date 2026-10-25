@@ -484,7 +484,7 @@ def _validate_diagnostic(
     group = definition.doctor_groups["host"]
     workflow_files = [definition.workflow_file, launch.REVIEW_WORKFLOW_FILE]
     if definition.kind == "feature":
-        workflow_files.append("factory-define-v1.0.yaml")
+        workflow_files.append(launch.DEFINE_WORKFLOW_FILE)
     with tempfile.TemporaryDirectory() as tmp:
         catalog = Path(tmp)
         try:
@@ -494,9 +494,7 @@ def _validate_diagnostic(
         for filename in workflow_files:
             _output, failure = _probe((runner, "-validate", str(catalog / filename)))
             if failure is not None:
-                prerequisite = (
-                    " (requires core/verify-change)" if definition.kind == "feature" else ""
-                )
+                prerequisite = " (requires core/implement-change and core/verify-change)"
                 return Diagnostic(
                     name,
                     False,

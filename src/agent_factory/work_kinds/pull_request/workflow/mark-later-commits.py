@@ -25,9 +25,13 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 if TYPE_CHECKING:
-    from agent_factory.work_kinds.pull_request.workflow.pr_description import masked, unmasked
+    from agent_factory.work_kinds.pull_request.workflow.pr_description import (
+        is_bookkeeping,
+        masked,
+        unmasked,
+    )
 else:
-    from pr_description import masked, unmasked
+    from pr_description import is_bookkeeping, masked, unmasked
 
 LATER_COMMITS_TITLE = "Commits after acceptance"
 ACCEPTED = re.compile(r"^Acceptance ran against `([0-9a-f]{7,40})`\.")
@@ -147,7 +151,11 @@ def mark(text: str, base: str | None = None) -> str:
         lines[index] = line
 
     orange = " ".join(line for line, tier in zip(lines, tier_of, strict=True) if tier == "Orange")
-    unnamed = [(sha, subject) for sha, subject, _ in commits if sha[:7] not in orange]
+    unnamed = [
+        (sha, subject)
+        for sha, subject, _ in commits
+        if sha[:7] not in orange and not is_bookkeeping(sha)
+    ]
     if unnamed:
         detail = ", ".join(f"{sha[:12]} ({subject})" for sha, subject in unnamed)
         prefix = f"- [{LATER_COMMITS_TITLE}]("

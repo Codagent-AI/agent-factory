@@ -69,7 +69,7 @@ def _make_fix_tree(
     for rel in (
         "logs/agent-runner.log",
         "factory-suite.log",
-        "agent-runner/workflows/factory-fix-v1.0.yaml",
+        "agent-runner/workflows/factory-fix-v2.0.yaml",
         "agent-runner-session/state.json",
         ".runtime/session-state/x",
         "input/issue.json",

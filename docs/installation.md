@@ -68,14 +68,17 @@ Each attempt stages it into the attempt's artifact directory, where the
 sandboxed Runner resolves `agent-runner run factory-fix` from its user-level
 workflow catalog; a target repository that ships its own `factory-fix` project
 workflow would shadow it, and the attempt then fails for lack of an outcome
-rather than running the wrong thing. The workflow uses one shared lead session
-for triage and review, one shared implementor session for implementation and
-validation or review repairs, and one shared tester session for flow testing. It runs the built-in
-`run-validator` immediately after implementation and again after review
-findings are addressed, then reuses `core/finalize-pr-v1.0` for the PR and CI
-loop. The configured Runner branch must accept `builtin:` sub-workflow
-references and the `ci_fix_cycles` parameter on that finalizer; `doctor` checks
-the parameter so an incompatible Runner revision is caught before a fix is
+rather than running the wrong thing. After triage, the workflow writes a small
+definition of the fix outside the repository and runs the Runner's
+`core/implement-change` on it: the lead's and the implementor's checklists merged
+by the `crosscheck` role, the implementation, the crosscheck's audit of it, and
+`core/verify-change`, whose one validator run (three repair rounds at most) comes
+before the draft pull request and acceptance. It then reuses
+`core/finalize-pr-v1.0` for the PR and CI loop. The configured Runner branch
+must provide `core/implement-change-v2.0`, `core/verify-change`, and
+`core/run-validator`, accept `builtin:` sub-workflow references, and accept the
+`ci_fix_cycles` parameter on that finalizer; `doctor` checks them so an
+incompatible Runner revision is caught before a fix is
 admitted, not after.
 
 ### Host execution for fixes
@@ -169,7 +172,7 @@ Optional `[feature.limits]` defaults are 1800 seconds without progress, 21600
 seconds for execution, and 28800 seconds total. `[feature.schedule]` defaults
 to an always open window; `feature.minimum_free_gib` defaults to the shared
 disk floor. The installed Agent Runner must validate the packaged
-`factory-feature` workflow and provide `core/verify-change`. Run `doctor` and
+`factory-feature` workflow and provide `core/implement-change` and `core/verify-change`. Run `doctor` and
 check `feature-host` before enabling intake. It also reports a target working
 clone without `openspec/` as informational; the workflow will ask for
 initialization during preflight.

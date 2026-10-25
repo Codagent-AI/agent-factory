@@ -82,46 +82,88 @@ def test_sub_workflows_are_called_by_builtin_reference_with_one_ci_fix_cycle() -
     finalize = _step_block(text, "finalize-pr")
     assert "workflow: builtin:core/finalize-pr-v1.0.yaml" in finalize
     assert 'ci_fix_cycles: "3"' in finalize
-    assert text.count("workflow: builtin:core/run-validator-v1.0.yaml") == 2
+    assert "workflow: builtin:core/implement-change-v2.0.yaml" in _step_block(text, "change")
     assert not re.search(r"workflow: (?!builtin:)", text), "relative sub-workflow reference"
 
 
-def test_factory_steps_use_one_shared_session_per_role_and_implementor_for_code() -> None:
+def test_the_validator_runs_once_and_only_inside_implement_change() -> None:
+    text = _workflow_text()
+    assert "agent-validator" not in text
+    assert "run-validator" not in text
+    assert text.count("workflow: builtin:core/implement-change-v2.0.yaml") == 1
+
+
+def test_factory_steps_use_the_lead_session_and_leave_the_rest_to_implement_change() -> None:
     text = _workflow_text()
     sessions = text[text.index("sessions:") : text.index("steps:")]
-    assert sessions.count("- name: lead-agent") == 1
-    assert sessions.count("- name: implementor-agent") == 1
-    assert sessions.count("- name: tester-agent") == 1
+    assert re.findall(r"- name: (\S+)", sessions) == ["lead-agent"]
     assert "agent: lead" in sessions
-    assert "agent: implementor" in sessions
-    assert "agent: tester" in sessions
-    assert "session: implementor-agent" in _step_block(text, "implement-fix")
-    assert "session: tester-agent" in _step_block(text, "test-flows")
-    assert "session: lead-agent" in _step_block(text, "review-fix")
-    assert "session: implementor-agent" in _step_block(text, "address-findings")
-    assert "skip_if:" not in _step_block(text, "address-findings")
+    assert "session: lead-agent" in _step_block(text, "triage")
+    assert "session: lead-agent" in _step_block(text, "define-fix")
+    assert "session:" not in "".join(
+        _step_block(text, step) for step in ("change", "add-constraints", "finalize-pr")
+    )
 
 
-def test_validation_runs_after_initial_implementation_and_after_findings_repairs() -> None:
+def test_the_fix_is_defined_outside_the_repository_for_implement_change() -> None:
     text = _workflow_text()
-    implement_at = text.index("- id: implement-fix\n")
-    initial_at = text.index("- id: initial-validator\n")
-    test_at = text.index("- id: test-flows\n")
-    review_at = text.index("- id: review-fix\n")
-    address_at = text.index("- id: address-findings\n")
-    final_at = text.index("- id: final-validator\n")
-    finalize_at = text.index("- id: finalize-pr\n")
-    assert implement_at < initial_at < test_at < review_at < address_at < final_at < finalize_at
+    change = _step_block(text, "change")
+    assert 'change_dir: "{{artifact_dir}}/definition"' in change
+    assert 'change_kind: "spec-driven"' in change
+    assert 'skip_validator: "false"' in change
+    assert "{{artifact_dir}}/definition" in _step_block(text, "define-fix")
+    assert 'design_file: "{{artifact_dir}}/definition/design.md"' in _step_block(
+        text, "add-constraints"
+    )
 
 
-def test_implement_group_marks_completion_only_after_implementor_succeeds() -> None:
+def test_a_fix_is_defined_and_constrained_before_implement_change_and_finalized_after() -> None:
+    text = _workflow_text()
+    order = [
+        "create-branch",
+        "change-name",
+        "define-fix",
+        "add-constraints",
+        "change",
+        "record-change-blocked",
+        "record-change-failure",
+        "mark-implemented",
+        "finalize-pr",
+        "record-pr-details",
+        "annotate-pr",
+    ]
+    positions = [text.index(f"- id: {step}\n") for step in order]
+    assert positions == sorted(positions)
+
+
+def test_a_failure_before_verification_ends_the_workflow_without_an_outcome() -> None:
+    text = _workflow_text()
+    failure = _step_block(text, "record-change-failure")
+    assert "verify-failure.py" in failure
+    assert "--require-evidence" in failure
+    assert "continue_on_failure" not in failure
+    # mark-implemented follows it, so the exit that ends the group also skips record-outcome.
+    assert text.index("- id: record-change-failure\n") < text.index("- id: mark-implemented\n")
+
+
+def test_an_outcome_written_by_a_blocked_implementation_is_not_overwritten() -> None:
+    text = _workflow_text()
+    blocked = _step_block(text, "record-change-blocked")
+    assert "contract: factory-fix/1" in blocked
+    assert 'outcome_path: "{{artifact_dir}}/fix-outcome.json"' in blocked
+    assert "test -s {{artifact_dir}}/fix-outcome.json" in _step_block(text, "record-outcome")
+    assert 'verify_failure: "{{artifact_dir}}/verify-failure.json"' in _step_block(
+        text, "record-outcome"
+    )
+
+
+def test_implement_group_marks_completion_only_after_the_change_has_run() -> None:
     text = _workflow_text()
     seed_at = text.index("- id: seed-implement-status\n")
-    implement_at = text.index("- id: implement-fix\n")
+    change_at = text.index("- id: change\n")
     mark_at = text.index("- id: mark-implemented\n")
-    initial_at = text.index("- id: initial-validator\n")
-    assert seed_at < implement_at < mark_at < initial_at
-    assert not re.search(r"^      - id: ", text[implement_at + 1 : mark_at], re.MULTILINE)
+    finalize_at = text.index("- id: finalize-pr\n")
+    assert seed_at < change_at < mark_at < finalize_at
     assert "command: printf 'failed'" in _step_block(text, "seed-implement-status")
     assert "capture: implement_status" in _step_block(text, "seed-implement-status")
     assert "command: printf 'passed'" in _step_block(text, "mark-implemented")
@@ -129,10 +171,8 @@ def test_implement_group_marks_completion_only_after_implementor_succeeds() -> N
 
 
 def test_record_outcome_skips_when_implementor_did_not_complete() -> None:
-    assert (
-        "skip_if: 'sh: test {{fixable}} != true || test \"{{implement_status}}\" != passed'"
-        in _step_block(_workflow_text(), "record-outcome")
-    )
+    skip = 'test {{fixable}} != true || test "{{implement_status}}" != passed'
+    assert skip in _step_block(_workflow_text(), "record-outcome")
 
 
 def test_implement_group_records_completion_only_after_finalization() -> None:
@@ -145,7 +185,7 @@ def test_implement_group_records_completion_only_after_finalization() -> None:
         assert "capture: implement_completed" in seed
         assert "skip_if:" not in seed
     group = _step_block(text, "implement")
-    assert group.index("- id: seed-implement-completed\n") < group.index("- id: implement-fix\n")
+    assert group.index("- id: seed-implement-completed\n") < group.index("- id: change\n")
     step_ids = re.findall(r"^      - id: (.+)$", group, re.MULTILINE)
     assert step_ids[-3:] == ["annotate-pr", "refresh-loc", "mark-implement-completed"]
     mark = _step_block(group, "mark-implement-completed")
@@ -188,43 +228,6 @@ def test_missing_outcome_names_incomplete_implementor_only_when_it_failed(
     assert ("implementor step did not complete" in result.stderr) is mentions_implementor
 
 
-def test_each_validator_gate_has_an_implementor_repair_and_recheck() -> None:
-    text = _workflow_text()
-    for phase in ("initial", "final"):
-        gate_at = text.index(f"- id: {phase}-validation-gate\n")
-        repair_at = text.index(f"- id: repair-{phase}-validation\n")
-        recheck_at = text.index(f"- id: recheck-{phase}-validation\n")
-        assert gate_at < repair_at < recheck_at
-        assert "continue_on_failure: true" in _step_block(text, f"{phase}-validation-gate")
-        assert "session: implementor-agent" in _step_block(text, f"repair-{phase}-validation")
-        assert "skip_if: previous_success" in _step_block(text, f"repair-{phase}-validation")
-        recheck = _step_block(text, f"recheck-{phase}-validation")
-        assert "agent-validator run --report" in recheck
-        assert '>"{{artifact_dir}}/logs/{{step_id}}.log"' in recheck
-
-
-def test_validator_repairs_leave_out_of_scope_check_failures_for_a_human() -> None:
-    for phase in ("initial", "final"):
-        repair = _step_block(_workflow_text(), f"repair-{phase}-validation")
-        for phrase in (
-            "either of these independent conditions",
-            "not caused by this branch's changes",
-            "same check fails with the same error at the merge base",
-            "origin/<target branch>",
-            "temporary worktree",
-            "lockfile entries",
-            "check's definition and configuration",
-            "If you cannot confirm it, treat the failure as caused by the branch",
-            "If the branch added or changed the check or its policy, the branch caused the failure",
-            "git, URL, or fork overrides or resolutions",
-            "even if the branch caused the failure",
-            "leave the check failing",
-            "Out-of-scope failures needing a human decision",
-            "what remedy a human would need to approve",
-        ):
-            assert phrase in repair, (phase, phrase)
-
-
 def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None:
     block = _step_block(_workflow_text(), "annotate-pr")
     for needle in ("Refs #", "agent-factory:claim:"):
@@ -241,9 +244,22 @@ def test_annotate_step_marks_the_pr_with_the_issue_reference_and_claim() -> None
 def test_scripts_are_referenced_by_bare_name_next_to_the_workflow() -> None:
     text = _workflow_text()
     scripts = set(re.findall(r"^\s+script: (\S+)$", text, re.MULTILINE))
-    assert scripts == set(launch.WORKFLOW_SCRIPTS)
+    assert scripts <= set(launch.WORKFLOW_SCRIPTS)
     for name in launch.WORKFLOW_SCRIPTS:
         assert os.access(str(PACKAGE / name), os.X_OK), name
+
+
+def test_every_file_a_packaged_workflow_names_is_staged() -> None:
+    """A script, rule file, or sub-workflow a workflow names must be in the Runner catalog."""
+    staged = set(launch.STAGED_FILES)
+    for workflow in sorted(Path(str(PACKAGE)).iterdir()):
+        if not workflow.name.endswith(".yaml"):
+            continue
+        text = workflow.read_text()
+        named = set(re.findall(r"^\s+script: (\S+)$", text, re.MULTILINE))
+        named |= set(re.findall(r"\.agent-runner/workflows/([\w.-]+)", text))
+        named |= set(re.findall(r"^\s+workflow: ((?!builtin:)\S+)$", text, re.MULTILINE))
+        assert named <= staged, (workflow.name, sorted(named - staged))
 
 
 # -- the artifact directory parameter (INT-002) -------------------------------------------
@@ -289,7 +305,7 @@ def test_packaged_workflow_check_refuses_a_stray_container_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     text = _workflow_text().replace(
-        'mkdir -p "{{artifact_dir}}/logs"', "mkdir -p /artifacts/logs", 1
+        'mkdir -p "{{artifact_dir}}/definition"', "mkdir -p /artifacts/definition", 1
     )
     assert text != _workflow_text()
     monkeypatch.setattr(launch, "packaged_workflow_text", _constant(text))
@@ -339,9 +355,11 @@ def _runner_clone(tmp_path: Path, finalize_pr: str | None) -> Path:
     clone = tmp_path / "runner"
     (clone / "scripts").mkdir(parents=True)
     (clone / "scripts" / "sandbox-run.sh").write_text(LAUNCHER)
+    core = clone / "workflows" / "core"
+    core.mkdir(parents=True)
+    for required in launch.REQUIRED_RUNNER_WORKFLOWS:
+        (clone / required).write_text("# fixture\n")
     if finalize_pr is not None:
-        core = clone / "workflows" / "core"
-        core.mkdir(parents=True)
         (clone / launch.FINALIZE_PR_PATH).write_text(finalize_pr)
     return clone
 
@@ -353,6 +371,15 @@ def test_runner_contract_accepts_a_finalize_pr_that_takes_ci_fix_cycles(tmp_path
 def test_runner_contract_refuses_a_finalize_pr_without_the_parameter(tmp_path: Path) -> None:
     clone = _runner_clone(tmp_path, "name: finalize-pr\nsteps: []\n")
     with pytest.raises(ReadinessError, match="does not accept ci_fix_cycles"):
+        launch.check_runner_contract(clone, CONTRACT)
+
+
+def test_runner_contract_refuses_a_runner_without_the_builtins_the_workflows_call(
+    tmp_path: Path,
+) -> None:
+    clone = _runner_clone(tmp_path, FINALIZE_WITH_PARAM)
+    (clone / "workflows/core/implement-change-v2.0.yaml").unlink()
+    with pytest.raises(ReadinessError, match="implement-change-v2.0.yaml is missing"):
         launch.check_runner_contract(clone, CONTRACT)
 
 
@@ -392,11 +419,11 @@ def test_target_catalog_without_a_shadowing_workflow_is_accepted(tmp_path: Path)
     catalog.mkdir(parents=True)
     (catalog / "deploy-v1.0.yaml").write_text("name: deploy\n")
     (catalog / "team").mkdir()
-    (catalog / "team" / "factory-fix-v1.0.yaml").write_text("name: factory-fix\n")
+    (catalog / "team" / "factory-fix-v2.0.yaml").write_text("name: factory-fix\n")
     launch.check_target_catalog(tmp_path)
 
 
-@pytest.mark.parametrize("filename", ["factory-fix-v1.0.yaml", "factory-fix-v2.yml"])
+@pytest.mark.parametrize("filename", ["factory-fix-v2.0.yaml", "factory-fix-v2.yml"])
 def test_target_catalog_shadowing_the_packaged_workflow_is_refused(
     tmp_path: Path, filename: str
 ) -> None:
@@ -843,7 +870,7 @@ def test_shell_template_scan_reads_every_skip_if_quoting_form() -> None:
 
 
 _RUNNER_CAPTURE_WORKFLOW = """name: capture-probe
-description: The packaged scripts' captures gate steps the way factory-fix-v1.0 does.
+description: The packaged scripts' captures gate steps the way factory-fix-v2.0 does.
 steps:
   - id: record-triage
     script: record-triage.sh

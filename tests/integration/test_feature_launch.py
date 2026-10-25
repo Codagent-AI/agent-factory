@@ -109,7 +109,7 @@ def test_feature_launch_refuses_runner_without_verify_change(tmp_path: Path) -> 
     runner = tmp_path / "agent-runner"
     runner.write_text('#!/bin/sh\necho "unknown core/verify-change" >&2\nexit 1\n')
     runner.chmod(0o755)
-    workflow = tmp_path / "factory-feature-v1.0.yaml"
+    workflow = tmp_path / "factory-feature-v2.0.yaml"
     workflow.write_text("name: factory-feature\n")
     with pytest.raises(ReadinessError, match="core/verify-change"):
         launch.check_host_runner_workflow(str(runner), workflow, FEATURE)
@@ -122,7 +122,7 @@ def test_feature_launch_refuses_incompatible_define_contract(
     workflow = tmp_path / "workflow"
     workflow.mkdir()
     (workflow / FEATURE.workflow_file).write_text((package / FEATURE.workflow_file).read_text())
-    (workflow / "factory-define-v1.0.yaml").write_text(
+    (workflow / "factory-define-v2.0.yaml").write_text(
         "# factory-contract: factory-feature/2\nname: factory-define\n"
     )
 
@@ -137,8 +137,8 @@ def test_feature_launch_refuses_incompatible_define_contract(
 @pytest.mark.parametrize(
     ("contract", "workflow_file"),
     [
-        ("factory-feature/1", "factory-feature-v1.0.yaml"),
-        ("factory-review/1", "factory-review-v1.0.yaml"),
+        ("factory-feature/1", "factory-feature-v2.0.yaml"),
+        ("factory-review/1", "factory-review-v2.0.yaml"),
     ],
 )
 def test_feature_host_command_passes_only_params_its_workflow_declares(

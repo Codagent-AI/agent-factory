@@ -28,7 +28,7 @@ def test_task_review_without_base_head_does_not_merge(tmp_path: Path) -> None:
 
 def test_task_review_passes_scope_to_shared_implementation() -> None:
     review = launch.packaged_workflow_text(launch.REVIEW_CONTRACT)
-    implementation = (WORKFLOW / "factory-implement-v1.0.yaml").read_text()
+    implementation = (WORKFLOW / "factory-implement-v2.0.yaml").read_text()
     assert "On a task pull request" in review
     implement_call = review.split("  - id: implement\n", 1)[1].split(
         "  - id: restore-description", 1

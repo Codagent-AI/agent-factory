@@ -1,6 +1,6 @@
 # factory-contract: factory-task/1
 name: factory-task
-description: "Triage and implement guarded low-risk maintenance as a chore pull request."
+description: "Triage guarded low-risk maintenance, implement it through the Runner's implement-change with its crosscheck audit and single validator run, and guard its scope as a chore pull request."
 hidden: true
 
 params:
@@ -17,10 +17,6 @@ params:
 sessions:
   - name: lead-agent
     agent: lead
-  - name: implementor-agent
-    agent: implementor
-  - name: tester-agent
-    agent: tester
 
 steps:
   - id: check-contract
@@ -90,22 +86,28 @@ steps:
     command: printf ''
     capture: prefinalize_head
 
+  # Stays failed when a step before verification fails: that ends the workflow without an
+  # outcome, which the factory retries as a technical failure.
+  - id: seed-implement-complete
+    command: printf failed
+    capture: implement_complete
+
   - id: implement
     skip_if: 'sh: test "{{doable}}" != true'
     continue_on_failure: true
     steps:
       - id: seed-validator-status
-        command: printf failed
+        command: printf passed
         capture: validator_status
+      - id: seed-implement-result
+        command: printf failed
+        capture: implement_result
       - id: seed-ci-status
         command: printf ''
         capture: ci_status
       - id: seed-pr-details
         command: printf '{}'
         capture: pr_details
-      - id: seed-test-flow-report
-        command: printf ''
-        capture: test_flow_report
       - id: seed-failure-reasons
         command: printf '[]'
         capture: failure_reasons
@@ -117,91 +119,90 @@ steps:
         capture: scope_status
       - id: create-branch
         command: git checkout -b "{{branch_name}}"
-      - id: implement-task
-        session: implementor-agent
-        mode: autonomous
-        prompt: |
-          Implement the plan in {{artifact_dir}}/task-triage.json without a
-          red-test-first requirement. Run repository tests, linters and validator.
-          Commit changes as [{{step_id}}] chore: ...
-      - id: initial-validator
-        workflow: builtin:core/run-validator-v1.0.yaml
-      - id: initial-validation-gate
-        command: |
-          mkdir -p "{{artifact_dir}}/logs"
-          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then printf passed; else printf failed; exit 1; fi
-        capture: validator_status
-        continue_on_failure: true
-      - id: repair-initial-validation
-        session: implementor-agent
-        mode: autonomous
-        skip_if: previous_success
-        prompt: |
-          Repair {{artifact_dir}}/logs/initial-validation-gate.log, run checks,
-          and commit changes as [{{step_id}}] chore: ...
-          For CHECK failures, do not apply a remedy when either of these independent conditions holds:
-          - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
-          - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
-          For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
-      - id: recheck-initial-validation
-        command: |
-          mkdir -p "{{artifact_dir}}/logs"
-          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1; then printf passed; else printf failed; exit 1; fi
-        capture: validator_status
-        skip_if: 'sh: test "{{validator_status}}" = passed'
-      - id: test-flows
-        session: tester-agent
-        mode: autonomous
-        capture: test_flow_report
-        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{user_visible}}" != true'
-        prompt: |
-          Exercise representative user-facing tooling flows changed by this Task.
-          Report concrete evidence, defects and limitations. Do not edit code.
-      - id: scope-floor-for-review
-        command: python3 .agent-runner/workflows/task-scope-floor.py "{{scope_base}}"
-        capture: scope_floor
-      - id: review-task
+
+      # The Runner's implement-change needs a defined change. A Task gets a small one, kept
+      # outside the repository with the checklist and audit records, so the pull request
+      # carries only the Task.
+      - id: change-name
+        command: printf '%s' "{{branch_name}}" | sed 's#^factory/##; s#/#-#g'
+        capture: change_name
+      - id: prepare-definition
+        command: mkdir -p "{{artifact_dir}}/definition"
+      - id: define-task
         session: lead-agent
         mode: autonomous
-        capture: review_report
         prompt: |
-          Review the complete diff, validator, tester report and scope floor
-          {{scope_floor}}. Identify concrete
-          correctness or task-boundary findings. Do not edit code.
-      - id: record-pre-findings-head
-        command: git rev-parse HEAD
-        capture: pre_findings_head
-      - id: address-findings
-        session: implementor-agent
-        mode: autonomous
-        prompt: |
-          Address in-scope findings from {{review_report}} and tester evidence.
-          Commit changes as [{{step_id}}] chore: ... Do not widen Task scope.
-      - id: final-validator
-        workflow: builtin:core/run-validator-v1.0.yaml
-      - id: final-validation-gate
-        command: |
-          mkdir -p "{{artifact_dir}}/logs"
-          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
-        capture: validator_status
+          Define the Task in {{issue_file}} so it can be implemented and audited against its stated
+          behavior. Your triage plan is in {{artifact_dir}}/task-triage.json; the Task boundary is
+          in `.agent-runner/workflows/factory-task-boundary.md`.
+
+          Write four small artifacts under `{{artifact_dir}}/definition/` and nothing in the
+          repository. Use the issue and your plan only; do not implement, widen the scope, or
+          settle a decision the issue leaves open.
+
+          - `proposal.md`: what the Task changes and why, and what is out of scope.
+          - `specs/task/spec.md`: the outcome as requirements. Each starts with
+            `### Requirement: <name>` and states what the repository SHALL have or do; each has
+            one or more `#### Scenario: <name>` blocks with `- **WHEN** ...` and `- **THEN** ...`
+            lines. Add this requirement exactly: `### Requirement: Stay within the Task boundary`,
+            stating that the change SHALL NOT cross the Task boundary, with the scenario "WHEN
+            `python3 .agent-runner/workflows/task-scope-floor.py {{scope_base}}` runs from the
+            repository root THEN it prints `[]`". Verify that scenario by running that command.
+          - `design.md`: the files and tooling the Task touches and the approach, from your plan.
+          - `test-plan.md`: the repository's existing tests, linters, and build to run, and any
+            automated test to add. Under a `## Testing envelope` heading, state that agent
+            acceptance testing is {{user_visible}} for this Task: when `true`, name the tooling
+            flows a user runs that the Task changes; when `false`, state that no agent
+            acceptance flow is required beyond the automated checks and current-head CI.
+
+      - id: add-constraints
+        script: add-constraints.sh
+        script_inputs:
+          design_file: "{{artifact_dir}}/definition/design.md"
+          kind: task
+
+      # implement-change runs the lead's and the implementor's checklists, merged by the
+      # crosscheck; the implementation; the crosscheck's audit and the fixes it asks for; and
+      # verify-change, whose one validator run (with bounded repair) precedes the draft pull
+      # request and acceptance.
+      - id: implement-change
         continue_on_failure: true
-      - id: repair-final-validation
-        session: implementor-agent
-        mode: autonomous
-        skip_if: 'sh: test "{{validator_status}}" = passed'
-        prompt: |
-          Repair final validation, ensure a clean committed tree, and commit
-          changes as [{{step_id}}] chore: ...
-          For CHECK failures, do not apply a remedy when either of these independent conditions holds:
-          - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
-          - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
-          For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
-      - id: recheck-final-validation
-        command: |
-          mkdir -p "{{artifact_dir}}/logs"
-          if agent-validator run --report >"{{artifact_dir}}/logs/{{step_id}}.log" 2>&1 && test -z "$(git status --porcelain)"; then printf passed; else printf failed; exit 1; fi
+        steps:
+          - id: change
+            workflow: builtin:core/implement-change-v2.0.yaml
+            params:
+              change_name: "{{change_name}}"
+              change_dir: "{{artifact_dir}}/definition"
+              change_label: "task"
+              change_kind: "spec-driven"
+              artifact_validation_instruction: "No artifact validation applies: the definition lives outside the repository."
+              skip_validator: "false"
+          - id: mark-change-passed
+            command: printf passed
+            capture: implement_result
+      - id: mark-change-failed
+        command: printf failed
         capture: validator_status
-        skip_if: 'sh: test "{{validator_status}}" = passed'
+        skip_if: 'sh: test "{{implement_result}}" != failed'
+      - id: record-change-blocked
+        script: record-blocked.sh
+        script_inputs:
+          contract: factory-task/1
+          outcome_path: "{{artifact_dir}}/task-outcome.json"
+          blocked_file: "{{session_dir}}/output/implementation-blocked.md"
+          branch_name: "{{branch_name}}"
+        skip_if: 'sh: test "{{implement_result}}" != failed'
+      - id: record-change-failure
+        command: python3 .agent-runner/workflows/verify-failure.py "{{session_dir}}" "{{artifact_dir}}" --require-evidence
+        skip_if: 'sh: test "{{implement_result}}" != failed || test -s {{artifact_dir}}/task-outcome.json'
+
+      - id: mark-implement-complete
+        command: printf passed
+        capture: implement_complete
+
+      # The Runner pushes the branch and opens the draft pull request inside verify-change,
+      # so the guard runs on a pushed head. It runs before the pull request is marked ready;
+      # a crossing leaves the draft open for a human and is reported as failed.
       - id: prepush-guard
         workflow: factory-task-guard-v1.0.yaml
         params:
@@ -213,10 +214,11 @@ steps:
         command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
         capture: scope_status
         skip_if: 'sh: test "{{validator_status}}" != passed'
-      - id: normalize-chore-commits
-        command: python3 .agent-runner/workflows/normalize-chore-commits.py "{{scope_base}}"
-        continue_on_failure: true
-        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{scope_status}}" != clean'
+      # Commits are pushed before finalization, so a subject without chore: cannot be rewritten.
+      # Record it for the pull request description instead.
+      - id: record-chore-subjects
+        command: python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json" || test $? -eq 3
+        skip_if: 'sh: test "{{validator_status}}" != passed'
       - id: record-prefinalize-head
         command: git rev-parse HEAD
         capture: prefinalize_head
@@ -259,7 +261,7 @@ steps:
 
   - id: record-outcome
     script: record-outcome.sh
-    skip_if: 'sh: test "{{doable}}" != true'
+    skip_if: 'sh: test "{{doable}}" != true || test "{{implement_complete}}" != passed || test -s {{artifact_dir}}/task-outcome.json'
     script_inputs:
       contract: factory-task/1
       outcome_path: "{{artifact_dir}}/task-outcome.json"
@@ -272,6 +274,7 @@ steps:
       scope_path: "{{artifact_dir}}/scope-prepush.json"
       post_scope_path: "{{artifact_dir}}/scope-postfinalize.json"
       prefinalize_head: "{{prefinalize_head}}"
+      verify_failure: "{{artifact_dir}}/verify-failure.json"
 
   - id: verify-outcome
     command: |

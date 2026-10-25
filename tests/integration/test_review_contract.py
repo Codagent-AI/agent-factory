@@ -87,10 +87,10 @@ def test_eligible_review_activity_keeps_writer_pr_comments_after_checkpoint() ->
 def test_review_workflow_and_shared_implementation_are_staged(tmp_path: Path) -> None:
     staged = launch.stage_workflow(tmp_path, "factory-review/1")
 
-    assert (staged / "factory-review-v1.0.yaml").read_text().splitlines()[
+    assert (staged / "factory-review-v2.0.yaml").read_text().splitlines()[
         0
     ] == "# factory-contract: factory-review/1"
-    assert (staged / "factory-implement-v1.0.yaml").is_file()
+    assert (staged / "factory-implement-v2.0.yaml").is_file()
     assert (staged / "record-review-triage.sh").is_file()
 
 
@@ -119,7 +119,7 @@ def test_review_workflow_declares_artifact_dir_and_no_container_path() -> None:
 
     assert "- name: artifact_dir" in text
     assert "review-outcome.json" in text
-    assert "factory-implement-v1.0.yaml" in text
+    assert "factory-implement-v2.0.yaml" in text
 
 
 def test_host_wrapper_runs_the_review_workflow_with_its_input_file(tmp_path: Path) -> None:
@@ -704,7 +704,7 @@ def test_int008_merge_only_prompt_and_implementation_default() -> None:
     ):
         assert phrase in respond
     implementation = (
-        Path(launch.__file__).parent / "workflow/factory-implement-v1.0.yaml"
+        Path(launch.__file__).parent / "workflow/factory-implement-v2.0.yaml"
     ).read_text()
     assert '  - name: implement_plan\n    required: false\n    default: "true"' in implementation
     assert "skip_if: 'sh: test \"{{implement_plan}}\" = false'" in _review_step(
@@ -800,3 +800,68 @@ def test_int008_review_merge_current_or_clean(tmp_path: Path, moved: bool) -> No
     else:
         assert git(repo, "rev-parse", "HEAD") == before
         assert "merge_commit" not in record
+
+
+def _implement_workflow() -> str:
+    return (Path(launch.__file__).parent / "workflow" / launch.IMPLEMENT_WORKFLOW_FILE).read_text()
+
+
+def test_review_round_audits_its_changes_then_validates_once() -> None:
+    text = _implement_workflow()
+    order = [
+        "record-round-base",
+        "implement-plan",
+        "implement-task-plan",
+        "audit",
+        "resolve-findings",
+        "run-validator",
+        "check-clean",
+        "validation-gate",
+        "finalize-pr",
+        "write-result",
+    ]
+    positions = [text.index(f"  - id: {step}\n") for step in order]
+    assert positions == sorted(positions)
+    # The validator runs through the Runner's run-validator once; its repair is bounded there.
+    assert text.count("workflow: builtin:core/run-validator-v1.0.yaml") == 1
+    assert "agent-validator" not in text
+    sessions = text[text.index("sessions:") : text.index("steps:")]
+    assert "agent: crosscheck" in sessions
+    assert "tester" not in sessions
+    audit = text.split("  - id: audit\n", 1)[1].split("\n  - id: ", 1)[0]
+    assert "session: crosscheck-agent" in audit
+    assert "capture: audit_findings" in audit
+    # The implementor resolves findings after every audit, so it is the session the
+    # validator's repair steps inherit.
+    resolve = text.split("  - id: resolve-findings\n", 1)[1].split("\n  - id: ", 1)[0]
+    assert "session: implementor-agent" in resolve
+
+
+@pytest.mark.parametrize(
+    ("result", "dirty", "expected"),
+    [
+        ("PASS", False, "passed"),
+        ("FAIL", False, "failed"),
+        ("PASS", True, "failed"),
+        (None, False, "failed"),
+    ],
+)
+def test_validation_gate_reads_the_validators_result_and_the_tree(
+    tmp_path: Path, result: str | None, dirty: bool, expected: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    if dirty:
+        (repo / "stray.txt").write_text("uncommitted\n")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    if result is not None:
+        (artifacts / "validator-result.txt").write_text(f"{result}\nboth reviews failed\n")
+    gate = _implement_workflow().split("  - id: validation-gate\n", 1)[1].split("\n  - id: ", 1)[0]
+    script = gate.split("    command: |\n", 1)[1].split("    capture:", 1)[0]
+    script = "\n".join(line[6:] for line in script.splitlines())
+    script = script.replace("{{artifact_dir}}", str(artifacts))
+    done = subprocess.run(["sh", "-c", script], cwd=repo, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert done.stdout == expected
