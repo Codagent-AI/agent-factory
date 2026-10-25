@@ -147,8 +147,8 @@ because a round has no checklist. Role mapping, by the factory's configured prof
 | `acceptance-tester` | `tester` | acceptance rounds |
 
 Fix and task claims need a `crosscheck` profile, so `[fix.defaults]` and `[task.defaults]` gain
-one. Their default is a Claude profile, because the implementor is Codex and the docs advise a
-separate model family; the feature default (Codex) is left as it is. A claim frozen before this
+one. Their default is `codex:gpt-6.1-sol:high`, as for features and evals: the crosscheck merges and
+audits against the lead's checklist, and the lead is Claude, so it uses the other model family. A claim frozen before this
 change has no crosscheck, so the handler fills in the kind's configured default at launch
 (`launch_roles`); every other role stays as frozen.
 
@@ -298,10 +298,11 @@ else.
 
 ## Open Decisions
 
-1. Accept archiving after verification, with bookkeeping commits kept out of the orange items.
-   Recommended: yes.
-2. Merge before the Runner passes through `acceptance_rounds` and `acceptance_fix_scope`, or
-   hold. Recommended: merge after a clean live run and file the Runner request.
-3. Accept the weaker Task guard ordering above. Recommended: yes, with the Runner request.
-4. The new fix and task crosscheck default (`claude:claude-sonnet-5-5:high`), and whether to
-   move the feature default off Codex too. Recommended: yes to both.
+Paul's rulings:
+
+1. Archiving after verification, with bookkeeping commits kept out of the orange items: accepted.
+2. This change waits until the Runner passes `acceptance_rounds` and `acceptance_fix_scope`
+   through `implement-change` to `verify-change`, so no acceptance regression ships.
+3. The weaker Task guard ordering above: accepted as is, with no Runner stop-before-PR option.
+4. Crosscheck defaults: Codex for every kind, because the crosscheck checks the lead (Claude),
+   not the implementor.

@@ -108,9 +108,9 @@ repository = "Codagent-AI/and-scene"
 lead = "claude:claude-opus-5-5:high"
 implementor = "codex:gpt-6.1-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
-# Audits the implementation against the fix's checklist. A different model family from the
-# implementor, as docs/installation.md advises.
-crosscheck = "claude:claude-sonnet-5-5:high"
+# Merges the lead's and implementor's checklists and audits the implementation. A different
+# model family from the lead, whose checklist it cross-checks.
+crosscheck = "codex:gpt-6.1-sol:high"
 
 [feature]
 contract = "factory-feature/1"
@@ -130,7 +130,7 @@ contract = "factory-task/1"
 lead = "claude:claude-sonnet-5-5:high"
 implementor = "codex:gpt-6.1-sol:medium"
 tester = "claude:claude-sonnet-5:medium"
-crosscheck = "claude:claude-sonnet-5-5:high"
+crosscheck = "codex:gpt-6.1-sol:high"
 
 [notify]
 enabled = true
