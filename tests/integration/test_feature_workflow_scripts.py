@@ -302,6 +302,29 @@ def test_record_blocked_turns_the_implementation_blocker_into_needs_input(
         assert outcome["validator"] == {"status": "skipped"}
 
 
+def test_record_blocked_ends_the_attempt_when_the_feature_branch_cannot_be_pushed(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    blocked = tmp_path / "implementation-blocked.md"
+    blocked.write_text("Question: which API?\n")
+    outcome_path = tmp_path / "outcome.json"
+    payload = json.dumps(
+        {
+            "contract": "factory-feature/1",
+            "outcome_path": str(outcome_path),
+            "blocked_file": str(blocked),
+            "branch_name": "claim",
+        }
+    )
+    result = run(str(PACKAGE / "record-blocked.sh"), cwd=repo, input=payload)
+    assert result.returncode != 0
+    assert "push failed" in result.stderr
+    assert not outcome_path.exists()
+
+
 def test_add_constraints_appends_the_factory_rules_to_a_design_once(tmp_path: Path) -> None:
     design = tmp_path / "design.md"
     design.write_text("# Design\n\nThe approach.\n")

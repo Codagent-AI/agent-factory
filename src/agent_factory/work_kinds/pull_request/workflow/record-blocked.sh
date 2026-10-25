@@ -38,8 +38,15 @@ if contract == "factory-feature/1":
     if not branch:
         print("record-blocked: branch_name is required for a feature", file=sys.stderr)
         sys.exit(2)
-    # Keep the work done so far, so the resumed attempt continues from it.
-    subprocess.run(["git", "push", "origin", f"HEAD:refs/heads/{branch}"], check=False)
+    # Keep the work done so far, so the resumed attempt continues from it. A push that fails
+    # ends the attempt without an outcome, which the factory retries, rather than claim a branch
+    # the remote does not hold.
+    pushed = subprocess.run(
+        ["git", "push", "origin", f"HEAD:refs/heads/{branch}"], capture_output=True, text=True
+    )
+    if pushed.returncode != 0:
+        print(f"record-blocked: push failed: {pushed.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
     outcome = {
         "contract": contract,
         "outcome": "needs-input",
