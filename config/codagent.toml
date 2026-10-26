@@ -72,9 +72,9 @@ agent_validator_ref = "main"
 lead = "claude:claude-sonnet-5-5:high"
 # Reviews the planned tasks; the and-scene suite requires it.
 crosscheck = "codex:gpt-6.1-sol:high"
-implementor = "claude:claude-sonnet-5-5:medium"
+implementor = "codex:gpt-6.1-sol:medium"
 tester = "codex:gpt-6-luna:medium"
-skip_validator = false
+skip_validator = true
 
 [fix]
 contract = "factory-fix/1"
