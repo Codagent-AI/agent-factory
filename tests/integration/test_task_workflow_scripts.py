@@ -161,7 +161,7 @@ def test_normalize_chore_commits_refuses_pushed_commits_and_merge(tmp_path: Path
     assert git(repo, "rev-parse", "HEAD") == head
 
 
-def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path) -> None:
+def test_scope_outcomes_keep_an_open_pull_request_after_a_crossing(tmp_path: Path) -> None:
     script = (WORKFLOW / "record-outcome.sh").resolve()
     pre = tmp_path / "scope-prepush.json"
     post = tmp_path / "scope-postfinalize.json"
@@ -180,6 +180,16 @@ def test_scope_outcomes_stop_before_push_and_keep_postfinalize_pr(tmp_path: Path
         "pr_details": json.dumps({"url": "https://github.com/example/repo/pull/3", "number": 3}),
     }
     result = run(["sh", str(script)], data=payload)
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(output.read_text())
+    # The Runner opened the draft pull request before the guard ran, so it stays open.
+    assert outcome["outcome"] == "failed"
+    assert outcome["pr"]["number"] == 3
+    assert outcome["reasons"] == ["belongs in a Feature"]
+    # Finalization never ran, so no CI result is reported.
+    assert "ci" not in outcome
+    without_pr = {key: value for key, value in payload.items() if key != "pr_details"}
+    result = run(["sh", str(script)], data=without_pr)
     assert result.returncode == 0, result.stderr
     outcome = json.loads(output.read_text())
     assert outcome["outcome"] == "needs-input"

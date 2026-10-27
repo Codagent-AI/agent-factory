@@ -96,77 +96,6 @@ def flag_red_acceptance_validator(flags: dict[str, list[dict[str, str]]], result
     )
 
 
-TASK_TITLES = {
-    "Task-compliance did not run",
-    "Task-compliance violations remain",
-    "Task-compliance not declared",
-    "Task-compliance passed",
-}
-
-
-def task_compliance_record(artifact_dir: Path) -> dict[str, Any]:
-    try:
-        raw: object = json.loads((artifact_dir / "task-compliance.json").read_text())
-        record = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
-        if record.get("result") in {
-            "passed",
-            "failed",
-            "not-run",
-            "not-declared",
-        } and (
-            (record.get("result") == "not-run" and isinstance(record.get("reason"), str))
-            or all(
-                isinstance(record.get(key), str) and record[key]
-                for key in ("base", "reviewed_head", "tasks_sha256")
-            )
-        ):
-            return record
-    except (OSError, json.JSONDecodeError):
-        pass
-    return {"result": "not-run", "reason": "no task-compliance record"}
-
-
-def flag_task_compliance(
-    flags: dict[str, list[dict[str, str]]], artifact_dir: Path
-) -> dict[str, Any]:
-    record = task_compliance_record(artifact_dir)
-    for tier in ("red", "orange", "yellow", "white"):
-        flags[tier] = [item for item in flags[tier] if item.get("title") not in TASK_TITLES]
-    result = record["result"]
-    if result == "passed":
-        tier, title, detail, link = (
-            "white",
-            "Task-compliance passed",
-            f"reviewed {str(record.get('reviewed_head', ''))[:12]}",
-            "",
-        )
-    elif result == "failed":
-        violations = cast(list[dict[str, Any]], record.get("violations") or [])
-        detail = (
-            "; ".join(
-                f"{v.get('file', '')}:{v.get('line', '')} {v.get('issue', '')}" for v in violations
-            )
-            or "unresolved task-compliance violations"
-        )
-        tier, title, link = "red", "Task-compliance violations remain", EVIDENCE_LINK
-    elif result == "not-declared":
-        tier, title, detail, link = (
-            "yellow",
-            "Task-compliance not declared",
-            "the target declares no task-compliance review",
-            "",
-        )
-    else:
-        tier, title, detail, link = (
-            "red",
-            "Task-compliance did not run",
-            str(record.get("reason") or "no task-compliance record"),
-            EVIDENCE_LINK,
-        )
-    flags[tier].append({"title": title, "detail": detail, "link": link})
-    return record
-
-
 EVIDENCE_LINK = "#acceptance-evidence"
 LINE_SUFFIX = re.compile(r":(\d+)(?:-(\d+))?$")
 
@@ -219,17 +148,18 @@ def main() -> None:
         change_name = payload["change_name"]
         archive = Path(payload["archived_dir"])
         session_dir = Path(payload.get("session_dir", artifact_dir))
+        target_head = str(payload.get("target_head") or "")
     else:
         artifact_dir, issue_file = map(Path, sys.argv[1:3])
         change_name = sys.argv[3]
         archive = Path(sys.argv[4])
         session_dir = artifact_dir
+        target_head = sys.argv[5] if len(sys.argv) > 5 else ""
     issue = json.loads(issue_file.read_text())
     evidence_dir = session_dir / "output" if (session_dir / "output").exists() else artifact_dir
     path = artifact_dir / "review-attention.json"
     flags = json.loads(path.read_text())
     flag_red_acceptance_validator(flags, evidence_dir / "acceptance-validator-result.txt")
-    task_record = flag_task_compliance(flags, artifact_dir)
     accepted = flags["accepted_head"]
     later = command("git", "log", "--format=%H", f"{accepted}..HEAD").splitlines()
     # Acceptance evidence covers only the accepted head, so a later commit is covered
@@ -237,7 +167,13 @@ def main() -> None:
     orange_text = " ".join(
         f"{item.get('title', '')} {item.get('detail', '')}" for item in flags["orange"]
     )
-    uncovered = [sha for sha in later if sha[:7] not in orange_text]
+    # Bookkeeping commits (the archive and the checkpoints) are listed with the later commits,
+    # but are not worth a reviewer's attention: they move OpenSpec files only.
+    uncovered = [
+        sha
+        for sha in later
+        if sha[:7] not in orange_text and not pr_description.is_bookkeeping(sha)
+    ]
     flags["later_commits"] = later
     later_item = next(
         (item for item in flags["orange"] if item.get("title") == LATER_COMMITS_TITLE), None
@@ -247,8 +183,6 @@ def main() -> None:
             f"{sha[:12]} ({command('git', 'log', '-1', '--format=%s', sha)})" for sha in uncovered
         )
         if later_item is None:
-            # Keep the new item bound so the task-compliance note below joins it
-            # instead of adding a second item with the same title.
             later_item = {
                 "title": LATER_COMMITS_TITLE,
                 "detail": detail,
@@ -257,19 +191,6 @@ def main() -> None:
             flags["orange"].append(later_item)
         else:
             later_item["detail"] = f"{later_item['detail']}, {detail}"
-    reviewed_head = task_record.get("reviewed_head")
-    if isinstance(reviewed_head, str) and reviewed_head:
-        try:
-            unreviewed = command("git", "log", "--format=%H", f"{reviewed_head}..HEAD").splitlines()
-        except subprocess.CalledProcessError:
-            unreviewed = []
-        if unreviewed:
-            note = "Not covered by task-compliance: " + ", ".join(sha[:12] for sha in unreviewed)
-            if later_item is None:
-                later_item = {"title": LATER_COMMITS_TITLE, "detail": note, "link": EVIDENCE_LINK}
-                flags["orange"].append(later_item)
-            elif note not in later_item["detail"]:
-                later_item["detail"] += ". " + note
     path.write_text(json.dumps(flags, indent=2) + "\n")
     branch = command("git", "branch", "--show-current")
     pr = json.loads(
@@ -308,10 +229,7 @@ def main() -> None:
     root = Path(command("git", "rev-parse", "--show-toplevel")).resolve()
     for tier in ("red", "orange", "yellow", "white"):
         for item in flags[tier]:
-            if item.get("title") in ("Task-compliance not declared", "Task-compliance passed"):
-                item["link"] = ""
-            else:
-                item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
+            item["link"] = item_link(str(item.get("link", "")), repository, branch, root)
     title = issue.get("title")
     lines = [
         f"**Feature for #{issue['number']}:** {title}"
@@ -431,24 +349,6 @@ def main() -> None:
     )
     if later:
         lines.append("Later commits: " + ", ".join(f"`{sha}`" for sha in later))
-    evidence = ", ".join(
-        str(run.get("evidence", ""))
-        for run in cast(list[dict[str, Any]], task_record.get("runs", []))
-    )
-    lines.extend(
-        [
-            "",
-            "Task-compliance: "
-            + "; ".join(
-                (
-                    f"result {task_record['result']}",
-                    f"base {task_record.get('base', 'unavailable')}",
-                    f"reviewed head {task_record.get('reviewed_head', 'unavailable')}",
-                    f"evidence {evidence or 'unavailable'}",
-                )
-            ),
-        ]
-    )
     for name in ("acceptance-flow-evidence.md", "acceptance-findings.md"):
         evidence = evidence_dir / name
         if evidence.exists():
@@ -462,8 +362,8 @@ def main() -> None:
     # Best effort: the unmarked description is still published if marking fails.
     marker = Path(__file__).with_name("mark-later-commits.py")
     marker_command = [sys.executable, str(marker), str(body)]
-    if task_record.get("base"):
-        marker_command.append(task_record["base"])
+    if target_head:
+        marker_command.append(target_head)
     marked = subprocess.run(marker_command, check=False)
     if marked.returncode != 0:
         print("could not mark items later commits may have fixed", file=sys.stderr)

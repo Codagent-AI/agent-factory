@@ -1,0 +1,287 @@
+# factory-contract: factory-task/1
+name: factory-task
+description: "Triage guarded low-risk maintenance, implement it through the Runner's implement-change with its crosscheck audit and single validator run, and guard its scope as a chore pull request."
+hidden: true
+
+params:
+  - name: issue_file
+    required: true
+  - name: branch_name
+    required: true
+  - name: contract_version
+    required: true
+  - name: artifact_dir
+    required: false
+    default: /artifacts
+
+sessions:
+  - name: lead-agent
+    agent: lead
+
+steps:
+  - id: check-contract
+    script: check-contract.sh
+    script_inputs:
+      expected_contract: factory-task/1
+      declared_contract: "{{contract_version}}"
+
+  - id: check-clean-tree
+    command: test -z "$(git status --porcelain)"
+
+  - id: record-base
+    command: git rev-parse HEAD
+    capture: scope_base
+
+  - id: triage
+    session: lead-agent
+    mode: autonomous
+    capture: triage_decision
+    prompt: |
+      Read {{issue_file}}, including eligible comments and prior factory PR on
+      re-attempts. Decide whether this Task is bounded, low-risk maintenance
+      under the Task boundary in `.agent-runner/workflows/factory-task-boundary.md`.
+      Decline with doable=false when it crosses that boundary, naming where it
+      belongs and the exact decision needed. Decline any decision the issue leaves open.
+
+      Return only JSON with exactly doable (boolean), reasons (string array),
+      plan (string), and user_visible (boolean). When declining, the reasons
+      must state where the work belongs and the decision needed; leave plan empty.
+
+  - id: record-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: "{{triage_decision}}"
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      contract: factory-task/1
+      accept_field: doable
+      decision_path: "{{artifact_dir}}/task-triage.json"
+    capture: doable
+    continue_on_failure: true
+
+  - id: repair-triage
+    session: lead-agent
+    mode: autonomous
+    skip_if: previous_success
+    capture: triage_decision
+    prompt: |
+      Re-read {{issue_file}} and return exactly one JSON object with doable,
+      reasons, plan, and user_visible. No prose or code fence.
+
+  - id: recheck-triage
+    script: record-triage.sh
+    script_inputs:
+      decision: "{{triage_decision}}"
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      contract: factory-task/1
+      accept_field: doable
+      decision_path: "{{artifact_dir}}/task-triage.json"
+    capture: doable
+    skip_if: 'sh: test "{{doable}}" = true || test "{{doable}}" = false'
+
+  - id: triage-user-visible
+    command: python3 .agent-runner/workflows/json-flag.py "{{artifact_dir}}/task-triage.json" user_visible
+    capture: user_visible
+
+  - id: seed-prefinalize-head
+    command: printf ''
+    capture: prefinalize_head
+
+  # Stays failed when a step before verification fails: that ends the workflow without an
+  # outcome, which the factory retries as a technical failure.
+  - id: seed-implement-complete
+    command: printf failed
+    capture: implement_complete
+
+  - id: implement
+    skip_if: 'sh: test "{{doable}}" != true'
+    continue_on_failure: true
+    steps:
+      - id: seed-validator-status
+        command: printf passed
+        capture: validator_status
+      - id: seed-implement-result
+        command: printf failed
+        capture: implement_result
+      - id: seed-ci-status
+        command: printf ''
+        capture: ci_status
+      - id: seed-pr-details
+        command: printf '{}'
+        capture: pr_details
+      - id: seed-failure-reasons
+        command: printf '[]'
+        capture: failure_reasons
+      - id: seed-annotation-status
+        command: printf failed
+        capture: annotation_status
+      - id: seed-scope-status
+        command: printf crossed
+        capture: scope_status
+      - id: create-branch
+        command: git checkout -b "{{branch_name}}"
+
+      # The Runner's implement-change needs a defined change. A Task gets a small one, kept
+      # outside the repository with the checklist and audit records, so the pull request
+      # carries only the Task.
+      - id: change-name
+        command: printf '%s' "{{branch_name}}" | sed 's#^factory/##; s#/#-#g'
+        capture: change_name
+      - id: prepare-definition
+        command: mkdir -p "{{artifact_dir}}/definition"
+      - id: define-task
+        session: lead-agent
+        mode: autonomous
+        prompt: |
+          Define the Task in {{issue_file}} so it can be implemented and audited against its stated
+          behavior. Your triage plan is in {{artifact_dir}}/task-triage.json; the Task boundary is
+          in `.agent-runner/workflows/factory-task-boundary.md`.
+
+          Write four small artifacts under `{{artifact_dir}}/definition/` and nothing in the
+          repository. Use the issue and your plan only; do not implement, widen the scope, or
+          settle a decision the issue leaves open.
+
+          - `proposal.md`: what the Task changes and why, and what is out of scope.
+          - `specs/task/spec.md`: the outcome as requirements. Each starts with
+            `### Requirement: <name>` and states what the repository SHALL have or do; each has
+            one or more `#### Scenario: <name>` blocks with `- **WHEN** ...` and `- **THEN** ...`
+            lines. Add this requirement exactly: `### Requirement: Stay within the Task boundary`,
+            stating that the change SHALL NOT cross the Task boundary, with the scenario "WHEN
+            `python3 .agent-runner/workflows/task-scope-floor.py {{scope_base}}` runs from the
+            repository root THEN it prints `[]`". Verify that scenario by running that command.
+          - `design.md`: the files and tooling the Task touches and the approach, from your plan.
+          - `test-plan.md`: the repository's existing tests, linters, and build to run, and any
+            automated test to add. Under a `## Testing envelope` heading, state that agent
+            acceptance testing is {{user_visible}} for this Task: when `true`, name the tooling
+            flows a user runs that the Task changes; when `false`, state that no agent
+            acceptance flow is required beyond the automated checks and current-head CI.
+
+      - id: add-constraints
+        script: add-constraints.sh
+        script_inputs:
+          design_file: "{{artifact_dir}}/definition/design.md"
+          kind: task
+
+      # implement-change runs the lead's and the implementor's checklists, merged by the
+      # crosscheck; the implementation; the crosscheck's audit and the fixes it asks for; and
+      # verify-change, whose one validator run (with bounded repair) precedes the draft pull
+      # request and acceptance.
+      - id: implement-change
+        continue_on_failure: true
+        steps:
+          - id: change
+            workflow: builtin:core/implement-change-v2.0.yaml
+            params:
+              change_name: "{{change_name}}"
+              change_dir: "{{artifact_dir}}/definition"
+              change_label: "task"
+              change_kind: "spec-driven"
+              artifact_validation_instruction: "No artifact validation applies: the definition lives outside the repository."
+              skip_validator: "false"
+          - id: mark-change-passed
+            command: printf passed
+            capture: implement_result
+      - id: mark-change-failed
+        command: printf failed
+        capture: validator_status
+        skip_if: 'sh: test "{{implement_result}}" != failed'
+      - id: record-change-blocked
+        script: record-blocked.sh
+        script_inputs:
+          contract: factory-task/1
+          outcome_path: "{{artifact_dir}}/task-outcome.json"
+          blocked_file: "{{session_dir}}/output/implementation-blocked.md"
+          branch_name: "{{branch_name}}"
+        skip_if: 'sh: test "{{implement_result}}" != failed'
+      - id: record-change-failure
+        command: python3 .agent-runner/workflows/verify-failure.py "{{session_dir}}" "{{artifact_dir}}" --require-evidence
+        skip_if: 'sh: test "{{implement_result}}" != failed || test -s {{artifact_dir}}/task-outcome.json'
+
+      - id: mark-implement-complete
+        command: printf passed
+        capture: implement_complete
+
+      # The Runner pushes the branch and opens the draft pull request inside verify-change,
+      # so the guard runs on a pushed head. It runs before the pull request is marked ready;
+      # a crossing leaves the draft open for a human and is reported as failed.
+      - id: prepush-guard
+        workflow: factory-task-guard-v1.0.yaml
+        params:
+          base: "{{scope_base}}"
+          mode: prepush
+          artifact_dir: "{{artifact_dir}}"
+        skip_if: 'sh: test "{{validator_status}}" != passed'
+      - id: read-prepush-scope
+        command: python3 .agent-runner/workflows/scope-state.py status "{{artifact_dir}}/scope-prepush.json"
+        capture: scope_status
+        skip_if: 'sh: test "{{validator_status}}" != passed'
+      # Commits are pushed before finalization, so a subject without chore: cannot be rewritten.
+      # Record it for the pull request description instead.
+      - id: record-chore-subjects
+        command: python3 .agent-runner/workflows/check-chore-subjects.py "{{scope_base}}" "{{artifact_dir}}/nonchore-commits.json" || test $? -eq 3
+        skip_if: 'sh: test "{{validator_status}}" != passed'
+      - id: record-prefinalize-head
+        command: git rev-parse HEAD
+        capture: prefinalize_head
+      - id: seed-ci-status-attempted
+        command: printf passed
+        capture: ci_status
+      - id: finalize-pr
+        workflow: builtin:core/finalize-pr-v1.0.yaml
+        params:
+          ci_fix_cycles: "3"
+        skip_if: 'sh: test "{{validator_status}}" != passed || test "{{scope_status}}" != clean'
+        continue_on_failure: true
+      - id: mark-ci-failed
+        command: printf failed
+        capture: ci_status
+        skip_if: previous_success
+      - id: postfinalize-guard
+        workflow: factory-task-guard-v1.0.yaml
+        params:
+          base: "{{scope_base}}"
+          mode: postfinalize
+          artifact_dir: "{{artifact_dir}}"
+        skip_if: 'sh: test "$(git rev-parse HEAD)" = "{{prefinalize_head}}"'
+        # A guard that stops after the push must still reach record-outcome with the PR,
+        # which reports it `failed` because scope-postfinalize.json is not complete.
+        continue_on_failure: true
+      - id: record-pr-details
+        command: |
+          branch=$(git branch --show-current)
+          gh pr list --head "$branch" --state open --json url,number,headRefOid --limit 1 | jq -c '.[0] // {}'
+        capture: pr_details
+        continue_on_failure: true
+      - id: annotate-chore-pr
+        script: annotate-chore-pr.sh
+        script_inputs:
+          artifact_dir: "{{artifact_dir}}"
+          issue_file: "{{issue_file}}"
+        capture: annotation_status
+        continue_on_failure: true
+
+  - id: record-outcome
+    script: record-outcome.sh
+    skip_if: 'sh: test "{{doable}}" != true || test "{{implement_complete}}" != passed || test -s {{artifact_dir}}/task-outcome.json'
+    script_inputs:
+      contract: factory-task/1
+      outcome_path: "{{artifact_dir}}/task-outcome.json"
+      validator_status: "{{validator_status}}"
+      ci_status: "{{ci_status}}"
+      branch_name: "{{branch_name}}"
+      pr_details: "{{pr_details}}"
+      annotation_status: "{{annotation_status}}"
+      reasons: "{{failure_reasons}}"
+      scope_path: "{{artifact_dir}}/scope-prepush.json"
+      post_scope_path: "{{artifact_dir}}/scope-postfinalize.json"
+      prefinalize_head: "{{prefinalize_head}}"
+      verify_failure: "{{artifact_dir}}/verify-failure.json"
+
+  - id: verify-outcome
+    command: |
+      python3 - "{{artifact_dir}}/task-outcome.json" <<'PY'
+      import json, sys
+      from pathlib import Path
+      outcome = json.loads(Path(sys.argv[1]).read_text()).get("outcome")
+      if outcome not in ("pull-request", "needs-input", "failed"):
+          sys.exit(f"task-outcome.json has an invalid or missing outcome: {outcome}")
+      PY

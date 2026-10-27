@@ -14,17 +14,7 @@ import pytest
 from tests.e2e import test_fix_cycle as fix_cycle
 
 
-@pytest.mark.parametrize(
-    "compliance,comment",
-    [
-        ({"result": "not-run", "reason": "Trusted"}, "Task-compliance did not run: Trusted."),
-        ({"result": "failed"}, "Task-compliance violations remain."),
-        ({"result": "passed"}, ""),
-    ],
-)
-def test_feature_happy_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compliance: dict[str, str], comment: str
-) -> None:
+def test_feature_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         fix_cycle, "RUNNER", fix_cycle.RUNNER.replace("fix-outcome.json", "feature-outcome.json")
     )
@@ -68,8 +58,8 @@ def test_feature_happy_path(
         assert f"change_name=feature-1-{claim.id[:8]}" in args
         assert "resume_from=" in args and "prior_branch=" in args
         staged = h.root / "clones" / claim.id / "0" / "repo" / ".agent-runner" / "workflows"
-        assert (staged / "factory-feature-v1.0.yaml").is_file()
-        assert (staged / "factory-define-v1.0.yaml").is_file()
+        assert (staged / "factory-feature-v2.0.yaml").is_file()
+        assert (staged / "factory-define-v2.0.yaml").is_file()
         assert any("starts fresh" in comment for comment in h.comments())
         assert any("Feature inputs accepted and frozen." in comment for comment in h.comments())
         assert "feature slot:" in h.cli("status")
@@ -79,17 +69,11 @@ def test_feature_happy_path(
             "outcome": "pull-request",
             "reasons": [],
             "review_attention_counts": {
-                "red": 1 if compliance["result"] != "passed" else 0,
+                "red": 1,
                 "orange": 3,
                 "yellow": 12,
             },
-            "validator": {
-                "checks": "passed",
-                "status": {"not-run": "incomplete", "failed": "review-failed", "passed": "passed"}[
-                    compliance["result"]
-                ],
-            },
-            "task_compliance": compliance,
+            "validator": {"checks": "passed", "status": "passed"},
             "pr": {
                 "url": "https://github.com/example/work/pull/214",
                 "number": 214,
@@ -103,14 +87,7 @@ def test_feature_happy_path(
         assert h.field(h.shared.project.verdict.id) == h.shared.project.verdict.option(
             "pending-human-review"
         )
-        red = 1 if compliance["result"] != "passed" else 0
-        assert any(f"{red} red flags, 3 orange flags, 12 yellow items" in c for c in h.comments())
-        if comment:
-            assert any(comment in c for c in h.comments())
-        else:
-            assert all(
-                "Task-compliance" not in c for c in h.comments() if "Pull request opened" in c
-            )
+        assert any("1 red flags, 3 orange flags, 12 yellow items" in c for c in h.comments())
         merged_sha = fix_cycle._commit(tmp_path / "work", "the feature")
         fix_cycle._git(tmp_path / "work", "push", "-q", "origin", "main")
         h.update(pr_states={"214": {"state": "MERGED", "mergedAt": "2026-01-02T00:00:00Z"}})

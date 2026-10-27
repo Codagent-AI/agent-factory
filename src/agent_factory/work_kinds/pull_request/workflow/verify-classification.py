@@ -5,7 +5,12 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from agent_factory.work_kinds.pull_request.workflow.pr_description import is_bookkeeping
+else:
+    from pr_description import is_bookkeeping
 
 TIERS = ("red", "orange", "yellow", "white")
 # `git diff --shortstat` wording, for example "3 files changed, 40 insertions(+)".
@@ -51,6 +56,9 @@ for tier in TIERS:
 for sha in later:
     if not isinstance(sha, str) or not sha:
         errors.append("later_commits must list commit SHAs")
+        continue
+    # The archive of the accepted change and the phase checkpoints only move OpenSpec files.
+    if is_bookkeeping(sha):
         continue
     naming = [item for item in items["orange"] if sha[:7] in f"{item['title']} {item['detail']}"]
     if not naming:

@@ -93,7 +93,12 @@ case "$1" in
   *) exit 1 ;;
 esac
 """
-ROLES = {"lead": "cursor:m:high", "implementor": "claude:m:high", "tester": "codex:m:low"}
+ROLES = {
+    "lead": "cursor:m:high",
+    "implementor": "claude:m:high",
+    "tester": "codex:m:low",
+    "crosscheck": "codex:m:high",
+}
 
 
 def _git(path: Path, *args: str) -> str:

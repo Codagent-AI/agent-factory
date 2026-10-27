@@ -73,9 +73,14 @@ class PullRequestKind:
 
 FEATURE_STAGED_FILES = (
     "factory-task-guard-v1.0.yaml",
-    "factory-feature-v1.0.yaml",
-    "factory-define-v1.0.yaml",
+    "factory-feature-v2.0.yaml",
+    "factory-define-v2.0.yaml",
     "factory-define-rules.md",
+    "factory-change-rules.md",
+    "add-constraints.sh",
+    "record-blocked.sh",
+    "verify-pending.sh",
+    "verify-failure.py",
     "prepare-branch.sh",
     "merge-base.sh",
     "continue-change.sh",
@@ -87,7 +92,6 @@ FEATURE_STAGED_FILES = (
     "checkpoint.sh",
     "reconcile-skip.sh",
     "locate-archive.py",
-    "verify-failure.py",
     "check-openspec.sh",
     "record-validation-failure.sh",
     "verify-classification.py",
@@ -95,7 +99,6 @@ FEATURE_STAGED_FILES = (
     "annotate-pr.sh",
     "annotate-pr.py",
     "count-loc.py",
-    "task-compliance-gate.py",
     "mark-later-commits.py",
     "pr_description.py",
     "check-contract.sh",
@@ -103,12 +106,23 @@ FEATURE_STAGED_FILES = (
 )
 
 TASK_STAGED_FILES = (
-    "factory-task-v1.0.yaml",
+    "factory-task-v2.0.yaml",
+    "factory-task-guard-v1.0.yaml",
+    "factory-task-boundary.md",
+    "factory-change-rules.md",
+    "add-constraints.sh",
+    "record-blocked.sh",
+    "verify-failure.py",
     "check-contract.sh",
     "record-triage.sh",
     "decision_json.py",
     "record-outcome.sh",
     "annotate-chore-pr.sh",
+    "json-flag.py",
+    "task-scope-floor.py",
+    "record-scope.sh",
+    "scope-state.py",
+    "check-chore-subjects.py",
 )
 
 
@@ -119,9 +133,12 @@ FIX = PullRequestKind(
     item_noun="bug",
     issue_type=lambda shared: shared.routing.bug_type,
     workflow_name="factory-fix",
-    workflow_file="factory-fix-v1.0.yaml",
+    workflow_file="factory-fix-v2.0.yaml",
     staged_files=(
-        "factory-fix-v1.0.yaml",
+        "factory-fix-v2.0.yaml",
+        "factory-change-rules.md",
+        "add-constraints.sh",
+        "record-blocked.sh",
         "count-loc.py",
         "record-triage.sh",
         "record-outcome.sh",
@@ -133,7 +150,7 @@ FIX = PullRequestKind(
     branch_prefix="factory/fix",
     sync_marker="fix-sync",
     allowed_modes=("docker", "host"),
-    roles=("lead", "implementor", "tester"),
+    roles=("lead", "implementor", "tester", "crosscheck"),
     doctor_groups={"docker": "fix-sandbox", "host": "fix-host"},
     reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
     local=lambda local: local.fix,
@@ -150,7 +167,7 @@ FEATURE = PullRequestKind(
     item_noun="feature",
     issue_type=lambda shared: shared.routing.feature_type,
     workflow_name="factory-feature",
-    workflow_file="factory-feature-v1.0.yaml",
+    workflow_file="factory-feature-v2.0.yaml",
     staged_files=FEATURE_STAGED_FILES,
     contract=lambda shared: (
         shared.feature.contract if shared.feature is not None else FEATURE.default_contract
@@ -177,7 +194,7 @@ TASK = PullRequestKind(
     item_noun="task",
     issue_type=lambda shared: shared.routing.task_type,
     workflow_name="factory-task",
-    workflow_file="factory-task-v1.0.yaml",
+    workflow_file="factory-task-v2.0.yaml",
     staged_files=TASK_STAGED_FILES,
     contract=lambda shared: (
         shared.task.contract if shared.task is not None else TASK.default_contract
@@ -187,7 +204,7 @@ TASK = PullRequestKind(
     branch_prefix="factory/task",
     sync_marker="task-sync",
     allowed_modes=("host",),
-    roles=("lead", "implementor", "tester"),
+    roles=("lead", "implementor", "tester", "crosscheck"),
     doctor_groups={"host": "task-host"},
     reconcile=ReconcilePolicy.SETTLE_ON_OPEN_PR,
     local=lambda local: local.task,

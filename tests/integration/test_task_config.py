@@ -30,7 +30,7 @@ def test_task_configuration_and_registration() -> None:
     ) == (900, 7200, 10800)
     assert local.task.execution == "host"
     assert registered()[-1] is TASK
-    assert "factory-task-v1.0.yaml" in launch.STAGED_FILES
+    assert "factory-task-v2.0.yaml" in launch.STAGED_FILES
     assert "factory-task-guard-v1.0.yaml" in launch.STAGED_FILES
     assert set(handlers(shared, local)) >= {"fix", "feature", "task", "eval"}
     assert local.feature.limits.inactivity_seconds == 1800

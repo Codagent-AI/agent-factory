@@ -137,21 +137,9 @@ steps:
       branch_name: "{{branch_name}}"
       step: "approach-review"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
-  - id: write-tasks
-    session: lead-agent
-    mode: autonomous
-    skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
-    prompt: |
-      Follow `.agent-runner/workflows/factory-define-rules.md`.
-      On a direction-level stop, write {{artifact_dir}}/define-stop.json.
-      Write openspec/changes/{{change_name}}/tasks.md with exactly one implementation task for the whole change.
-  - id: record-stop-write-tasks
-    script: record-stop.sh
-    script_inputs:
-      artifact_dir: "{{artifact_dir}}"
-      branch_name: "{{branch_name}}"
-      step: "write-tasks"
-    skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
+  # `write-tasks` below is the resume marker for closing the definition (validate, check,
+  # commit, push). Change v3 plans no tasks, but a claim that stopped at the old step still
+  # carries the name.
   - id: validate-openspec
     command: openspec validate --type change "{{change_name}}" --strict >"{{artifact_dir}}/validation.log" 2>&1 && touch "{{artifact_dir}}/validation-ok"
     continue_on_failure: true
@@ -178,7 +166,7 @@ steps:
     workflow: builtin:core/check-planning-artifacts-v1.0.yaml
     params:
       change_dir: "openspec/changes/{{change_name}}"
-      required_files: "proposal.md,design.md,test-plan.md,tasks.md"
+      required_files: "proposal.md,design.md,test-plan.md"
       require_specs: "true"
     skip_if: 'sh: test -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{resume_from}}" write-tasks'
   - id: commit-plan

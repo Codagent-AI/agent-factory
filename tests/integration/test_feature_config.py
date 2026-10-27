@@ -129,7 +129,7 @@ def test_feature_doctor_names_missing_verify_change(tmp_path: Path) -> None:
     runner = tmp_path / "agent-runner"
     runner.write_text(
         '#!/bin/sh\ncase "$*" in\n'
-        '  *factory-feature-v1.0.yaml*) echo "unknown core/verify-change" >&2; exit 1;;\n'
+        '  *factory-feature-v2.0.yaml*) echo "unknown core/verify-change" >&2; exit 1;;\n'
         "esac\nexit 0\n"
     )
     runner.chmod(0o755)
@@ -213,6 +213,6 @@ def test_doctor_fails_when_a_kind_lacks_a_role_profile(
 
 def test_packaged_define_workflow_declares_feature_contract() -> None:
     resource = (
-        files("agent_factory.work_kinds.pull_request") / "workflow" / "factory-define-v1.0.yaml"
+        files("agent_factory.work_kinds.pull_request") / "workflow" / "factory-define-v2.0.yaml"
     )
     assert resource.read_text().splitlines()[0] == "# factory-contract: factory-feature/1"

@@ -77,8 +77,8 @@ GH_STUB = (
 
 def test_feature_files_are_listed_and_exist() -> None:
     for name in (
-        "factory-feature-v1.0.yaml",
-        "factory-define-v1.0.yaml",
+        "factory-feature-v2.0.yaml",
+        "factory-define-v2.0.yaml",
         "factory-define-rules.md",
         "prepare-branch.sh",
         "factory-resume-skip.sh",
@@ -145,6 +145,205 @@ def test_prepare_branch_fresh_resume_continue_and_missing_fallback(tmp_path: Pat
     assert missing.stdout == ""
     assert git(repo, "branch", "--show-current") == "claim-three"
     assert json.loads((evidence / "resume.json").read_text())["fallback"]
+
+
+def _checkpoint_branch(repo: Path, branch: str, target: str, *, verified: bool) -> None:
+    """Push `branch` with the plan, implemented, and archived checkpoints a claim leaves."""
+    git(repo, "checkout", "-b", branch, target)
+    (repo / "openspec" / "changes" / "sample").mkdir(parents=True)
+    script = str(PACKAGE / "checkpoint.sh")
+    assert run(script, "planned", branch, "sample", cwd=repo).returncode == 0
+    flag = "false" if verified else "true"
+    assert run(script, "archived", branch, "sample", flag, cwd=repo).returncode == 0
+    git(repo, "checkout", "main")
+
+
+@pytest.mark.parametrize(
+    ("verified", "resume", "expected"),
+    [
+        (True, "verify", "finalize"),
+        (False, "verify", "verify"),
+        (True, "archive", "archive"),
+        (True, "implement", "implement"),
+    ],
+)
+def test_prepare_branch_does_not_repeat_verification_a_checkpoint_records(
+    tmp_path: Path, verified: bool, resume: str, expected: str
+) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    _checkpoint_branch(repo, "claim", target, verified=verified)
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = run(
+        str(PACKAGE / "prepare-branch.sh"), "claim", target, resume, "", str(evidence), cwd=repo
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+def test_prepare_branch_verifies_again_after_a_merge_brings_in_commits(tmp_path: Path) -> None:
+    repo, _ = repository(tmp_path)
+    old_target = git(repo, "rev-parse", "HEAD")
+    _checkpoint_branch(repo, "claim", old_target, verified=True)
+    (repo / "later.txt").write_text("the target moved\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "target moves")
+    git(repo, "push", "origin", "main")
+    new_target = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    result = run(
+        str(PACKAGE / "prepare-branch.sh"),
+        "claim",
+        old_target,
+        "verify",
+        "",
+        str(evidence),
+        new_target,
+        cwd=repo,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "verify"
+
+
+@pytest.mark.parametrize(
+    ("verified", "resume", "expected"),
+    [
+        (True, "archive", "false"),
+        (False, "archive", "true"),
+        (False, "verify", "true"),
+        (True, "implement", "false"),
+        (False, "", "false"),
+        (True, "finalize", "false"),
+    ],
+)
+def test_verify_pending_runs_verification_only_when_nothing_did(
+    tmp_path: Path, verified: bool, resume: str, expected: str
+) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    _checkpoint_branch(repo, "claim", target, verified=verified)
+    git(repo, "checkout", "claim")
+    payload = json.dumps({"resume_from": resume, "target_head": target})
+    result = run(str(PACKAGE / "verify-pending.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"), [("merged", "true"), ("conflict", "true"), ("current", "false")]
+)
+def test_verify_pending_runs_verification_when_a_merge_added_commits(
+    tmp_path: Path, status: str, expected: str
+) -> None:
+    repo, _ = repository(tmp_path)
+    target = git(repo, "rev-parse", "HEAD")
+    _checkpoint_branch(repo, "claim", target, verified=True)
+    git(repo, "checkout", "claim")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "base-merge.json").write_text(json.dumps({"status": status}))
+    payload = json.dumps(
+        {"resume_from": "archive", "target_head": target, "artifact_dir": str(evidence)}
+    )
+    result = run(str(PACKAGE / "verify-pending.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
+def test_checkpoints_inherited_from_the_target_branch_do_not_count_as_verified(
+    tmp_path: Path,
+) -> None:
+    """The target branch carries the checkpoints of merged feature pull requests."""
+    repo, _ = repository(tmp_path)
+    git(repo, "commit", "--allow-empty", "-m", "merged feature", "-m", "Factory-Verified: true")
+    target = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-b", "claim")
+    payload = json.dumps({"resume_from": "archive", "target_head": target})
+    result = run(str(PACKAGE / "verify-pending.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
+
+
+@pytest.mark.parametrize("contract", ["factory-feature/1", "factory-fix/1", "factory-task/1"])
+def test_record_blocked_turns_the_implementation_blocker_into_needs_input(
+    tmp_path: Path, contract: str
+) -> None:
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    blocked = tmp_path / "implementation-blocked.md"
+    outcome_path = tmp_path / "outcome.json"
+    payload = json.dumps(
+        {
+            "contract": contract,
+            "outcome_path": str(outcome_path),
+            "blocked_file": str(blocked),
+            "branch_name": "claim",
+        }
+    )
+    # No record: nothing to report.
+    none = run(str(PACKAGE / "record-blocked.sh"), cwd=repo, input=payload)
+    assert none.returncode == 0, none.stderr
+    assert not outcome_path.exists()
+    blocked.write_text("Question: which API?\nDecision needed: the user's choice.\n")
+    result = run(str(PACKAGE / "record-blocked.sh"), cwd=repo, input=payload)
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(outcome_path.read_text())
+    assert outcome["outcome"] == "needs-input"
+    assert "which API?" in outcome["reasons"][0]
+    parsed = read_interpreted_outcome(tmp_path, contract, outcome_path.name)
+    assert parsed.outcome is not None, parsed.error
+    if contract == "factory-feature/1":
+        assert outcome["stopped_step"] == "implement"
+        assert outcome["branch"] == "claim"
+        assert git(remote, "rev-parse", "refs/heads/claim") == git(repo, "rev-parse", "HEAD")
+    else:
+        assert outcome["validator"] == {"status": "skipped"}
+
+
+def test_record_blocked_ends_the_attempt_when_the_feature_branch_cannot_be_pushed(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    git(repo, "remote", "set-url", "origin", str(tmp_path / "missing.git"))
+    blocked = tmp_path / "implementation-blocked.md"
+    blocked.write_text("Question: which API?\n")
+    outcome_path = tmp_path / "outcome.json"
+    payload = json.dumps(
+        {
+            "contract": "factory-feature/1",
+            "outcome_path": str(outcome_path),
+            "blocked_file": str(blocked),
+            "branch_name": "claim",
+        }
+    )
+    result = run(str(PACKAGE / "record-blocked.sh"), cwd=repo, input=payload)
+    assert result.returncode != 0
+    assert "push failed" in result.stderr
+    assert not outcome_path.exists()
+
+
+def test_add_constraints_appends_the_factory_rules_to_a_design_once(tmp_path: Path) -> None:
+    design = tmp_path / "design.md"
+    design.write_text("# Design\n\nThe approach.\n")
+    payload = json.dumps({"design_file": str(design), "kind": "feature"})
+    first = run(str(PACKAGE / "add-constraints.sh"), cwd=tmp_path, input=payload)
+    assert first.returncode == 0, first.stderr
+    appended = design.read_text()
+    assert appended.startswith("# Design\n\nThe approach.\n")
+    assert (PACKAGE / "factory-change-rules.md").read_text() in appended
+    assert "chore:" not in appended and "Task boundary" not in appended
+    again = run(str(PACKAGE / "add-constraints.sh"), cwd=tmp_path, input=payload)
+    assert again.returncode == 0, again.stderr
+    assert design.read_text() == appended
+    missing = run(
+        str(PACKAGE / "add-constraints.sh"),
+        cwd=tmp_path,
+        input=json.dumps({"design_file": str(tmp_path / "none.md"), "kind": "fix"}),
+    )
+    assert missing.returncode != 0
 
 
 def test_record_stop_pushes_draft_and_writes_outcome(tmp_path: Path) -> None:
@@ -309,7 +508,7 @@ def test_record_archive_block_reports_invalid_declaration_payload(tmp_path: Path
 
 
 def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
-    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    feature = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     steps = feature.split("\n  - id: ")
     ids = [step.split("\n", 1)[0] for step in steps[1:]]
     archive = steps[ids.index("archive") + 1]
@@ -325,8 +524,8 @@ def test_archive_block_steps_precede_push_and_keep_status_defined() -> None:
 
 
 def test_feature_verify_narrows_acceptance_fix_scope() -> None:
-    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
-    verify = feature.split("\n  - id: verify\n", 1)[1].split("\n  - id: ", 1)[0]
+    feature = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
+    verify = feature.split("\n      - id: verify\n", 1)[1].split("\n      - id: ", 1)[0]
     assert "acceptance_fix_scope:" in verify
     assert "Do not edit workflow files" in verify
     assert "assumptions ledger" in verify
@@ -334,7 +533,7 @@ def test_feature_verify_narrows_acceptance_fix_scope() -> None:
 
 def test_feature_workflow_shell_placeholders_are_interpolatable() -> None:
     """Runner rejects placeholders within shell single quotes at step execution time."""
-    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    feature = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     refused = {
         template.strip().splitlines()[0]: names
         for template in shell_templates(feature)
@@ -349,26 +548,24 @@ def test_archive_status_survives_change_directory_moving_after_failure(tmp_path:
     change.mkdir(parents=True)
     evidence = tmp_path / "evidence"
     evidence.mkdir()
-    skip_script = repo / ".agent-runner" / "workflows" / "factory-resume-skip.sh"
-    skip_script.parent.mkdir(parents=True)
-    skip_script.write_text("#!/bin/sh\nexit 1\n")
-    skip_script.chmod(0o755)
-    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    feature = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     seed = feature.split("  - id: seed-archive-status\n", 1)[1].split("\n  - id: ")[0]
     mark = feature.split("  - id: mark-archive-failed\n", 1)[1].split("\n  - id: ")[0]
     seed_command = seed.split("    command: ", 1)[1].split("\n", 1)[0]
-    seed_command = (
-        seed_command.replace("{{artifact_dir}}", str(evidence))
-        .replace("{{change_name}}", "example")
-        .replace("{{effective_resume}}", "archive")
+    seed_command = seed_command.replace("{{artifact_dir}}", str(evidence)).replace(
+        "{{change_name}}", "example"
     )
-    seeded = run("sh", "-c", seed_command, cwd=repo)
+    passing = seed_command.replace("{{validator_status}}", "passed")
+    seeded = run("sh", "-c", passing, cwd=repo)
     assert seeded.returncode == 0 and seeded.stdout == "passed"
+    # A change whose implementation failed is not archived.
+    failed = run("sh", "-c", seed_command.replace("{{validator_status}}", "failed"), cwd=repo)
+    assert failed.returncode == 0 and failed.stdout == "skipped"
     change.rmdir()  # archive-transition can move the change before commit verification fails.
     mark_command = mark.split("    command: ", 1)[1].split("\n", 1)[0]
     marked = run("sh", "-c", mark_command.replace("{{archive_status}}", seeded.stdout), cwd=repo)
     assert marked.returncode == 0 and marked.stdout == "failed"
-    skipped = run("sh", "-c", seed_command, cwd=repo)
+    skipped = run("sh", "-c", passing, cwd=repo)
     assert skipped.returncode == 0 and skipped.stdout == "skipped"
     preserved = run(
         "sh", "-c", mark_command.replace("{{archive_status}}", skipped.stdout), cwd=repo
@@ -414,7 +611,7 @@ def test_every_definition_stop_records_the_resume_key_of_its_step() -> None:
     the lead step before it skips on; reconciliation stops resume where the run resumed."""
     import re
 
-    define = (PACKAGE / "factory-define-v1.0.yaml").read_text()
+    define = (PACKAGE / "factory-define-v2.0.yaml").read_text()
     steps = re.split(r"\n  - id: ", "\n" + define.split("\nsteps:\n", 1)[1])[1:]
     resume_key = ""
     recorded = 0
@@ -425,8 +622,8 @@ def test_every_definition_stop_records_the_resume_key_of_its_step() -> None:
         if step.startswith("record-stop"):
             assert f'step: "{resume_key}"' in step or f"step: {resume_key}\n" in step, step
             recorded += 1
-    assert recorded == 9
-    feature = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    assert recorded == 8
+    feature = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     reconcile = feature.split("  - id: record-stop-reconcile\n", 1)[1].split("\n  - id: ")[0]
     assert 'step: "{{effective_resume}}"' in reconcile
 
@@ -1163,7 +1360,7 @@ def test_define_skips_every_step_when_resuming_past_write_tasks(tmp_path: Path) 
     (workflows / "factory-resume-skip.sh").chmod(0o755)
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
-    text = (PACKAGE / "factory-define-v1.0.yaml").read_text()
+    text = (PACKAGE / "factory-define-v2.0.yaml").read_text()
     steps = re.split(r"\n  - id: ", "\n" + text.split("\nsteps:\n", 1)[1])[1:]
     values = {"artifact_dir": str(artifact_dir), "resume_from": "implement"}
     ran: list[str] = []
@@ -1182,8 +1379,6 @@ def test_checkpoint_is_visible_only_after_push(tmp_path: Path) -> None:
     repo, remote = repository(tmp_path)
     git(repo, "checkout", "-b", "claim")
     (repo / "openspec" / "changes" / "sample").mkdir(parents=True)
-    task = repo / "openspec" / "changes" / "sample" / "tasks.md"
-    task.write_text("- [ ] Implement the feature\n")
     script = str(PACKAGE / "checkpoint.sh")
     assert run(script, "planned", "claim", "sample", cwd=repo).returncode == 0
     planned = git(remote, "rev-parse", "refs/heads/claim")
@@ -1192,49 +1387,80 @@ def test_checkpoint_is_visible_only_after_push(tmp_path: Path) -> None:
     git(repo, "add", "code.py")
     git(repo, "commit", "-m", "implement")
     assert git(remote, "rev-parse", "refs/heads/claim") == planned
-    assert run(script, "implemented", "claim", "sample", cwd=repo).returncode == 0
+    assert run(script, "implemented", "claim", "sample", "false", cwd=repo).returncode == 0
     assert "Factory-Checkpoint: implemented" in git(
         remote, "log", "-1", "--format=%B", "refs/heads/claim"
     )
-    assert task.read_text() == "- [x] Implement the feature\n"
     implemented = git(remote, "rev-parse", "refs/heads/claim")
     (repo / "openspec" / "archive-note.md").write_text("archived")
     git(repo, "add", ".")
     git(repo, "commit", "-m", "archive change")
     assert git(remote, "rev-parse", "refs/heads/claim") == implemented
-    assert run(script, "archived", "claim", "sample", cwd=repo).returncode == 0
+    assert run(script, "archived", "claim", "sample", "false", cwd=repo).returncode == 0
     assert "Factory-Checkpoint: archived" in git(
         remote, "log", "-1", "--format=%B", "refs/heads/claim"
     )
 
 
-def test_implemented_checkpoint_only_completes_its_change(tmp_path: Path) -> None:
+@pytest.mark.parametrize(("pending", "verified"), [("false", True), ("true", False), ("", False)])
+def test_checkpoint_marks_verification_only_when_it_is_done(
+    tmp_path: Path, pending: str, verified: bool
+) -> None:
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    (repo / "openspec" / "changes" / "sample").mkdir(parents=True)
+    arguments = ["archived", "claim", "sample", *([pending] if pending else [])]
+    assert run(str(PACKAGE / "checkpoint.sh"), *arguments, cwd=repo).returncode == 0
+    trailers = git(
+        remote,
+        "log",
+        "-1",
+        "--format=%(trailers:key=Factory-Verified,valueonly)",
+        "refs/heads/claim",
+    )
+    assert (trailers.strip() == "true") is verified
+
+
+def test_checkpoint_reads_its_inputs_from_the_workflow_payload(tmp_path: Path) -> None:
+    repo, remote = repository(tmp_path)
+    git(repo, "checkout", "-b", "claim")
+    payload = json.dumps(
+        {
+            "phase": "implemented",
+            "branch_name": "claim",
+            "change_name": "sample",
+            "verify_pending": "false",
+        }
+    )
+    (repo / "openspec" / "changes" / "sample").mkdir(parents=True)
+    assert run(str(PACKAGE / "checkpoint.sh"), cwd=repo, input=payload).returncode == 0
+    message = git(remote, "log", "-1", "--format=%B", "refs/heads/claim")
+    assert "Factory-Checkpoint: implemented" in message
+    assert "Factory-Verified: true" in message
+
+
+def test_implemented_checkpoint_only_commits_its_change(tmp_path: Path) -> None:
     repo, _ = repository(tmp_path)
     git(repo, "checkout", "-b", "claim")
     changes = repo / "openspec" / "changes"
     for name in ("target", "unrelated"):
         path = changes / name
         path.mkdir(parents=True)
-        (path / "tasks.md").write_text(f"- [ ] {name} task\n")
+        (path / "proposal.md").write_text(f"{name}\n")
     result = run(str(PACKAGE / "checkpoint.sh"), "implemented", "claim", "target", cwd=repo)
     assert result.returncode == 0, result.stderr
-    assert (changes / "target" / "tasks.md").read_text() == "- [x] target task\n"
-    assert (changes / "unrelated" / "tasks.md").read_text() == "- [ ] unrelated task\n"
-    assert "openspec/changes/unrelated/tasks.md" not in git(
-        repo, "ls-tree", "-r", "--name-only", "HEAD"
-    )
+    committed = git(repo, "ls-tree", "-r", "--name-only", "HEAD")
+    assert "openspec/changes/target/proposal.md" in committed
+    assert "openspec/changes/unrelated/proposal.md" not in committed
 
 
-def test_implemented_checkpoint_rejects_multiple_open_tasks(tmp_path: Path) -> None:
+@pytest.mark.parametrize("change_name", ["", "../escape", "nested/name"])
+def test_implemented_checkpoint_requires_one_change_name(tmp_path: Path, change_name: str) -> None:
     repo, remote = repository(tmp_path)
     git(repo, "checkout", "-b", "claim")
-    task = repo / "openspec" / "changes" / "target" / "tasks.md"
-    task.parent.mkdir(parents=True)
-    task.write_text("- [ ] first\n- [ ] second\n")
-    result = run(str(PACKAGE / "checkpoint.sh"), "implemented", "claim", "target", cwd=repo)
+    result = run(str(PACKAGE / "checkpoint.sh"), "implemented", "claim", change_name, cwd=repo)
     assert result.returncode != 0
     assert run("git", "rev-parse", "refs/heads/claim", cwd=remote).returncode != 0
-    assert task.read_text() == "- [ ] first\n- [ ] second\n"
 
 
 def test_prepare_branch_conflict_keeps_prior_branch_for_resolution(tmp_path: Path) -> None:
@@ -1572,7 +1798,7 @@ def test_feature_workflow_skip_conditions_read_only_variables_defined_on_a_stop(
     must be a parameter or be captured before any stop can happen or by an unguarded step."""
     import re
 
-    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    text = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     params = set(re.findall(r"^  - name: (\w+)", text.split("\nsessions:")[0], re.MULTILINE))
     steps = re.split(r"\n  - id: ", "\n" + text.split("\nsteps:\n", 1)[1])[1:]
     defined = set(params)
@@ -1708,6 +1934,38 @@ def item(title: str, detail: str = "detail") -> dict[str, str]:
     return {"title": title, "detail": detail, "link": "#evidence"}
 
 
+def test_verify_classification_does_not_ask_for_the_archive_and_checkpoint_commits(
+    tmp_path: Path,
+) -> None:
+    repo, _ = repository(tmp_path)
+    (repo / "openspec" / "specs").mkdir()
+    (repo / "openspec" / "specs" / "x.md").write_text("spec\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "[archive] chore: archive openspec documents for change")
+    archive = git(repo, "rev-parse", "HEAD")
+    git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "[factory-feature] chore: mark archived checkpoint",
+        "-m",
+        "Factory-Checkpoint: archived",
+    )
+    checkpoint = git(repo, "rev-parse", "HEAD")
+    (repo / "code.py").write_text("fixed = True\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "[fix-pr] fix: ci repair")
+    repair = git(repo, "rev-parse", "HEAD")
+    attention = classified(later_commits=[archive, checkpoint])
+    assert verify_classification(repo, attention).returncode == 0
+    named = classified(later_commits=[archive, checkpoint, repair])
+    refused = verify_classification(repo, named)
+    assert refused.returncode != 0
+    assert f"later commit {repair[:7]} is not named by SHA in an orange item" in refused.stderr
+    assert archive[:7] not in refused.stderr and checkpoint[:7] not in refused.stderr
+
+
 def test_verify_classification_accepts_a_later_commits_item_with_size_and_tests(
     tmp_path: Path,
 ) -> None:
@@ -1817,11 +2075,6 @@ def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
             }
         )
     )
-    (evidence / "task-compliance.json").write_text(
-        json.dumps(
-            {"result": "passed", "reviewed_head": accepted, "base": base, "tasks_sha256": "a" * 64}
-        )
-    )
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7", "repository": "o/r"}))
     stub = tmp_path / "gh"
@@ -1835,6 +2088,7 @@ def test_annotate_pr_marks_items_whose_linked_file_changed_after_acceptance(
             str(issue),
             "change",
             "openspec/changes/archive/2026-09-25-change",
+            base,
         ],
         cwd=repo,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body)},
@@ -2246,216 +2500,130 @@ def test_review_round_description_keeps_the_layout_and_reflects_the_round(
     assert restored.index("### 🔁 Review round") < restored.index("## Change summary")
 
 
-def test_task_compliance_workflow_structure() -> None:
-    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
-    assert "  - id: task-compliance-implemented\n" not in workflow
-    assert "  - id: task-compliance-implemented-final\n" not in workflow
-    assert workflow.index("  - id: implement\n") < workflow.index("  - id: complete-task\n")
-    assert (
-        workflow.index("  - id: restore-skipped-verify-status\n")
-        < workflow.index("  - id: task-compliance-verified\n")
-        < workflow.index("  - id: classify\n")
-    )
-    assert "  - name: implementor-agent\n    agent: implementor" in workflow
-    for phase, tasks in (("verified", '"{{archived_dir}}/tasks.md"'),):
-        block = workflow.split(f"  - id: task-compliance-{phase}\n", 1)[1].split(
-            f"  - id: task-compliance-{phase}-final\n", 1
-        )[0]
-        assert "loop:\n      max: 3" in block
-        assert "break_if: success" in block
-        assert "session: implementor-agent" in block
-        assert "skip_if: previous_success" in block
-        assert "continue_on_failure: true" in block
-        assert f"tasks_file: {tasks}" in block
-        assert "capture: validator_status" not in block
-        final = workflow.split(f"  - id: task-compliance-{phase}-final\n", 1)[1].split(
-            "  - id:", 1
-        )[0]
-        assert "skip_if: previous_success" in final
-    assert 'task_compliance: "{{artifact_dir}}/task-compliance.json"' in workflow
-    assert "task-compliance-gate.py" in FEATURE_STAGED_FILES
+def test_feature_workflow_implements_through_the_runner_and_archives_after_it() -> None:
+    workflow = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
+    order = [
+        "define",
+        "verify-pending",
+        "implement-change",
+        "record-implement-blocked",
+        "record-implement-failure",
+        "complete-implement",
+        "seed-archive-status",
+        "archive",
+        "push-archive",
+        "locate-archive",
+        "verify-change",
+        "classify",
+        "finalize",
+        "annotate-pr",
+        "record-outcome",
+    ]
+    positions = [workflow.index(f"  - id: {step}\n") for step in order]
+    assert positions == sorted(positions)
+    # The planned change's tasks and the task-compliance gate are gone with them.
+    assert "task-compliance" not in workflow
+    assert "task_compliance" not in workflow
+    assert "task-compliance-gate.py" not in FEATURE_STAGED_FILES
+    assert not (Path(str(PACKAGE)) / "task-compliance-gate.py").exists()
+    # annotate-pr gets the target head, which the description marks stale items against.
+    annotate = workflow.split("  - id: annotate-pr\n", 1)[1].split("\n  - id: ", 1)[0]
+    assert 'target_head: "{{target_head}}"' in annotate
 
 
 @pytest.mark.parametrize(
-    "compliance,expected",
+    ("validator_status", "verify_failure", "expected"),
     [
-        ({"result": "passed"}, "passed"),
-        ({"result": "not-declared"}, "passed"),
-        ({"result": "not-run", "reason": "Trusted"}, "incomplete"),
-        ({"result": "failed"}, "review-failed"),
-        (None, "incomplete"),
+        ("passed", None, "passed"),
+        (
+            "failed",
+            {"validator": "passed", "reasons": ["verify failed at acceptance-push"]},
+            "incomplete",
+        ),
+        ("failed", {"validator": "failed", "reasons": []}, "failed"),
+        ("failed", None, "failed"),
     ],
 )
 def test_feature_outcome_qualifies_validator_status(
-    tmp_path: Path, compliance: dict[str, str] | None, expected: str
+    tmp_path: Path,
+    validator_status: str,
+    verify_failure: dict[str, object] | None,
+    expected: str,
 ) -> None:
-    record_path = tmp_path / "task-compliance.json"
-    if compliance is not None:
-        record_path.write_text(
-            json.dumps(
-                {
-                    **compliance,
-                    "base": "a" * 40,
-                    "reviewed_head": "b" * 40,
-                    "tasks_sha256": "c" * 64,
-                }
-            )
-        )
-    payload = {
+    payload: dict[str, object] = {
         "contract": "factory-feature/1",
         "outcome_path": str(tmp_path / "feature-outcome.json"),
-        "validator_status": "passed",
+        "validator_status": validator_status,
         "ci_status": "passed",
         "annotation_status": "passed",
         "branch_name": "feature",
         "review_attention_counts": json.dumps({"red": [], "orange": [], "yellow": [], "white": []}),
         "pr_details": json.dumps({"url": "https://example.test/pr", "number": 1}),
-        "task_compliance": str(record_path),
     }
+    if verify_failure is not None:
+        failure_path = tmp_path / "verify-failure.json"
+        failure_path.write_text(json.dumps(verify_failure))
+        payload["verify_failure"] = str(failure_path)
     result = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
     assert result.returncode == 0, result.stderr
     outcome = json.loads((tmp_path / "feature-outcome.json").read_text())
-    assert outcome["outcome"] == "pull-request"
-    assert outcome["validator"] == {"status": expected, "checks": "passed"}
-    assert outcome["task_compliance"]["result"] == (compliance or {}).get("result", "not-run")
+    assert outcome["validator"]["status"] == expected
+    assert "task_compliance" not in outcome
     parsed = read_interpreted_outcome(tmp_path, "factory-feature/1")
-    assert parsed.outcome is not None and parsed.outcome.product_verdict == "pull-request"
-    if compliance is None:
-        record_path.write_text('{"result": "passed"}')  # Missing binding is unreadable evidence.
-        rerun = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
-        assert rerun.returncode == 0, rerun.stderr
-        assert (
-            json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
-            == "incomplete"
-        )
-        record_path.write_text(
-            json.dumps({"result": "not-run", "reason": "binding failed: bad base", "base": ""})
-        )
-        rerun = run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
-        assert rerun.returncode == 0, rerun.stderr
-        assert json.loads((tmp_path / "feature-outcome.json").read_text())["task_compliance"] == {
-            "result": "not-run",
-            "reason": "binding failed: bad base",
-            "base": "",
-        }
-    payload["validator_status"] = "failed"
-    run(str(PACKAGE / "record-outcome.sh"), cwd=tmp_path, input=json.dumps(payload))
-    assert (
-        json.loads((tmp_path / "feature-outcome.json").read_text())["validator"]["status"]
-        == "failed"
-    )
+    assert parsed.outcome is not None
+    assert parsed.outcome.product_verdict == ("pull-request" if expected == "passed" else "failed")
 
 
-def test_task_compliance_record_rejects_non_object_json(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("bookkeeping_only", [True, False])
+def test_annotate_pr_does_not_flag_the_archive_and_checkpoints_as_unreviewed_commits(
+    tmp_path: Path, bookkeeping_only: bool
 ) -> None:
-    import importlib.util
-    import sys
-
-    monkeypatch.setattr(sys, "path", [str(PACKAGE), *sys.path])
-    spec = importlib.util.spec_from_file_location("annotate_pr", str(PACKAGE / "annotate-pr.py"))
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    (tmp_path / "task-compliance.json").write_text("[]")
-
-    assert module.task_compliance_record(tmp_path) == {
-        "result": "not-run",
-        "reason": "no task-compliance record",
-    }
-    (tmp_path / "task-compliance.json").write_text(
-        json.dumps({"result": "not-run", "reason": "binding failed: bad base", "base": ""})
-    )
-    assert module.task_compliance_record(tmp_path)["reason"] == "binding failed: bad base"
-
-
-@pytest.mark.parametrize(
-    "compliance,tier,title,status",
-    [
-        (
-            {"result": "not-run", "reason": "Trusted"},
-            "red",
-            "Task-compliance did not run",
-            "incomplete",
-        ),
-        (
-            {
-                "result": "failed",
-                "violations": [{"file": "code.py", "line": 4, "issue": "missing"}],
-            },
-            "red",
-            "Task-compliance violations remain",
-            "review-failed",
-        ),
-        ({"result": "not-declared"}, "yellow", "Task-compliance not declared", "passed"),
-        ({"result": "passed"}, "white", "Task-compliance passed", "passed"),
-        (None, "red", "Task-compliance did not run", "incomplete"),
-    ],
-)
-def test_task_compliance_record_flows_through_pr_and_outcome(
-    tmp_path: Path, compliance: dict[str, Any] | None, tier: str, title: str, status: str
-) -> None:
+    """Acceptance runs before the change is archived, so the archive and the phase
+    checkpoints follow it on every feature pull request. They move OpenSpec files only and
+    are listed with the later commits, but they are not a reason for the reviewer to look."""
     import os
 
     repo, _ = repository(tmp_path)
     archive = repo / "openspec" / "changes" / "archive" / "2026-09-25-change"
     archive.mkdir(parents=True)
+    (archive / "proposal.md").write_text("proposal\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "feature")
     accepted = git(repo, "rev-parse", "HEAD")
-    for name in ("first", "second"):
-        (repo / name).write_text(name)
+    (repo / "openspec" / "specs").mkdir()
+    (repo / "openspec" / "specs" / "x.md").write_text("spec\n")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "[archive] chore: archive openspec documents for change")
+    git(
+        repo,
+        "commit",
+        "--allow-empty",
+        "-m",
+        "[factory-feature] chore: mark archived checkpoint",
+        "-m",
+        "Factory-Checkpoint: archived",
+    )
+    bookkeeping = git(repo, "log", "--format=%H", f"{accepted}..HEAD").splitlines()
+    code = ""
+    if not bookkeeping_only:
+        (repo / "code.py").write_text("fixed = True\n")
         git(repo, "add", ".")
-        git(repo, "commit", "-m", name)
-    later = git(repo, "log", "--format=%H", f"{accepted}..HEAD").splitlines()
-    artifacts = tmp_path / "artifacts"
-    artifacts.mkdir()
-    (artifacts / "review-attention.json").write_text(
+        git(repo, "commit", "-m", "[fix-pr] fix: ci repair")
+        code = git(repo, "rev-parse", "HEAD")
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    (evidence / "review-attention.json").write_text(
         json.dumps(
             {
-                "red": [
-                    {
-                        "title": "Task-compliance did not run",
-                        "detail": "classifier guess",
-                        "link": "#acceptance-evidence",
-                    }
-                ],
-                "orange": [
-                    {
-                        "title": "Task-compliance violations remain",
-                        "detail": "guess",
-                        "link": "#acceptance-evidence",
-                    }
-                ],
-                "yellow": [
-                    {
-                        "title": "Task-compliance not declared",
-                        "detail": "guess",
-                        "link": "#acceptance-evidence",
-                    }
-                ],
-                "white": [
-                    {
-                        "title": "Task-compliance passed",
-                        "detail": "guess",
-                        "link": "#acceptance-evidence",
-                    }
-                ],
+                "red": [],
+                "orange": [],
+                "yellow": [],
+                "white": [],
                 "accepted_head": accepted,
                 "later_commits": [],
             }
         )
     )
-    if compliance is not None:
-        (artifacts / "task-compliance.json").write_text(
-            json.dumps(
-                {
-                    **compliance,
-                    "base": accepted,
-                    "reviewed_head": accepted,
-                    "tasks_sha256": "a" * 64,
-                    "runs": [{"evidence": "review/logs"}],
-                }
-            )
-        )
     issue = tmp_path / "issue.json"
     issue.write_text(json.dumps({"number": 7, "claim_id": "claim-7"}))
     stub = tmp_path / "gh"
@@ -2463,63 +2631,24 @@ def test_task_compliance_record_flows_through_pr_and_outcome(
     stub.chmod(0o755)
     body_path = tmp_path / "body.md"
     result = subprocess.run(
-        [str(PACKAGE / "annotate-pr.sh"), str(artifacts), str(issue), "change", str(archive)],
+        [str(PACKAGE / "annotate-pr.sh"), str(evidence), str(issue), "change", str(archive)],
         cwd=repo,
         env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}", "GH_BODY": str(body_path)},
         text=True,
         capture_output=True,
     )
     assert result.returncode == 0, result.stderr
-    flags = json.loads((artifacts / "review-attention.json").read_text())
-    items = [
-        item
-        for value in ("red", "orange", "yellow", "white")
-        for item in flags[value]
-        if item["title"].startswith("Task-compliance")
-    ]
-    assert len(items) == 1
-    assert items[0]["title"] == title
-    assert items[0] in flags[tier]
-    if tier in ("white", "yellow"):
-        assert items[0]["link"] == ""
+    flags = json.loads((evidence / "review-attention.json").read_text())
     body = body_path.read_text()
-    assert title in body
-    if tier in ("white", "yellow"):
-        assert f"- {title}:" in body
-    if compliance is not None:
-        assert f"base {accepted}" in body
-        assert "Not covered by task-compliance: " in body
-    assert all(sha[:12] in body for sha in later)
-    # One "Commits after acceptance" item carries both the commits and the task-compliance note.
+    assert "Task-compliance" not in body
     later_items = [item for item in flags["orange"] if item["title"] == "Commits after acceptance"]
-    assert len(later_items) == 1
-    assert all(sha[:12] in later_items[0]["detail"] for sha in later)
-    if compliance is not None:
-        assert "Not covered by task-compliance: " in later_items[0]["detail"]
-    assert body.count("[Commits after acceptance]") == 1
-    assert f"### 🟠 Orange ({len(flags['orange'])})" in body
-    payload = {
-        "contract": "factory-feature/1",
-        "outcome_path": str(artifacts / "feature-outcome.json"),
-        "validator_status": "passed",
-        "ci_status": "passed",
-        "branch_name": "feature",
-        "pr_details": json.dumps({"url": "https://example.test/pr", "number": 9}),
-        "review_attention_counts": str(artifacts / "review-attention.json"),
-        "task_compliance": str(artifacts / "task-compliance.json"),
-    }
-    result = run(str(PACKAGE / "record-outcome.sh"), cwd=repo, input=json.dumps(payload))
-    assert result.returncode == 0, result.stderr
-    outcome = json.loads((artifacts / "feature-outcome.json").read_text())
-    assert outcome["validator"] == {"checks": "passed", "status": status}
-    assert outcome["review_attention_counts"]["red"] == len(flags["red"])
-    assert f"### 🔴 Red ({len(flags['red'])})" in body
-    assert read_interpreted_outcome(artifacts, "factory-feature/1").outcome is not None
-    if compliance is None:
-        assert outcome["task_compliance"] == {
-            "result": "not-run",
-            "reason": "no task-compliance record",
-        }
+    assert all(sha[:12] in body for sha in bookkeeping)
+    if bookkeeping_only:
+        assert later_items == []
+    else:
+        assert len(later_items) == 1
+        assert code[:12] in later_items[0]["detail"]
+        assert all(sha[:12] not in later_items[0]["detail"] for sha in bookkeeping)
 
 
 VERIFY_PREFIX = "verify/sub:verify-change/prepare-acceptance:0"
@@ -2703,6 +2832,72 @@ def test_verify_failure_missing_or_malformed_audit_is_safe(
     }
 
 
+IMPLEMENT_VERIFY_PREFIX = (
+    "implement/sub:implement-change/verify-change/sub:verify-change/prepare-acceptance:0"
+)
+
+
+def _write_failed_step(session: Path, prefix: str, step_id: str, stderr: str) -> None:
+    event = {
+        "identity": {"prefix": prefix, "step_id": step_id},
+        "outcome": "failed",
+        "stderr": stderr,
+    }
+    (session / "audit.log").write_text(f"2026-10-09T14:00:00Z [x] step_end {json.dumps(event)}\n")
+
+
+def test_verify_failure_finds_verification_inside_implement_change(tmp_path: Path) -> None:
+    (tmp_path / "output").mkdir()
+    (tmp_path / "output/verify-change-validator-result.txt").write_text("PASS")
+    _write_failed_step(tmp_path, IMPLEMENT_VERIFY_PREFIX, "acceptance-push", PUSH_REJECTION)
+    result = run(
+        "python3",
+        str(PACKAGE / "verify-failure.py"),
+        str(tmp_path),
+        str(tmp_path),
+        "--require-evidence",
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    value = json.loads((tmp_path / "verify-failure.json").read_text())
+    assert value["validator"] == "passed"
+    assert value["reasons"][0].startswith(f"verify failed at {IMPLEMENT_VERIFY_PREFIX}/")
+
+
+@pytest.mark.parametrize(
+    ("validator_result", "failed_prefix", "exit_code"),
+    [
+        (None, "implement/sub:implement-change", 3),
+        ("PASS", "implement/sub:implement-change", 3),
+        ("FAIL", "implement/sub:implement-change", 0),
+        (None, IMPLEMENT_VERIFY_PREFIX, 0),
+    ],
+)
+def test_verify_failure_requires_evidence_that_verification_ran(
+    tmp_path: Path, validator_result: str | None, failed_prefix: str, exit_code: int
+) -> None:
+    """A workflow that stopped before verification is a technical failure, not an outcome."""
+    (tmp_path / "output").mkdir()
+    if validator_result is not None:
+        (tmp_path / "output/verify-change-validator-result.txt").write_text(validator_result)
+    _write_failed_step(tmp_path, failed_prefix, "audit", "audit crashed")
+    result = run(
+        "python3",
+        str(PACKAGE / "verify-failure.py"),
+        str(tmp_path),
+        str(tmp_path),
+        "--require-evidence",
+        cwd=tmp_path,
+    )
+    assert result.returncode == exit_code, result.stderr
+    # The record is written either way; without the flag the exit status is always 0.
+    assert (tmp_path / "verify-failure.json").is_file()
+    plain = run(
+        "python3", str(PACKAGE / "verify-failure.py"), str(tmp_path), str(tmp_path), cwd=tmp_path
+    )
+    assert plain.returncode == 0, plain.stderr
+
+
 @pytest.mark.parametrize("pr_url", ["https://example.test/pr/9", ""])
 @pytest.mark.parametrize("evidence", [True, False])
 def test_feature_record_outcome_preserves_actual_verify_result(
@@ -2737,10 +2932,7 @@ def test_feature_record_outcome_preserves_actual_verify_result(
     if evidence:
         assert value["reasons"] == [reason]
         assert value["validator"] == {"checks": "passed", "status": "incomplete"}
-        assert value["task_compliance"] == {
-            "result": "not-run",
-            "reason": "verify failed before task-compliance",
-        }
+        assert "task_compliance" not in value
     else:
         assert value["reasons"] == ["validator did not pass within its repair cycles"]
         assert value["validator"] == {"checks": "failed", "status": "failed"}
@@ -2784,7 +2976,7 @@ def test_feature_record_outcome_rejects_malformed_verify_failure(
 
 
 def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
-    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    workflow = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
     skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
     assert 'test "{{validator_status}}" != passed' in skip
@@ -2793,10 +2985,13 @@ def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
     assert (
         workflow.index("  - id: mark-verify-failed\n")
         < workflow.index("  - id: record-verify-failure\n")
-        < workflow.index("  - id: restore-skipped-verify-status\n")
+        < workflow.index("  - id: push-verified\n")
     )
     record = workflow.split("  - id: record-verify-failure\n")[1].split("  - id: ")[0]
-    assert "skip_if: 'sh: test \"{{validator_status}}\" != failed'" in record
+    assert "skip_if: 'sh: test \"{{verify_result}}\" != failed'" in record
+    # A failure inside implement-change records the same evidence before a failed outcome.
+    implement = workflow.split("  - id: record-implement-failure\n")[1].split("  - id: ")[0]
+    assert "verify-failure.py" in implement
     assert "verify-failure.py" in FEATURE_STAGED_FILES
 
 
@@ -2804,7 +2999,7 @@ def test_verify_failure_workflow_wiring_and_annotation_guards() -> None:
 def test_annotation_guard_does_not_hide_missing_classification(
     tmp_path: Path, validator_status: str
 ) -> None:
-    workflow = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    workflow = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     annotate = workflow.split("  - id: annotate-pr\n")[1].split("  - id: ")[0]
     skip = next(line for line in annotate.splitlines() if "skip_if:" in line)
     command = skip.split("'sh: ", 1)[1].removesuffix("'")
