@@ -74,7 +74,7 @@ lead = "claude:claude-sonnet-5-5:high"
 crosscheck = "codex:gpt-6.1-sol:high"
 implementor = "codex:gpt-6.1-sol:medium"
 tester = "codex:gpt-6-luna:medium"
-skip_validator = true
+validation_workflow = "none"
 
 [fix]
 contract = "factory-fix/1"

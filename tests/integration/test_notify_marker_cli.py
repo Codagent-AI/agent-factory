@@ -52,7 +52,7 @@ def test_stamp_carry_and_eval_template(tmp_path: Path) -> None:
         "main",
         "main",
         {role: "codex:gpt-5.6-sol:high" for role in ("lead", "implementor", "tester")},
-        False,
+        "agent-validator",
         3,
     )
     parse_request(stamped, defaults)

@@ -34,6 +34,7 @@ _SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 _FLY_DRY_RUN_TIMEOUT_SECONDS = 60
 _ACCEPTS_NO_PUBLISH = re.compile(r"^[ \t]*--no-publish\)", re.MULTILINE)
 _ACCEPTS_CROSSCHECK = re.compile(r"^[ \t]*--crosscheck-cli\)", re.MULTILINE)
+_ACCEPTS_VALIDATION_WORKFLOW = re.compile(r"^[ \t]*--validation-workflow\)", re.MULTILINE)
 # Suite role order. `crosscheck` is optional: claims frozen before it keep three roles.
 _ROLES = ("lead", "crosscheck", "implementor", "tester")
 _OPTIONAL_ROLES = frozenset({"crosscheck"})
@@ -224,10 +225,19 @@ class AndSceneAdapter:
         *,
         pinned: Collection[str] = (),
         roles: Collection[str] = (),
+        selects_validation_workflow: bool = False,
     ) -> str | None:
         for relative in _REQUIRED_EVAL_FILES:
             if not (worktrees.evals / relative).is_file():
                 return f"selected and-scene harness is missing {relative}"
+        if selects_validation_workflow and not _ACCEPTS_VALIDATION_WORKFLOW.search(
+            (worktrees.evals / _REQUIRED_EVAL_FILES[0]).read_text(encoding="utf-8")
+        ):
+            harness_commit = _git(worktrees.evals, "rev-parse", "HEAD", allow_failure=True)
+            return (
+                f"selected and-scene harness {harness_commit[:12]} does not accept "
+                "--validation-workflow, which this claim's frozen setting needs"
+            )
         if "crosscheck" in roles and not _ACCEPTS_CROSSCHECK.search(
             (worktrees.evals / _REQUIRED_EVAL_FILES[0]).read_text(encoding="utf-8")
         ):
@@ -408,7 +418,12 @@ class AndSceneAdapter:
             arguments_by_input.extend(entry.suite_arguments(revision))
         settings = _settings(frozen)
         roles = _roles(settings)
-        readiness = self.readiness(worktrees, pinned=revisions.keys(), roles=roles.keys())
+        readiness = self.readiness(
+            worktrees,
+            pinned=revisions.keys(),
+            roles=roles.keys(),
+            selects_validation_workflow="validation_workflow" in settings,
+        )
         if readiness is not None:
             raise ReadinessError(readiness)
         artifact = artifact_dir.resolve()
@@ -434,7 +449,16 @@ class AndSceneAdapter:
                 (f"--{role}-cli", cli, f"--{role}-model", model, f"--{role}-effort", effort)
             )
         arguments.extend(arguments_by_input)
-        if settings.get("skip_validator") is True:
+        validation_workflow = settings.get("validation_workflow")
+        if validation_workflow is not None:
+            if not isinstance(validation_workflow, str) or not inputs.VALIDATION_WORKFLOW.fullmatch(
+                validation_workflow
+            ):
+                raise ReadinessError("accepted validation_workflow is not a supported value")
+            arguments.extend(("--validation-workflow", validation_workflow))
+        elif settings.get("skip_validator") is True:
+            # Claims frozen before validation_workflow resume on the harness they
+            # froze, which only knows this flag.
             arguments.append("--skip-validator")
         workflow = settings.get("workflow")
         if workflow is not None:

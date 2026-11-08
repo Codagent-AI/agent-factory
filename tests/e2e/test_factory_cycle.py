@@ -99,9 +99,11 @@ def _source_repositories(root: Path, suite: str) -> None:
 def _setup(tmp_path: Path) -> tuple[Path, Path, dict[str, str], SharedConfig]:
     suite = f"""#!{sys.executable}
 import json,pathlib,sys,time
-# Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
+# Readiness reads run.sh's case arms; this harness accepts the crosscheck role
+# and a validation workflow selection.
 ACCEPTS = '''
     --crosscheck-cli)
+    --validation-workflow)
 '''
 args=sys.argv
 out=pathlib.Path(args[args.index('--artifact-dir')+1]);out.mkdir(parents=True,exist_ok=True)

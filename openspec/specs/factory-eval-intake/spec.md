@@ -38,7 +38,7 @@ Execution admission SHALL identify an evaluation card by its native issue type, 
 
 ### Requirement: Interpret one evaluation configuration per request
 
-The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `crosscheck`, `implementor`, `tester`, `skip_validator`, `repetitions`, and `workflow`. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `skip_validator` SHALL be a boolean; `fixture_ref`, when supplied, SHALL be a non-empty TOML string; `workflow`, when supplied, SHALL be a TOML string naming a logical Agent Runner workflow in the suite's `namespace:name` form, each part lowercase letters, digits, and hyphens starting with a letter or digit (for example `core:orchestrated-implement-change`). When `workflow` is omitted, the suite SHALL run its own default workflow; configuration SHALL supply no default for it. Omitted settings SHALL use configured defaults; the configured eval defaults SHALL include a complete `crosscheck` profile, which the `and-scene` suite requires for the agent that reviews planned tasks. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
+The factory SHALL read TOML execution overrides from a fenced `eval` block in the issue body and ignore surrounding prose for execution settings. Supported keys SHALL be `agent_runner_ref`, `agent_skills_ref`, `fixture_ref`, `lead`, `crosscheck`, `implementor`, `tester`, `validation_workflow`, `repetitions`, and `workflow`, plus the legacy `skip_validator`, which issues written before `validation_workflow` still carry. Other keys, including the legacy `lead_profile`, `implementor_profile`, `reviewer`, `reviewer_profile`, and `tester_profile` aliases, SHALL be rejected. Each supplied role override SHALL contain a complete `cli / model / effort` triple as a TOML string; `validation_workflow`, when supplied, SHALL be `auto`, `agent-validator`, `none`, or a `builtin:` workflow reference; `skip_validator`, when supplied, SHALL be a boolean, SHALL freeze as `validation_workflow` `none` when true and `agent-validator` when false, SHALL keep the request fingerprint computed from the key as written, and SHALL NOT appear together with `validation_workflow`; `fixture_ref`, when supplied, SHALL be a non-empty TOML string; `workflow`, when supplied, SHALL be a TOML string naming a logical Agent Runner workflow in the suite's `namespace:name` form, each part lowercase letters, digits, and hyphens starting with a letter or digit (for example `core:orchestrated-implement-change`). When `workflow` is omitted, the suite SHALL run its own default workflow; configuration SHALL supply no default for it. Omitted settings SHALL use configured defaults, and a configuration that sets no `validation_workflow` SHALL default to `none`; the configured eval defaults SHALL include a complete `crosscheck` profile, which the `and-scene` suite requires for the agent that reviews planned tasks. A request SHALL describe one configuration with a repetition count, without automatic matrix expansion.
 
 When the eval kind is configured for Fly execution, a request whose effective lead, crosscheck, implementor, or tester profile uses the `cursor` CLI, whether supplied in the block or inherited from the configured defaults, SHALL be an invalid request and SHALL follow the correction behavior below with a comment naming the affected role and stating that Cursor is unavailable on Fly. Under Docker execution Cursor profiles SHALL remain valid.
 
@@ -67,6 +67,22 @@ Repetitions SHALL be a positive integer. An optional configured maximum SHALL re
 
 - **WHEN** a block supplies `workflow` as a non-string TOML value or a string that is not a `namespace:name` logical reference, such as a workflow file path
 - **THEN** the request is invalid, stays in Ready with `needs-input`, the comment states that `workflow` must be a logical Agent Runner workflow reference, and no evaluation starts
+
+#### Scenario: Select a validation workflow
+
+- **WHEN** a valid block supplies `validation_workflow = "none"`
+- **THEN** the request is valid, its frozen settings record that selection, and each repetition, retry, and resume passes `--validation-workflow none` to the suite
+
+#### Scenario: Keep a request written with skip_validator
+
+- **WHEN** an issue's block still supplies `skip_validator = true`
+- **THEN** the request is valid, a new claim freezes `validation_workflow` as `none`, and the request fingerprint is unchanged from the one computed before `validation_workflow` existed
+- **AND** an existing claim for that issue is not treated as a changed request
+
+#### Scenario: Reject a malformed validation workflow
+
+- **WHEN** a block supplies `validation_workflow` as a non-string TOML value or an unsupported value such as a workflow file path, or supplies it together with `skip_validator`
+- **THEN** the request is invalid, stays in Ready with `needs-input`, and no evaluation starts
 
 #### Scenario: Omit the crosscheck profile
 

@@ -44,7 +44,10 @@ def test_ordinary_registry_input(
     _git(sample, "fetch", "origin")
     branch = _git(sample, "branch", "--show-current")
     script = sources.evals / "evals/agent-runner/and-scene/run.sh"
-    script.write_text("#!/bin/sh\ncase $1 in\n --sample-ref) ;;\nesac\n", encoding="utf-8")
+    script.write_text(
+        "#!/bin/sh\ncase $1 in\n --sample-ref) ;;\n --validation-workflow) ;;\nesac\n",
+        encoding="utf-8",
+    )
     _git(sources.evals, "add", ".")
     _git(sources.evals, "commit", "-m", "sample flag")
     revisions["evals"] = _git(sources.evals, "rev-parse", "HEAD")
@@ -67,7 +70,7 @@ def test_ordinary_registry_input(
         branch,
         branch,
         {role: "codex:model:medium" for role in ("lead", "implementor", "tester")},
-        False,
+        "agent-validator",
         1,
     )
     request = parse_request(f'```eval\nsample_ref = "{branch}"\n```', defaults)
@@ -153,7 +156,7 @@ def test_requested_fixture_without_checkout_is_not_admitted(tmp_path: Path) -> N
         _git(source, "remote", "add", "origin", str(source))
     branch = _git(sources.runner, "branch", "--show-current")
     store = ClaimStore(tmp_path / "claims.sqlite3")
-    defaults = EvalDefaults(branch, branch, {}, False, 1)
+    defaults = EvalDefaults(branch, branch, {}, "agent-validator", 1)
     handler = EvalHandler(defaults, harness_ref=branch, sources=sources)
     snapshot = RequestSnapshot(
         "repo",

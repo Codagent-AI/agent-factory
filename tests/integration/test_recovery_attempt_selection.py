@@ -147,7 +147,7 @@ def _handler(store: ClaimStore) -> object:
     from agent_factory.work_kinds.eval import EvalDefaults
     from agent_factory.work_kinds.eval.handler import EvalHandler
 
-    handler = EvalHandler(EvalDefaults("main", "main", {}, False, 3))
+    handler = EvalHandler(EvalDefaults("main", "main", {}, "agent-validator", 3))
     handler.attach_store(store)
     return handler
 

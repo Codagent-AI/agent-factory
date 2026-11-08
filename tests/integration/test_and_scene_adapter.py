@@ -612,7 +612,11 @@ def test_controller_understands_real_nonresumable_workflow_owner(tmp_path: Path)
             return "1"
 
     defaults = EvalDefaults(
-        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
+        "main",
+        "main",
+        {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"},
+        "agent-validator",
+        1,
     )
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"),
@@ -760,7 +764,11 @@ def test_controller_reserves_an_absolute_stable_artifact_path(tmp_path: Path) ->
             return "1"
 
     defaults = EvalDefaults(
-        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
+        "main",
+        "main",
+        {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"},
+        "agent-validator",
+        1,
     )
     controller = Controller(
         ClaimStore(tmp_path / "state.sqlite3"),

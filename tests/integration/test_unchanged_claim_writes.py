@@ -63,7 +63,9 @@ def test_tick_over_a_cleaned_cancelled_claim_on_a_closed_issue_writes_nothing(
     site.github.fields[status.id] = status.option("done")
     with site.store() as store:
         store.set_paused(True)
-        request = parse_request(site.github.body, EvalDefaults("main", "main", ROLES, False, 1))
+        request = parse_request(
+            site.github.body, EvalDefaults("main", "main", ROLES, "agent-validator", 1)
+        )
         frozen = request.freeze(
             {name: site.revisions[name] for name in ("runner", "skills", "evals")},
             suite="and-scene",

@@ -17,6 +17,6 @@ agent_skills_ref = "main"
 lead = "codex:gpt-5.6-sol:high"
 implementor = "codex:gpt-5.6-sol:high"
 tester = "codex:gpt-5.6-sol:high"
-skip_validator = false
+validation_workflow = "agent-validator"
 repetitions = 3
 ```

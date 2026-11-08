@@ -237,7 +237,7 @@ class EvalHandler:
                 for role in ROLES
                 if role != "crosscheck" or role in values
             },
-            bool(values.get("skip_validator", False)),
+            str(values.get("validation_workflow", "none")),
             shared.eval.repetitions,
             execution=local.eval_execution,
             agent_validator_ref=str(values.get("agent_validator_ref", "main")),
@@ -433,7 +433,8 @@ class EvalHandler:
         worktrees = self._manager.prepare(claim.id, revisions)
         if not claim.preparation and self._worktree_cleanup is not None:
             self._worktree_cleanup.record(claim.id, worktrees)
-        roles = mapping(mapping(claim.frozen_spec.get("settings")).get("roles"))
+        settings = mapping(claim.frozen_spec.get("settings"))
+        roles = mapping(settings.get("roles"))
         if self._local is not None and self._local.eval_execution == "fly":
             for role, profile in roles.items():
                 if str(profile).split(":", 1)[0] == "cursor":
@@ -445,7 +446,12 @@ class EvalHandler:
         failures = [check.detail for check in auth if not check.available]
         if failures:
             raise ReadinessError("; ".join(failures))
-        reason = self.adapter.readiness(worktrees, pinned=revisions.keys(), roles=roles.keys())
+        reason = self.adapter.readiness(
+            worktrees,
+            pinned=revisions.keys(),
+            roles=roles.keys(),
+            selects_validation_workflow="validation_workflow" in settings,
+        )
         if reason:
             raise ReadinessError(reason)
         return Preparation(worktrees=worktrees)

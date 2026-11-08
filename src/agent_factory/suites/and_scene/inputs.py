@@ -16,6 +16,12 @@ FIXTURE_REPOSITORY = "https://github.com/Codagent-AI/and-scene.git"
 # The shape run.sh accepts for `--workflow`: a logical Agent Runner `namespace:name`
 # reference. A request that omits `workflow` runs the suite's default workflow.
 WORKFLOW = re.compile(r"[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*")
+# The values run.sh accepts for `--validation-workflow`. Agent Runner also takes an
+# absolute path, but no host path exists inside the evaluation sandbox. A builtin
+# reference stays inside Runner's bundled workflows: no `..`, no root.
+VALIDATION_WORKFLOW = re.compile(
+    r"auto|agent-validator|none|builtin:(?![./])(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml"
+)
 
 
 def _resolve(checkout: Path | None, ref: str) -> str:

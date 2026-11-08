@@ -193,13 +193,14 @@ def test_fly_settings_default_to_ewr_shared_4_cpus_8_gib_and_900_s_grace(site: S
     assert config.fly.collection_grace_seconds == 900
 
 
-def test_codagent_shared_eval_defaults_select_sol_implementor_and_skip_validator() -> None:
+def test_codagent_shared_eval_defaults_select_sol_implementor_and_no_validation() -> None:
     shared = SharedConfig.from_file(Path("config/codagent.toml"))
 
     assert shared.eval.defaults["lead"] == "claude:claude-sonnet-5-5:high"
     assert shared.eval.defaults["implementor"] == "codex:gpt-6.1-sol:medium"
     assert shared.eval.defaults["tester"] == "codex:gpt-6-luna:medium"
-    assert shared.eval.defaults["skip_validator"] is True
+    assert shared.eval.defaults["validation_workflow"] == "none"
+    assert "skip_validator" not in shared.eval.defaults
 
 
 # -- doctor --------------------------------------------------------------------

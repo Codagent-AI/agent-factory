@@ -30,6 +30,7 @@ from agent_factory.github import (
 )
 from agent_factory.store import Claim, ClaimStore, Event
 from agent_factory.suites.and_scene import FIXTURE_REPOSITORY, AndSceneAdapter, ReadinessError
+from agent_factory.suites.and_scene.inputs import VALIDATION_WORKFLOW
 from agent_factory.work_kinds.pull_request.kinds import FIX, registered
 
 if TYPE_CHECKING:
@@ -161,6 +162,21 @@ def doctor(
                 group="eval",
             )
         )
+    if shared is not None:
+        # A stale or malformed default would otherwise freeze into every new claim.
+        validation = shared.eval.defaults.get("validation_workflow", "none")
+        if "skip_validator" in shared.eval.defaults or not (
+            isinstance(validation, str) and VALIDATION_WORKFLOW.fullmatch(validation)
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    "Eval validation default",
+                    False,
+                    "eval.defaults needs a supported validation_workflow and no skip_validator",
+                    "Set validation_workflow in [eval.defaults] in config/codagent.toml.",
+                    group="eval",
+                )
+            )
     if config.eval_execution == "fly":
         # A local Cursor login proves nothing on Fly, where Cursor cannot run.
         cursor_roles = sorted(
