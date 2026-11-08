@@ -20,7 +20,7 @@ WORKFLOW = re.compile(r"[a-z0-9][a-z0-9-]*:[a-z0-9][a-z0-9-]*")
 # absolute path, but no host path exists inside the evaluation sandbox. A builtin
 # reference stays inside Runner's bundled workflows: no `..`, no root.
 VALIDATION_WORKFLOW = re.compile(
-    r"auto|agent-validator|none|builtin:(?![./])(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml"
+    r"auto|agent-validator|none|builtin:(?:[A-Za-z0-9_-][A-Za-z0-9_.-]*/)*[A-Za-z0-9_-][A-Za-z0-9_.-]*\.ya?ml"
 )
 
 

@@ -40,7 +40,14 @@ def test_validation_workflow_uses_the_default_and_accepts_supported_selections()
 
 
 @pytest.mark.parametrize(
-    "value", ["builtin:/etc/x.yaml", "builtin:../x.yaml", "builtin:core/../../x.yaml"]
+    "value",
+    [
+        "builtin:/etc/x.yaml",
+        "builtin:../x.yaml",
+        "builtin:core/../../x.yaml",
+        "builtin:core/./x.yaml",
+        "builtin:core//x.yaml",
+    ],
 )
 def test_validation_workflow_builtin_reference_stays_inside_runner(value: str) -> None:
     defaults = EvalDefaults("main", "main", {}, "none", 1)
