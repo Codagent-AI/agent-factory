@@ -224,7 +224,7 @@ def test_preflight_reuses_claim_and_cap_holds_next_eval_repetition(tmp_path: Pat
         agent_runner_ref="main",
         agent_skills_ref="main",
         roles={"lead": "codex:m:high", "implementor": "codex:m:high", "tester": "codex:m:high"},
-        skip_validator=False,
+        validation_workflow="agent-validator",
         repetitions=2,
     )
     snapshot = RequestSnapshot(

@@ -19,7 +19,9 @@ _BLOCK = re.compile(r"```eval[ \t]*\n(.*?)\n```", re.DOTALL)
 # Eval role profiles in suite role order. `crosscheck` reviews planned tasks.
 ROLES = ("lead", "crosscheck", "implementor", "tester")
 _ROLES = frozenset(ROLES)
-_KEYS = _ROLES | {"skip_validator", "repetitions", "workflow"}
+# `skip_validator` is legacy input: open issues still carry it, and rejecting it
+# would change their request fingerprints and read as a request for a fresh claim.
+_KEYS = _ROLES | {"validation_workflow", "skip_validator", "repetitions", "workflow"}
 
 
 def _accepted_keys() -> frozenset[str]:
@@ -33,7 +35,7 @@ class EvalDefaults:
     agent_runner_ref: str
     agent_skills_ref: str
     roles: Mapping[str, str]
-    skip_validator: bool
+    validation_workflow: str
     repetitions: int
     max_repetitions: int | None = None
     execution: str = "docker"
@@ -110,13 +112,15 @@ def parse_request(body: str, defaults: EvalDefaults) -> ParsedRequest:
             if entry.has_default and entry.setting
         },
         "roles": dict(defaults.roles),
-        "skip_validator": defaults.skip_validator,
+        "validation_workflow": defaults.validation_workflow,
         "repetitions": defaults.repetitions,
     }
     for key, value in parsed.items():
         if key in _ROLES:
             roles = cast(dict[str, str], effective["roles"])
             roles[key] = cast(str, value)
+        elif key == "skip_validator":
+            effective["validation_workflow"] = "none" if value else "agent-validator"
         else:
             effective[key] = value
     if defaults.execution == "fly":
@@ -139,6 +143,16 @@ def _validate_overrides(overrides: Mapping[str, object], defaults: EvalDefaults)
             _profile(overrides[role], role)
     if "skip_validator" in overrides and not isinstance(overrides["skip_validator"], bool):
         raise ValueError("skip_validator must be a boolean")
+    if "skip_validator" in overrides and "validation_workflow" in overrides:
+        raise ValueError("set validation_workflow or skip_validator, not both")
+    if "validation_workflow" in overrides and not (
+        isinstance(overrides["validation_workflow"], str)
+        and inputs.VALIDATION_WORKFLOW.fullmatch(overrides["validation_workflow"])
+    ):
+        raise ValueError(
+            "validation_workflow must be auto, agent-validator, none, or a builtin: "
+            "workflow reference"
+        )
     if "workflow" in overrides and not (
         isinstance(overrides["workflow"], str) and inputs.WORKFLOW.fullmatch(overrides["workflow"])
     ):

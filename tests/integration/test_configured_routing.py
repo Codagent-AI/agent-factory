@@ -377,7 +377,11 @@ def test_eval_card_is_admitted_on_issue_type_without_a_redundant_label() -> None
     )
 
     defaults = EvalDefaults(
-        "main", "main", {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"}, False, 1
+        "main",
+        "main",
+        {"lead": "a:b:c", "implementor": "a:b:c", "tester": "a:b:c"},
+        "agent-validator",
+        1,
     )
     handler = EvalHandler(defaults, harness_ref="e" * 40)
     snapshot = handler.snapshot(card, github, config)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -34,7 +35,9 @@ _HARNESS_WITH_CROSSCHECK = (
 
 
 def _defaults(execution: str = "docker", **roles: str) -> EvalDefaults:
-    return EvalDefaults("main", "main", {**_ROLES, **roles}, False, 1, execution=execution)
+    return EvalDefaults(
+        "main", "main", {**_ROLES, **roles}, "agent-validator", 1, execution=execution
+    )
 
 
 # -- intake ------------------------------------------------------------------
@@ -99,6 +102,40 @@ def test_handler_defaults_carry_the_configured_crosscheck(site: Site) -> None:  
     roles = request.settings["roles"]
     assert isinstance(roles, dict)
     assert roles["crosscheck"] == "claude:y:high"
+
+
+def test_handler_runs_no_validation_unless_configured(site: Site) -> None:  # noqa: F811
+    from agent_factory.work_kinds.eval import EvalHandler
+
+    handler = EvalHandler.from_config(site.shared(), site.config(evals="docker"))
+    request = parse_request("```eval\n# defaults\n```", handler._defaults)  # pyright: ignore[reportPrivateUsage]
+
+    assert request.settings["validation_workflow"] == "none"
+
+
+@pytest.mark.parametrize(
+    "line",
+    ['validation_workflow = "/tmp/x.yaml"', "validation_workflow = true", "skip_validator = false"],
+)
+def test_doctor_fails_an_unusable_validation_default(site: Site, line: str) -> None:  # noqa: F811
+    from agent_factory.operations import doctor
+
+    site.shared_path.write_text(
+        SHARED.replace('crosscheck = "codex:x:medium"', f'crosscheck = "codex:x:medium"\n{line}'),
+        encoding="utf-8",
+    )
+
+    diagnostics = doctor(site.config(evals="docker"))
+
+    assert [d.available for d in diagnostics if d.name == "Eval validation default"] == [False]
+
+
+def test_doctor_accepts_an_unset_validation_default(site: Site) -> None:  # noqa: F811
+    from agent_factory.operations import doctor
+
+    diagnostics = doctor(site.config(evals="docker"))
+
+    assert not [d for d in diagnostics if d.name == "Eval validation default"]
 
 
 def test_doctor_under_fly_fails_a_cursor_crosscheck_default(site: Site) -> None:  # noqa: F811
@@ -218,6 +255,66 @@ def test_harness_without_crosscheck_holds_a_frozen_crosscheck(tmp_path: Path) ->
         adapter.plan(_frozen(_ROLES, revisions), worktrees, tmp_path / "a", recovery=False)
     three = {role: profile for role, profile in _ROLES.items() if role != "crosscheck"}
     assert adapter.readiness(worktrees, roles=three.keys()) is None
+
+
+# -- validation selection ----------------------------------------------------
+
+_HARNESS_WITH_VALIDATION = _HARNESS_WITH_CROSSCHECK.replace(
+    "esac", "    --validation-workflow) ;;\nesac"
+)
+
+
+def _with_settings(frozen: dict[str, object], **settings: object) -> dict[str, object]:
+    return {**frozen, "settings": {**cast(dict[str, object], frozen["settings"]), **settings}}
+
+
+def test_frozen_validation_workflow_reaches_the_suite(tmp_path: Path) -> None:
+    adapter, worktrees, revisions = _adapter_and_worktrees(tmp_path, _HARNESS_WITH_VALIDATION)
+    frozen = _with_settings(_frozen(_ROLES, revisions), validation_workflow="none")
+
+    argv = adapter.plan(frozen, worktrees, tmp_path / "a", recovery=False).argv
+
+    assert argv[argv.index("--validation-workflow") + 1] == "none"
+    assert "--skip-validator" not in argv
+
+
+@pytest.mark.parametrize("skip", [True, False])
+def test_claim_frozen_with_skip_validator_keeps_the_flag_its_harness_knows(
+    tmp_path: Path, skip: bool
+) -> None:
+    adapter, worktrees, revisions = _adapter_and_worktrees(tmp_path, _HARNESS_WITH_CROSSCHECK)
+    frozen = _with_settings(_frozen(_ROLES, revisions), skip_validator=skip)
+
+    argv = adapter.plan(frozen, worktrees, tmp_path / "a", recovery=False).argv
+
+    assert ("--skip-validator" in argv) is skip
+    assert "--validation-workflow" not in argv
+
+
+def test_harness_without_validation_workflow_holds_a_claim_that_selects_one(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.suites.and_scene import ReadinessError
+
+    adapter, worktrees, revisions = _adapter_and_worktrees(tmp_path, _HARNESS_WITH_CROSSCHECK)
+    frozen = _with_settings(_frozen(_ROLES, revisions), validation_workflow="none")
+
+    reason = adapter.readiness(worktrees, selects_validation_workflow=True)
+    assert reason is not None
+    assert "--validation-workflow" in reason and revisions["evals"][:12] in reason
+    with pytest.raises(ReadinessError, match="--validation-workflow"):
+        adapter.plan(frozen, worktrees, tmp_path / "a", recovery=False)
+    assert adapter.readiness(worktrees) is None
+
+
+def test_malformed_frozen_validation_workflow_is_refused(tmp_path: Path) -> None:
+    from agent_factory.suites.and_scene import ReadinessError
+
+    adapter, worktrees, revisions = _adapter_and_worktrees(tmp_path, _HARNESS_WITH_VALIDATION)
+    frozen = _with_settings(_frozen(_ROLES, revisions), validation_workflow="/tmp/x.yaml")
+
+    with pytest.raises(ReadinessError, match="validation_workflow"):
+        adapter.plan(frozen, worktrees, tmp_path / "a", recovery=False)
 
 
 def test_eval_handler_prepare_holds_a_frozen_crosscheck_on_an_old_harness(

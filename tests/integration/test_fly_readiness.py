@@ -73,7 +73,7 @@ def test_fly_refuses_cursor_from_defaults_and_overrides() -> None:
             "implementor": "codex:x:medium",
             "tester": "claude:x:medium",
         },
-        False,
+        "agent-validator",
         1,
         execution="fly",
     )
@@ -83,7 +83,7 @@ def test_fly_refuses_cursor_from_defaults_and_overrides() -> None:
         "main",
         "main",
         {"lead": "codex:x:medium", "implementor": "codex:x:medium", "tester": "claude:x:medium"},
-        False,
+        "agent-validator",
         1,
         execution="fly",
     )

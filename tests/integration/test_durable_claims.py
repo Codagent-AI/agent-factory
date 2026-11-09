@@ -18,7 +18,7 @@ def defaults() -> EvalDefaults:
             "implementor": "codex:gpt-5.6-sol:high",
             "tester": "codex:gpt-5.6-sol:high",
         },
-        skip_validator=False,
+        validation_workflow="agent-validator",
         repetitions=3,
     )
 

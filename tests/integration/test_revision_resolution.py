@@ -18,7 +18,7 @@ from agent_factory.work_kinds.eval.handler import Resolution, validator_source_u
 
 
 def test_fixture_request_freezes_only_when_selected() -> None:
-    defaults = EvalDefaults("main", "main", {}, False, 1)
+    defaults = EvalDefaults("main", "main", {}, "agent-validator", 1)
     standard = parse_request("```eval\nrepetitions = 1\n```", defaults)
     selected = parse_request('```eval\nfixture_ref = "eval/fixture-x"\n```', defaults)
     assert "fixture_ref" not in standard.settings
@@ -90,7 +90,7 @@ def source_pair(tmp_path: Path) -> tuple[Path, Path, str, str]:
 def resolve(clone: Path, ref: str) -> tuple[str, ...]:
     from agent_factory.work_kinds.eval import handler as eval_handler
 
-    defaults = EvalDefaults("main", "main", {}, False, 1)
+    defaults = EvalDefaults("main", "main", {}, "agent-validator", 1)
     request = parse_request(f'```eval\nagent_runner_ref = "{ref}"\n```', defaults)
     return tuple(
         eval_handler.resolve_revisions(
@@ -133,7 +133,7 @@ def test_validator_source_rejects_unfetchable_origins(tmp_path: Path, origin: st
 
 
 def test_validator_ref_is_configuration_only_and_freezes_with_source() -> None:
-    defaults = EvalDefaults("main", "main", {}, False, 1, agent_validator_ref="main")
+    defaults = EvalDefaults("main", "main", {}, "agent-validator", 1, agent_validator_ref="main")
     with pytest.raises(ValueError, match="unsupported eval setting"):
         parse_request('```eval\nagent_validator_ref = "dev"\n```', defaults)
     request = parse_request("```eval\nrepetitions = 1\n```", defaults)
@@ -169,7 +169,7 @@ def test_admission_freezes_validator_from_real_remote_and_docker_omits_it(
     git(validator, "remote", "set-url", "origin", ssh)
     git(validator, "config", f"url.{origin}.insteadOf", ssh)
     store = ClaimStore(tmp_path / "state.sqlite3")
-    defaults = EvalDefaults("main", "main", {}, False, 1, execution="fly")
+    defaults = EvalDefaults("main", "main", {}, "agent-validator", 1, execution="fly")
     handler = EvalHandler(
         defaults,
         harness_ref="main",
@@ -203,7 +203,7 @@ def test_admission_freezes_validator_from_real_remote_and_docker_omits_it(
     assert _revisions(claim)["validator"] == latest
 
     docker = EvalHandler(
-        EvalDefaults("main", "main", {}, False, 1, execution="docker"),
+        EvalDefaults("main", "main", {}, "agent-validator", 1, execution="docker"),
         harness_ref="main",
         sources=SourceRepositories(common, common, common),
     )
@@ -289,7 +289,7 @@ def test_eval_handler_resolves_harness_branch_at_each_admission(tmp_path: Path) 
     old = git(origin, "rev-parse", "HEAD")
     clone = tmp_path / "clone"
     subprocess.run(["git", "clone", "--quiet", str(origin), str(clone)], check=True)
-    defaults = EvalDefaults("main", "main", {}, False, 1)
+    defaults = EvalDefaults("main", "main", {}, "agent-validator", 1)
     store = ClaimStore(tmp_path / "state.sqlite3")
     handler = EvalHandler(
         defaults,

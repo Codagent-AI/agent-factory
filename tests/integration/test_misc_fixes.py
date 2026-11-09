@@ -662,7 +662,7 @@ def test_presuite_failures_relaunch_same_unit_then_settle(tmp_path: Path) -> Non
             "main",
             "main",
             {"lead": "codex:x:medium", "implementor": "codex:x:medium", "tester": "codex:x:medium"},
-            False,
+            "agent-validator",
             1,
         )
     )

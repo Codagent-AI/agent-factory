@@ -102,7 +102,7 @@ collection_grace_seconds = {GRACE_SECONDS}
         self.artifacts = tmp_path / "artifacts"
         self.store = ClaimStore(tmp_path / "state.sqlite3")
         self.handler = RecordedResults(
-            EvalDefaults("main", "main", ROLES, False, 1, execution="fly"),
+            EvalDefaults("main", "main", ROLES, "agent-validator", 1, execution="fly"),
             AndSceneAdapter(environment_file=environment, execution="fly", fly=self.local.fly),
         )
         self.controller = Controller(
@@ -699,7 +699,7 @@ def _three_repetition_claim() -> Claim:
 
 
 def _handler() -> EvalHandler:
-    return EvalHandler(EvalDefaults("main", "main", ROLES, False, 3))
+    return EvalHandler(EvalDefaults("main", "main", ROLES, "agent-validator", 3))
 
 
 def test_one_lost_repetition_among_reviewable_ones_is_pending_human_review() -> None:

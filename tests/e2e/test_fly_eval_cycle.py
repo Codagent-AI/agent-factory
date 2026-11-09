@@ -48,9 +48,11 @@ REVIEWABLE: dict[str, object] = {
 # waits for the test to hand it its result.
 _RUN_SH = f"""#!{sys.executable}
 import os, subprocess, sys
-# Readiness reads run.sh's case arms; this harness accepts the crosscheck role.
+# Readiness reads run.sh's case arms; this harness accepts the crosscheck role
+# and a validation workflow selection.
 ACCEPTS = '''
     --crosscheck-cli)
+    --validation-workflow)
 '''
 args = sys.argv[1:]
 def option(name):
@@ -582,7 +584,7 @@ def test_e2e_001_legacy_fly_claim_reports_unpinned_validator(factory: Factory) -
         "main",
         "main",
         {role: "codex:x:medium" for role in ("lead", "implementor", "tester")},
-        False,
+        "agent-validator",
         1,
         execution="fly",
     )

@@ -23,6 +23,14 @@ FIXTURE = "c" * 40
 SOURCE = "https://github.com/Codagent-AI/agent-validator.git"
 
 
+def _pre_rename(text: str) -> str:
+    """Express a frozen setting as the immutable goldens recorded it.
+
+    The rename to validation_workflow is the one intended change to the frozen shape.
+    """
+    return text.replace('"validation_workflow": "agent-validator"', '"skip_validator": false')
+
+
 def _assert_golden(path: Path, actual: object, *, capture: str = "CAPTURE_EVAL_GOLDENS") -> None:
     if os.environ.get(capture) == "1":
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +65,7 @@ def test_frozen_and_reporting_golden(
             "implementor": "codex:default:medium",
             "tester": "codex:default:medium",
         },
-        False,
+        "agent-validator",
         1,
         execution=execution,
     )
@@ -81,9 +89,9 @@ def test_frozen_and_reporting_golden(
     handler.attach_store(store)
     actual = {
         "fingerprint": request.fingerprint,
-        "frozen_spec": json.dumps(claim.frozen_spec),
+        "frozen_spec": _pre_rename(json.dumps(claim.frozen_spec)),
         "refs": handler.refs_text(claim),
-        "frozen_inputs": handler.frozen_inputs_event(claim),
+        "frozen_inputs": _pre_rename(handler.frozen_inputs_event(claim)),
     }
     path = GOLDENS / f"{shape}.json"
     _assert_golden(path, actual)
@@ -104,7 +112,7 @@ def test_report_golden(tmp_path: Path, shape: str) -> None:
     claim = store.create_claim(
         ClaimDraft("repo", 1, "issue", "item", "eval", saved["fingerprint"], frozen_spec)
     )
-    handler = EvalHandler(EvalDefaults("main", "main", {}, False, 1))
+    handler = EvalHandler(EvalDefaults("main", "main", {}, "agent-validator", 1))
     handler.attach_store(store)
     run = store.reserve_run(
         claim.id, "rep-1", lane="low", reason="initial", evidence_path="/artifact"
@@ -325,7 +333,7 @@ def test_admission_freezes_the_golden_combined_shape_and_continues(tmp_path: Pat
             "implementor": "codex:default:medium",
             "tester": "codex:default:medium",
         },
-        False,
+        "agent-validator",
         1,
         execution="fly",
     )
@@ -377,7 +385,7 @@ def test_admission_freezes_the_golden_combined_shape_and_continues(tmp_path: Pat
         "revisions": {name: placeholders[name] for name in revisions},
     }
     golden = json.loads((GOLDENS / "combined_fly.json").read_text(encoding="utf-8"))
-    assert json.dumps(normalized) == golden["frozen_spec"]
+    assert _pre_rename(json.dumps(normalized)) == golden["frozen_spec"]
     assert saved.request_fingerprint == golden["fingerprint"]
 
     _git(sources.runner, "commit", "--allow-empty", "-m", "advance")

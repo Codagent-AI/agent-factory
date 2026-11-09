@@ -361,7 +361,7 @@ def test_frozen_cursor_claim_is_held_under_fly_without_mutating_its_inputs(
             "implementor": "codex:x:medium",
             "tester": "cursor:agent:medium",
         },
-        False,
+        "agent-validator",
         1,
         execution="docker",
     )
@@ -497,7 +497,7 @@ def test_fly_pinned_claim_waits_under_docker_and_legacy_claim_still_plans(
                 "main",
                 "main",
                 {role: "codex:x:medium" for role in ("lead", "implementor", "tester")},
-                False,
+                "agent-validator",
                 1,
                 execution="fly",
             ),
@@ -590,7 +590,7 @@ def test_admission_defers_terminal_result_finished_after_consumption(
                     "implementor": "codex:x:medium",
                     "tester": "codex:x:medium",
                 },
-                False,
+                "agent-validator",
                 1,
             ),
         )

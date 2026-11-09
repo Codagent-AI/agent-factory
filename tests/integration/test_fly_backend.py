@@ -201,7 +201,7 @@ def test_lost_repetition_is_explained_but_does_not_become_a_product_failure() ->
             "main",
             "main",
             {"lead": "codex:x", "implementor": "codex:x", "tester": "codex:x"},
-            False,
+            "agent-validator",
             2,
         )
     )
