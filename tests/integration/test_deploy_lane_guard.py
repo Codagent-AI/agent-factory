@@ -20,10 +20,16 @@ def _executable(path: Path, text: str) -> None:
 
 
 def _deploy(
-    tmp_path: Path, scenario: str
+    tmp_path: Path, scenario: str, *, paused: bool = False, marker: bool = False
 ) -> tuple[subprocess.CompletedProcess[str], list[str], str, str]:
     home = tmp_path / "home"
     home.mkdir()
+    pause_state = home / "paused"
+    pause_marker = home / "deploy-paused"
+    if paused:
+        pause_state.touch()
+    if marker:
+        pause_marker.touch()
     scripts = tmp_path / "scripts"
     shutil.copytree(SCRIPTS, scripts)
     bin_dir = tmp_path / "bin"
@@ -63,7 +69,12 @@ elif args == ['lanes','enable']:
     pathlib.Path({str(home / "guard")!r}).write_text('lanes')
 elif args == ['honored-revisions']: print('fixture')
 elif args == ['status']:
-    print('paused: false\\neval slot: free\\nfix slot: busy (low)\\nhost attempts: 1')
+    state=str(pathlib.Path({str(pause_state)!r}).exists()).lower()
+    print(f'paused: {{state}}\\neval slot: free\\nfix slot: busy (low)\\nhost attempts: 1')
+elif args in (['pause'],['resume']):
+    state=pathlib.Path({str(pause_state)!r})
+    state.touch() if args == ['pause'] else state.unlink(missing_ok=True)
+    pathlib.Path({str(pause_marker)!r}).unlink(missing_ok=True)
 elif args == ['doctor'] and scenario == 'doctor-fails':
     print('probe: failed');sys.exit(1)
 """
@@ -187,3 +198,24 @@ def test_deploy_guard_and_recovery(tmp_path: Path, scenario: str) -> None:
         if scenario in {"bootstrap-fails", "resident-fails"}:
             assert "/abc123456789/" in pointer
             assert (tmp_path / "home/guard").read_text() == "kind"
+
+
+@pytest.mark.parametrize(
+    ("scenario", "paused", "marker", "resumes", "marked_after"),
+    [
+        ("success", False, False, True, False),
+        ("doctor-fails", False, False, False, True),
+        ("doctor-fails", True, True, False, True),
+        ("success", True, True, True, False),
+        ("doctor-fails", True, False, False, False),
+        ("success", True, False, False, False),
+    ],
+)
+def test_deploy_resumes_only_a_pause_a_deploy_left(
+    tmp_path: Path, scenario: str, paused: bool, marker: bool, resumes: bool, marked_after: bool
+) -> None:
+    result, calls, _, _ = _deploy(tmp_path, scenario, paused=paused, marker=marker)
+    assert result.returncode == (0 if scenario == "success" else 1), result.stderr
+    assert any(call.endswith(" resume") for call in calls) is resumes
+    assert (tmp_path / "home/paused").exists() is not resumes
+    assert (tmp_path / "home/deploy-paused").exists() is marked_after
