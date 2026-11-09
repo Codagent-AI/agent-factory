@@ -110,7 +110,7 @@ def test_cli_tick_still_exits_at_startup_on_invalid_local_configuration(tmp_path
     assert "invalid local configuration" in tick.stderr
 
 
-def test_cli_doctor_reports_unsupported_eval_host_execution(tmp_path: Path) -> None:
+def _write_local_config(tmp_path: Path, execution: str) -> Path:
     config_path = tmp_path / "local.toml"
     config_path.write_text(
         f'''\
@@ -140,10 +140,15 @@ github_app_key = "{tmp_path / "missing-app.pem"}"
 suite_environment = "{tmp_path / "missing-suite.env"}"
 
 [eval]
-execution = "host"
+execution = "{execution}"
 ''',
         encoding="utf-8",
     )
+    return config_path
+
+
+def test_cli_doctor_reports_unsupported_eval_host_execution(tmp_path: Path) -> None:
+    config_path = _write_local_config(tmp_path, "host")
 
     command = [sys.executable, "-m", "agent_factory.cli", "--config", str(config_path)]
     doctor = subprocess.run([*command, "doctor"], check=False, capture_output=True, text=True)
@@ -174,6 +179,21 @@ def test_cli_pause_resume_and_status_use_durable_state(tmp_path: Path) -> None:
     assert subprocess.run([*command, "resume"], check=False).returncode == 0
     resumed = subprocess.run([*command, "status"], check=False, capture_output=True, text=True)
     assert "paused: false" in resumed.stdout
+
+
+def test_cli_pause_and_resume_clear_a_stopped_deploys_marker(tmp_path: Path) -> None:
+    config_path = _write_local_config(tmp_path, "docker")
+    marker = tmp_path / "deploy-paused"
+    for action in ("pause", "resume"):
+        marker.touch()
+        result = subprocess.run(
+            [sys.executable, "-m", "agent_factory.cli", "--config", str(config_path), action],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert not marker.exists()
 
 
 def test_cli_status_all_lists_every_saved_claim(tmp_path: Path) -> None:
