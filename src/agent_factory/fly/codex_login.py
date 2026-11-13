@@ -108,6 +108,16 @@ def read_login(home: Path) -> CodexLogin:
     return CodexLogin(id_token, access, account, _expiry(access))
 
 
+def _check(reply: object) -> object:
+    """A JSON-RPC error reply as a login error. Codex's error text holds no token."""
+    error = _get(reply, "error")
+    if error is not None:
+        message = _get(error, "message")
+        detail = message[:200] if isinstance(message, str) else "no message"
+        raise CodexLoginError(f"Codex refused the login refresh: {detail}")
+    return reply
+
+
 def refresh_native_login(codex: str = "codex") -> None:
     """Ask the Mac's Codex to refresh its login; Codex saves the new tokens itself.
 
@@ -152,10 +162,11 @@ def refresh_native_login(codex: str = "codex") -> None:
             if _get(message, "id") == identifier:
                 return message
 
+    client = {"name": "agent-factory", "title": "Agent Factory", "version": "1"}
     try:
-        call(1, "initialize", {"clientInfo": {"name": "agent-factory"}, "capabilities": None})
+        _check(call(1, "initialize", {"clientInfo": client, "capabilities": None}))
         process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
-        reply = call(2, "account/read", {"refreshToken": True})
+        reply = _check(call(2, "account/read", {"refreshToken": True}))
     except (BrokenPipeError, OSError):
         raise CodexLoginError("the Codex CLI stopped while refreshing the login") from None
     finally:

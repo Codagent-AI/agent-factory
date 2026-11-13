@@ -707,10 +707,19 @@ def test_codex_login_missing_or_still_short_is_refused_without_the_token(
 _FAKE_CODEX = """
 import json, os, sys
 from pathlib import Path
+initialized = False
 for line in sys.stdin:
     message = json.loads(line)
     if message.get("method") == "initialize":
+        if set(message["params"]["clientInfo"]) != {"name", "title", "version"}:
+            error = {"code": -32600, "message": "Invalid request: missing field `version`"}
+            print(json.dumps({"id": message["id"], "error": error}), flush=True)
+            continue
+        initialized = True
         print(json.dumps({"id": message["id"], "result": {}}), flush=True)
+    elif message.get("method") == "account/read" and not initialized:
+        error = {"code": -32600, "message": "Not initialized"}
+        print(json.dumps({"id": message["id"], "error": error}), flush=True)
     elif message.get("method") == "account/read":
         assert message["params"] == {"refreshToken": True}
         account = None
