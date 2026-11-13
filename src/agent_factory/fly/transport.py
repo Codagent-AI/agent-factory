@@ -349,6 +349,9 @@ class JobRequest:
     codex_auth: bool
     claude_auth: bool
     deliveries: tuple[tuple[Path, str], ...] = ()
+    # A Codex login built on the Mac, delivered as the guest's auth.json in place of
+    # the Mac's own file (see agent_factory.fly.codex_login).
+    codex_login_file: bytes | None = None
 
 
 class FlyTransport:
@@ -1026,6 +1029,8 @@ class Lifecycle:
             self.transport.put_file(path, f"/host-home/{target}", prepare=False)
         if self._claude_login.kind == "keychain":
             self.transport.put_bytes(self._claude_login.data, "/host-home/claude/.credentials.json")
+        if request.codex_login_file is not None:
+            self.transport.put_bytes(request.codex_login_file, "/host-home/codex/auth.json")
         with tempfile.TemporaryDirectory() as scratch:
             # Secret-bearing files are staged outside the artifact tree.
             environment = Path(scratch) / "env"

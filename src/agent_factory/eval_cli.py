@@ -9,6 +9,7 @@ database or its live release; per-repetition state lives under ``<run-dir>/.fact
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -455,6 +456,7 @@ def command_start(options: argparse.Namespace) -> int:
         [Path(p) for p in _strings(launch.get("env_files"))],
         _strings(launch.get("env_names")),
     )
+    codex_login_file: bytes | None = None
     if launch.get("mount_codex_auth") is True:
         # The Machine gets only an access token that outlives the job; the Mac keeps
         # the refresh token (see agent_factory.fly.codex_login).
@@ -463,12 +465,14 @@ def command_start(options: argparse.Namespace) -> int:
         except CodexLoginError as error:
             raise CliError(f"no usable Codex login: {error}") from None
         environment += login.environment_lines()
+        codex_login_file = login.login_file(datetime.datetime.now(datetime.UTC))
     request = JobRequest(
         artifact_dir=artifact,
         script=job_script(manifest, script),
         input_dir=Path(input_dir),
         environment=environment,
         codex_auth=False,
+        codex_login_file=codex_login_file,
         claude_auth=launch.get("mount_claude_auth") is True,
         deliveries=pairs,
     )

@@ -7,6 +7,7 @@ so delivery, the job loop, the file manifest, and collection are all exercised.
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import os
 import subprocess
@@ -647,7 +648,12 @@ def _jwt(expires: int) -> str:
 
 def _write_codex_login(home: Path, token: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    tokens = {"access_token": token, "refresh_token": "refresh-secret", "account_id": "acct-1"}
+    tokens = {
+        "id_token": "id-token",
+        "access_token": token,
+        "refresh_token": "refresh-secret",
+        "account_id": "acct-1",
+    }
     (home / "auth.json").write_text(json.dumps({"tokens": tokens}), encoding="utf-8")
 
 
@@ -670,6 +676,16 @@ def test_codex_login_is_delivered_as_an_access_token_refreshed_only_when_short(
     assert f"ARCHON_CODEX_CHATGPT_ACCESS_TOKEN={_jwt(10_000)}" in lines
     assert "ARCHON_CODEX_CHATGPT_ACCOUNT_ID=acct-1" in lines
     assert "refresh-secret" not in lines and _jwt(10_000) not in repr(login)
+    # The judge's own `codex exec` gets a login file that cannot refresh.
+    when = datetime.datetime(2026, 11, 13, 8, 0, tzinfo=datetime.UTC)
+    written = json.loads(login.login_file(when))
+    assert written["tokens"] == {
+        "id_token": "id-token",
+        "access_token": _jwt(10_000),
+        "refresh_token": "",
+        "account_id": "acct-1",
+    }
+    assert written["last_refresh"] == "2026-11-13T08:00:00Z"
     login = delivered_login(50_000, home=home, now=lambda: 0, refresh=refresh)
     assert refreshes == [1] and login.expires_at == 200_000
 
@@ -765,7 +781,7 @@ def test_eval_cli_start_sends_the_codex_access_token_and_not_the_login_file(
 
     def login(minimum: int) -> CodexLogin:
         minimums.append(minimum)
-        return CodexLogin("access-secret", "acct-1", 0)
+        return CodexLogin("id-secret", "access-secret", "acct-1", 0)
 
     class Recording:
         def __init__(self, *_args: object) -> None:
@@ -798,3 +814,21 @@ def test_eval_cli_start_sends_the_codex_access_token_and_not_the_login_file(
     assert minimums == [100_900]
     assert requests[0].codex_auth is False
     assert "ARCHON_CODEX_CHATGPT_ACCESS_TOKEN=access-secret" in requests[0].environment
+    login_file = requests[0].codex_login_file
+    assert login_file is not None
+    assert json.loads(login_file)["tokens"]["refresh_token"] == ""
+
+
+def test_built_codex_login_replaces_the_macs_file_on_the_machine(env: Environment) -> None:
+    import dataclasses
+
+    suite = (
+        "cat /host-home/codex/auth.json > /artifacts/seen-codex.txt; "
+        'echo \'{"evaluation_status": "completed"}\' > /artifacts/result.json'
+    )
+    request = dataclasses.replace(
+        env.request(suite, auth=False), codex_login_file=b'{"built": true}'
+    )
+    assert env.lifecycle(env.manifest()).run(request) == 0
+    assert (env.artifact / "seen-codex.txt").read_text() == '{"built": true}'
+    assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []

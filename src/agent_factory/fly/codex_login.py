@@ -4,15 +4,17 @@ OpenAI refresh tokens are single use. A Machine that holds a copy of the Mac's
 ``auth.json`` and refreshes it cancels the Mac's copy, and the new token is lost
 when the Machine is destroyed. Archon reads a ChatGPT access token and account id
 from ``ARCHON_CODEX_CHATGPT_ACCESS_TOKEN`` and ``ARCHON_CODEX_CHATGPT_ACCOUNT_ID``,
-logs each Codex turn in with them in memory, and never refreshes them. So the
-refresh token stays on the Mac, and only the Mac's own Codex refreshes it, saving
-the new tokens back into ``auth.json``.
+logs each Codex turn in with them in memory, and never refreshes them. The eval's
+Codex judge runs ``codex exec`` itself, so the Machine also gets an ``auth.json``
+whose refresh token is empty. The refresh token stays on the Mac, and only the
+Mac's own Codex refreshes it, saving the new tokens back into ``auth.json``.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
+import datetime
 import fcntl
 import json
 import os
@@ -40,6 +42,7 @@ class CodexLoginError(RuntimeError):
 
 @dataclass(frozen=True)
 class CodexLogin:
+    id_token: str = field(repr=False)
     access_token: str = field(repr=False)
     account_id: str = field(repr=False)
     expires_at: int
@@ -50,6 +53,22 @@ class CodexLogin:
             f"{ACCESS_TOKEN_ENV}={shlex.quote(self.access_token)}\n"
             f"{ACCOUNT_ID_ENV}={shlex.quote(self.account_id)}\n"
         )
+
+    def login_file(self, now: datetime.datetime) -> bytes:
+        """An ``auth.json`` without the refresh token, for Codex run directly on the Machine.
+
+        ``last_refresh`` is the delivery time, so Codex sees a fresh login and does not
+        try to refresh it before the access token expires.
+        """
+        tokens = {
+            "id_token": self.id_token,
+            "access_token": self.access_token,
+            "refresh_token": "",
+            "account_id": self.account_id,
+        }
+        stamp = now.astimezone(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        login = {"OPENAI_API_KEY": None, "tokens": tokens, "last_refresh": stamp}
+        return json.dumps(login).encode()
 
 
 def _get(value: object, key: str) -> object:
@@ -82,11 +101,11 @@ def read_login(home: Path) -> CodexLogin:
     except (OSError, ValueError):
         raise CodexLoginError("the Codex login file is unreadable") from None
     tokens = _get(data, "tokens")
-    access = _get(tokens, "access_token")
-    account = _get(tokens, "account_id")
-    if not isinstance(access, str) or not access or not isinstance(account, str) or not account:
+    fields = [_get(tokens, key) for key in ("id_token", "access_token", "account_id")]
+    if not all(isinstance(value, str) and value for value in fields):
         raise CodexLoginError("the Codex login is not a ChatGPT sign-in: run `codex login`")
-    return CodexLogin(access, account, _expiry(access))
+    id_token, access, account = cast(list[str], fields)
+    return CodexLogin(id_token, access, account, _expiry(access))
 
 
 def refresh_native_login(codex: str = "codex") -> None:

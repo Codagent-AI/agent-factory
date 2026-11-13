@@ -135,7 +135,8 @@ refreshed a copy of the login would cancel the Mac's login, and the new token
 would be lost with the Machine. The launcher sends only the ChatGPT access token
 and account id, as `ARCHON_CODEX_CHATGPT_ACCESS_TOKEN` and
 `ARCHON_CODEX_CHATGPT_ACCOUNT_ID`, which Archon uses in memory and never
-refreshes. When the access token would expire within a day or before the job's
+refreshes. The eval's Codex judge runs `codex exec` itself, so the Machine also
+gets an `auth.json` built from the same tokens with an empty refresh token. When the access token would expire within a day or before the job's
 deadline, the launcher first has the Mac's own Codex refresh it (`codex
 app-server`, `account/read` with `refreshToken`), and Codex saves the new tokens
 in `~/.codex/auth.json`. If that refresh fails, run `codex login`.
