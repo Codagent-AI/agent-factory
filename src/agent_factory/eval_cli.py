@@ -208,13 +208,15 @@ RUN set -eu; \\
     export HOME=/root npm_config_cache=/root/.npm; \\
     npm install -g --prefix /opt/bun bun@{bun}; \\
     ln -sf /opt/bun/bin/bun /usr/local/bin/bun; \\
-    cd /opt/archon; bun install --frozen-lockfile; \\
+    cd /opt/archon; bun install --frozen-lockfile --production --filter './packages/cli'; \\
     npm install -g @fission-ai/openspec@{openspec}; \\
     printf '%s\\n' '#!/bin/sh' 'exec bun /opt/archon/packages/cli/src/cli.ts "$@"' \\
       >/usr/local/bin/archon; \\
     chmod +x /usr/local/bin/archon; \\
     mkdir -p /agent-workflows-source; chown pwuser /agent-workflows-source; \\
     chmod -R a+rX /opt/archon/node_modules; \\
+    git config --system --add safe.directory /opt/archon; \\
+    rm -rf /root/.bun /root/.npm; \\
     [ "$(git -C /opt/archon rev-parse HEAD)" = "{archon_commit}" ]; \\
     [ "$(bun --version)" = "{bun}" ]; \\
     [ "$(openspec --version)" = "{openspec}" ]
@@ -316,9 +318,10 @@ def command_image_status(options: argparse.Namespace) -> int:
         _emit({"state": "building"})
         return 0
     code = exit_file.read_text(encoding="utf-8").strip()
-    log = (work / "build.log").read_bytes()[-20000:]
+    full_log = (work / "build.log").read_bytes()
+    log = full_log
     if code != "0":
-        _emit({"state": "failed", "log_tail": log[-2000:].decode(errors="replace")})
+        _emit({"state": "failed", "log_tail": full_log[-2000:].decode(errors="replace")})
         return 1
     repository, tag = str(built.get("repository")), str(built.get("tag"))
     image = f"{repository}:{tag}".encode()
@@ -401,7 +404,7 @@ def _strings(value: object) -> list[str]:
 def command_start(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     artifact, factory = _paths(options.run_dir)
-    if _phase(factory) not in {"none", "created"}:
+    if _phase(factory) not in {"none", "created", "failed"}:
         raise CliError(f"the repetition is already {_phase(factory)}")
     manifest = _manifest(factory, fly)
     image = _read(options.image_file)
@@ -445,6 +448,9 @@ def command_start(options: argparse.Namespace) -> int:
     code = Lifecycle(manifest, factory).start(request)
     record = _read(factory / "machine.json")
     if code != 0:
+        # A Machine may already be claimed: keep its id so a retry adopts it and
+        # `destroy --abandon` can remove it.
+        _set_phase(factory, "failed", machine=record.get("id"), exit_code=code)
         _emit({"ok": False, "exit_code": code, "machine": record.get("id")})
         return 1
     _set_phase(factory, "delivered", machine=record.get("id"), job=record.get("job"))
@@ -532,6 +538,9 @@ def command_teardown(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     eval_id = _eval_id(options.eval_id)
     client = _client(fly)
+    # A unit key is `<eval id>-rep-<n>`: match it exactly, so an eval id that is a
+    # prefix of another never reaches the other eval's machines.
+    unit_pattern = re.compile(re.escape(eval_id) + r"-rep-\d+")
     found: list[dict[str, object]] = []
     for machine in client.list_machines("factory-owner", options.owner):
         config = machine.get("config")
@@ -546,7 +555,7 @@ def command_teardown(options: argparse.Namespace) -> int:
             else None
         )
         identifier = machine.get("id")
-        if isinstance(unit, str) and unit.startswith(eval_id) and isinstance(identifier, str):
+        if isinstance(unit, str) and unit_pattern.fullmatch(unit) and isinstance(identifier, str):
             kept = unit in options.keep
             found.append({"id": identifier, "unit_key": unit, "kept": kept})
             if options.destroy and not kept:

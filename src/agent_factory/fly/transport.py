@@ -1161,9 +1161,16 @@ class Lifecycle:
         flags += [len(lines) > index and lines[index].strip() == "1" for index in (1, 2)]
         latest = lines[3].strip() if len(lines) > 3 else ""
         if log:
-            with (self.factory / f"job-{job}.log").open("ab") as stream:
+            # The local log mirrors the remote one byte for byte, so cutting it back to
+            # the recorded offset first keeps a crash between the two writes from
+            # duplicating bytes on the next poll.
+            log_path = self.factory / f"job-{job}.log"
+            with log_path.open("ab") as stream:
+                stream.truncate(offset)
                 stream.write(log)
-            offset_path.write_text(str(offset + len(log)), encoding="utf-8")
+            pending = offset_path.with_name(offset_path.name + ".tmp")
+            pending.write_text(str(offset + len(log)), encoding="utf-8")
+            pending.replace(offset_path)
         return Observation("done" if flags[0] else "running", flags[2], flags[1], latest, log)
 
     def collect(self, artifact_dir: Path, job: int) -> int:
