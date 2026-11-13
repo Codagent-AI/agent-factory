@@ -23,6 +23,11 @@ from typing import cast
 
 from agent_factory.config import ConfigurationError, FlyLocalConfig, LocalConfig
 from agent_factory.fly.api import DIGEST_PATTERN, FlyApiError, FlyMachinesClient, read_token
+from agent_factory.fly.codex_login import (
+    MINIMUM_LIFETIME_SECONDS,
+    CodexLoginError,
+    delivered_login,
+)
 from agent_factory.fly.guest import job_script
 from agent_factory.fly.transport import (
     FlyTransport,
@@ -141,9 +146,12 @@ def command_preflight(options: argparse.Namespace) -> int:
             errors.append(f"no usable Claude login: {login.reason}")
     codex = "not-requested"
     if options.codex_auth:
-        codex = "present" if (Path.home() / ".codex/auth.json").is_file() else "missing"
-        if codex == "missing":
-            errors.append("the Codex login file is missing")
+        try:
+            delivered_login(MINIMUM_LIFETIME_SECONDS)
+            codex = "access-token"
+        except CodexLoginError as error:
+            codex = "unusable"
+            errors.append(f"no usable Codex login: {error}")
     leftovers: list[str] = []
     try:
         for machine in client.list_machines("factory-owner", options.owner):
@@ -401,6 +409,17 @@ def _strings(value: object) -> list[str]:
     )
 
 
+def _job_seconds(manifest: Mapping[str, object]) -> int:
+    deadline = manifest.get("deadline")
+    if not isinstance(deadline, dict):
+        return 0
+    return sum(
+        value
+        for key in ("total_seconds", "collection_grace_seconds")
+        if isinstance(value := cast(dict[str, object], deadline).get(key), int)
+    )
+
+
 def command_start(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     artifact, factory = _paths(options.run_dir)
@@ -432,15 +451,24 @@ def command_start(options: argparse.Namespace) -> int:
         if isinstance(deliveries, list)
         else ()
     )
+    environment = environment_text(
+        [Path(p) for p in _strings(launch.get("env_files"))],
+        _strings(launch.get("env_names")),
+    )
+    if launch.get("mount_codex_auth") is True:
+        # The Machine gets only an access token that outlives the job; the Mac keeps
+        # the refresh token (see agent_factory.fly.codex_login).
+        try:
+            login = delivered_login(max(MINIMUM_LIFETIME_SECONDS, _job_seconds(manifest)))
+        except CodexLoginError as error:
+            raise CliError(f"no usable Codex login: {error}") from None
+        environment += login.environment_lines()
     request = JobRequest(
         artifact_dir=artifact,
         script=job_script(manifest, script),
         input_dir=Path(input_dir),
-        environment=environment_text(
-            [Path(p) for p in _strings(launch.get("env_files"))],
-            _strings(launch.get("env_names")),
-        ),
-        codex_auth=launch.get("mount_codex_auth") is True,
+        environment=environment,
+        codex_auth=False,
         claude_auth=launch.get("mount_claude_auth") is True,
         deliveries=pairs,
     )

@@ -6,6 +6,7 @@ so delivery, the job loop, the file manifest, and collection are all exercised.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -635,3 +636,165 @@ def test_eval_cli_poll_reports_lost_after_repeated_unreachable_observations(
         eval_cli.main(["poll", "--config", "c", "--run-dir", str(tmp_path / "run")])
         states.append(json.loads(capsys.readouterr().out)["state"])
     assert states == ["unreachable"] * (eval_cli.LOST_AFTER_FAILURES - 1) + ["lost"]
+
+
+def _jwt(expires: int) -> str:
+    def part(value: object) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    return f"{part({'alg': 'none'})}.{part({'exp': expires})}.signature"
+
+
+def _write_codex_login(home: Path, token: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    tokens = {"access_token": token, "refresh_token": "refresh-secret", "account_id": "acct-1"}
+    (home / "auth.json").write_text(json.dumps({"tokens": tokens}), encoding="utf-8")
+
+
+def test_codex_login_is_delivered_as_an_access_token_refreshed_only_when_short(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.fly.codex_login import delivered_login
+
+    home = tmp_path / "codex"
+    _write_codex_login(home, _jwt(10_000))
+    refreshes: list[int] = []
+
+    def refresh() -> None:
+        refreshes.append(1)
+        _write_codex_login(home, _jwt(200_000))
+
+    login = delivered_login(5_000, home=home, now=lambda: 0, refresh=refresh)
+    assert refreshes == [] and login.expires_at == 10_000
+    lines = login.environment_lines()
+    assert f"ARCHON_CODEX_CHATGPT_ACCESS_TOKEN={_jwt(10_000)}" in lines
+    assert "ARCHON_CODEX_CHATGPT_ACCOUNT_ID=acct-1" in lines
+    assert "refresh-secret" not in lines and _jwt(10_000) not in repr(login)
+    login = delivered_login(50_000, home=home, now=lambda: 0, refresh=refresh)
+    assert refreshes == [1] and login.expires_at == 200_000
+
+
+def test_codex_login_missing_or_still_short_is_refused_without_the_token(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.fly.codex_login import CodexLoginError, delivered_login
+
+    home = tmp_path / "codex"
+    with pytest.raises(CodexLoginError, match="codex login"):
+        delivered_login(1, home=home, now=lambda: 0, refresh=lambda: None)
+    _write_codex_login(home, _jwt(100))
+    with pytest.raises(CodexLoginError, match="expire") as caught:
+        delivered_login(1_000, home=home, now=lambda: 0, refresh=lambda: None)
+    assert _jwt(100) not in str(caught.value) and "refresh-secret" not in str(caught.value)
+
+
+_FAKE_CODEX = """
+import json, os, sys
+from pathlib import Path
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        print(json.dumps({"id": message["id"], "result": {}}), flush=True)
+    elif message.get("method") == "account/read":
+        assert message["params"] == {"refreshToken": True}
+        account = None
+        if os.environ.get("FAKE_CODEX_ACCOUNT") != "none":
+            Path(os.environ["CODEX_HOME"], "auth.json").write_text(os.environ["FAKE_CODEX_LOGIN"])
+            account = {"type": "chatgpt"}
+        reply = {"account": account, "requiresOpenaiAuth": True}
+        print(json.dumps({"id": message["id"], "result": reply}), flush=True)
+"""
+
+
+def test_codex_refresh_waits_for_the_macs_codex_to_answer_and_save_the_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from agent_factory.fly.codex_login import CodexLoginError, read_login, refresh_native_login
+
+    home = tmp_path / "codex"
+    _write_codex_login(home, _jwt(100))
+    fresh = tmp_path / "fresh"
+    _write_codex_login(fresh, _jwt(900_000))
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex").write_text(f"#!{sys.executable}\n{_FAKE_CODEX}", encoding="utf-8")
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("FAKE_CODEX_LOGIN", (fresh / "auth.json").read_text())
+    refresh_native_login()
+    assert read_login(home).expires_at == 900_000
+    monkeypatch.setenv("FAKE_CODEX_ACCOUNT", "none")
+    with pytest.raises(CodexLoginError, match="codex login"):
+        refresh_native_login()
+
+
+def test_eval_cli_start_sends_the_codex_access_token_and_not_the_login_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    from agent_factory import eval_cli
+    from agent_factory.fly.codex_login import CodexLogin
+
+    run = tmp_path / "run"
+    factory = run / ".factory"
+    factory.mkdir(parents=True)
+    manifest = {
+        "engine": "archon",
+        "repositories": {"workflows": "https://github.com/o/w.git"},
+        "commits": {"workflows": "w1", "archon": "ar1"},
+        "deadline": {"total_seconds": 100_000, "collection_grace_seconds": 900},
+    }
+    (factory / "manifest.json").write_text(json.dumps(manifest))
+    launch: dict[str, object] = {
+        "dry_run": True,
+        "script": "exec /suite/run",
+        "input_dir": str(tmp_path),
+        "env_files": [],
+        "env_names": [],
+        "mount_codex_auth": True,
+    }
+    (factory / "parsed-launch.json").write_text(json.dumps(launch))
+    image = tmp_path / "image.json"
+    image.write_text(json.dumps({"digest": "sha256:" + "a" * 64, "repository": "r"}))
+    minimums: list[int] = []
+    requests: list[JobRequest] = []
+
+    def login(minimum: int) -> CodexLogin:
+        minimums.append(minimum)
+        return CodexLogin("access-secret", "acct-1", 0)
+
+    class Recording:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def start(self, request: JobRequest) -> int:
+            requests.append(request)
+            return 0
+
+    fly = SimpleNamespace(
+        app="app",
+        token_file=tmp_path / "token",
+        region="ewr",
+        cpu_kind="shared",
+        cpus=4,
+        memory_mb=8192,
+        heartbeat_seconds=20,
+    )
+
+    def fly_settings(_config: Path) -> tuple[None, object]:
+        return None, fly
+
+    monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+    monkeypatch.setattr(eval_cli, "delivered_login", login)
+    monkeypatch.setattr(eval_cli, "Lifecycle", Recording)
+    argv = ["start", "--config", "c", "--run-dir", str(run), "--image-file", str(image)]
+    assert eval_cli.main(argv) == 0
+    assert "access-secret" not in capsys.readouterr().out
+    # The token must outlive the whole job, even past the one-day floor.
+    assert minimums == [100_900]
+    assert requests[0].codex_auth is False
+    assert "ARCHON_CODEX_CHATGPT_ACCESS_TOKEN=access-secret" in requests[0].environment
