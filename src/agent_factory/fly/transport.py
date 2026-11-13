@@ -560,6 +560,30 @@ def _log(factory: Path, message: str) -> None:
         stream.write(f"{datetime.now(UTC).isoformat()} {message}\n")
 
 
+def _observation_command(directory: str, offset: int) -> str:
+    """The one ssh command that reports a job's state and its new log bytes."""
+    return (
+        f"test -e {directory}/DONE && printf 1 || printf 0; printf '\\n'; "
+        "test -e /artifacts/run-state.json && printf 1 || printf 0; printf '\\n'; "
+        f"test -e {directory}/setup-complete && printf 1 || printf 0; printf '\\n'; "
+        "find /artifacts -path /artifacts/.factory -prune -o -type f "
+        "-printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 1; printf '\\n'; "
+        f"printf '%s' '{_LOG_MARKER.decode().strip()}'; printf '\\n'; "
+        f"tail -c +{offset + 1} {directory}/job.log 2>/dev/null || true"
+    )
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One poll of a job. ``state`` is running, done, stopped, lost or unreachable."""
+
+    state: str
+    setup_complete: bool = False
+    checkpoint: bool = False
+    latest: str = ""
+    log: bytes = b""
+
+
 class Lifecycle:
     """One launcher invocation: claim a Machine, run one job, collect it."""
 
@@ -571,8 +595,13 @@ class Lifecycle:
         client: FlyMachinesClient | None = None,
         transport: FlyTransport | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        owner: str | None = None,
     ) -> None:
         self.manifest = manifest
+        # The ``factory-owner`` metadata value. A manifest may name its own, so a
+        # second driver of the same Fly app never shares the factory's value.
+        manifest_owner = manifest.get("owner")
+        self.owner = owner or (manifest_owner if isinstance(manifest_owner, str) else "") or OWNER
         self.factory = factory
         self.fly = mapping_field(manifest, "fly")
         self.transport = transport or FlyTransport.from_manifest(manifest)
@@ -589,6 +618,32 @@ class Lifecycle:
 
     def attach(self, artifact_dir: Path) -> int:
         return self._guarded(lambda: self._attach(artifact_dir))
+
+    def start(self, request: JobRequest) -> int:
+        """Claim a Machine and deliver the job, then return without following it."""
+        return self._guarded(lambda: self._start(request))
+
+    def observe(self, job: int) -> Observation:
+        """One look at the job in the recorded Machine; see :class:`Observation`."""
+        return self._observe(job)
+
+    def destroy_machine(self) -> str:
+        """Destroy the recorded Machine once it is provably this repetition's.
+
+        Returns ``absent`` when it is already gone and ``destroyed`` otherwise.
+        An ownership mismatch raises and leaves the Machine alone.
+        """
+        record = read_record(self.record_path)
+        machine_id = record.get("id")
+        if not isinstance(machine_id, str):
+            return "absent"
+        machine = self._get(machine_id)
+        if machine is None:
+            return "absent"
+        if not _owned(machine, self._stable_metadata(record)):
+            raise OwnershipMismatchError(machine_id)
+        self.client.destroy(machine_id)
+        return "destroyed"
 
     def _guarded(self, action: Callable[[], int]) -> int:
         try:
@@ -615,6 +670,14 @@ class Lifecycle:
     # -- claiming -----------------------------------------------------------
 
     def _run(self, request: JobRequest) -> int:
+        job = self._launch(request)
+        return self._follow(request.artifact_dir, job)
+
+    def _start(self, request: JobRequest) -> int:
+        self._launch(request)
+        return 0
+
+    def _launch(self, request: JobRequest) -> int:
         (self.factory / "launch-stage.json").unlink(missing_ok=True)
         self._stage = "credential"
         # Validate all local credential sources before creating a billable Machine.
@@ -655,7 +718,7 @@ class Lifecycle:
             self._deliver(request, deadline, job)
         self._update_record({"job": job})
         self._stage = "suite"
-        return self._follow(request.artifact_dir, job)
+        return job
 
     def _attach(self, artifact_dir: Path) -> int:
         # Pre-suite until observation sees the job's setup-complete marker.
@@ -780,7 +843,7 @@ class Lifecycle:
             cpus=_integer(self.fly, "cpus"),
             memory_mb=_integer(self.fly, "memory_mb"),
             region=string_field(self.fly, "region"),
-            factory_owner=OWNER,
+            factory_owner=self.owner,
             run_id=run_id,
             claim_id=string_field(self.manifest, "claim_id"),
             nonce=nonce,
@@ -896,7 +959,7 @@ class Lifecycle:
         """Keys that identify the repetition's Machine across attempts."""
         nonce = record.get("nonce")
         return {
-            "factory-owner": OWNER,
+            "factory-owner": self.owner,
             "claim_id": string_field(self.manifest, "claim_id"),
             "unit_key": string_field(self.manifest, "unit_key"),
             "nonce": nonce
@@ -1025,15 +1088,7 @@ class Lifecycle:
         failures = 0
         while True:
             try:
-                raw = self.transport.command(
-                    f"test -e {directory}/DONE && printf 1 || printf 0; printf '\\n'; "
-                    "test -e /artifacts/run-state.json && printf 1 || printf 0; printf '\\n'; "
-                    f"test -e {directory}/setup-complete && printf 1 || printf 0; printf '\\n'; "
-                    "find /artifacts -path /artifacts/.factory -prune -o -type f "
-                    "-printf '%T@ %p\\n' 2>/dev/null | sort -n | tail -n 1; printf '\\n'; "
-                    f"printf '%s' '{_LOG_MARKER.decode().strip()}'; printf '\\n'; "
-                    f"tail -c +{offset + 1} {directory}/job.log 2>/dev/null || true"
-                )
+                raw = self.transport.command(_observation_command(directory, offset))
                 failures = 0
             except FlyTransportError as error:
                 failures += 1
@@ -1074,6 +1129,46 @@ class Lifecycle:
             if done:
                 return self._collect(artifact_dir, job)
             self.sleep(interval)
+
+    def _observe(self, job: int) -> Observation:
+        record = read_record(self.record_path)
+        machine_id = record.get("id")
+        if not isinstance(machine_id, str):
+            return Observation("lost")
+        self.transport.machine_id = machine_id
+        try:
+            machine = self._get(machine_id)
+        except (FlyApiError, FlyTransportError):
+            return Observation("unreachable")
+        if machine is None:
+            return Observation("lost")
+        if machine.get("state") in {"stopped", "suspended"}:
+            return Observation("stopped")
+        directory = f"/artifacts/.factory/job/{job}"
+        offset_path = self.factory / f"job-{job}.offset"
+        try:
+            offset = int(offset_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            offset = 0
+        try:
+            raw = self.transport.command(_observation_command(directory, offset), timeout=90)
+        except FlyTransportError as error:
+            _log(self.factory, f"observation failed: {error}")
+            return Observation("unreachable")
+        head, _, log = raw.partition(_LOG_MARKER)
+        lines = head.decode(errors="replace").splitlines()
+        flags = [bool(lines) and lines[0].strip() == "1"]
+        flags += [len(lines) > index and lines[index].strip() == "1" for index in (1, 2)]
+        latest = lines[3].strip() if len(lines) > 3 else ""
+        if log:
+            with (self.factory / f"job-{job}.log").open("ab") as stream:
+                stream.write(log)
+            offset_path.write_text(str(offset + len(log)), encoding="utf-8")
+        return Observation("done" if flags[0] else "running", flags[2], flags[1], latest, log)
+
+    def collect(self, artifact_dir: Path, job: int) -> int:
+        """Copy a finished job's files back; the Machine is left in place."""
+        return self._guarded(lambda: self._collect(artifact_dir, job))
 
     def _collect(self, artifact_dir: Path, job: int) -> int:
         # The job already emptied these before DONE; root removes the shells.

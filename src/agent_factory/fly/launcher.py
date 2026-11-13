@@ -126,6 +126,14 @@ def main(argv: Sequence[str] | None = None, *, manifest_path: Path | None = None
                 "mounts": parsed.mounts,
                 "deliveries": [(str(source), target) for source, target in parsed.deliveries],
                 "script": parsed.script,
+                # What a later ``start`` needs: the dry run is the only process that
+                # sees this invocation's environment.
+                "input_dir": str(parsed.input_dir),
+                "env_names": list(parsed.env_names),
+                "env_files": [str(path) for path in parsed.env_files],
+                "env_values": _env_values(parsed.env_names),
+                "mount_codex_auth": parsed.mount_codex_auth,
+                "mount_claude_auth": parsed.mount_claude_auth,
             }
         ),
         encoding="utf-8",
@@ -135,6 +143,19 @@ def main(argv: Sequence[str] | None = None, *, manifest_path: Path | None = None
     # The full lifecycle is intentionally delegated to the transport-backed runner
     # once a valid manifest has crossed this compatibility boundary.
     return _launch(parsed, manifest, factory)
+
+
+# ``--env NAME`` takes its value from the invoking process. Only names that carry
+# no credential are recorded, so a later process can deliver them.
+_RECORDED_ENV_PREFIXES = ("AGENT_EVALS_SOURCE_", "AND_SCENE_")
+
+
+def _env_values(names: Sequence[str]) -> dict[str, str]:
+    return {
+        name: os.environ[name]
+        for name in names
+        if name.startswith(_RECORDED_ENV_PREFIXES) and name in os.environ
+    }
 
 
 def _launch(parsed: LaunchArguments, manifest: Mapping[str, object], factory: Path) -> int:

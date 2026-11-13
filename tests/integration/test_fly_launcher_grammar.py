@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 
-def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path: Path) -> None:
+def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AND_SCENE_ARCHON_LOCATION", "sandbox")
+    monkeypatch.setenv("NAME", "never-recorded")
     from agent_factory.fly.launcher import main
 
     artifact = tmp_path / "artifact"
@@ -38,6 +42,8 @@ def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path:
             "seccomp=unconfined",
             "--env",
             "NAME",
+            "--env",
+            "AND_SCENE_ARCHON_LOCATION",
             "--env-file",
             str(tmp_path / "env"),
             "--",
@@ -46,7 +52,12 @@ def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path:
         manifest_path=manifest,
     )
     assert result == 0
-    assert json.loads((factory / "parsed-launch.json").read_text())["dry_run"] is True
+    recorded = json.loads((factory / "parsed-launch.json").read_text())
+    assert recorded["dry_run"] is True
+    # A later `start` needs the invocation's inputs; only non-credential names carry values.
+    assert recorded["env_names"] == ["NAME", "AND_SCENE_ARCHON_LOCATION"]
+    assert recorded["env_values"] == {"AND_SCENE_ARCHON_LOCATION": "sandbox"}
+    assert recorded["env_files"] == [str(tmp_path / "env")]
 
 
 def _manifest_for(tmp_path: Path) -> tuple[Path, Path]:

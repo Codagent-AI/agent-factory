@@ -542,3 +542,96 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
     retry = env.manifest("run-4", expect_checkpoint=True)
     assert env.lifecycle(retry).run(env.request("true", auth=False)) == 0
     assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
+
+
+def test_job_script_without_an_engine_is_unchanged_and_archon_has_its_own() -> None:
+    import hashlib
+
+    from agent_factory.fly.guest import job_script
+
+    base: dict[str, object] = {
+        "repositories": {"runner": "git@github.com:o/r.git", "skills": "https://x/s.git"},
+        "commits": {"runner": "a1", "skills": "b2"},
+    }
+    text = job_script(base, "exec /suite/run")
+    # Pinned from the script before the Archon branch existed.
+    assert (
+        hashlib.sha256(text.encode()).hexdigest()
+        == "c4d3b488a984d46b460582ea8ae4bafb23a6b4c13ddf240e9502e4420383dd67"
+    )
+    archon = job_script(
+        {
+            "engine": "archon",
+            "repositories": {"workflows": "git@github.com:o/w.git"},
+            "commits": {"workflows": "w1", "archon": "ar1"},
+        },
+        "exec /suite/run",
+    )
+    assert "go build" not in archon and "agent-runner-source" not in archon
+    assert archon.index("trap ") < archon.index("git clone")
+    assert "https://github.com/o/w.git" in archon and "checkout --detach w1" in archon
+    assert "AND_SCENE_EXPECT_WORKFLOWS_COMMIT=w1" in archon
+    assert "AND_SCENE_EXPECT_ARCHON_COMMIT=ar1" in archon
+    assert archon.rstrip().endswith("exec /suite/run")
+
+
+def test_archon_repetition_steps_start_observe_collect_and_destroy(env: Environment) -> None:
+    lifecycle = env.lifecycle(env.manifest(owner="agent-evals-archon"))
+    assert lifecycle.start(env.request("echo hi; exit 3")) == 0
+    state = ""
+    for _ in range(100):
+        state = lifecycle.observe(1).state
+        if state == "done":
+            break
+        time.sleep(0.2)
+    assert state == "done"
+    assert lifecycle.collect(env.artifact, 1) == 3
+    create = next(r for r in env.api.requests if r["method"] == "POST")
+    assert "agent-evals-archon" in json.dumps(create["body"])
+    metadata = cast(dict[str, Any], create["body"])["config"]["metadata"]
+    assert metadata["factory-owner"] == "agent-evals-archon"
+    # Collection leaves the Machine in place; destroying it is a separate, owned step.
+    assert lifecycle.observe(1).state == "done"
+    assert lifecycle.destroy_machine() == "destroyed"
+    assert lifecycle.destroy_machine() == "absent"
+    assert lifecycle.observe(1).state == "lost"
+
+
+def test_eval_cli_image_recipe_pins_archon_bun_and_openspec() -> None:
+    from agent_factory.eval_cli import archon_dockerfile
+
+    base = "FROM node:22\nUSER pwuser\nWORKDIR /workspace\n"
+    text = archon_dockerfile(base, "1.4.2", "abc123", "1.17.0")
+    assert text.startswith(base.rstrip())
+    assert 'rev-parse HEAD)" = "abc123"' in text and "bun@1.4.2" in text
+    assert "openspec@1.17.0" in text and "/opt/archon-eval/sandbox-sync-home.sh" in text
+    assert text.rstrip().endswith("USER pwuser\nWORKDIR /workspace")
+
+
+def test_eval_cli_poll_reports_lost_after_repeated_unreachable_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agent_factory import eval_cli
+    from agent_factory.fly.transport import Observation
+
+    factory = tmp_path / "run/.factory"
+    factory.mkdir(parents=True)
+    (factory / "eval-state.json").write_text('{"phase": "delivered", "job": 1}')
+
+    class Unreachable:
+        def observe(self, _job: int) -> Observation:
+            return Observation("unreachable")
+
+    def fly_settings(_config: Path) -> tuple[None, object]:
+        return None, object()
+
+    def lifecycle(*_args: object) -> Unreachable:
+        return Unreachable()
+
+    monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+    monkeypatch.setattr(eval_cli, "_lifecycle", lifecycle)
+    states: list[str] = []
+    for _ in range(eval_cli.LOST_AFTER_FAILURES):
+        eval_cli.main(["poll", "--config", "c", "--run-dir", str(tmp_path / "run")])
+        states.append(json.loads(capsys.readouterr().out)["state"])
+    assert states == ["unreachable"] * (eval_cli.LOST_AFTER_FAILURES - 1) + ["lost"]
