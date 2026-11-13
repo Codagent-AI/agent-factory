@@ -6,6 +6,8 @@ so delivery, the job loop, the file manifest, and collection are all exercised.
 
 from __future__ import annotations
 
+import base64
+import datetime
 import json
 import os
 import subprocess
@@ -542,3 +544,300 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
     retry = env.manifest("run-4", expect_checkpoint=True)
     assert env.lifecycle(retry).run(env.request("true", auth=False)) == 0
     assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
+
+
+def test_job_script_without_an_engine_is_unchanged_and_archon_has_its_own() -> None:
+    import hashlib
+
+    from agent_factory.fly.guest import job_script
+
+    base: dict[str, object] = {
+        "repositories": {"runner": "git@github.com:o/r.git", "skills": "https://x/s.git"},
+        "commits": {"runner": "a1", "skills": "b2"},
+    }
+    text = job_script(base, "exec /suite/run")
+    # Pinned from the script before the Archon branch existed.
+    assert (
+        hashlib.sha256(text.encode()).hexdigest()
+        == "c4d3b488a984d46b460582ea8ae4bafb23a6b4c13ddf240e9502e4420383dd67"
+    )
+    archon = job_script(
+        {
+            "engine": "archon",
+            "repositories": {"workflows": "git@github.com:o/w.git"},
+            "commits": {"workflows": "w1", "archon": "ar1"},
+        },
+        "exec /suite/run",
+    )
+    assert "go build" not in archon and "agent-runner-source" not in archon
+    assert archon.index("trap ") < archon.index("git clone")
+    assert "https://github.com/o/w.git" in archon and "checkout --detach w1" in archon
+    assert "AND_SCENE_EXPECT_WORKFLOWS_COMMIT=w1" in archon
+    assert "AND_SCENE_EXPECT_ARCHON_COMMIT=ar1" in archon
+    assert archon.rstrip().endswith("exec /suite/run")
+
+
+def test_archon_repetition_steps_start_observe_collect_and_destroy(env: Environment) -> None:
+    lifecycle = env.lifecycle(env.manifest(owner="agent-evals-archon"))
+    assert lifecycle.start(env.request("echo hi; exit 3")) == 0
+    state = ""
+    for _ in range(100):
+        state = lifecycle.observe(1).state
+        if state == "done":
+            break
+        time.sleep(0.2)
+    assert state == "done"
+    assert lifecycle.collect(env.artifact, 1) == 3
+    create = next(r for r in env.api.requests if r["method"] == "POST")
+    assert "agent-evals-archon" in json.dumps(create["body"])
+    metadata = cast(dict[str, Any], create["body"])["config"]["metadata"]
+    assert metadata["factory-owner"] == "agent-evals-archon"
+    # Collection leaves the Machine in place; destroying it is a separate, owned step.
+    assert lifecycle.observe(1).state == "done"
+    assert lifecycle.destroy_machine() == "destroyed"
+    assert lifecycle.destroy_machine() == "absent"
+    assert lifecycle.observe(1).state == "lost"
+
+
+def test_eval_cli_image_recipe_pins_archon_bun_and_openspec() -> None:
+    from agent_factory.eval_cli import archon_dockerfile
+
+    base = "FROM node:22\nUSER pwuser\nWORKDIR /workspace\n"
+    text = archon_dockerfile(base, "1.4.2", "abc123", "1.17.0")
+    assert text.startswith(base.rstrip())
+    assert 'rev-parse HEAD)" = "abc123"' in text and "bun@1.4.2" in text
+    assert "openspec@1.17.0" in text and "/opt/archon-eval/sandbox-sync-home.sh" in text
+    assert text.rstrip().endswith("USER pwuser\nWORKDIR /workspace")
+
+
+def test_eval_cli_poll_reports_lost_after_repeated_unreachable_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agent_factory import eval_cli
+    from agent_factory.fly.transport import Observation
+
+    factory = tmp_path / "run/.factory"
+    factory.mkdir(parents=True)
+    (factory / "eval-state.json").write_text('{"phase": "delivered", "job": 1}')
+
+    class Unreachable:
+        def observe(self, _job: int) -> Observation:
+            return Observation("unreachable")
+
+    def fly_settings(_config: Path) -> tuple[None, object]:
+        return None, object()
+
+    def lifecycle(*_args: object) -> Unreachable:
+        return Unreachable()
+
+    monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+    monkeypatch.setattr(eval_cli, "_lifecycle", lifecycle)
+    states: list[str] = []
+    for _ in range(eval_cli.LOST_AFTER_FAILURES):
+        eval_cli.main(["poll", "--config", "c", "--run-dir", str(tmp_path / "run")])
+        states.append(json.loads(capsys.readouterr().out)["state"])
+    assert states == ["unreachable"] * (eval_cli.LOST_AFTER_FAILURES - 1) + ["lost"]
+
+
+def _jwt(expires: int) -> str:
+    def part(value: object) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    return f"{part({'alg': 'none'})}.{part({'exp': expires})}.signature"
+
+
+def _write_codex_login(home: Path, token: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    tokens = {
+        "id_token": "id-token",
+        "access_token": token,
+        "refresh_token": "refresh-secret",
+        "account_id": "acct-1",
+    }
+    (home / "auth.json").write_text(json.dumps({"tokens": tokens}), encoding="utf-8")
+
+
+def test_codex_login_is_delivered_as_an_access_token_refreshed_only_when_short(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.fly.codex_login import delivered_login
+
+    home = tmp_path / "codex"
+    _write_codex_login(home, _jwt(10_000))
+    refreshes: list[int] = []
+
+    def refresh() -> None:
+        refreshes.append(1)
+        _write_codex_login(home, _jwt(200_000))
+
+    login = delivered_login(5_000, home=home, now=lambda: 0, refresh=refresh)
+    assert refreshes == [] and login.expires_at == 10_000
+    lines = login.environment_lines()
+    assert f"ARCHON_CODEX_CHATGPT_ACCESS_TOKEN={_jwt(10_000)}" in lines
+    assert "ARCHON_CODEX_CHATGPT_ACCOUNT_ID=acct-1" in lines
+    assert "refresh-secret" not in lines and _jwt(10_000) not in repr(login)
+    # The judge's own `codex exec` gets a login file that cannot refresh.
+    when = datetime.datetime(2026, 11, 13, 8, 0, tzinfo=datetime.UTC)
+    written = json.loads(login.login_file(when))
+    assert written["tokens"] == {
+        "id_token": "id-token",
+        "access_token": _jwt(10_000),
+        "refresh_token": "",
+        "account_id": "acct-1",
+    }
+    assert written["last_refresh"] == "2026-11-13T08:00:00Z"
+    login = delivered_login(50_000, home=home, now=lambda: 0, refresh=refresh)
+    assert refreshes == [1] and login.expires_at == 200_000
+
+
+def test_codex_login_missing_or_still_short_is_refused_without_the_token(
+    tmp_path: Path,
+) -> None:
+    from agent_factory.fly.codex_login import CodexLoginError, delivered_login
+
+    home = tmp_path / "codex"
+    with pytest.raises(CodexLoginError, match="codex login"):
+        delivered_login(1, home=home, now=lambda: 0, refresh=lambda: None)
+    _write_codex_login(home, _jwt(100))
+    with pytest.raises(CodexLoginError, match="expire") as caught:
+        delivered_login(1_000, home=home, now=lambda: 0, refresh=lambda: None)
+    assert _jwt(100) not in str(caught.value) and "refresh-secret" not in str(caught.value)
+
+
+_FAKE_CODEX = """
+import json, os, sys
+from pathlib import Path
+initialized = False
+for line in sys.stdin:
+    message = json.loads(line)
+    if message.get("method") == "initialize":
+        if set(message["params"]["clientInfo"]) != {"name", "title", "version"}:
+            error = {"code": -32600, "message": "Invalid request: missing field `version`"}
+            print(json.dumps({"id": message["id"], "error": error}), flush=True)
+            continue
+        initialized = True
+        print(json.dumps({"id": message["id"], "result": {}}), flush=True)
+    elif message.get("method") == "account/read" and not initialized:
+        error = {"code": -32600, "message": "Not initialized"}
+        print(json.dumps({"id": message["id"], "error": error}), flush=True)
+    elif message.get("method") == "account/read":
+        assert message["params"] == {"refreshToken": True}
+        account = None
+        if os.environ.get("FAKE_CODEX_ACCOUNT") != "none":
+            Path(os.environ["CODEX_HOME"], "auth.json").write_text(os.environ["FAKE_CODEX_LOGIN"])
+            account = {"type": "chatgpt"}
+        reply = {"account": account, "requiresOpenaiAuth": True}
+        print(json.dumps({"id": message["id"], "result": reply}), flush=True)
+"""
+
+
+def test_codex_refresh_waits_for_the_macs_codex_to_answer_and_save_the_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from agent_factory.fly.codex_login import CodexLoginError, read_login, refresh_native_login
+
+    home = tmp_path / "codex"
+    _write_codex_login(home, _jwt(100))
+    fresh = tmp_path / "fresh"
+    _write_codex_login(fresh, _jwt(900_000))
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex").write_text(f"#!{sys.executable}\n{_FAKE_CODEX}", encoding="utf-8")
+    (bin_dir / "codex").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("CODEX_HOME", str(home))
+    monkeypatch.setenv("FAKE_CODEX_LOGIN", (fresh / "auth.json").read_text())
+    refresh_native_login()
+    assert read_login(home).expires_at == 900_000
+    monkeypatch.setenv("FAKE_CODEX_ACCOUNT", "none")
+    with pytest.raises(CodexLoginError, match="codex login"):
+        refresh_native_login()
+
+
+def test_eval_cli_start_sends_the_codex_access_token_and_not_the_login_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    from agent_factory import eval_cli
+    from agent_factory.fly.codex_login import CodexLogin
+
+    run = tmp_path / "run"
+    factory = run / ".factory"
+    factory.mkdir(parents=True)
+    manifest = {
+        "engine": "archon",
+        "repositories": {"workflows": "https://github.com/o/w.git"},
+        "commits": {"workflows": "w1", "archon": "ar1"},
+        "deadline": {"total_seconds": 100_000, "collection_grace_seconds": 900},
+    }
+    (factory / "manifest.json").write_text(json.dumps(manifest))
+    launch: dict[str, object] = {
+        "dry_run": True,
+        "script": "exec /suite/run",
+        "input_dir": str(tmp_path),
+        "env_files": [],
+        "env_names": [],
+        "mount_codex_auth": True,
+    }
+    (factory / "parsed-launch.json").write_text(json.dumps(launch))
+    image = tmp_path / "image.json"
+    image.write_text(json.dumps({"digest": "sha256:" + "a" * 64, "repository": "r"}))
+    minimums: list[int] = []
+    requests: list[JobRequest] = []
+
+    def login(minimum: int) -> CodexLogin:
+        minimums.append(minimum)
+        return CodexLogin("id-secret", "access-secret", "acct-1", 0)
+
+    class Recording:
+        def __init__(self, *_args: object) -> None:
+            pass
+
+        def start(self, request: JobRequest) -> int:
+            requests.append(request)
+            return 0
+
+    fly = SimpleNamespace(
+        app="app",
+        token_file=tmp_path / "token",
+        region="ewr",
+        cpu_kind="shared",
+        cpus=4,
+        memory_mb=8192,
+        heartbeat_seconds=20,
+    )
+
+    def fly_settings(_config: Path) -> tuple[None, object]:
+        return None, fly
+
+    monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+    monkeypatch.setattr(eval_cli, "delivered_login", login)
+    monkeypatch.setattr(eval_cli, "Lifecycle", Recording)
+    argv = ["start", "--config", "c", "--run-dir", str(run), "--image-file", str(image)]
+    assert eval_cli.main(argv) == 0
+    assert "access-secret" not in capsys.readouterr().out
+    # The token must outlive the whole job, even past the one-day floor.
+    assert minimums == [100_900]
+    assert requests[0].codex_auth is False
+    assert "ARCHON_CODEX_CHATGPT_ACCESS_TOKEN=access-secret" in requests[0].environment
+    login_file = requests[0].codex_login_file
+    assert login_file is not None
+    assert json.loads(login_file)["tokens"]["refresh_token"] == ""
+
+
+def test_built_codex_login_replaces_the_macs_file_on_the_machine(env: Environment) -> None:
+    import dataclasses
+
+    suite = (
+        "cat /host-home/codex/auth.json > /artifacts/seen-codex.txt; "
+        'echo \'{"evaluation_status": "completed"}\' > /artifacts/result.json'
+    )
+    request = dataclasses.replace(
+        env.request(suite, auth=False), codex_login_file=b'{"built": true}'
+    )
+    assert env.lifecycle(env.manifest()).run(request) == 0
+    assert (env.artifact / "seen-codex.txt").read_text() == '{"built": true}'
+    assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []

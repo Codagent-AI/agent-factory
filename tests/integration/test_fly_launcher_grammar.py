@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 
-def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path: Path) -> None:
+def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AND_SCENE_ARCHON_LOCATION", "sandbox")
+    monkeypatch.setenv("NAME", "never-recorded")
     from agent_factory.fly.launcher import main
 
     artifact = tmp_path / "artifact"
@@ -38,6 +42,8 @@ def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path:
             "seccomp=unconfined",
             "--env",
             "NAME",
+            "--env",
+            "AND_SCENE_ARCHON_LOCATION",
             "--env-file",
             str(tmp_path / "env"),
             "--",
@@ -46,7 +52,12 @@ def test_launcher_dry_run_accepts_harness_shape_without_contacting_fly(tmp_path:
         manifest_path=manifest,
     )
     assert result == 0
-    assert json.loads((factory / "parsed-launch.json").read_text())["dry_run"] is True
+    recorded = json.loads((factory / "parsed-launch.json").read_text())
+    assert recorded["dry_run"] is True
+    # A later `start` needs the invocation's inputs; only non-credential names carry values.
+    assert recorded["env_names"] == ["NAME", "AND_SCENE_ARCHON_LOCATION"]
+    assert recorded["env_values"] == {"AND_SCENE_ARCHON_LOCATION": "sandbox"}
+    assert recorded["env_files"] == [str(tmp_path / "env")]
 
 
 def _manifest_for(tmp_path: Path) -> tuple[Path, Path]:
@@ -144,6 +155,31 @@ def test_env_file_values_reach_the_guest_as_literal_data(
 
     assert shown.stdout == "a b|$(touch pwned)|'unmatched|kept|from host|value  |"
     assert not (tmp_path / "pwned").exists()
+
+
+def test_launcher_delivers_the_visual_judging_mount_beside_the_panel(tmp_path: Path) -> None:
+    from agent_factory.fly.launcher import parse_arguments
+
+    artifact, manifest_path = _manifest_for(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    evals = tmp_path / "evals"
+    panel = evals / "evals/lib/panel-judging"
+    visual = evals / "evals/lib/visual-judging"
+    panel.mkdir(parents=True)
+    visual.mkdir(parents=True)
+    manifest["worktrees"]["evals"] = str(evals)
+    argv = _harness_argv(artifact, tmp_path, ["--mount-claude-auth", "--mount-codex-auth"])
+    index = argv.index("--env")
+    for source, target in ((panel, "/lib/panel-judging"), (visual, "/lib/visual-judging")):
+        mount = f"type=bind,source={source},target={target},readonly"
+        argv[index:index] = ["--docker-run-arg", "--mount", "--docker-run-arg", mount]
+        index += 4
+
+    parsed = parse_arguments(argv, manifest)
+    assert parsed.deliveries == (
+        (panel.resolve(), "/lib/panel-judging"),
+        (visual.resolve(), "/lib/visual-judging"),
+    )
 
 
 @pytest.mark.parametrize("panel_before_audit", [True, False])
