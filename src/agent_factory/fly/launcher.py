@@ -335,7 +335,7 @@ def _take_mounts(
 
 
 # Delivery replaces its target as root; keep it within dedicated harness paths.
-_DELIVERY_PREFIXES = (Path("/lib/panel-judging"),)
+_DELIVERY_PREFIXES = (Path("/lib/panel-judging"), Path("/lib/visual-judging"))
 
 _RESERVED_TARGETS = tuple(
     Path(value)

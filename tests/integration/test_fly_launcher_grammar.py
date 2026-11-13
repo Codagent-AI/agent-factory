@@ -157,6 +157,31 @@ def test_env_file_values_reach_the_guest_as_literal_data(
     assert not (tmp_path / "pwned").exists()
 
 
+def test_launcher_delivers_the_visual_judging_mount_beside_the_panel(tmp_path: Path) -> None:
+    from agent_factory.fly.launcher import parse_arguments
+
+    artifact, manifest_path = _manifest_for(tmp_path)
+    manifest = json.loads(manifest_path.read_text())
+    evals = tmp_path / "evals"
+    panel = evals / "evals/lib/panel-judging"
+    visual = evals / "evals/lib/visual-judging"
+    panel.mkdir(parents=True)
+    visual.mkdir(parents=True)
+    manifest["worktrees"]["evals"] = str(evals)
+    argv = _harness_argv(artifact, tmp_path, ["--mount-claude-auth", "--mount-codex-auth"])
+    index = argv.index("--env")
+    for source, target in ((panel, "/lib/panel-judging"), (visual, "/lib/visual-judging")):
+        mount = f"type=bind,source={source},target={target},readonly"
+        argv[index:index] = ["--docker-run-arg", "--mount", "--docker-run-arg", mount]
+        index += 4
+
+    parsed = parse_arguments(argv, manifest)
+    assert parsed.deliveries == (
+        (panel.resolve(), "/lib/panel-judging"),
+        (visual.resolve(), "/lib/visual-judging"),
+    )
+
+
 @pytest.mark.parametrize("panel_before_audit", [True, False])
 def test_launcher_delivers_panel_in_current_and_legacy_mount_order(
     tmp_path: Path, panel_before_audit: bool
