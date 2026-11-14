@@ -203,8 +203,14 @@ def _last(lines: Sequence[str], keyword: str) -> str:
     raise CliError(f"the Runner Dockerfile has no final {keyword}")
 
 
-def archon_dockerfile(base: str, bun: str, archon_commit: str, openspec: str) -> str:
-    """The Runner base image plus Archon at its frozen commit and a pinned OpenSpec."""
+def archon_dockerfile(
+    base: str, bun: str, archon_commit: str, openspec: str, codex: str, claude_code: str
+) -> str:
+    """The Runner base image plus Archon at its frozen commit and pinned tools.
+
+    The pinned Codex and Claude Code replace the base image's unpinned copies, and
+    the suite points Archon at them, so a run never uses the copies Archon bundles.
+    """
     lines = base.splitlines()
     final = max(i for i, line in enumerate(lines) if line.lstrip().upper().startswith("FROM "))
     user = _last(lines[final + 1 :], "USER")
@@ -218,7 +224,8 @@ RUN set -eu; \\
     npm install -g --prefix /opt/bun bun@{bun}; \\
     ln -sf /opt/bun/bin/bun /usr/local/bin/bun; \\
     cd /opt/archon; bun install --frozen-lockfile --production --filter './packages/cli'; \\
-    npm install -g @fission-ai/openspec@{openspec}; \\
+    npm install -g @fission-ai/openspec@{openspec} \\
+      @openai/codex@{codex} @anthropic-ai/claude-code@{claude_code}; \\
     printf '%s\\n' '#!/bin/sh' 'exec bun /opt/archon/packages/cli/src/cli.ts "$@"' \\
       >/usr/local/bin/archon; \\
     chmod +x /usr/local/bin/archon; \\
@@ -228,7 +235,10 @@ RUN set -eu; \\
     rm -rf /root/.bun /root/.npm; \\
     [ "$(git -C /opt/archon rev-parse HEAD)" = "{archon_commit}" ]; \\
     [ "$(bun --version)" = "{bun}" ]; \\
-    [ "$(openspec --version)" = "{openspec}" ]
+    [ "$(openspec --version)" = "{openspec}" ]; \\
+    [ "$(codex --version)" = "codex-cli {codex}" ]; \\
+    [ "$(claude --version)" = "{claude_code} (Claude Code)" ]
+ENV DISABLE_AUTOUPDATER=1
 {user}
 {workdir}
 """
@@ -269,7 +279,12 @@ def command_image_start(options: argparse.Namespace) -> int:
     dockerfile = context / "Dockerfile.archon"
     dockerfile.write_text(
         archon_dockerfile(
-            base, _archon_bun_version(archon), archon_commit, options.openspec_version
+            base,
+            _archon_bun_version(archon),
+            archon_commit,
+            options.openspec_version,
+            options.codex_version,
+            options.claude_code_version,
         ),
         encoding="utf-8",
     )
@@ -308,6 +323,8 @@ def command_image_start(options: argparse.Namespace) -> int:
             "pid": process.pid,
             "archon_commit": archon_commit,
             "runner_commit": runner_commit,
+            "codex_version": options.codex_version,
+            "claude_code_version": options.claude_code_version,
         },
     )
     _emit({"state": "building", "tag": tag, "pid": process.pid})
@@ -354,6 +371,8 @@ def command_image_status(options: argparse.Namespace) -> int:
         "digest": digest,
         "archon_commit": built.get("archon_commit"),
         "runner_commit": built.get("runner_commit"),
+        "codex_version": built.get("codex_version"),
+        "claude_code_version": built.get("claude_code_version"),
     }
     _write(work / "image.json", result)
     _emit({"state": "built", **result})
@@ -608,6 +627,15 @@ def command_teardown(options: argparse.Namespace) -> int:
 
 # -- parsing ---------------------------------------------------------------------
 
+_VERSION = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?")
+
+
+def _package_version(value: str) -> str:
+    """An exact npm version, since it is written into the image recipe's shell."""
+    if not _VERSION.fullmatch(value):
+        raise argparse.ArgumentTypeError(f"not an exact version: {value!r}")
+    return value
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agent-factory-fly-eval")
@@ -645,6 +673,9 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--runner-dir", type=Path, required=True)
     start.add_argument("--runner-commit", required=True)
     start.add_argument("--openspec-version", default="1.17.0")
+    # No defaults: the suite pins the model CLIs, as it pins the Archon commit.
+    start.add_argument("--codex-version", type=_package_version, required=True)
+    start.add_argument("--claude-code-version", type=_package_version, required=True)
     launch = add("start", command_start, run_dir=True)
     launch.add_argument("--image-file", type=Path, required=True)
     add("poll", command_poll, run_dir=True)

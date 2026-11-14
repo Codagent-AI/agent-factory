@@ -141,6 +141,15 @@ deadline, the launcher first has the Mac's own Codex refresh it (`codex
 app-server`, `account/read` with `refreshToken`), and Codex saves the new tokens
 in `~/.codex/auth.json`. If that refresh fails, run `codex login`.
 
+`agent-factory-fly-eval image start` requires `--codex-version` and
+`--claude-code-version`, exact npm versions with no default; Agent Evals owns
+the pins. The image installs those versions over the base image's unpinned
+copies, sets `DISABLE_AUTOUPDATER=1`, and fails the build unless `codex
+--version` and `claude --version` report them. A source install of Archon
+bundles its own copies of both CLIs, so the suite also points Archon at the
+installed binaries (`codexBinaryPath` and `claudeBinaryPath`); without that, a
+run uses the bundled versions whatever the image installs.
+
 ### Quick diagnosis
 
 | Symptom | Where | Fix |

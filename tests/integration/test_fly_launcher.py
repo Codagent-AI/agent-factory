@@ -599,15 +599,43 @@ def test_archon_repetition_steps_start_observe_collect_and_destroy(env: Environm
     assert lifecycle.observe(1).state == "lost"
 
 
-def test_eval_cli_image_recipe_pins_archon_bun_and_openspec() -> None:
+def test_eval_cli_image_recipe_pins_archon_bun_openspec_and_the_model_clis() -> None:
     from agent_factory.eval_cli import archon_dockerfile
 
     base = "FROM node:22\nUSER pwuser\nWORKDIR /workspace\n"
-    text = archon_dockerfile(base, "1.4.2", "abc123", "1.17.0")
+    text = archon_dockerfile(base, "1.4.2", "abc123", "1.17.0", "0.169.0", "2.1.311")
     assert text.startswith(base.rstrip())
     assert 'rev-parse HEAD)" = "abc123"' in text and "bun@1.4.2" in text
     assert "openspec@1.17.0" in text and "/opt/archon-eval/sandbox-sync-home.sh" in text
+    # The pinned CLIs replace the base image's unpinned copies, and the build checks them.
+    assert "@openai/codex@0.169.0" in text and "@anthropic-ai/claude-code@2.1.311" in text
+    assert '[ "$(codex --version)" = "codex-cli 0.169.0" ]' in text
+    assert '[ "$(claude --version)" = "2.1.311 (Claude Code)" ]' in text
+    assert "ENV DISABLE_AUTOUPDATER=1" in text
     assert text.rstrip().endswith("USER pwuser\nWORKDIR /workspace")
+
+
+def test_eval_cli_image_start_requires_exact_model_cli_versions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from agent_factory.eval_cli import build_parser
+
+    argv = [
+        "image", "start", "--config", "c", "--work-dir", "w", "--eval-id", "e",
+        "--archon-dir", "a", "--archon-commit", "h", "--runner-dir", "r", "--runner-commit", "h",
+    ]  # fmt: skip
+    pinned = build_parser().parse_args(
+        [*argv, "--codex-version", "0.169.0", "--claude-code-version", "2.1.311"]
+    )
+    assert (pinned.codex_version, pinned.claude_code_version) == ("0.169.0", "2.1.311")
+    for extra in (
+        ["--codex-version", "0.169.0"],
+        ["--codex-version", "latest", "--claude-code-version", "2.1.311"],
+        ["--codex-version", "0.169.0", "--claude-code-version", "2.1.311; rm -rf /"],
+    ):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([*argv, *extra])
+    capsys.readouterr()
 
 
 def test_eval_cli_poll_reports_lost_after_repeated_unreachable_observations(
