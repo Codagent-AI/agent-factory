@@ -129,6 +129,27 @@ Machine and is never written to a file on the Mac. The LaunchAgent must set
 `USER` and `LOGNAME`. Doctor and admission check that the login can be
 delivered before a Machine is created. A blocked Keychain read times out.
 
+The Archon eval launcher (`agent-factory-fly-eval`) does not copy
+`~/.codex/auth.json`. OpenAI refresh tokens are single use: a Machine that
+refreshed a copy of the login would cancel the Mac's login, and the new token
+would be lost with the Machine. The launcher sends only the ChatGPT access token
+and account id, as `ARCHON_CODEX_CHATGPT_ACCESS_TOKEN` and
+`ARCHON_CODEX_CHATGPT_ACCOUNT_ID`, which Archon uses in memory and never
+refreshes. The eval's Codex judge runs `codex exec` itself, so the Machine also
+gets an `auth.json` built from the same tokens with an empty refresh token. When the access token would expire within a day or before the job's
+deadline, the launcher first has the Mac's own Codex refresh it (`codex
+app-server`, `account/read` with `refreshToken`), and Codex saves the new tokens
+in `~/.codex/auth.json`. If that refresh fails, run `codex login`.
+
+`agent-factory-fly-eval image start` requires `--codex-version` and
+`--claude-code-version`, exact npm versions with no default; Agent Evals owns
+the pins. The image installs those versions over the base image's unpinned
+copies, sets `DISABLE_AUTOUPDATER=1`, and fails the build unless `codex
+--version` and `claude --version` report them. A source install of Archon
+bundles its own copies of both CLIs, so the suite also points Archon at the
+installed binaries (`codexBinaryPath` and `claudeBinaryPath`); without that, a
+run uses the bundled versions whatever the image installs.
+
 ### Quick diagnosis
 
 | Symptom | Where | Fix |

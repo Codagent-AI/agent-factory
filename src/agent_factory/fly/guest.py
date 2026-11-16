@@ -113,6 +113,8 @@ done
 
 def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
     """Build the guest job wrapper from non-secret manifest data and suite text."""
+    if manifest.get("engine") == "archon":
+        return _archon_job_script(manifest, suite_script)
     repositories = mapping_field(manifest, "repositories")
     commits = mapping_field(manifest, "commits")
     runner_url = _anonymous_url(string_field(repositories, "runner"))
@@ -173,6 +175,64 @@ def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
             "    json.dump({name: version(name) for name in "
             '("claude", "codex", "agent-validator")}, output)',
             "PY",
+            'touch "$(dirname "$0")/setup-complete"',
+            suite_script,
+            "",
+        )
+    )
+
+
+_VERSIONS_PYTHON = (
+    'python3 - "$(dirname "$0")/versions.json" <<\'PY\'',
+    "import json, subprocess, sys",
+    "def version(name):",
+    "    try:",
+    '        result = subprocess.run([name, "--version"], '
+    "capture_output=True, text=True, timeout=10, check=False)",
+    '        return (result.stdout.strip() or "unavailable") '
+    'if result.returncode == 0 else "unavailable"',
+    "    except (OSError, subprocess.TimeoutExpired):",
+    '        return "unavailable"',
+    'with open(sys.argv[1], "w") as output:',
+    "    json.dump({name: version(name) for name in "
+    '("claude", "codex", "archon", "openspec", "bun")}, output)',
+    "PY",
+)
+
+
+def _archon_job_script(manifest: Mapping[str, object], suite_script: str) -> str:
+    """The job wrapper for an Archon-engine evaluation.
+
+    The image already holds Archon at the frozen commit; the job clones the
+    workflows repository at its frozen commit and verifies both. There is no
+    Runner or Skills clone and no Go build.
+    """
+    repositories = mapping_field(manifest, "repositories")
+    commits = mapping_field(manifest, "commits")
+    workflows_url = _anonymous_url(string_field(repositories, "workflows"))
+    workflows_commit = string_field(commits, "workflows")
+    archon_commit = string_field(commits, "archon")
+    return "\n".join(
+        (
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            f"trap '{_CREDENTIAL_CLEANUP}; "
+            "rm -rf /workspace/home/.codex /workspace/home/.claude' EXIT",
+            "[ -d /agent-workflows-source/.git ] || git clone "
+            + shlex.quote(workflows_url)
+            + " /agent-workflows-source",
+            "git -C /agent-workflows-source checkout --detach " + shlex.quote(workflows_commit),
+            f'[ "$(git -C /opt/archon rev-parse HEAD)" = {shlex.quote(archon_commit)} ] || '
+            "{ echo 'the image Archon is not at the frozen commit' >&2; exit 70; }",
+            "/opt/archon-eval/sandbox-sync-home.sh",
+            "export CI=1 HOME=/workspace/home AGENT_RUNNER_NO_TUI=1 "
+            "AND_SCENE_EXPECT_WORKFLOWS_COMMIT="
+            + shlex.quote(workflows_commit)
+            + " AND_SCENE_EXPECT_ARCHON_COMMIT="
+            + shlex.quote(archon_commit),
+            "cd /workspace",
+            "set -a; . /run/factory/env; set +a",
+            *_VERSIONS_PYTHON,
             'touch "$(dirname "$0")/setup-complete"',
             suite_script,
             "",
