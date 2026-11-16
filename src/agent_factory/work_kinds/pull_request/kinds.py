@@ -84,6 +84,7 @@ FEATURE_STAGED_FILES = (
     "factory-resume-skip.sh",
     "record-stop.sh",
     "record-archive-block.sh",
+    "repair-block.py",
     "checkpoint.sh",
     "reconcile-skip.sh",
     "locate-archive.py",
