@@ -33,6 +33,26 @@ def command(*args: str, cwd: Path | None = None) -> str:
         raise ValueError(f"{' '.join(args)}: timed out after {exc.timeout}s") from exc
 
 
+class TasksFileNotFoundError(ValueError):
+    """Missing task context needs another bounded repair."""
+
+
+def resolve_tasks(change_name: str) -> Path:
+    archive = Path("openspec/changes/archive")
+    pattern = f"*-{change_name}/tasks.md"
+    found = sorted(path for path in archive.glob(pattern) if path.is_file())
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1:
+        raise ValueError(f"expected one archive for {change_name}, found {len(found)}")
+    active = Path("openspec/changes") / change_name / "tasks.md"
+    if active.is_file():
+        return active
+    raise TasksFileNotFoundError(
+        f"tasks file not found for change {change_name}: checked {archive}/{pattern}, {active}"
+    )
+
+
 def tasks_hash(path: Path) -> str:
     normalized = CHECKBOX.sub(r"\1 \2", path.read_text())
     return hashlib.sha256(normalized.encode()).hexdigest()
@@ -242,7 +262,8 @@ def main() -> int:
     if phase != "verified":
         raise ValueError("invalid phase")
     artifacts = Path(str(payload["artifact_dir"]))
-    tasks = Path(str(payload["tasks_file"]))
+    tasks_override = payload.get("tasks_file")
+    tasks = Path(str(tasks_override)) if tasks_override else None
     target_head = str(payload["target_head"])
     path = artifacts / "task-compliance.json"
     try:
@@ -266,7 +287,7 @@ def main() -> int:
         "uncovered_paths": [],
         "reviewed_head": head,
         "reviewed_tree": tree,
-        "tasks_file": str(tasks),
+        "tasks_file": str(tasks) if tasks is not None else "",
         "tasks_sha256": digest,
         "violations": [],
         "runs": runs,
@@ -280,12 +301,16 @@ def main() -> int:
         head = command("git", "rev-parse", "HEAD")
         tree = command("git", "rev-parse", "HEAD^{tree}")
         base = command("git", "merge-base", target_ref, head)
+        if tasks is None:
+            tasks = resolve_tasks(str(payload["change_name"]))
+        record["tasks_file"] = str(tasks)
         digest = tasks_hash(tasks)
     except (KeyError, TypeError, ValueError, OSError) as exc:
         # A binding failure is an error that prevents a verdict: record it as not-run with its
         # cause, replacing any earlier verdict, so repair never acts on a stale record and the
         # pull request names the cause.
-        reason = f"binding failed: {exc}"
+        missing_tasks = isinstance(exc, TasksFileNotFoundError)
+        reason = str(exc) if missing_tasks else f"binding failed: {exc}"
         runs.append(
             {"phase": phase, "head": head, "result": "not-run", "reason": reason, "evidence": ""}
         )
@@ -299,8 +324,8 @@ def main() -> int:
         )
         save(path, record)
         print(json.dumps({"result": "not-run", "reason": reason}))
-        return 0
-    if reusable(old, head, base, target_ref, digest):
+        return int(missing_tasks)
+    if old.get("tasks_file") == str(tasks) and reusable(old, head, base, target_ref, digest):
         return int(old["result"] == "failed")
     record.update(
         target_ref=target_ref,

@@ -65,7 +65,7 @@ def setup(tmp_path: Path) -> tuple[Path, Path, Path, str, dict[str, str]]:
     base = git(repo, "rev-parse", "HEAD")
     git(repo, "checkout", "-b", "feature")
     (repo / "code.py").write_text("feature\n")
-    tasks = repo / "openspec" / "changes" / "feature" / "tasks.md"
+    tasks = repo / "openspec" / "changes" / "archive" / "2026-10-09-feature" / "tasks.md"
     tasks.parent.mkdir(parents=True)
     tasks.write_text("- [ ] Add feature\n")
     git(repo, "add", ".")
@@ -95,7 +95,7 @@ def gate(
     payload = {
         "phase": phase,
         "artifact_dir": str(artifacts),
-        "tasks_file": str(tasks),
+        "change_name": "feature",
         "target_head": base,
     }
     return subprocess.run(
@@ -128,7 +128,7 @@ def test_staged_gate_runs_directly(tmp_path: Path) -> None:
 
 
 def test_staged_gate_reads_script_inputs_from_stdin(tmp_path: Path) -> None:
-    repo, tasks, artifacts, base, env = setup(tmp_path)
+    repo, _tasks, artifacts, base, env = setup(tmp_path)
     catalog = launch.stage_workflow_into(tmp_path / "workflows", "factory-feature/1", FEATURE)
     workflow = yaml.safe_load((catalog / "factory-feature-v1.0.yaml").read_text())
     steps = {step["id"]: step for step in workflow["steps"]}
@@ -142,7 +142,7 @@ def test_staged_gate_reads_script_inputs_from_stdin(tmp_path: Path) -> None:
         assert "args" not in step
         inputs = {
             key: value.replace("{{artifact_dir}}", str(artifacts))
-            .replace("{{archived_dir}}/tasks.md", str(tasks))
+            .replace("{{change_name}}", "feature")
             .replace("{{target_head}}", base)
             for key, value in step["script_inputs"].items()
         }
@@ -220,6 +220,41 @@ def test_gate_reuses_only_openspec_changes_and_rechecks_code(tmp_path: Path) -> 
     tasks.write_text("- [x] Add another feature\n")
     assert gate(repo, tasks, artifacts, base, env, "verified").returncode == 0
     assert len(review_calls(env)) == 3
+
+
+def test_gate_rechecks_after_repair_moves_change(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    assert gate(repo, tasks, artifacts, base, env).returncode == 0
+    assert record(artifacts)["result"] == "passed"
+    assert record(artifacts)["tasks_file"] == str(tasks.relative_to(repo))
+    active = repo / "openspec" / "changes" / "feature"
+    git(repo, "mv", str(tasks.parent), str(active))
+    git(repo, "commit", "-m", "repair moves change")
+    result = gate(repo, tasks, artifacts, base, env)
+    assert result.returncode == 0, result.stderr
+    saved = record(artifacts)
+    assert saved["result"] == "passed"
+    assert saved["reviewed_head"] == git(repo, "rev-parse", "HEAD")
+    assert saved["tasks_file"] == "openspec/changes/feature/tasks.md"
+    assert "binding failed" not in saved["reason"]
+    assert len(review_calls(env)) == 2
+
+
+def test_gate_missing_tasks_requests_another_repair(tmp_path: Path) -> None:
+    repo, tasks, artifacts, base, env = setup(tmp_path)
+    assert gate(repo, tasks, artifacts, base, env).returncode == 0
+    git(repo, "rm", str(tasks))
+    git(repo, "commit", "-m", "remove tasks")
+    result = gate(repo, tasks, artifacts, base, env)
+    assert result.returncode == 1, result.stderr
+    saved = record(artifacts)
+    assert saved["result"] == "not-run"
+    assert saved["violations"] == []
+    assert saved["reviewed_head"] == git(repo, "rev-parse", "HEAD")
+    assert "tasks file not found for change feature" in saved["reason"]
+    assert "openspec/changes/archive/*-feature/tasks.md" in saved["reason"]
+    assert "openspec/changes/feature/tasks.md" in saved["reason"]
+    assert len(review_calls(env)) == 1
 
 
 def test_gate_uses_resume_target_and_names_uncovered_paths(tmp_path: Path) -> None:
