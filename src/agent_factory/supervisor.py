@@ -301,7 +301,13 @@ def _supervise_fly(
                     _supervise_fly(store, _required_run(store, run.id), plan, limits)
                     return
             if _identity_status(run.process) == "missing":
-                _finish_fly_launcher_exit(store, run, plan)
+                result = _load_result(
+                    _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+                ).result
+                if result is not None:
+                    store.finish_run(run.id, execution_status=_result_status(result), result=result)
+                else:
+                    _finish_fly_launcher_exit(store, run, plan)
             else:
                 store.report_uncertainty(
                     run.id, "Fly Machine identity was not recorded by launcher"
@@ -330,17 +336,14 @@ def _supervise_fly(
             and mismatch.get("machine_id") == identity.get("id")
         ):
             store.compare_and_set_setting("runtime", "fly:mismatch", mismatch, {})
+        launcher_alive = _identity_status(run.process) == "alive"
         result = _load_result(
             _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
         ).result
         if result is not None:
             store.finish_run(run.id, execution_status=_result_status(result), result=result)
         else:
-            reason = (
-                "execution ended while unsupervised"
-                if _identity_status(run.process) != "alive"
-                else "machine lost"
-            )
+            reason = "execution ended while unsupervised" if not launcher_alive else "machine lost"
             store.finish_run(run.id, execution_status="interrupted", result={"reason": reason})
         return
     if probe.state == "mismatch":
@@ -549,15 +552,17 @@ def _observe_fly(
         changed, sources = _progress_changed(plan.progress_sources, sources)
         if changed:
             last_progress = now
-        result = _load_result(
-            _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
-        )
         launcher_missing = _identity_status(launcher) == "missing"
         # A probe is a REST round trip; like the container probe below it runs on
         # an interval, and at once when the launcher has gone away.
         if state is None or now - last_probe >= _FLY_PROBE_SECONDS or launcher_missing:
             state = machine_backend.probe(identity)
             last_probe = now
+        # Collection may finish during either observation. Read only afterwards,
+        # so a terminal decision cannot discard a result collected before exit.
+        result = _load_result(
+            _artifact_root(plan, run.evidence_path), kind=run.kind, reason=run.reason
+        )
         progress.update(
             {
                 "started_at": started,
