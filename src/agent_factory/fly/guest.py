@@ -87,19 +87,38 @@ while :; do
     status=$?
     rm -f "$ARTIFACTS/.factory/active-job-pgid"
     printf '%s\n' "$status" >"$directory/exit-code"
+    # Archon keeps SQLite in WAL mode. A late checkpoint would change the database
+    # between the listing and the copy, so merge the WAL first. A failure here
+    # never fails the job: the host tolerates a database that grew.
+    for database in "$ARTIFACTS"/.runtime/archon-home/*.db; do
+      [ -f "$database" ] || continue
+      command -v python3 >/dev/null 2>&1 || break
+      python3 -c 'import sqlite3, sys
+c = sqlite3.connect(sys.argv[1], timeout=10)
+c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+c.close()' "$database" >/dev/null 2>&1 || true
+    done
     # One real tab-separated line per file: path, size, mtime. GNU find does it in
-    # a single process; the loop is the portable fallback. Neither stat flavour
-    # expands "\t" in a format, so tabs come from printf. Runner scratch
-    # folders are temporary work, not evidence.
+    # a single process; the loop is the portable fallback, used only when find
+    # printed nothing usable (a file vanishing mid-scan makes find exit non-zero
+    # after a complete listing). Neither stat flavour expands "\t" in a format, so
+    # tabs come from printf. Runner scratch folders are temporary work, not evidence.
     (cd "$ARTIFACTS" && {
+      listing="$(mktemp)"
       find . -path './.factory/staging' -prune -o \
-        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -printf '%P\t%s\t%T@\n' 2>/dev/null ||
-      find . -path './.factory/staging' -prune -o \
-        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -print | while IFS= read -r file; do
-        size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
-        mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
-        printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
-      done
+        -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -printf '%P\t%s\t%T@\n' \
+        >"$listing" 2>/dev/null
+      if [ $? -eq 0 ] || [ -s "$listing" ]; then
+        cat "$listing"
+      else
+        find . -path './.factory/staging' -prune -o \
+          -path "$RUNNER_SCRATCH_PATH" -prune -o -type f -print | while IFS= read -r file; do
+          size="$(stat -c %s "$file" 2>/dev/null || stat -f %z "$file")"
+          mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file")"
+          printf '%s\t%s\t%s\n' "${file#./}" "$size" "$mtime"
+        done
+      fi
+      rm -f "$listing"
     }) | sort >"$directory/files.txt"
     touch "$directory/DONE"
     [ -e "$ARTIFACTS/.factory/deadline-expired" ] && exit 1

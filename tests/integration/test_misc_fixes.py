@@ -796,6 +796,35 @@ def test_fly_collection_still_rejects_non_scratch_mismatch(tmp_path: Path) -> No
         transport._declared_files(listing, tmp_path, 1)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_fly_collection_accepts_grown_sqlite_db(tmp_path: Path) -> None:
+    from agent_factory.fly import transport
+
+    database = ".runtime/archon-home/archon.db"
+    listing = tmp_path / "files.txt"
+    listing.write_text(f"{database}\t4\t0\n{database}-wal\t9\t0\n{database}-shm\t9\t0\n")
+    (tmp_path / database).parent.mkdir(parents=True)
+    declare = transport._declared_files  # pyright: ignore[reportPrivateUsage]
+
+    (tmp_path / database).write_text("grown!")
+    assert declare(listing, tmp_path, 1) == [Path(database)]
+
+    (tmp_path / f"{database}-wal").write_text("different size")
+    assert declare(listing, tmp_path, 1) == [Path(database), Path(f"{database}-wal")]
+    (tmp_path / f"{database}-wal").unlink()
+
+    (tmp_path / database).write_text("abc")
+    with pytest.raises(transport.CollectionError, match="does not match the manifest"):
+        declare(listing, tmp_path, 1)
+
+    (tmp_path / database).unlink()
+    with pytest.raises(transport.CollectionError, match="does not match the manifest"):
+        declare(listing, tmp_path, 1)
+
+    (tmp_path / database).mkdir()
+    with pytest.raises(transport.CollectionError, match="does not match the manifest"):
+        declare(listing, tmp_path, 1)
+
+
 def test_fly_tar_get_excludes_runner_scratch(tmp_path: Path) -> None:
     from agent_factory.fly.transport import FlyTransport
 

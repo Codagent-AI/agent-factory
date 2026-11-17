@@ -1228,6 +1228,10 @@ def _is_runner_scratch(relative: Path) -> bool:
     )
 
 
+_ARCHON_DB = Path(".runtime/archon-home/archon.db")
+_ARCHON_DB_SIDECARS = (Path(f"{_ARCHON_DB}-wal"), Path(f"{_ARCHON_DB}-shm"))
+
+
 def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
     """Relative paths the guest declared and the collection really contains.
 
@@ -1235,7 +1239,9 @@ def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
     listed, are eligible; the guest's ``.factory`` tree is host-managed state and
     is accepted only for job evidence, so a job cannot overwrite the Machine
     record or manifest. The current job's own evidence files were still being
-    written when the listing was taken, so they are checked for type only.
+    written when the listing was taken, so they are checked for type only. Archon's
+    SQLite database may be checkpointed between the listing and the copy: it can
+    only have grown, and its WAL and shared-memory sidecars may be gone or changed.
     """
     job_prefix = (".factory", "job", str(job))
     declared: list[Path] = []
@@ -1252,6 +1258,20 @@ def _declared_files(listing: Path, staging: Path, job: int) -> list[Path]:
             continue
         collected = staging / relative
         current_job = relative.parts[:3] == job_prefix
+        if relative in _ARCHON_DB_SIDECARS:
+            # Any size is fine: a checkpoint may have removed or rewritten them.
+            if collected.exists() or collected.is_symlink():
+                if not _is_regular(collected):
+                    raise CollectionError(
+                        f"collected file does not match the manifest: {fields[0]}"
+                    )
+                declared.append(relative)
+            continue
+        if relative == _ARCHON_DB:
+            if not _is_regular(collected) or collected.lstat().st_size < int(fields[1]):
+                raise CollectionError(f"collected file does not match the manifest: {fields[0]}")
+            declared.append(relative)
+            continue
         if not _is_regular(collected) or (
             not current_job and collected.lstat().st_size != int(fields[1])
         ):

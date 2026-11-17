@@ -142,3 +142,68 @@ def test_guest_with_an_expired_deadline_still_exits_at_once(tmp_path: Path) -> N
         ["bash", "-c", guest_init_script()], env=environment, timeout=20, check=False
     )
     assert done.returncode == 1
+
+
+def test_guest_listing_has_no_duplicates_when_find_fails_and_checkpoints_sqlite(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "guest"
+    artifacts = root / "artifacts"
+    job = artifacts / ".factory/job/1"
+    job.mkdir(parents=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    real_find = subprocess.run(["which", "find"], capture_output=True, text=True).stdout.strip()
+    # A find that lists everything, then exits non-zero as if a file vanished mid-scan.
+    (bin_dir / "find").write_text(
+        f'#!/bin/bash\n{real_find} "$@"\nstatus=$?\n[ $status -eq 0 ] && exit 1\nexit $status\n'
+    )
+    (bin_dir / "find").chmod(0o755)
+    (job / "job.sh").write_text(
+        "#!/bin/bash\n"
+        'home="$FACTORY_ROOT/artifacts/.runtime/archon-home"\nmkdir -p "$home"\n'
+        "python3 - \"$home/archon.db\" <<'PY'\n"
+        "import sqlite3, sys\n"
+        "c = sqlite3.connect(sys.argv[1])\n"
+        "c.execute('PRAGMA journal_mode=WAL')\n"
+        "c.execute('PRAGMA wal_autocheckpoint=0')\n"
+        "c.execute('CREATE TABLE t (x)')\n"
+        "c.execute('INSERT INTO t VALUES (1)')\n"
+        "c.commit()\n"
+        "import os\n"
+        "os._exit(0)\n"
+        "PY\n"
+        'echo hello > "$FACTORY_ROOT/artifacts/value"\n'
+    )
+    (job / "job.sh").chmod(0o700)
+    deadline = root / "var/lib/factory/deadline"
+    deadline.parent.mkdir(parents=True)
+    deadline.write_text(str(int(time.time()) + 10))
+    environment = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 10),
+        "FACTORY_ROOT": str(root),
+        "FACTORY_WATCHDOG_SECONDS": "1",
+    }
+    process = start_guest(environment)
+    try:
+        (job / "start").touch()
+        done = job / "DONE"
+        for _ in range(600):
+            if done.exists():
+                break
+            time.sleep(0.05)
+        assert done.exists()
+        paths = [line.split("\t")[0] for line in (job / "files.txt").read_text().splitlines()]
+        assert len(paths) == len(set(paths))
+        assert "value" in paths
+        home = artifacts / ".runtime/archon-home"
+        assert not (home / "archon.db-wal").exists() or (home / "archon.db-wal").stat().st_size == 0
+        listed = {
+            line.split("\t")[0]: line.split("\t")[1]
+            for line in (job / "files.txt").read_text().splitlines()
+        }
+        assert listed[".runtime/archon-home/archon.db"] == str((home / "archon.db").stat().st_size)
+    finally:
+        stop_guest(process)
