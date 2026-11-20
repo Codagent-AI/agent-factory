@@ -608,7 +608,7 @@ class PullRequestHandler:
         if self.reconcile(claim) is not None:
             return Preparation()
         claim = self._store.get_claim(claim.id) or claim
-        roles = mapping(claim.frozen_spec.get("roles"))
+        roles = self.launch_roles(claim)
         failures = [
             check.detail
             for check in model_authentication({k: str(v) for k, v in roles.items()})
@@ -932,7 +932,7 @@ class PullRequestHandler:
                 evidence=evidence,
                 repo_clone=Path(str(clones["repo"])),
                 credential_copy=credential,
-                roles=mapping(claim.frozen_spec.get("roles")),
+                roles=self.launch_roles(claim),
                 branch=branch,
                 contract=workflow_contract,
                 definition=self.definition,
@@ -971,7 +971,7 @@ class PullRequestHandler:
             evidence=evidence,
             clones={name: str(clones[name]) for name in ("repo", "runner", "skills")},
             credential_copy=credential,
-            roles=mapping(claim.frozen_spec.get("roles")),
+            roles=self.launch_roles(claim),
             branch=branch,
             contract=workflow_contract,
             definition=self.definition,
@@ -1254,6 +1254,20 @@ class PullRequestHandler:
             return schedule
         return ScheduleConfig.always(local.schedule.timezone, local.schedule.poll_seconds)
 
+    def launch_roles(self, claim: Claim) -> Mapping[str, object]:
+        """The claim's frozen role profiles for launch.
+
+        A fix or task claim frozen before those kinds ran the Runner's crosscheck audit has no
+        crosscheck profile, and its review rounds and recovery attempts need one. It takes the
+        kind's configured default; every other role stays as frozen.
+        """
+        roles = dict(mapping(claim.frozen_spec.get("roles")))
+        if "crosscheck" in self.definition.roles and not roles.get("crosscheck"):
+            configured = self.definition.defaults(self._shared).get("crosscheck")
+            if configured:
+                roles["crosscheck"] = configured
+        return roles
+
     def providers(self, claim: Claim) -> set[str]:
         return self.providers_for_spec(claim.frozen_spec)
 
@@ -1408,11 +1422,6 @@ def _pr_message(result: Mapping[str, object]) -> str:
             f"\n\n{counts['red']} red flags, {counts['orange']} orange flags, "
             f"{counts['yellow']} yellow items."
         )
-    compliance = mapping(result.get("task_compliance"))
-    if compliance.get("result") == "not-run":
-        body += f"\n\nTask-compliance did not run: {compliance.get('reason') or 'unknown reason'}."
-    elif compliance.get("result") == "failed":
-        body += "\n\nTask-compliance violations remain."
     return _with_host_note(body, result)
 
 

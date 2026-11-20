@@ -516,7 +516,7 @@ _RUNNER_REJECTS_WORKFLOW = _RUNNER_OK.replace(
 )
 _RUNNER_REJECTS_REVIEW_WORKFLOW = _RUNNER_OK.replace(
     "-validate) exit 0",
-    '-validate) case "$2" in *factory-review-v1.0.yaml) echo bad-review >&2; exit 1;; esac',
+    '-validate) case "$2" in *factory-review-v2.0.yaml) echo bad-review >&2; exit 1;; esac',
 )
 _GH_OK = (
     '#!/bin/sh\nif [ "$1 $2" = "auth status" ] && [ -n "${GH_TOKEN:-}" ]; then exit 0; fi\nexit 1\n'
@@ -604,6 +604,7 @@ def _host_shared() -> SharedConfig:
                 "lead": "cursor:m:high",
                 "implementor": "cursor:m:medium",
                 "tester": "cursor:m:low",
+                "crosscheck": "cursor:m:high",
             },
         ),
     )
@@ -773,13 +774,13 @@ def test_validator_doctor_checks_both_paths_and_reports_staleness(
             {"agent-runner": _RUNNER_REJECTS_WORKFLOW},
             _SETTINGS_OK,
             "fix host workflow validation",
-            "rejected packaged factory-fix-v1.0.yaml",
+            "rejected packaged factory-fix-v2.0.yaml",
         ),
         (
             {"agent-runner": _RUNNER_REJECTS_REVIEW_WORKFLOW},
             _SETTINGS_OK,
             "fix host workflow validation",
-            "rejected packaged factory-review-v1.0.yaml",
+            "rejected packaged factory-review-v2.0.yaml",
         ),
         (
             {"gh": _GH_AUTH_FAILS},

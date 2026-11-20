@@ -138,7 +138,7 @@ File low-risk maintenance as a native Task in a configured `[fix]` target. A Tas
 reaches the factory only when a writer moves its card to Ready (or uses the
 `factory-assign` skill); routing does not queue it automatically. Shared
 `[task]` enables new admissions, sets `contract = "factory-task/1"`, and provides
-lead, implementor, and tester profiles. Local `[task]` is optional: host-only
+lead, implementor, tester, and crosscheck profiles. Local `[task]` is optional: host-only
 execution, an always-open schedule by default, an optional disk floor, and
 inactivity/execution/total limits of 900/7200/10800 seconds. `doctor` reports
 `task-host`, while `status` reports the task slot and task claims.
@@ -225,6 +225,20 @@ To take an issue from handoff to a reviewed PR (assign, watch, answer
 ## Session notifications
 
 `codagent-github-project` records the creating Claude session on an issue; `factory-assign` replaces that marker at handoff. One session is tracked per issue. When a claim stops with a pull request, needs-input, failure, settled eval, cancellation, or a card that is no longer queued, the resident waits for the settle period and any service watcher dispatch, then sends a short, link-only notice to the recorded live local session. It never changes the claim or issue. Delivery is best effort: ended or unresolvable sessions receive nothing, a renamed-and-reused session name has a small race, and another permission mode may hold a message. See `docs/operations.md` for `[notify]` settings, `doctor`, and `status`.
+
+## Pull request workflows and the Runner
+
+Fix, feature, task, and review-round workflows (`factory-*-v2.0.yaml`) build on the
+Runner's change v3 workflows, which the factory takes from the Runner it runs: the host
+`agent-runner` on `PATH`, which `scripts/deploy.sh` rebuilds from Agent Runner `origin/main`.
+A feature runs `core/implement-change-v2.0` on its OpenSpec change; a fix or task writes a
+small definition under its attempt's artifact directory and runs the same workflow on it.
+Each kind has one validator run before its pull request (inside `core/verify-change`) and the
+crosscheck audit inside `implement-change`. Fix and task claims need a `crosscheck` profile
+in `[fix.defaults]` and `[task.defaults]`; a claim frozen without one takes the configured
+default at launch. Deploy the factory and the Runner together, because a release whose
+workflows call a Runner builtin an older `agent-runner` lacks stops at `doctor` and holds
+new attempts. The design is the `align-workflows-with-change-v3` OpenSpec change (`design.md`).
 
 ## Priority lanes
 

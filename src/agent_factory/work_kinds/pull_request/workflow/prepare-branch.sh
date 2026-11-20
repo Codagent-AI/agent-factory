@@ -53,6 +53,15 @@ from pathlib import Path
 Path(sys.argv[1]).write_text(json.dumps({'fallback': sys.argv[2], 'resume_from': ''}) + '\n')
 PY
 fi
+# A checkpoint that records verification as done (the Factory-Verified trailer, first-parent
+# history of this claim's branch only) means a resume at verification continues at finalize.
+# A merge below still sends it back, because merged commits invalidate that verification.
+if [ "$effective_resume" = verify ]; then
+  verified=$(git log --first-parent --format='%(trailers:key=Factory-Verified,valueonly)' "$target..HEAD" 2>/dev/null | grep -x true || true)
+  if [ -n "$verified" ]; then
+    effective_resume=finalize
+  fi
+fi
 # A merge that brought in commits invalidates earlier validation, so finalize re-verifies.
 if [ "$effective_resume" = finalize ]; then
   case "${merge_status:-}" in

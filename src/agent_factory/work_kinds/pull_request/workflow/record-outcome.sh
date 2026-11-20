@@ -136,6 +136,16 @@ elif post_error is not None:
     )
 elif post_required and not post_scope.get("complete"):
     outcome = failed_with_pr(post_scope.get("reasons") or ["post-finalize Task scope guard did not complete"])
+elif scope.get("crossed") and pr_url:
+    # The Runner's verification opens the draft pull request before this guard can run, so a
+    # crossing leaves that pull request open for a human, as a crossing after finalization does.
+    outcome = {
+        "contract": contract,
+        "outcome": "failed",
+        "reasons": scope.get("reasons") or ["Task scope crosses its boundary; belongs in a Feature"],
+        "pr": pr_reference(),
+        "validator": {"status": "passed"},
+    }
 elif scope.get("crossed"):
     outcome = {
         "contract": contract,
@@ -231,34 +241,11 @@ for key in ("stopped_step", "review_attention_counts", "resume"):
     outcome[key] = value
 
 if contract == "factory-feature/1":
+    # The validator's own result, apart from the rest of verification: an acceptance push that
+    # failed after a passing validator leaves the status incomplete rather than failed.
     outcome["validator"]["checks"] = "passed" if checks_status == "passed" else "failed"
-    compliance = None
-    compliance_path = parsed.get("task_compliance")
-    if isinstance(compliance_path, str) and compliance_path:
-        try:
-            loaded = json.loads(Path(compliance_path).read_text())
-            if (isinstance(loaded, dict)
-                and loaded.get("result") in ("passed", "failed", "not-run", "not-declared")
-                and ((loaded.get("result") == "not-run" and isinstance(loaded.get("reason"), str))
-                     or all(isinstance(loaded.get(key), str) and loaded[key]
-                            for key in ("base", "reviewed_head", "tasks_sha256")))):
-                compliance = {
-                    key: loaded[key] for key in ("result", "reason", "base", "reviewed_head", "tasks_sha256")
-                    if key in loaded
-                }
-        except (OSError, json.JSONDecodeError):
-            pass
-    if checks_status == "passed" and compliance is None:
-        compliance = {"result": "not-run", "reason":
-                      "verify failed before task-compliance" if validator_status != "passed"
-                      else "no task-compliance record"}
-    if compliance is not None:
-        outcome["task_compliance"] = compliance
-    if checks_status == "passed":
-        outcome["validator"]["status"] = {
-            "passed": "passed", "not-declared": "passed", "not-run": "incomplete",
-            "failed": "review-failed",
-        }[compliance["result"]]
+    if checks_status == "passed" and validator_status != "passed":
+        outcome["validator"]["status"] = "incomplete"
 
 if contract == "factory-feature/1" and outcome["outcome"] == "failed" and branch_name:
     outcome["branch"] = branch_name

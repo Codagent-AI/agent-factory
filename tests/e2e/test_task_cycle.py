@@ -43,7 +43,7 @@ def test_task_happy_path(tmp_path: Path) -> None:
         assert f"branch_name={h.branch_for(claim.id)}" in args
         assert "contract_version=factory-task/1" in args
         clone = h.root / "clones" / claim.id / "0" / "repo"
-        assert (clone / ".agent-runner/workflows/factory-task-v1.0.yaml").is_file()
+        assert (clone / ".agent-runner/workflows/factory-task-v2.0.yaml").is_file()
         assert "fix-token-value" not in json.dumps(run.plan)
         assert "host" in json.dumps(run.plan)
         h.finish(artifact, task_pr(h.branch_for(claim.id)))
@@ -164,7 +164,7 @@ def test_three_kinds_admitted_independently(tmp_path: Path) -> None:
                 / "0"
                 / "repo"
                 / ".agent-runner/workflows"
-                / f"factory-{run.kind}-v1.0.yaml"
+                / f"factory-{run.kind}-v2.0.yaml"
             ).is_file()
     finally:
         for run in h.store.nonterminal_runs():

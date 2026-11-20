@@ -25,8 +25,9 @@ WORKFLOW_FILE = FIX.workflow_file
 WORKFLOW_SCRIPTS = tuple(name for name in FIX.staged_files if name.endswith((".sh", ".py")))
 REVIEW_CONTRACT = "factory-review/1"
 REVIEW_WORKFLOW_NAME = "factory-review"
-REVIEW_WORKFLOW_FILE = "factory-review-v1.0.yaml"
-IMPLEMENT_WORKFLOW_FILE = "factory-implement-v1.0.yaml"
+REVIEW_WORKFLOW_FILE = "factory-review-v2.0.yaml"
+IMPLEMENT_WORKFLOW_FILE = "factory-implement-v2.0.yaml"
+DEFINE_WORKFLOW_FILE = "factory-define-v2.0.yaml"
 REVIEW_WORKFLOW_SCRIPTS = (
     "merge-base.sh",
     "review-merge-base.sh",
@@ -47,6 +48,7 @@ REVIEW_WORKFLOW_SCRIPTS = (
     "scope-state.py",
     "json-flag.py",
     "factory-task-boundary.md",
+    "factory-change-rules.md",
     "review-field.sh",
 )
 # Every file the factory publishes into a Runner catalog: the fix and review workflows,
@@ -82,6 +84,12 @@ HOST_NOTE = (
     "executed."
 )
 FINALIZE_PR_PATH = "workflows/core/finalize-pr-v1.0.yaml"
+# Runner builtins every packaged workflow calls; the recorded Runner commit must carry them.
+REQUIRED_RUNNER_WORKFLOWS = (
+    "workflows/core/implement-change-v2.0.yaml",
+    "workflows/core/verify-change-v1.0.yaml",
+    "workflows/core/run-validator-v1.0.yaml",
+)
 FINALIZE_PR_PARAM = "ci_fix_cycles"
 IMAGE_PREFIX = "agent-runner-factory"
 _TOKEN_LINE = re.compile(r"^GH_TOKEN=(.+)$")
@@ -194,9 +202,7 @@ def check_packaged_workflow(contract: str, definition: PullRequestKind = FIX) ->
             f"{', '.join(stray)} instead of using the {ARTIFACT_DIR_PARAM} parameter"
         )
     if definition.kind == "feature" and contract != REVIEW_CONTRACT:
-        define = (
-            files("agent_factory.work_kinds.pull_request") / "workflow" / "factory-define-v1.0.yaml"
-        )
+        define = files("agent_factory.work_kinds.pull_request") / "workflow" / DEFINE_WORKFLOW_FILE
         try:
             lines = define.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError) as error:
@@ -319,6 +325,12 @@ def check_runner_contract(
             f"{FINALIZE_PR_PATH} at the recorded Runner commit does not accept "
             f"{FINALIZE_PR_PARAM}; the recorded Runner commit is incompatible with {contract}"
         )
+    for required in REQUIRED_RUNNER_WORKFLOWS:
+        if not (runner_clone / required).is_file():
+            raise ReadinessError(
+                f"{required} is missing from the recorded Runner commit; "
+                f"the recorded Runner commit is incompatible with {contract}"
+            )
     launcher = runner_clone / "scripts" / "sandbox-run.sh"
     try:
         text = launcher.read_text(encoding="utf-8")
@@ -693,6 +705,11 @@ def validator_provenance(checkout: Path | None) -> dict[str, str]:
 
 
 def check_host_runner_workflow(runner: str, workflow: Path, definition: PullRequestKind) -> None:
+    """The installed Runner must resolve the builtin workflows the packaged feature one calls.
+
+    ``-validate`` loads ``core/implement-change`` and the workflows it calls. Fix, task, and
+    review workflows are validated by the host readiness check instead.
+    """
     if definition.kind != "feature":
         return
     try:
@@ -705,13 +722,13 @@ def check_host_runner_workflow(runner: str, workflow: Path, definition: PullRequ
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReadinessError(
-            f"cannot validate feature workflow with installed Runner: {error}"
+            f"cannot validate {definition.workflow_name} workflow with installed Runner: {error}"
         ) from error
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
         raise ReadinessError(
-            "installed Runner cannot validate factory-feature; core/verify-change is required: "
-            f"{detail}"
+            f"installed Runner cannot validate {workflow.name}; core/implement-change and "
+            f"core/verify-change are required: {detail}"
         )
 
 

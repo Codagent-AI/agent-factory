@@ -209,7 +209,7 @@ class HostFixture:
             evidence=self.evidence,
             repo_clone=self.clone,
             credential_copy=credential,
-            roles={"lead": "codex:m:high", "implementor": "codex:m:high", "tester": "codex:m:high"},
+            roles=dict.fromkeys(("lead", "implementor", "tester", "crosscheck"), "codex:m:high"),
             branch=f"factory/fix-1-{claim.id[:8]}",
             contract=CONTRACT,
             recorded_revisions={"runner": "a" * 40, "skills": "b" * 40},

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Record the actual validator result and the last failed verify leaf."""
+"""Record the actual validator result and the last failed verify leaf.
+
+With --require-evidence, exit 3 after writing the record when it names no verify failure and
+the validator did not fail: the workflow stopped before verification, which is a technical
+failure for the factory to retry, not an outcome.
+"""
 
 import json
 import re
@@ -9,6 +14,15 @@ from pathlib import Path
 from typing import Any, cast
 
 REPAIR_LIMIT = 1500
+
+
+def in_verify(step: str) -> bool:
+    """Whether a step path is the verification sub-workflow or inside it.
+
+    Verification runs as the top-level `verify` step, or as the `verify-change` step of the
+    Runner's implement-change workflow, whatever step of the factory workflow calls that.
+    """
+    return any(segment in ("verify", "verify-change") for segment in step.split("/"))
 
 
 def failure(session: Path) -> dict[str, object]:
@@ -58,7 +72,7 @@ def failure(session: Path) -> dict[str, object]:
             if not isinstance(prefix, str) or not isinstance(step_id, str) or not step_id:
                 return fallback
             step = "/".join(part for part in (prefix, step_id) if part)
-            if step != "verify" and not step.startswith("verify/"):
+            if not in_verify(step):
                 continue
             # Parent failures are logged after their failed child. Keep that
             # child, but replace earlier retry failures with a later failed leaf.
@@ -100,8 +114,18 @@ def failure(session: Path) -> dict[str, object]:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        sys.exit("usage: verify-failure.py SESSION_DIR ARTIFACT_DIR")
-    artifact = Path(sys.argv[2])
+    arguments = [argument for argument in sys.argv[1:] if argument != "--require-evidence"]
+    if len(arguments) != 2:
+        sys.exit("usage: verify-failure.py SESSION_DIR ARTIFACT_DIR [--require-evidence]")
+    artifact = Path(arguments[1])
     artifact.mkdir(parents=True, exist_ok=True)
-    (artifact / "verify-failure.json").write_text(json.dumps(failure(Path(sys.argv[1]))) + "\n")
+    record = failure(Path(arguments[0]))
+    (artifact / "verify-failure.json").write_text(json.dumps(record) + "\n")
+    if len(arguments) != len(sys.argv) - 1 and not record["reasons"]:
+        result = Path(arguments[0]) / "output" / "verify-change-validator-result.txt"
+        try:
+            red = result.read_text().strip() != "PASS"
+        except OSError:
+            red = False
+        if not red:
+            sys.exit(3)

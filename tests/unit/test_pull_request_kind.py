@@ -18,12 +18,12 @@ def test_fix_definition_preserves_the_registered_fix_contract() -> None:
     assert fix.kind == fix.unit_key == "fix"
     assert fix.noun == "Fix" and fix.item_noun == "bug"
     assert fix.workflow_name == "factory-fix"
-    assert fix.workflow_file == "factory-fix-v1.0.yaml"
+    assert fix.workflow_file == "factory-fix-v2.0.yaml"
     assert fix.outcome_file == "fix-outcome.json"
     assert fix.branch_prefix == "factory/fix"
     assert fix.sync_marker == "fix-sync"
     assert fix.allowed_modes == ("docker", "host")
-    assert fix.roles == ("lead", "implementor", "tester")
+    assert fix.roles == ("lead", "implementor", "tester", "crosscheck")
     assert fix.doctor_groups == {"docker": "fix-sandbox", "host": "fix-host"}
     assert fix.reconcile is kinds.ReconcilePolicy.SETTLE_ON_OPEN_PR
 
@@ -277,3 +277,40 @@ def test_reconcile_preserves_handoff_for_unconsumed_own_result(
         handoffs = [event for event in store.pending_events(claim.id) if event.key == "handoff"]
         assert len(handoffs) == 1
         assert handoffs[0].body == "Pull request opened: https://example.test/pr/2"
+
+
+@pytest.mark.parametrize("kind", ["fix", "task"])
+def test_claims_frozen_before_the_crosscheck_role_take_the_configured_one_at_launch(
+    tmp_path: Path, kind: str
+) -> None:
+    """Review rounds and recovery attempts of an older fix or task claim run the crosscheck
+    audit too, and its frozen roles have no profile for it."""
+    from agent_factory.work_kinds.pull_request.handler import PullRequestHandler
+
+    kinds = import_module("agent_factory.work_kinds.pull_request.kinds")
+    shared = SharedConfig.from_file(Path("config/codagent.toml"))
+    local = LocalConfig.from_file(Path("config/local.example.toml"))
+    definition = getattr(kinds, kind.upper())
+    handler = PullRequestHandler(definition, shared, local)
+    store = ClaimStore(tmp_path / "state.sqlite3")
+    older = {"lead": "codex:a:high", "implementor": "codex:b:medium", "tester": "codex:c:low"}
+    claim = store.create_claim(
+        ClaimDraft("example/work", 2, "I2", "P2", kind, "fp", {"roles": older})
+    )
+    roles = handler.launch_roles(claim)
+    assert roles["crosscheck"] == definition.defaults(shared)["crosscheck"]
+    assert {role: roles[role] for role in older} == older
+    frozen = store.create_claim(
+        ClaimDraft(
+            "example/work",
+            3,
+            "I3",
+            "P3",
+            kind,
+            "fp3",
+            {"roles": {**older, "crosscheck": "claude:d:high"}},
+        )
+    )
+    assert handler.launch_roles(frozen)["crosscheck"] == "claude:d:high"
+    for role in definition.roles:
+        assert role in definition.defaults(shared)

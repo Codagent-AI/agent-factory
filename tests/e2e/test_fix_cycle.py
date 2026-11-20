@@ -253,7 +253,9 @@ def _harness_repositories(root: Path) -> tuple[str, str, str, str]:
         {
             "scripts/sandbox-run.sh": SANDBOX,
             "workflows/core/finalize-pr-v1.0.yaml": 'name: finalize-pr\nparams:\n  - name: ci_fix_cycles\n    default: "3"\nsteps: []\n',
-            "workflows/core/implement-change-v1.0.yaml": "# fixture",
+            "workflows/core/implement-change-v2.0.yaml": "# fixture",
+            "workflows/core/verify-change-v1.0.yaml": "# fixture",
+            "workflows/core/run-validator-v1.0.yaml": "# fixture",
         },
     )
     skills_sha = _repo(root / "skills", {"README.md": "fixture"})
@@ -310,12 +312,13 @@ class Harness:
             '[fix]\ncontract = "factory-fix/1"\n[fix.branches]\nrunner = "main"\nskills = "main"\n'
             f'[[fix.targets]]\nrepository = "{REPOSITORY}"\n[fix.defaults]\n'
             'lead = "codex:test:high"\nimplementor = "codex:test:high"\ntester = "codex:test:high"\n'
+            'crosscheck = "codex:test:high"\n'
         )
         if kind == "task":
             shared_text += (
                 '[task]\ncontract = "factory-task/1"\n[task.defaults]\n'
                 'lead = "codex:test:high"\nimplementor = "codex:test:high"\n'
-                'tester = "codex:test:high"\n'
+                'tester = "codex:test:high"\ncrosscheck = "codex:test:high"\n'
             )
         (tmp_path / "shared.toml").write_text(shared_text)
         self.shared = SharedConfig.from_toml(shared_text)
@@ -769,7 +772,7 @@ def test_e2e_002_fix_journey_launches_reports_syncs_and_cleans_up(tmp_path: Path
         assert f"--param branch_name={branch}" in script
         assert "agent-runner run factory-fix" in script
         staged = artifact / "agent-runner" / "workflows"
-        workflow_text = (staged / "factory-fix-v1.0.yaml").read_text()
+        workflow_text = (staged / "factory-fix-v2.0.yaml").read_text()
         assert workflow_text.splitlines()[0] == "# factory-contract: factory-fix/1"
         assert "builtin:core/finalize-pr-v1.0.yaml" in workflow_text
         for name in ("record-triage.sh", "record-outcome.sh"):
@@ -1020,7 +1023,7 @@ def _assert_host_launch(h: Harness, run: Run, artifact: Path, claim_id: str) -> 
         "host mode must not stage into evidence"
     )
     catalog = clones / "repo" / ".agent-runner" / "workflows"
-    assert (catalog / "factory-fix-v1.0.yaml").read_text().splitlines()[
+    assert (catalog / "factory-fix-v2.0.yaml").read_text().splitlines()[
         0
     ] == "# factory-contract: factory-fix/1"
     exclude = (clones / "repo" / ".git" / "info" / "exclude").read_text().splitlines()

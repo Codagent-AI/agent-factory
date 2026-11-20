@@ -1,6 +1,6 @@
 # factory-contract: factory-feature/1
 name: factory-feature
-description: "Define, implement, verify, and finalize an OpenSpec feature."
+description: "Define an OpenSpec feature, implement it through the Runner's implement-change with its crosscheck audit and single validator run, archive it, and finalize the pull request."
 hidden: true
 params:
   - name: issue_file
@@ -22,12 +22,6 @@ params:
 sessions:
   - name: lead-agent
     agent: lead
-  - name: implementor-agent
-    agent: implementor
-  - name: proposal-reviewer
-    agent: crosscheck
-  - name: approach-reviewer
-    agent: crosscheck
 steps:
   - id: check-contract
     script: check-contract.sh
@@ -38,6 +32,13 @@ steps:
     script: check-openspec.sh
     script_inputs:
       artifact_dir: "{{artifact_dir}}"
+  # A stop recorded earlier skips the capturing steps; later steps still read their values.
+  - id: seed-target-head
+    command: printf ''
+    capture: target_head
+  - id: seed-effective-resume
+    command: printf ''
+    capture: effective_resume
   - id: target-head
     command: git rev-parse HEAD
     capture: target_head
@@ -63,17 +64,11 @@ steps:
       answers to prior merge questions. Resolve every conflict while keeping both
       sides' intent. In the merge commit, edit only paths listed under conflicted
       in merge-conflict.json. Never reset, rebase, squash, or amend. Finish the
-      merge with git commit --no-edit first. Then run agent-validator run and
-      commit any fixes it needs as separate follow-up commits. Those commits may
-      touch any file, including new files. If the conflict cannot be resolved
-      within these rules, write
+      merge with git commit --no-edit first. Do not run Agent Validator: the
+      attempt's single validator run covers the merged tree. If the conflict cannot
+      be resolved within these rules, write
       {{artifact_dir}}/merge-stop.json with non-empty questions and
       direction_summary, and leave the merge in progress.
-
-      For CHECK failures from agent-validator run, do not apply a remedy when either of these independent conditions holds:
-      - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
-      - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
-      For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
   - id: check-merge
     script: check-merge.sh
     script_inputs:
@@ -111,7 +106,7 @@ steps:
       step: "{{effective_resume}}"
     skip_if: 'sh: test ! -s {{artifact_dir}}/define-stop.json || test -s {{artifact_dir}}/feature-outcome.json'
   - id: define
-    workflow: factory-define-v1.0.yaml
+    workflow: factory-define-v2.0.yaml
     params:
       issue_file: "{{issue_file}}"
       branch_name: "{{branch_name}}"
@@ -119,22 +114,82 @@ steps:
       artifact_dir: "{{artifact_dir}}"
       resume_from: "{{effective_resume}}"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
-  - id: implement
-    workflow: builtin:core/implement-task-v1.0.yaml
-    params:
-      task_file: "openspec/changes/{{change_name}}/tasks.md"
-      run_session_report: "true"
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
-  - id: complete-task
+  # Verification the attempt must run itself: it resumed past implement-change, which
+  # verifies the change it implements, without a checkpoint that records verification as done.
+  - id: seed-verify-pending
+    command: printf false
+    capture: verify_pending
+  - id: verify-pending
+    script: verify-pending.sh
+    script_inputs:
+      resume_from: "{{effective_resume}}"
+      target_head: "{{target_head}}"
+      artifact_dir: "{{artifact_dir}}"
+    capture: verify_pending
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
+  # Everything below reads validator_status: it stays passed unless a step fails.
+  - id: seed-validator-status
+    command: printf passed
+    capture: validator_status
+  - id: seed-implement-result
+    command: if test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement; then printf skipped; else printf failed; fi
+    capture: implement_result
+  - id: implement-change
+    continue_on_failure: true
+    skip_if: 'sh: test "{{implement_result}}" = skipped'
+    steps:
+      - id: add-constraints
+        script: add-constraints.sh
+        script_inputs:
+          design_file: "openspec/changes/{{change_name}}/design.md"
+          kind: feature
+      # The Runner's implement-change: the lead's and the implementor's checklists merged by the
+      # crosscheck, implementation against it, the crosscheck's audit and the findings fixed,
+      # then verify-change with the change's one validator run, the draft pull request, and
+      # acceptance.
+      - id: implement
+        workflow: builtin:core/implement-change-v2.0.yaml
+        params:
+          change_name: "{{change_name}}"
+          change_dir: "openspec/changes/{{change_name}}"
+          change_label: "feature"
+          change_kind: "openspec"
+          artifact_validation_instruction: 'When an approved artifact changed, run `openspec validate --type change "{{change_name}}"`.'
+          skip_validator: "false"
+      - id: mark-implement-passed
+        command: printf passed
+        capture: implement_result
+  - id: mark-implement-failed
+    command: printf failed
+    capture: validator_status
+    skip_if: 'sh: test "{{implement_result}}" != failed'
+  # An implementation the lead ruled cannot be done without the user is a question, not a failure.
+  - id: record-implement-blocked
+    script: record-blocked.sh
+    script_inputs:
+      contract: factory-feature/1
+      outcome_path: "{{artifact_dir}}/feature-outcome.json"
+      blocked_file: "{{session_dir}}/output/implementation-blocked.md"
+      branch_name: "{{branch_name}}"
+    skip_if: 'sh: test "{{implement_result}}" != failed'
+  # A failure inside verification becomes a failed outcome with its reason. A failure before
+  # it ends this workflow without an outcome, which the factory retries as a technical failure.
+  - id: record-implement-failure
+    command: python3 .agent-runner/workflows/verify-failure.py "{{session_dir}}" "{{artifact_dir}}" --require-evidence
+    skip_if: 'sh: test "{{implement_result}}" != failed || test -s {{artifact_dir}}/feature-outcome.json'
+  - id: complete-implement
     script: checkpoint.sh
     script_inputs:
       phase: implemented
       branch_name: "{{branch_name}}"
       change_name: "{{change_name}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" implement'
-  # Capture the skip decision before archive changes the working tree.
+      verify_pending: "false"
+    skip_if: 'sh: test "{{implement_result}}" != passed'
+  # Capture the skip decision before archive changes the working tree. The change is
+  # archived after verification, as in the Runner's change workflow, so verification and
+  # acceptance saw the change in place; the archive commit is the only commit after them.
   - id: seed-archive-status
-    command: if test -s {{artifact_dir}}/feature-outcome.json || test ! -d openspec/changes/{{change_name}} || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive; then printf skipped; else printf passed; fi
+    command: if test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test ! -d openspec/changes/{{change_name}}; then printf skipped; else printf passed; fi
     capture: archive_status
   - id: archive
     workflow: builtin:openspec/archive-change-v1.0.yaml
@@ -158,79 +213,48 @@ steps:
     script_inputs:
       phase: archived
       branch_name: "{{branch_name}}"
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" archive'
-  # Unguarded: classify's skip_if reads validator_status even after a definition stop.
-  - id: seed-verify-status
-    command: printf passed
-    capture: validator_status
+      verify_pending: "{{verify_pending}}"
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{archive_status}}" != passed'
   - id: locate-archive
     command: python3 .agent-runner/workflows/locate-archive.py "{{change_name}}"
     capture: archived_dir
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'
-  - id: verify
-    workflow: builtin:core/verify-change-v1.0.yaml
-    params:
-      change_name: "{{change_name}}"
-      change_dir: "{{archived_dir}}"
-      change_label: "feature"
-      artifact_validation_instruction: "run openspec validate --specs --strict"
-      skip_validator: "false"
-      acceptance_fix_scope: "Resolve every high-confidence finding in this change's own implementation, specs, and tests. Do not edit workflow files (.github/workflows or any CI configuration), and do not add CI checks or test suites. Record CI, PR-state, tooling, setup, and environmental problems in the assumptions ledger instead of fixing them."
+    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
+  # A resume at archive or verify from a checkpoint that predates verification (a plan
+  # implemented under the earlier workflow, or a draft pull request left by a crash inside
+  # implement-change) verifies the archived change on its own.
+  - id: seed-verify-result
+    command: if test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed || test "{{verify_pending}}" != true; then printf skipped; else printf failed; fi
+    capture: verify_result
+  - id: verify-change
     continue_on_failure: true
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
+    skip_if: 'sh: test "{{verify_result}}" = skipped'
+    steps:
+      - id: verify
+        workflow: builtin:core/verify-change-v1.0.yaml
+        params:
+          change_name: "{{change_name}}"
+          change_dir: "{{archived_dir}}"
+          change_label: "feature"
+          artifact_validation_instruction: "run openspec validate --specs --strict"
+          skip_validator: "false"
+          acceptance_fix_scope: "Resolve every high-confidence finding in this change's own implementation, specs, and tests. Do not edit workflow files (.github/workflows or any CI configuration), and do not add CI checks or test suites. Record CI, PR-state, tooling, setup, and environmental problems in the assumptions ledger instead of fixing them."
+      - id: mark-verify-passed
+        command: printf passed
+        capture: verify_result
   - id: mark-verify-failed
     command: printf failed
     capture: validator_status
-    skip_if: previous_success
+    skip_if: 'sh: test "{{verify_result}}" != failed'
   - id: record-verify-failure
     command: python3 .agent-runner/workflows/verify-failure.py "{{session_dir}}" "{{artifact_dir}}"
-    # mark-verify-failed succeeded, so previous_success would skip this evidence.
-    skip_if: 'sh: test "{{validator_status}}" != failed'
-  - id: restore-skipped-verify-status
-    command: printf passed
-    capture: validator_status
-    skip_if: 'sh: ! .agent-runner/workflows/factory-resume-skip.sh "{{effective_resume}}" verify'
-  - id: task-compliance-verified
-    continue_on_failure: true
-    loop:
-      max: 3
-    steps:
-      - id: task-compliance-review
-        script: task-compliance-gate.py
-        script_inputs:
-          phase: verified
-          artifact_dir: "{{artifact_dir}}"
-          tasks_file: "{{archived_dir}}/tasks.md"
-          target_head: "{{target_head}}"
-        continue_on_failure: true
-        break_if: success
-      - id: task-compliance-repair
-        session: implementor-agent
-        mode: autonomous
-        skip_if: previous_success
-        continue_on_failure: true
-        prompt: |
-          Read {{artifact_dir}}/task-compliance.json and its violations. Fix what
-          the tasks require, run agent-validator check, and commit fixes following
-          the project's conventions with [{{step_id}}] prepended. Leave any
-          violation you disagree with unfixed and explain why in your summary.
-          Do not run agent-validator review or update-review. The factory's next
-          review supplies the verdict.
-
-          For CHECK failures from agent-validator check, do not apply a remedy when either of these independent conditions holds:
-          - The failure was not caused by this branch's changes: the same check fails with the same error at the merge base with the branch this work targets (`origin/<target branch>`, usually `origin/HEAD`; never a local branch). Confirm this by running the check on a temporary worktree of that merge base, or, for a dependency audit, by confirming that the flagged package's lockfile entries and the check's definition and configuration are unchanged since the merge base. A newly published advisory that also fails at the merge base counts as not caused by the branch. If you cannot confirm it, treat the failure as caused by the branch and fix it; a failure in a file the branch did not touch can still be caused by the branch (for example, a type error from a changed signature). If the branch added or changed the check or its policy, the branch caused the failure.
-          - The only available remedy would replace or redirect a dependency source through git, URL, or fork overrides or resolutions, tarball overrides or resolutions, new registries, or unvetted packages. This applies even if the branch caused the failure.
-          For either condition, do not commit anything for that failure; leave the check failing. In your summary, use a distinct heading, "Out-of-scope failures needing a human decision", and state what failed, why it is out of scope, and what remedy a human would need to approve so it can be filed as a separate issue. Continue fixing other failures as instructed above.
-    skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
-  - id: task-compliance-verified-final
-    script: task-compliance-gate.py
+    skip_if: 'sh: test "{{verify_result}}" != failed'
+  - id: push-verified
+    script: checkpoint.sh
     script_inputs:
-      phase: verified
-      artifact_dir: "{{artifact_dir}}"
-      tasks_file: "{{archived_dir}}/tasks.md"
-      target_head: "{{target_head}}"
-    skip_if: previous_success
-    continue_on_failure: true
+      phase: archived
+      branch_name: "{{branch_name}}"
+      verify_pending: "false"
+    skip_if: 'sh: test "{{verify_result}}" != passed'
   - id: classify
     session: lead-agent
     mode: autonomous
@@ -244,11 +268,13 @@ steps:
       {{artifact_dir}}/resume.json and commits after acceptance.
       Write {{artifact_dir}}/review-attention.json with red, orange, yellow, white
       arrays of {title, detail, link}, accepted_head SHA, and later_commits: every
-      commit after accepted_head, each also named by SHA in an orange item. A link is
+      commit after accepted_head, each also named by SHA in an orange item, except
+      the archive commit and the workflow's phase checkpoint commits (subjects
+      beginning `[archive]` or `[factory-feature]`), which only move OpenSpec files
+      and which you leave out of both. A link is
       a repository-relative path of a committed file, citing the line or range that
       shows the item (path:12 or path:12-18) where one exists, or a URL; any other
       path is shown as a link to the acceptance evidence.
-      The workflow adds task-compliance items from its record; do not add any.
       Classify every review item into exactly one tier, and make items that share
       one root cause a single item in the highest tier any of them reaches, its
       detail listing each symptom. Red: each acceptance criterion that failed, each
@@ -303,6 +329,7 @@ steps:
       change_name: "{{change_name}}"
       archived_dir: "{{archived_dir}}"
       session_dir: "{{session_dir}}"
+      target_head: "{{target_head}}"
     continue_on_failure: true
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json || test "{{validator_status}}" != passed'
   - id: mark-annotation-failed
@@ -326,7 +353,6 @@ steps:
       branch_name: "{{branch_name}}"
       pr_details: "{{pr_details}}"
       review_attention_counts: "{{artifact_dir}}/review-attention.json"
-      task_compliance: "{{artifact_dir}}/task-compliance.json"
       verify_failure: "{{artifact_dir}}/verify-failure.json"
       resume: "{{artifact_dir}}/resume.json"
     skip_if: 'sh: test -s {{artifact_dir}}/feature-outcome.json'

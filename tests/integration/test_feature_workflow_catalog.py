@@ -23,35 +23,11 @@ PACKAGE = files("agent_factory.work_kinds.pull_request") / "workflow"
 RUNNER = Path(os.environ.get("FEATURE_TEST_RUNNER", shutil.which("agent-runner") or ""))
 
 
-def test_implement_validator_repair_leaves_out_of_scope_checks_for_a_human() -> None:
-    text = (PACKAGE / "factory-implement-v1.0.yaml").read_text()
-    repair = text.split("  - id: repair-validation\n", 1)[1].split(
-        "  - id: recheck-validation\n", 1
-    )[0]
-    for phrase in (
-        "either of these independent conditions",
-        "not caused by this branch's changes",
-        "same check fails with the same error at the merge base",
-        "origin/<target branch>",
-        "temporary worktree",
-        "lockfile entries",
-        "check's definition and configuration",
-        "If you cannot confirm it, treat the failure as caused by the branch",
-        "If the branch added or changed the check or its policy, the branch caused the failure",
-        "git, URL, or fork overrides or resolutions",
-        "even if the branch caused the failure",
-        "leave the check failing",
-        "Out-of-scope failures needing a human decision",
-        "what remedy a human would need to approve",
-    ):
-        assert phrase in repair, phrase
-
-
 def suitable_runner() -> bool:
     if not RUNNER.is_file():
         return False
     result = subprocess.run(
-        [str(RUNNER), "-validate", str(PACKAGE / "factory-feature-v1.0.yaml")],
+        [str(RUNNER), "-validate", str(PACKAGE / "factory-feature-v2.0.yaml")],
         capture_output=True,
         text=True,
     )
@@ -73,8 +49,8 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
         set(FEATURE_STAGED_FILES)
         | set(FIX.staged_files)
         | {
-            "factory-review-v1.0.yaml",
-            "factory-implement-v1.0.yaml",
+            "factory-review-v2.0.yaml",
+            "factory-implement-v2.0.yaml",
             "record-review-outcome.sh",
             "record-review-triage.sh",
             "record-triage.sh",
@@ -83,11 +59,11 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
     for name in names:
         shutil.copy2(str(PACKAGE / name), catalog / name)
     for name in (
-        "factory-feature-v1.0.yaml",
-        "factory-define-v1.0.yaml",
-        "factory-fix-v1.0.yaml",
-        "factory-review-v1.0.yaml",
-        "factory-implement-v1.0.yaml",
+        "factory-feature-v2.0.yaml",
+        "factory-define-v2.0.yaml",
+        "factory-fix-v2.0.yaml",
+        "factory-review-v2.0.yaml",
+        "factory-implement-v2.0.yaml",
     ):
         result = subprocess.run(
             [str(RUNNER), "-validate", str(catalog / name)],
@@ -96,12 +72,18 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
             text=True,
         )
         assert result.returncode == 0, f"{name}: {result.stderr}"
-    feature = (catalog / "factory-feature-v1.0.yaml").read_text()
-    define = (catalog / "factory-define-v1.0.yaml").read_text()
-    for step in ("implement", "verify", "finalize"):
+    feature = (catalog / "factory-feature-v2.0.yaml").read_text()
+    define = (catalog / "factory-define-v2.0.yaml").read_text()
+    # Resume points: define and implementation skip past a resume at archive or later; the
+    # archive follows the change's own directory; verification runs on its own only when
+    # verify-pending.sh says so; finalization skips past its own resume point.
+    for step in ("define", "seed-implement-result", "finalize"):
         assert re.search(rf"- id: {step}\n(?:(?!  - id:).)*factory-resume-skip.sh", feature, re.S)
     assert re.search(
-        r"- id: seed-archive-status\n(?:(?!  - id:).)*factory-resume-skip.sh"
+        r"- id: verify-pending\n(?:(?!  - id:).)*script: verify-pending.sh", feature, re.S
+    )
+    assert re.search(
+        r"- id: seed-archive-status\n(?:(?!  - id:).)*test ! -d openspec/changes/"
         r"(?:(?!  - id:).)*capture: archive_status",
         feature,
         re.S,
@@ -118,12 +100,14 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
         "design",
         "test-plan",
         "approach-review",
-        "write-tasks",
     ):
         assert re.search(rf"- id: {step}\n(?:(?!  - id:).)*factory-resume-skip.sh", define, re.S)
+    assert "- id: write-tasks" not in define
     assert "tools: [call_agent]" not in feature + define
-    assert "agent-validator run" in feature
-    assert "agent-validator" not in define
+    # The change's one validator run belongs to the Runner's verify-change.
+    assert "agent-validator" not in feature + define
+    assert "tasks.md" not in feature + define
+    assert "workflow: builtin:core/implement-change-v2.0.yaml" in feature
     assert "capture: annotation_status" in feature
     assert 'annotation_status: "{{annotation_status}}"' in feature
     assert "mark-annotation-failed" in feature
@@ -193,7 +177,7 @@ def test_feature_catalog_validates_and_preserves_prepopulated_session_dir(tmp_pa
 def test_int009_feature_merge_steps_and_staged_catalog(tmp_path: Path) -> None:
     from agent_factory.work_kinds.pull_request import launch
 
-    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
+    text = (PACKAGE / "factory-feature-v2.0.yaml").read_text()
     ids = re.findall(r"^  - id: ([\w-]+)$", text, re.MULTILINE)
     ordered = (
         "prepare-branch",
@@ -250,7 +234,7 @@ def test_staged_catalog_scripts_are_executable(tmp_path: Path) -> None:
     }
     scripts = {name for names in workflow_scripts.values() for name in names}
     assert scripts
-    assert "task-compliance-gate.py" in scripts
+    assert {"add-constraints.sh", "record-blocked.sh", "verify-pending.sh"} <= scripts
     for name in scripts:
         assert name in launch.STAGED_FILES
         assert (PACKAGE / name).read_bytes().startswith(b"#!"), name
@@ -332,7 +316,7 @@ def test_staged_catalog_modes_follow_shebang_not_extension(
     assert (catalog / FIX.workflow_file).stat().st_mode & 0o777 == 0o644
 
 
-@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
+@pytest.mark.parametrize("workflow", ["factory-feature-v2.0.yaml", "factory-review-v2.0.yaml"])
 def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
     text = (PACKAGE / workflow).read_text()
     prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
@@ -340,9 +324,6 @@ def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
         "merge-conflict.json",
         "conflicted",
         "git commit --no-edit",
-        "agent-validator run",
-        "follow-up commits",
-        "any file, including new files",
         "reset",
         "rebase",
         "squash",
@@ -353,56 +334,14 @@ def test_merge_resolution_prompt_states_commit_boundary(workflow: str) -> None:
         "leave the merge in progress",
     ):
         assert required in prompt
-    assert prompt.index("git commit --no-edit") < prompt.index("agent-validator run")
 
 
-@pytest.mark.parametrize("workflow", ["factory-feature-v1.0.yaml", "factory-review-v1.0.yaml"])
-def test_merge_resolution_validator_repair_leaves_out_of_scope_checks_for_a_human(
-    workflow: str,
-) -> None:
+@pytest.mark.parametrize("workflow", ["factory-feature-v2.0.yaml", "factory-review-v2.0.yaml"])
+def test_merge_resolution_leaves_the_validator_to_the_attempts_one_run(workflow: str) -> None:
     text = (PACKAGE / workflow).read_text()
-    prompt = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
-    for phrase in (
-        "either of these independent conditions",
-        "not caused by this branch's changes",
-        "same check fails with the same error at the merge base",
-        "origin/<target branch>",
-        "temporary worktree",
-        "lockfile entries",
-        "check's definition and configuration",
-        "If you cannot confirm it, treat the failure as caused by the branch",
-        "If the branch added or changed the check or its policy, the branch caused the failure",
-        "git, URL, or fork overrides or resolutions",
-        "even if the branch caused the failure",
-        "leave the check failing",
-        "Out-of-scope failures needing a human decision",
-        "what remedy a human would need to approve",
-    ):
-        assert phrase in prompt, (workflow, phrase)
-
-
-def test_task_compliance_repair_leaves_out_of_scope_checks_for_a_human() -> None:
-    text = (PACKAGE / "factory-feature-v1.0.yaml").read_text()
-    prompt = text.split("      - id: task-compliance-repair\n", 1)[1].split(
-        "  - id: task-compliance-verified-final\n", 1
-    )[0]
-    for phrase in (
-        "For CHECK failures from agent-validator check",
-        "either of these independent conditions",
-        "same check fails with the same error at the merge base",
-        "origin/<target branch>",
-        "temporary worktree",
-        "lockfile entries",
-        "check's definition and configuration",
-        "If you cannot confirm it, treat the failure as caused by the branch",
-        "If the branch added or changed the check or its policy, the branch caused the failure",
-        "git, URL, or fork overrides or resolutions",
-        "even if the branch caused the failure",
-        "leave the check failing",
-        "Out-of-scope failures needing a human decision",
-        "what remedy a human would need to approve",
-    ):
-        assert phrase in prompt, phrase
+    resolve = text.split("  - id: resolve-merge\n", 1)[1].split("\n  - id: check-merge", 1)[0]
+    assert "agent-validator run" not in resolve
+    assert "agent-validator check" not in resolve
 
 
 def test_count_loc_is_staged_and_runs_for_each_workflow(tmp_path: Path) -> None:
