@@ -27,4 +27,4 @@ Pass `--no-runner` or a ref only when Paul asks. `AGENTS.md` ("Deploying") descr
 - **Stopped with "the factory stays paused"**: report the printed failures. If `doctor` failed, the service still points at the previous release. Fix the cause and rerun the script. Do not `resume` by hand while `doctor` fails.
 - **Success**: the last line is `deployed <sha>`. Report the factory commit and the runner commit it built.
 
-The script restores the pause state the factory had before the deploy. If Paul had paused it, it stays paused.
+The script restores the pause state the factory had before the deploy. If Paul had paused it, it stays paused. A pause left by an earlier deploy that stopped does not count, so the rerun that succeeds resumes the factory.

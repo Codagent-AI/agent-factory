@@ -71,7 +71,9 @@ resident's restart. The script:
    `launchctl bootstrap` (`launchctl kickstart -k` does not re-read a changed
    plist), confirms the resident is running, and moves `releases/current`;
 7. resumes the factory unless it was already paused before the deploy, and
-   runs one `tick`;
+   runs one `tick`. A pause left by an earlier deploy that stopped does not
+   count: the `deploy-paused` marker beside the local configuration records it,
+   and an explicit `pause` or `resume` clears the marker;
 8. removes releases beyond the newest two (`AGENT_FACTORY_KEEP_RELEASES`), but
    only while every slot is free, never the live one, and never one a process
    still uses.

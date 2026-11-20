@@ -15,6 +15,9 @@ from agent_factory.store import TERMINAL_LIFECYCLES, ClaimStore
 from agent_factory.suites.and_scene import inputs
 from agent_factory.supervisor import SupervisorLaunchError, resume_supervisor
 
+# scripts/deploy.sh writes this beside the local configuration when it pauses the factory.
+DEPLOY_PAUSE_MARKER = "deploy-paused"
+
 
 def _tick(state: Path, config_path: Path | None = None) -> None:
     """Reattach short-lived watchers; this never waits for suite completion."""
@@ -164,6 +167,9 @@ def main() -> None:
             store.set_paused(args.command == "pause")
         finally:
             store.close()
+        if args.config is not None:
+            # An explicit command replaces any pause a stopped deploy left behind.
+            args.config.with_name(DEPLOY_PAUSE_MARKER).unlink(missing_ok=True)
         print(f"paused: {str(args.command == 'pause').lower()}")
     else:
         with closing(ClaimStore(state)) as store:

@@ -82,8 +82,17 @@ die() { printf 'deploy: %s\n' "$*" >&2; exit 1; }
 running=$(plutil -extract ProgramArguments.0 raw -o - "$plist")
 read_status() { "$running" --config "$config" status; }
 status_text=$(read_status) || die "could not read factory status"
+# A deploy that stops after its pause leaves the factory paused until it is rerun. This
+# marker tells that pause from a deliberate one; an explicit pause or resume clears it.
+deploy_pause_marker=$(dirname "$config")/deploy-paused
 was_paused=false
-grep -q '^paused: true$' <<<"$status_text" && was_paused=true
+if grep -q '^paused: true$' <<<"$status_text"; then
+  if [[ -e $deploy_pause_marker ]]; then
+    say "the factory is paused by an earlier deploy that did not finish; this deploy will resume it"
+  else
+    was_paused=true
+  fi
+fi
 # shellcheck source=scripts/slots.sh
 source "$(dirname "$0")/slots.sh"
 source "$(dirname "$0")/validator.sh"
@@ -149,6 +158,8 @@ fi
 fixture_guard "$executable" "$running" before
 lane_guard before
 "$running" --config "$config" pause >/dev/null
+# Written after the pause, because the pause command clears any earlier marker.
+[[ $was_paused == true ]] || : >"$deploy_pause_marker"
 say "paused the factory"
 
 if [[ $build_runner == true ]]; then
@@ -219,6 +230,8 @@ if [[ $was_paused == true ]]; then
   say "left paused, as it was before the deploy"
 else
   "$executable" --config "$config" resume >/dev/null
+  # A rollback target's resume command does not clear the marker itself.
+  rm -f "$deploy_pause_marker"
   say "resumed the factory"
 fi
 PATH=$release/.venv/bin:$PATH "$executable" --config "$config" tick
