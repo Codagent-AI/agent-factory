@@ -204,12 +204,22 @@ def _last(lines: Sequence[str], keyword: str) -> str:
 
 
 def archon_dockerfile(
-    base: str, bun: str, archon_commit: str, openspec: str, codex: str, claude_code: str
+    base: str,
+    bun: str,
+    archon_commit: str,
+    openspec: str,
+    codex: str,
+    claude_code: str,
+    *,
+    runner_commit: str,
 ) -> str:
     """The Runner base image plus Archon at its frozen commit and pinned tools.
 
     The pinned Codex and Claude Code replace the base image's unpinned copies, and
     the suite points Archon at them, so a run never uses the copies Archon bundles.
+    The image records the Runner commit its base was built from as
+    AGENT_RUNNER_SOURCE_COMMIT, the build provenance the suite's native
+    measurement checks against its pinned Runner commit.
     """
     lines = base.splitlines()
     final = max(i for i, line in enumerate(lines) if line.lstrip().upper().startswith("FROM "))
@@ -239,6 +249,7 @@ RUN set -eu; \\
     [ "$(codex --version)" = "codex-cli {codex}" ]; \\
     [ "$(claude --version)" = "{claude_code} (Claude Code)" ]
 ENV DISABLE_AUTOUPDATER=1
+ENV AGENT_RUNNER_SOURCE_COMMIT={runner_commit}
 {user}
 {workdir}
 """
@@ -285,6 +296,7 @@ def command_image_start(options: argparse.Namespace) -> int:
             options.openspec_version,
             options.codex_version,
             options.claude_code_version,
+            runner_commit=runner_commit,
         ),
         encoding="utf-8",
     )
