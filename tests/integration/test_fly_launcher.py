@@ -603,7 +603,10 @@ def test_eval_cli_image_recipe_pins_archon_bun_openspec_and_the_model_clis() -> 
     from agent_factory.eval_cli import archon_dockerfile
 
     base = "FROM node:22\nUSER pwuser\nWORKDIR /workspace\n"
-    text = archon_dockerfile(base, "1.4.2", "abc123", "1.17.0", "0.169.0", "2.1.311")
+    runner = "0151294" + "0" * 33
+    text = archon_dockerfile(
+        base, "1.4.2", "abc123", "1.17.0", "0.169.0", "2.1.311", runner_commit=runner
+    )
     assert text.startswith(base.rstrip())
     assert 'rev-parse HEAD)" = "abc123"' in text and "bun@1.4.2" in text
     assert "openspec@1.17.0" in text and "/opt/archon-eval/sandbox-sync-home.sh" in text
@@ -612,6 +615,8 @@ def test_eval_cli_image_recipe_pins_archon_bun_openspec_and_the_model_clis() -> 
     assert '[ "$(codex --version)" = "codex-cli 0.169.0" ]' in text
     assert '[ "$(claude --version)" = "2.1.311 (Claude Code)" ]' in text
     assert "ENV DISABLE_AUTOUPDATER=1" in text
+    # The image carries its Runner build provenance for the suite's native measurement.
+    assert f"ENV AGENT_RUNNER_SOURCE_COMMIT={runner}" in text
     assert text.rstrip().endswith("USER pwuser\nWORKDIR /workspace")
 
 
