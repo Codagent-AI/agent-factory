@@ -1350,6 +1350,79 @@ def test_teardown_destroys_the_evals_run_and_scoring_machines_only(
     assert destroyed == ["e1-rep-1", "e1-rep-1-score"]
 
 
+@pytest.mark.parametrize(
+    ("condition", "deleted", "reason"),
+    [
+        ("unique", True, None),
+        ("shared", False, "shared with other-eval"),
+        ("missing", False, "the eval tag is absent"),
+        ("retagged", False, "registry tags changed"),
+        ("listed-late", False, "registry tags changed"),
+        ("kept", False, "kept machines still need the image"),
+    ],
+)
+def test_teardown_deletes_only_its_exclusive_registry_digest(
+    machines: Machines,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    condition: str,
+    deleted: bool,
+    reason: str | None,
+) -> None:
+    from agent_factory import eval_cli
+
+    assert machines.api.machines == {}
+    own = "archon-eval-e1"
+    digest = "sha256:" + "a" * 64
+    different = "sha256:" + "b" * 64
+    deletions: list[tuple[str, str]] = []
+    lists = 0
+    own_reads = 0
+
+    class Registry:
+        def list_machines(self, key: str, value: str) -> list[dict[str, object]]:
+            assert (key, value) == ("factory-owner", "agent-evals-archon")
+            return []
+
+        def list_tags(self, repository: str) -> list[str]:
+            nonlocal lists
+            assert repository == "registry.fly.io/app"
+            lists += 1
+            if condition == "missing":
+                return ["other-eval"]
+            names = [own, "other-eval"]
+            if condition == "listed-late" and lists == 2:
+                names.append("new-tag")
+            return names
+
+        def resolve_manifest(self, image: str) -> str:
+            nonlocal own_reads
+            assert image.startswith("registry.fly.io/app:")
+            if image.endswith(f":{own}"):
+                own_reads += 1
+                return different if condition == "retagged" and own_reads == 3 else digest
+            assert image.endswith(":other-eval")
+            return digest if condition == "shared" else different
+
+        def delete_manifest(self, repository: str, target: str) -> bool:
+            deletions.append((repository, target))
+            return True
+
+    monkeypatch.setattr(eval_cli, "_client", lambda _: Registry())
+    options = ["--keep", "e1-rep-1"] if condition == "kept" else []
+    assert (
+        eval_cli.main(["teardown", "--config", "c", "--eval-id", "e1", "--delete-image", *options])
+        == 0
+    )
+    assert deletions == ([("registry.fly.io/app", digest)] if deleted else [])
+    report = json.loads(capsys.readouterr().out)["image"]
+    assert report["deleted"] is deleted
+    if reason:
+        assert reason in report["reason"]
+    if condition == "kept":
+        assert (lists, own_reads) == (0, 0)
+
+
 def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

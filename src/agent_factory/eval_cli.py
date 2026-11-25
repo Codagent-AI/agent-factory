@@ -31,6 +31,7 @@ from agent_factory.fly.codex_login import (
     delivered_login,
 )
 from agent_factory.fly.guest import SCORE_JOB, job_script
+from agent_factory.fly.registry_cleanup import ownership_skip
 from agent_factory.fly.transport import (
     FlyTransport,
     FlyTransportError,
@@ -38,7 +39,6 @@ from agent_factory.fly.transport import (
     Lifecycle,
     OwnershipMismatchError,
     environment_text,
-    image_repository,
     read_record,
     resolve_claude_login,
 )
@@ -793,6 +793,32 @@ def command_destroy(options: argparse.Namespace) -> int:
     return 0
 
 
+def _delete_eval_image(client: FlyMachinesClient, app: str, tag: str) -> dict[str, object]:
+    repository = f"registry.fly.io/{app}"
+    reference = f"{repository}:{tag}"
+    try:
+        digest = client.resolve_manifest(reference)
+        if not DIGEST_PATTERN.fullmatch(digest):
+            return {"deleted": False, "reason": "registry returned an invalid digest"}
+        tags = set(client.list_tags(repository))
+        if tag not in tags:
+            return {"deleted": False, "reason": "the eval tag is absent from the registry tag list"}
+        bindings = {
+            other: client.resolve_manifest(f"{repository}:{other}") for other in sorted(tags)
+        }
+        skip = ownership_skip(digest, bindings[tag], bindings, tag)
+        if skip:
+            return {"deleted": False, "reason": skip}
+        if (
+            set(client.list_tags(repository)) != tags
+            or client.resolve_manifest(reference) != digest
+        ):
+            return {"deleted": False, "reason": "registry tags changed during the ownership check"}
+        return {"deleted": client.delete_manifest(repository, digest)}
+    except FlyApiError as error:
+        return {"deleted": False, "reason": str(error)}
+
+
 def command_teardown(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     eval_id = _eval_id(options.eval_id)
@@ -822,14 +848,10 @@ def command_teardown(options: argparse.Namespace) -> int:
                 client.destroy(identifier)
     image: dict[str, object] = {"deleted": False}
     if options.delete_image:
-        repository = f"registry.fly.io/{fly.app}"
-        tag = f"{IMAGE_TAG_PREFIX}{eval_id}"
-        try:
-            digest = client.resolve_manifest(f"{repository}:{tag}")
-        except FlyApiError as error:
-            image = {"deleted": False, "reason": str(error)}
+        if options.keep:
+            image["reason"] = "kept machines still need the image"
         else:
-            image = {"deleted": client.delete_manifest(image_repository(repository), digest)}
+            image = _delete_eval_image(client, fly.app, f"{IMAGE_TAG_PREFIX}{eval_id}")
     _emit({"machines": found, "destroyed": bool(options.destroy), "image": image})
     return 0
 
