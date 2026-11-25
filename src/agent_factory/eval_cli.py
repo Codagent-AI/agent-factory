@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -29,7 +30,7 @@ from agent_factory.fly.codex_login import (
     CodexLoginError,
     delivered_login,
 )
-from agent_factory.fly.guest import job_script
+from agent_factory.fly.guest import SCORE_JOB, job_script
 from agent_factory.fly.transport import (
     FlyTransport,
     FlyTransportError,
@@ -212,6 +213,7 @@ def archon_dockerfile(
     claude_code: str,
     *,
     runner_commit: str,
+    layer: str | None = None,
 ) -> str:
     """The Runner base image plus Archon at its frozen commit and pinned tools.
 
@@ -220,6 +222,9 @@ def archon_dockerfile(
     The image records the Runner commit its base was built from as
     AGENT_RUNNER_SOURCE_COMMIT, the build provenance the suite's native
     measurement checks against its pinned Runner commit.
+
+    A suite's own ``layer`` comes after the Archon tail, with the base image's final
+    USER and WORKDIR restored after it, so the guest runs as it does without one.
     """
     lines = base.splitlines()
     final = max(i for i, line in enumerate(lines) if line.lstrip().upper().startswith("FROM "))
@@ -253,13 +258,41 @@ ENV AGENT_RUNNER_SOURCE_COMMIT={runner_commit}
 {user}
 {workdir}
 """
-    return base.rstrip() + "\n" + tail
+    text = base.rstrip() + "\n" + tail
+    if layer is not None:
+        text += "\n" + layer.rstrip() + "\n" + f"{user}\n{workdir}\n"
+    return text
+
+
+def tree_sha256(root: Path) -> str:
+    """A digest of a folder's layout, file contents and executable bits, links unfollowed."""
+    entries: list[str] = []
+    for directory, folders, files in os.walk(root):
+        base = Path(directory)
+        for name in [*folders, *files]:
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                entries.append(f"L {relative}\0{os.readlink(path)}")
+            elif path.is_dir():
+                entries.append(f"D {relative}")
+            else:
+                executable = "x" if os.access(path, os.X_OK) else "-"
+                content = hashlib.sha256(path.read_bytes()).hexdigest()
+                entries.append(f"F {relative}\0{executable}{content}")
+    return hashlib.sha256("\n".join(sorted(entries)).encode()).hexdigest()
 
 
 def command_image_start(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     eval_id = _eval_id(options.eval_id)
     work = options.work_dir.resolve()
+    if options.extra_context is not None:
+        source = options.extra_context.resolve()
+        # The context is cleared and the layer's folder copied into it: neither may
+        # hold the other, or the copy recurses into itself or deletes its source.
+        if _within(work, source) or _within(source, work):
+            raise CliError("--extra-context and --work-dir must not hold each other")
     context = work / "context"
     shutil.rmtree(context, ignore_errors=True)
     context.mkdir(parents=True)
@@ -287,6 +320,19 @@ def command_image_start(options: argparse.Namespace) -> int:
     _git("-C", str(source), "checkout", "-q", "FETCH_HEAD")
     shutil.copy(context / "scripts/sandbox-sync-home.sh", context / "sandbox-sync-home.sh")
     base = (context / "docker/dev/Dockerfile").read_text(encoding="utf-8")
+    layer: str | None = None
+    provenance: dict[str, object] = {}
+    if options.extra_dockerfile is not None:
+        layer_bytes = options.extra_dockerfile.read_bytes()
+        layer = layer_bytes.decode("utf-8")
+        provenance["layer_dockerfile_sha256"] = hashlib.sha256(layer_bytes).hexdigest()
+        if options.extra_context is not None:
+            # The layer's COPY instructions name its files under suite/.
+            suite = context / "suite"
+            shutil.copytree(options.extra_context.resolve(), suite, symlinks=True)
+            provenance["layer_context_sha256"] = tree_sha256(suite)
+    elif options.extra_context is not None:
+        raise CliError("--extra-context needs --extra-dockerfile")
     dockerfile = context / "Dockerfile.archon"
     dockerfile.write_text(
         archon_dockerfile(
@@ -297,6 +343,7 @@ def command_image_start(options: argparse.Namespace) -> int:
             options.codex_version,
             options.claude_code_version,
             runner_commit=runner_commit,
+            layer=layer,
         ),
         encoding="utf-8",
     )
@@ -337,6 +384,7 @@ def command_image_start(options: argparse.Namespace) -> int:
             "runner_commit": runner_commit,
             "codex_version": options.codex_version,
             "claude_code_version": options.claude_code_version,
+            **provenance,
         },
     )
     _emit({"state": "building", "tag": tag, "pid": process.pid})
@@ -386,6 +434,9 @@ def command_image_status(options: argparse.Namespace) -> int:
         "codex_version": built.get("codex_version"),
         "claude_code_version": built.get("claude_code_version"),
     }
+    for key in ("layer_dockerfile_sha256", "layer_context_sha256"):
+        if key in built:
+            result[key] = built[key]
     _write(work / "image.json", result)
     _emit({"state": "built", **result})
     return 0
@@ -412,6 +463,29 @@ def _set_phase(factory: Path, phase: str, **extra: object) -> None:
     _write(factory / "eval-state.json", state)
 
 
+_CPU_KINDS = frozenset({"shared", "performance"})
+
+
+def _machine_size(manifest: Mapping[str, object]) -> dict[str, object]:
+    """The suite's size for this Machine, which replaces the configured one."""
+    value = manifest.get("machine")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise CliError("the manifest's machine size must be an object")
+    size = cast(dict[str, object], value)
+    unknown = sorted(set(size) - {"cpu_kind", "cpus", "memory_mb"})
+    if unknown:
+        raise CliError(f"the manifest's machine size has unknown keys: {', '.join(unknown)}")
+    if "cpu_kind" in size and size["cpu_kind"] not in _CPU_KINDS:
+        raise CliError("the manifest's machine cpu_kind must be shared or performance")
+    for key in ("cpus", "memory_mb"):
+        number = size.get(key)
+        if key in size and (not isinstance(number, int) or isinstance(number, bool) or number < 1):
+            raise CliError(f"the manifest's machine {key} must be a positive integer")
+    return size
+
+
 def _manifest(factory: Path, fly: FlyLocalConfig) -> dict[str, object]:
     manifest = _read(factory / "manifest.json")
     if not manifest:
@@ -424,6 +498,7 @@ def _manifest(factory: Path, fly: FlyLocalConfig) -> dict[str, object]:
         "cpus": fly.cpus,
         "memory_mb": fly.memory_mb,
         "heartbeat_seconds": fly.heartbeat_seconds,
+        **_machine_size(manifest),
     }
     manifest.setdefault("owner", OWNER)
     return manifest
@@ -450,6 +525,99 @@ def _job_seconds(manifest: Mapping[str, object]) -> int:
         for key in ("total_seconds", "collection_grace_seconds")
         if isinstance(value := cast(dict[str, object], deadline).get(key), int)
     )
+
+
+def _path_list(manifest: Mapping[str, object], key: str) -> list[Path] | None:
+    """The list's entries as given, absolute and normalized but with links unresolved."""
+    value = manifest.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and Path(item).is_absolute() for item in cast(list[object], value)
+    ):
+        raise CliError(f"the manifest's {key} list must hold absolute paths")
+    return [Path(os.path.abspath(item)) for item in cast(list[str], value)]
+
+
+def _real(path: Path) -> Path:
+    return Path(os.path.realpath(path))
+
+
+def _within(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def checked_delivery(
+    manifest: Mapping[str, object],
+    input_dir: Path,
+    deliveries: Sequence[tuple[Path, str]],
+) -> tuple[str, ...] | None:
+    """Enforce the manifest's ``delivery`` and ``private`` lists before any Machine exists.
+
+    Both lists hold absolute host paths. A ``private`` path, or anything under it, is
+    never delivered, even when ``delivery`` lists it, and neither is a folder that holds
+    one. With a ``delivery`` list, every harness delivery's source must be under a
+    listed path, and only the listed paths inside ``input_dir`` reach /eval-input.
+    Returns those paths relative to ``input_dir``, or None to deliver it whole.
+    """
+    listed_entries = _path_list(manifest, "delivery")
+    private = [_real(path) for path in _path_list(manifest, "private") or []]
+
+    def refuse_private(path: Path, shown: Path) -> None:
+        for secret in private:
+            if _within(path, secret):
+                raise CliError(
+                    f"refusing to deliver {shown}: it is under the private path {secret}"
+                )
+            if _within(secret, path):
+                raise CliError(f"refusing to deliver {shown}: it holds the private path {secret}")
+
+    root = _real(input_dir)
+    sources = [(_real(source), source) for source, _target in deliveries]
+    if listed_entries is None:
+        refuse_private(root, input_dir)
+        for resolved, source in sources:
+            refuse_private(resolved, source)
+        return None
+    allowed: list[Path] = []
+    for entry in listed_entries:
+        if not entry.exists():
+            raise CliError(f"a path on the delivery list does not exist: {entry}")
+        listed = _real(entry)
+        refuse_private(listed, entry)
+        # Every listed path must arrive where it names: a path spelled inside the input
+        # folder at that same place there, and any other as the input folder itself or a
+        # harness folder it holds.
+        named = _lexical_relative(entry, input_dir, root)
+        if named is not None and named != Path("."):
+            if not (_within(listed, root) and listed.relative_to(root) == named):
+                raise CliError(f"a path on the delivery list is a link inside the input: {entry}")
+        elif not (
+            _within(listed, root)
+            or _within(root, listed)
+            or any(_within(resolved, listed) for resolved, _source in sources)
+        ):
+            raise CliError(f"a path on the delivery list would not be delivered: {entry}")
+        allowed.append(listed)
+    for resolved, source in sources:
+        if not any(_within(resolved, listed) for listed in allowed):
+            raise CliError(f"refusing to deliver {source}: it is not on the delivery list")
+        refuse_private(resolved, source)
+    if any(_within(root, listed) for listed in allowed):
+        refuse_private(root, input_dir)
+        return None
+    inside = [listed for listed in allowed if _within(listed, root) and listed != root]
+    # A listed path inside another listed path is already delivered with it.
+    outermost = [path for path in inside if not any(other in path.parents for other in inside)]
+    return tuple(sorted({str(path.relative_to(root)) for path in outermost}))
+
+
+def _lexical_relative(entry: Path, input_dir: Path, root: Path) -> Path | None:
+    """Where an entry sits inside the input folder by its own spelling, if it says."""
+    for base in (Path(os.path.abspath(input_dir)), root):
+        if _within(entry, base):
+            return entry.relative_to(base)
+    return None
 
 
 def command_start(options: argparse.Namespace) -> int:
@@ -483,10 +651,14 @@ def command_start(options: argparse.Namespace) -> int:
         if isinstance(deliveries, list)
         else ()
     )
-    environment = environment_text(
-        [Path(p) for p in _strings(launch.get("env_files"))],
-        _strings(launch.get("env_names")),
-    )
+    input_paths = checked_delivery(manifest, Path(input_dir), pairs)
+    env_files = _strings(launch.get("env_files"))
+    env_names = _strings(launch.get("env_names"))
+    # A scoring machine never sees the suite environment file, and so no GitHub token.
+    scoring = manifest.get("job") == SCORE_JOB
+    if scoring and (env_files or env_names):
+        raise CliError("a scoring machine takes no environment file or variables")
+    environment = environment_text([Path(p) for p in env_files], env_names)
     codex_login_file: bytes | None = None
     if launch.get("mount_codex_auth") is True:
         # The Machine gets only an access token that outlives the job; the Mac keeps
@@ -495,17 +667,21 @@ def command_start(options: argparse.Namespace) -> int:
             login = delivered_login(max(MINIMUM_LIFETIME_SECONDS, _job_seconds(manifest)))
         except CodexLoginError as error:
             raise CliError(f"no usable Codex login: {error}") from None
-        environment += login.environment_lines()
+        if not scoring:
+            # For Archon; a scoring machine runs Codex only from the login file.
+            environment += login.environment_lines()
         codex_login_file = login.login_file(datetime.datetime.now(datetime.UTC))
     request = JobRequest(
         artifact_dir=artifact,
         script=job_script(manifest, script),
-        input_dir=Path(input_dir),
+        input_dir=Path(input_dir) if input_paths is None else Path(os.path.realpath(input_dir)),
         environment=environment,
         codex_auth=False,
         codex_login_file=codex_login_file,
         claude_auth=launch.get("mount_claude_auth") is True,
         deliveries=pairs,
+        deliver_environment=not scoring,
+        input_paths=input_paths,
     )
     _set_phase(factory, "created")
     code = Lifecycle(manifest, factory).start(request)
@@ -601,9 +777,10 @@ def command_teardown(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     eval_id = _eval_id(options.eval_id)
     client = _client(fly)
-    # A unit key is `<eval id>-rep-<n>`: match it exactly, so an eval id that is a
-    # prefix of another never reaches the other eval's machines.
-    unit_pattern = re.compile(re.escape(eval_id) + r"-rep-\d+")
+    # A unit key is `<eval id>-rep-<n>`, or `<eval id>-rep-<n>-score` for a scoring
+    # Machine: match it exactly, so an eval id that is a prefix of another never
+    # reaches the other eval's machines.
+    unit_pattern = re.compile(re.escape(eval_id) + r"-rep-\d+(?:-score)?")
     found: list[dict[str, object]] = []
     for machine in client.list_machines("factory-owner", options.owner):
         config = machine.get("config")
@@ -688,6 +865,9 @@ def build_parser() -> argparse.ArgumentParser:
     # No defaults: the suite pins the model CLIs, as it pins the Archon commit.
     start.add_argument("--codex-version", type=_package_version, required=True)
     start.add_argument("--claude-code-version", type=_package_version, required=True)
+    # A suite's toolchain layer, built after the Archon layer; its files go in suite/.
+    start.add_argument("--extra-dockerfile", type=Path)
+    start.add_argument("--extra-context", type=Path)
     launch = add("start", command_start, run_dir=True)
     launch.add_argument("--image-file", type=Path, required=True)
     add("poll", command_poll, run_dir=True)

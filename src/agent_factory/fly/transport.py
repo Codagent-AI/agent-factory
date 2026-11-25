@@ -352,6 +352,12 @@ class JobRequest:
     # A Codex login built on the Mac, delivered as the guest's auth.json in place of
     # the Mac's own file (see agent_factory.fly.codex_login).
     codex_login_file: bytes | None = None
+    # False delivers no /run/factory/env at all, for a job that must see no
+    # environment file (a scoring machine has no GitHub token).
+    deliver_environment: bool = True
+    # Paths relative to ``input_dir`` to deliver to /eval-input, at the same place;
+    # None delivers the whole directory.
+    input_paths: tuple[str, ...] | None = None
 
 
 class FlyTransport:
@@ -491,12 +497,16 @@ class FlyTransport:
         *,
         exclude: tuple[str, ...] = (),
         contents_only: bool = False,
+        only: tuple[str, ...] | None = None,
     ) -> None:
         """Deliver a directory byte-identically as one tarball, less excluded top-level names.
 
         ``contents_only`` leaves the target directory's own entry out of the archive. Tar
         extracting as root restores a ``.`` entry's owner and mode onto the target, which
         would hand an existing guest-owned directory to the host's user.
+
+        ``only`` delivers just these paths relative to ``local``, each at its own place
+        under ``remote``, and nothing else from the directory.
         """
         skipped = {f"./{name}" for name in exclude}
 
@@ -506,7 +516,10 @@ class FlyTransport:
         with tempfile.TemporaryDirectory() as scratch:
             bundle = Path(scratch) / "bundle.tar"
             with tarfile.open(bundle, "w") as archive:
-                if contents_only:
+                if only is not None:
+                    for relative in only:
+                        archive.add(local / relative, arcname=f"./{relative}", filter=keep)
+                elif contents_only:
                     for child in sorted(local.iterdir()):
                         archive.add(child, arcname=f"./{child.name}", filter=keep)
                 else:
@@ -685,8 +698,12 @@ class Lifecycle:
         self._stage = "credential"
         # Validate all local credential sources before creating a billable Machine.
         self._resolved_credentials = self._credential_files(request)
+        # Without an environment file a token cannot reach the Machine, so the login
+        # comes from the Keychain item or the credentials file.
         self._claude_login = (
-            resolve_claude_login([], env_text=request.environment)
+            resolve_claude_login(
+                [], env_text=request.environment if request.deliver_environment else ""
+            )
             if request.claude_auth
             else ClaudeLogin("token")
         )
@@ -1015,7 +1032,7 @@ class Lifecycle:
             f"printf '%s\\n' {deadline} > /var/lib/factory/deadline"
         )
         if request.input_dir is not None:
-            self.transport.put_directory(request.input_dir, "/eval-input")
+            self.transport.put_directory(request.input_dir, "/eval-input", only=request.input_paths)
         for source, target in request.deliveries:
             self.transport.put_directory(source, target)
         if request.deliveries:
@@ -1033,10 +1050,11 @@ class Lifecycle:
             self.transport.put_bytes(request.codex_login_file, "/host-home/codex/auth.json")
         with tempfile.TemporaryDirectory() as scratch:
             # Secret-bearing files are staged outside the artifact tree.
-            environment = Path(scratch) / "env"
-            environment.write_text(request.environment, encoding="utf-8")
-            environment.chmod(0o600)
-            self.transport.put_file(environment, "/run/factory/env", prepare=False)
+            if request.deliver_environment:
+                environment = Path(scratch) / "env"
+                environment.write_text(request.environment, encoding="utf-8")
+                environment.chmod(0o600)
+                self.transport.put_file(environment, "/run/factory/env", prepare=False)
             script = Path(scratch) / "job.sh"
             script.write_text(request.script, encoding="utf-8")
             self.transport.put_file(script, f"{directory}/job.sh", mode="0700", prepare=False)
@@ -1045,7 +1063,9 @@ class Lifecycle:
         # directory the init created. Their parents stay root-owned (traversable,
         # not listable), so a job cannot swap them for links that a later root
         # delivery would follow; the change itself never follows a link either.
-        handed_over = [directory, "/host-home/codex", "/host-home/claude", "/run/factory/env"]
+        handed_over = [directory, "/host-home/codex", "/host-home/claude"]
+        if request.deliver_environment:
+            handed_over.append("/run/factory/env")
         if request.input_dir is not None:
             handed_over.append("/eval-input")
         self.transport.command(

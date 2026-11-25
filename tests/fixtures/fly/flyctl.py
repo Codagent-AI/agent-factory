@@ -19,6 +19,10 @@ _GUEST_PATHS = (
     "/lib/panel-judging",
     "/host-home",
     "/tmp/factory-bundle",
+    # What a real Archon or scoring job script reaches in the image.
+    "/opt/archon",
+    "/agent-workflows-source",
+    "/workspace",
 )
 
 _SHIM = r"""#!{python}

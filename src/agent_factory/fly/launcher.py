@@ -163,6 +163,13 @@ def _launch(parsed: LaunchArguments, manifest: Mapping[str, object], factory: Pa
     from agent_factory.fly.transport import JobRequest, Lifecycle, environment_text
 
     try:
+        # Scoring jobs, suite sizes and delivery limits are enforced only by
+        # agent-factory-fly-eval start; this path must not run them unchecked.
+        unchecked = sorted(set(manifest) & {"job", "machine", "delivery", "private"})
+        if unchecked:
+            raise ValueError(
+                f"the manifest's {', '.join(unchecked)} needs agent-factory-fly-eval start"
+            )
         request = JobRequest(
             artifact_dir=parsed.artifact_dir,
             script=job_script(manifest, parsed.script),
