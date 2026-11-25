@@ -358,6 +358,9 @@ class JobRequest:
     # Paths relative to ``input_dir`` to deliver to /eval-input, at the same place;
     # None delivers the whole directory.
     input_paths: tuple[str, ...] | None = None
+    # With a Claude token, also send ~/.claude/.credentials.json when it exists. A
+    # scoring Machine gets the token alone.
+    claude_credentials_file: bool = True
 
 
 class FlyTransport:
@@ -711,7 +714,11 @@ class Lifecycle:
             raise FlyTransportError(self._claude_login.reason)
         if self._claude_login.kind == "file" and self._claude_login.path is not None:
             self._resolved_credentials.append((self._claude_login.path, "claude/.credentials.json"))
-        elif self._claude_login.kind == "token" and request.claude_auth:
+        elif (
+            self._claude_login.kind == "token"
+            and request.claude_auth
+            and request.claude_credentials_file
+        ):
             optional = Path.home() / ".claude/.credentials.json"
             if optional.is_file():
                 self._resolved_credentials.append((optional, "claude/.credentials.json"))
@@ -1402,9 +1409,12 @@ def _value(machine: Mapping[str, object], *keys: str) -> object:
     return value
 
 
-def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str:
+def environment_text(
+    env_files: Sequence[Path], env_names: Sequence[str], *, inherit: bool = True
+) -> str:
     # The guest sources this file, but env files hold Docker-style literal values:
-    # each one is re-quoted so quotes, spaces, and substitutions stay data.
+    # each one is re-quoted so quotes, spaces, and substitutions stay data. Without
+    # ``inherit``, a bare name takes nothing from this process's environment.
     lines: list[str] = []
     for path in env_files:
         for raw in path.read_text(encoding="utf-8").splitlines():
@@ -1422,7 +1432,7 @@ def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str
                 if name == "CLAUDE_CODE_OAUTH_TOKEN":
                     value = _claude_token_value(value)
                 lines.append(f"{name}={shlex.quote(value)}")
-            elif name in os.environ:
+            elif inherit and name in os.environ:
                 lines.append(f"{name}={shlex.quote(os.environ[name])}")
     for name in env_names:
         if name in os.environ:

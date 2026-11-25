@@ -280,8 +280,8 @@ def _score_job_script(suite_script: str) -> str:
     """The job wrapper for a scoring machine.
 
     It scores work another machine already did, so it clones nothing, checks no
-    Archon or workflows commit, and builds nothing. It gets no environment file:
-    the judge logins reach it only through ``/host-home``.
+    Archon or workflows commit, and builds nothing. Its environment file, when it
+    has one, holds only the judges' Claude token.
     """
     return "\n".join(
         (
@@ -293,6 +293,7 @@ def _score_job_script(suite_script: str) -> str:
             "/opt/archon-eval/sandbox-sync-home.sh",
             "export CI=1 HOME=/workspace/home",
             "cd /workspace",
+            "set -a; [ -r /run/factory/env ] && . /run/factory/env; set +a",
             *_SCORE_VERSIONS_PYTHON,
             'touch "$(dirname "$0")/setup-complete"',
             suite_script,

@@ -547,6 +547,20 @@ def _within(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
 
 
+_CLAUDE_TOKEN = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+def claude_token_lines(environment: str) -> str:
+    """Keep only a nonempty Claude token from an environment file's lines."""
+    kept = [
+        line
+        for line in environment.splitlines()
+        if line.startswith(f"{_CLAUDE_TOKEN}=")
+        and line not in {f"{_CLAUDE_TOKEN}=", f"{_CLAUDE_TOKEN}=''"}
+    ]
+    return "".join(f"{line}\n" for line in kept)
+
+
 def checked_delivery(
     manifest: Mapping[str, object],
     input_dir: Path,
@@ -654,11 +668,16 @@ def command_start(options: argparse.Namespace) -> int:
     input_paths = checked_delivery(manifest, Path(input_dir), pairs)
     env_files = _strings(launch.get("env_files"))
     env_names = _strings(launch.get("env_names"))
-    # A scoring machine never sees the suite environment file, and so no GitHub token.
+    # A scoring machine gets the suite environment file's Claude token and nothing else,
+    # so no GitHub token.
     scoring = manifest.get("job") == SCORE_JOB
-    if scoring and (env_files or env_names):
-        raise CliError("a scoring machine takes no environment file or variables")
-    environment = environment_text([Path(p) for p in env_files], env_names)
+    if scoring and env_names:
+        raise CliError("a scoring machine takes no environment variables from the Mac")
+    # Only a Claude token written in the file reaches a scoring machine: a bare name
+    # would take this Mac's own value.
+    environment = environment_text([Path(p) for p in env_files], env_names, inherit=not scoring)
+    if scoring:
+        environment = claude_token_lines(environment)
     codex_login_file: bytes | None = None
     if launch.get("mount_codex_auth") is True:
         # The Machine gets only an access token that outlives the job; the Mac keeps
@@ -680,8 +699,9 @@ def command_start(options: argparse.Namespace) -> int:
         codex_login_file=codex_login_file,
         claude_auth=launch.get("mount_claude_auth") is True,
         deliveries=pairs,
-        deliver_environment=not scoring,
+        deliver_environment=not scoring or bool(environment),
         input_paths=input_paths,
+        claude_credentials_file=not scoring,
     )
     _set_phase(factory, "created")
     code = Lifecycle(manifest, factory).start(request)
