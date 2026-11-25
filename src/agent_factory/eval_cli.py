@@ -287,6 +287,12 @@ def command_image_start(options: argparse.Namespace) -> int:
     _local, fly = _fly(options.config)
     eval_id = _eval_id(options.eval_id)
     work = options.work_dir.resolve()
+    if options.extra_context is not None:
+        source = options.extra_context.resolve()
+        # The context is cleared and the layer's folder copied into it: neither may
+        # hold the other, or the copy recurses into itself or deletes its source.
+        if _within(work, source) or _within(source, work):
+            raise CliError("--extra-context and --work-dir must not hold each other")
     context = work / "context"
     shutil.rmtree(context, ignore_errors=True)
     context.mkdir(parents=True)

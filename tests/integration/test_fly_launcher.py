@@ -1380,6 +1380,20 @@ def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     (layer_context / "tools.sh").chmod(0o644)
     assert eval_cli.tree_sha256(layer_context) != before
 
+    # A context that holds the work folder, or lies inside it, is refused at once.
+    for work, context in ((layer_context / "build", layer_context), (tmp_path, layer_context)):
+        argv = [
+            "image", "start", "--config", "c", "--work-dir", str(work), "--eval-id", "e1",
+            "--archon-dir", str(archon), "--archon-commit", archon_commit,
+            "--runner-dir", str(runner), "--runner-commit", runner_commit,
+            "--codex-version", "0.169.0", "--claude-code-version", "2.1.311",
+            "--extra-dockerfile", str(layer_file), "--extra-context", str(context),
+        ]  # fmt: skip
+        assert eval_cli.main(argv) == 1
+        assert "must not hold each other" in capsys.readouterr().out
+    assert not (layer_context / "build").exists()
+    assert (layer_context / "tools.sh").is_file()
+
     plain = tmp_path / "plain"
     status = image(plain)
     assert not (plain / "context/suite").exists()
@@ -1426,3 +1440,30 @@ def test_listed_path_that_would_not_arrive_where_it_names_is_refused(
     assert code == 1
     assert str(entry) in str(output["error"])
     assert fleet.creates() == []
+
+
+def test_compatibility_launch_refuses_a_manifest_only_start_checks(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    artifact = tmp_path / "artifact"
+    (artifact / ".factory").mkdir(parents=True)
+    (tmp_path / "input").mkdir()
+    env_file = tmp_path / "env"
+    env_file.write_text("GITHUB_TOKEN=github-secret\n", encoding="utf-8")
+    argv = [
+        "--artifact-dir", str(artifact), "--input-dir", str(tmp_path / "input"), "--dev-audit",
+        "--docker-run-arg", "--security-opt", "--docker-run-arg", "seccomp=unconfined",
+        "--env-file", str(env_file), "--", "echo ok",
+    ]  # fmt: skip
+    for extra in (
+        {"job": "score"},
+        {"machine": {"cpus": 4}},
+        {"delivery": [str(tmp_path / "input")]},
+        {"private": [str(tmp_path / "input")]},
+    ):
+        manifest = artifact / ".factory/manifest.json"
+        manifest.write_text(json.dumps({"artifact_dir": str(artifact), **extra}))
+        assert main(argv, manifest_path=manifest) == 70
+        message = capsys.readouterr().err
+        assert "needs agent-factory-fly-eval start" in message and next(iter(extra)) in message
+    assert not (artifact / ".factory/machine.json").exists()
