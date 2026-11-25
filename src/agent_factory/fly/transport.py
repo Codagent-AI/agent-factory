@@ -358,6 +358,9 @@ class JobRequest:
     # Paths relative to ``input_dir`` to deliver to /eval-input, at the same place;
     # None delivers the whole directory.
     input_paths: tuple[str, ...] | None = None
+    # With a Claude token, also send ~/.claude/.credentials.json when it exists. A
+    # scoring Machine gets the token alone.
+    claude_credentials_file: bool = True
 
 
 class FlyTransport:
@@ -711,7 +714,11 @@ class Lifecycle:
             raise FlyTransportError(self._claude_login.reason)
         if self._claude_login.kind == "file" and self._claude_login.path is not None:
             self._resolved_credentials.append((self._claude_login.path, "claude/.credentials.json"))
-        elif self._claude_login.kind == "token" and request.claude_auth:
+        elif (
+            self._claude_login.kind == "token"
+            and request.claude_auth
+            and request.claude_credentials_file
+        ):
             optional = Path.home() / ".claude/.credentials.json"
             if optional.is_file():
                 self._resolved_credentials.append((optional, "claude/.credentials.json"))

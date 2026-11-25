@@ -164,10 +164,14 @@ A repetition's manifest can also hold:
   the `[fly]` size.
 - `job: "score"`: a scoring Machine. Its guest job syncs the logins into `HOME`,
   records tool versions and runs the scoring script. It clones nothing, checks
-  no Archon or workflows commit and builds nothing. It gets no
-  `/run/factory/env`, so there is no GitHub token on the Machine. Codex reaches
-  it only as the built `auth.json`. A scoring launch plan that names an
-  environment file or environment names is refused.
+  no Archon or workflows commit and builds nothing. Its launch plan may name the
+  suite environment file, but only that file's `CLAUDE_CODE_OAUTH_TOKEN` line is
+  sent, as the Machine's whole `/run/factory/env`: no GitHub token or other
+  variable leaves the Mac, and no `~/.claude/.credentials.json` goes with the
+  token. With no usable token in the file, no `/run/factory/env` is sent and the
+  Claude login comes from the Keychain item or the credentials file. Codex
+  reaches it only as the built `auth.json`. A scoring launch plan that names
+  environment names is refused.
 - `delivery` and `private`: absolute host paths. With `delivery`, `start` sends
   only the listed paths inside the launch plan's input folder to `/eval-input`,
   and each harness folder it sends must lie under a listed path. Nothing under

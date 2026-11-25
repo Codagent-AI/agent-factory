@@ -924,7 +924,10 @@ class Machines:
         self.panel.mkdir()
         (self.panel / "judge.mjs").write_text("judge", encoding="utf-8")
         self.env_file = tmp_path / "suite.env"
-        self.env_file.write_text("GITHUB_TOKEN=github-secret\n", encoding="utf-8")
+        self.env_file.write_text(
+            "GITHUB_TOKEN=github-secret\nCLAUDE_CODE_OAUTH_TOKEN=claude-token-secret\n",
+            encoding="utf-8",
+        )
         self.image = tmp_path / "image.json"
         self.image.write_text(json.dumps({"digest": "sha256:" + "a" * 64, "repository": "r"}))
 
@@ -941,7 +944,11 @@ class Machines:
         sync.write_text('#!/bin/sh\nmkdir -p "$FACTORY_ROOT/workspace/home"\n')
         sync.chmod(0o755)
         # A Machine's variables come only from the delivered environment file.
-        guest_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
+        guest_env = {
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"GITHUB_TOKEN", "GH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+        }
         self.processes[machine_id] = start_guest(
             {
                 **guest_env,
@@ -1076,6 +1083,9 @@ _SEEN = (
     "{ "
     'echo "env_file=$([ -e /run/factory/env ] && echo yes || echo no)"; '
     'echo "github_token=${GITHUB_TOKEN:+yes}"; echo "gh_token=${GH_TOKEN:+yes}"; '
+    'echo "claude_token=${CLAUDE_CODE_OAUTH_TOKEN:+yes}"; '
+    # The names in the environment file, never their values.
+    "{ sed 's/=.*//; s/^/env_name=/' /run/factory/env 2>/dev/null || true; }; "
     "ls -A /host-home/codex /host-home/claude; "
     "(cd /eval-input && find . -type f | sort); "
     "(cd /lib/panel-judging && find . -type f | sort); "
@@ -1083,7 +1093,7 @@ _SEEN = (
 )
 
 
-def test_scoring_machine_runs_after_the_run_machine_without_a_github_token(
+def test_scoring_machine_runs_after_the_run_machine_with_only_the_claude_token(
     machines: Machines,
 ) -> None:
     from agent_factory.fly.guest import job_script
@@ -1130,6 +1140,8 @@ def test_scoring_machine_runs_after_the_run_machine_without_a_github_token(
             "script": score_script,
             "input_dir": str(suite),
             "deliveries": [[str(panel), "/lib/panel-judging"]],
+            # The suite file holds the GitHub token too; only the Claude token goes.
+            "env_files": [str(fleet.env_file)],
             "mount_codex_auth": True,
             "mount_claude_auth": True,
         },
@@ -1144,17 +1156,19 @@ def test_scoring_machine_runs_after_the_run_machine_without_a_github_token(
     inputs = [line for line in ran if line.startswith("./")]
     assert inputs == ["./AGENTS-runbook.md", "./fixture/start.json", "./judge.mjs"]
     scored = (score / "score/seen.txt").read_text().splitlines()
-    assert "env_file=no" in scored
+    assert "env_file=yes" in scored and "claude_token=yes" in scored
     assert "github_token=" in scored and "gh_token=" in scored
-    assert "auth.json" in scored and ".credentials.json" in scored
+    names = [line for line in scored if line.startswith("env_name=")]
+    assert names == ["env_name=CLAUDE_CODE_OAUTH_TOKEN"]
+    # The token is the judges' whole Claude login: no credentials file goes with it.
+    assert "auth.json" in scored and ".credentials.json" not in scored
     inputs = [line for line in scored if line.startswith("./")]
     assert inputs == ["./hidden/MenuTest.java", "./score/score.mjs", "./judge.mjs"]
     assert json.loads((score / "score/result.json").read_text())["evaluation_status"]
     # The scoring job built nothing and checked no commit, and it finished and cleaned up.
     job = fleet.roots / score_machine / "artifacts/.factory/job/1"
     script = (job / "job.sh").read_text()
-    # It sources no environment file.
-    for absent in ("git clone", "rev-parse", "go build", "set -a"):
+    for absent in ("git clone", "rev-parse", "go build"):
         assert absent not in script
     assert (job / "DONE").is_file()
     assert [p for p in (fleet.roots / score_machine / "host-home").rglob("*") if p.is_file()] == []
@@ -1181,7 +1195,8 @@ def test_scoring_machine_runs_after_the_run_machine_without_a_github_token(
         everything = "".join(
             p.read_text(errors="replace") for p in folder.rglob("*") if p.is_file()
         )
-        assert "github-secret" not in everything and "access-secret" not in everything
+        for secret in ("github-secret", "claude-token-secret", "access-secret"):
+            assert secret not in everything
     assert run_machine not in fleet.api.machines and score_machine not in fleet.api.machines
 
 
@@ -1246,15 +1261,43 @@ def test_delivery_outside_the_lists_is_refused_before_any_machine(
     assert fleet.creates() == []
 
 
-def test_scoring_launch_plan_with_an_environment_file_is_refused(machines: Machines) -> None:
+def test_scoring_machine_without_a_claude_token_gets_no_environment_file(
+    machines: Machines,
+) -> None:
+    fleet = machines
+    # No usable token: the GitHub token stays on the Mac and the login falls back.
+    fleet.env_file.write_text(
+        "GITHUB_TOKEN=github-secret\nCLAUDE_CODE_OAUTH_TOKEN=\n", encoding="utf-8"
+    )
+    score_script = "mkdir -p /artifacts/score; " + _SEEN.replace("{step}", "score")
+    score = fleet.run_dir(
+        "score",
+        fleet.manifest("e1-rep-1-score", job="score"),
+        {
+            "script": score_script,
+            "input_dir": str(fleet.suite),
+            "env_files": [str(fleet.env_file)],
+            "mount_claude_auth": True,
+        },
+    )
+    _finish(fleet, score)
+    scored = (score / "score/seen.txt").read_text().splitlines()
+    assert "env_file=no" in scored
+    assert "github_token=" in scored and "claude_token=" in scored
+    assert not [line for line in scored if line.startswith("env_name=")]
+    # The test HOME's credentials file is the login, as with no environment file.
+    assert ".credentials.json" in scored
+
+
+def test_scoring_launch_plan_with_environment_variables_is_refused(machines: Machines) -> None:
     fleet = machines
     run = fleet.run_dir(
         "score",
         fleet.manifest("e1-rep-1-score", job="score"),
-        {"script": "true", "input_dir": str(fleet.suite), "env_files": [str(fleet.env_file)]},
+        {"script": "true", "input_dir": str(fleet.suite), "env_names": ["GITHUB_TOKEN"]},
     )
     code, output = fleet.cli("start", run, "--image-file", str(fleet.image))
-    assert code == 1 and "no environment file" in str(output["error"])
+    assert code == 1 and "no environment variables" in str(output["error"])
     assert fleet.creates() == []
 
 
