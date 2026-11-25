@@ -150,6 +150,33 @@ bundles its own copies of both CLIs, so the suite also points Archon at the
 installed binaries (`codexBinaryPath` and `claudeBinaryPath`); without that, a
 run uses the bundled versions whatever the image installs.
 
+A suite can add its own toolchain layer with `image start --extra-dockerfile
+FILE --extra-context DIR`. The layer is built after the Archon layer, `DIR` is
+copied into the build context as `suite/`, and the base image's final `USER`
+and `WORKDIR` are restored after the layer. `image status` and `image.json`
+then also report `layer_dockerfile_sha256` and `layer_context_sha256`. The
+context hash covers each file's path, contents and executable bit, and each
+link's target. Without the options, the image is built exactly as before.
+
+A repetition's manifest can also hold:
+
+- `machine`: `cpu_kind`, `cpus` and `memory_mb` for this Machine, in place of
+  the `[fly]` size.
+- `job: "score"`: a scoring Machine. Its guest job syncs the logins into `HOME`,
+  records tool versions and runs the scoring script. It clones nothing, checks
+  no Archon or workflows commit and builds nothing. It gets no
+  `/run/factory/env`, so there is no GitHub token on the Machine. Codex reaches
+  it only as the built `auth.json`. A scoring launch plan that names an
+  environment file or environment names is refused.
+- `delivery` and `private`: absolute host paths. With `delivery`, `start` sends
+  only the listed paths inside the launch plan's input folder to `/eval-input`,
+  and each harness folder it sends must lie under a listed path. Nothing under
+  a `private` path is sent, even when listed, and neither is a folder that holds
+  one. These checks run before a Machine is created, and a refusal names the
+  path.
+
+Teardown matches both `<eval id>-rep-<n>` and `<eval id>-rep-<n>-score` exactly.
+
 ### Quick diagnosis
 
 | Symptom | Where | Fix |

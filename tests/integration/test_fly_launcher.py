@@ -874,3 +874,555 @@ def test_built_codex_login_replaces_the_macs_file_on_the_machine(env: Environmen
     assert env.lifecycle(env.manifest()).run(request) == 0
     assert (env.artifact / "seen-codex.txt").read_text() == '{"built": true}'
     assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []
+
+
+# -- INT-001 (Halo eval suite): scoring machine, sizes, delivery limits, teardown ------
+
+
+def _commit(repo: Path, files: dict[str, str]) -> str:
+    repo.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    for name, text in files.items():
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text(text, encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com",
+         "commit", "-q", "-m", "c"],
+        check=True,
+    )  # fmt: skip
+    return subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+
+class Machines:
+    """eval_cli's real commands against the fake API, one real guest per fake Machine."""
+
+    def __init__(self, tmp_path: Path, api: FakeMachinesApi) -> None:
+        self.api = api
+        self.tmp = tmp_path
+        self.roots = tmp_path / "machines"
+        self.processes: dict[str, subprocess.Popen[bytes]] = {}
+        self.home = tmp_path / "home"
+        (self.home / ".claude").mkdir(parents=True)
+        (self.home / ".claude/.credentials.json").write_text("claude-secret", encoding="utf-8")
+        self.archon_commit = _commit(tmp_path / "archon-image", {"README": "archon"})
+        self.workflows = tmp_path / "workflows"
+        self.workflows_commit = _commit(self.workflows, {"README": "workflows"})
+        self.suite = tmp_path / "suite"
+        for name, text in {
+            "fixture/start.json": "{}",
+            "AGENTS-runbook.md": "runbook",
+            "hidden/MenuTest.java": "hidden",
+            "score/score.mjs": "score",
+            "calibration/half.patch": "calibration",
+        }.items():
+            (self.suite / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.suite / name).write_text(text, encoding="utf-8")
+        self.panel = tmp_path / "panel-judging"
+        self.panel.mkdir()
+        (self.panel / "judge.mjs").write_text("judge", encoding="utf-8")
+        self.env_file = tmp_path / "suite.env"
+        self.env_file.write_text("GITHUB_TOKEN=github-secret\n", encoding="utf-8")
+        self.image = tmp_path / "image.json"
+        self.image.write_text(json.dumps({"digest": "sha256:" + "a" * 64, "repository": "r"}))
+
+    def boot(self, machine_id: str) -> None:
+        """Give a new fake Machine the image's paths, then start its guest init."""
+        root = self.roots / machine_id
+        archon = root / "opt/archon"
+        if not archon.exists():
+            subprocess.run(
+                ["git", "clone", "-q", str(self.tmp / "archon-image"), str(archon)], check=True
+            )
+        sync = root / "opt/archon-eval/sandbox-sync-home.sh"
+        sync.parent.mkdir(parents=True, exist_ok=True)
+        sync.write_text('#!/bin/sh\nmkdir -p "$FACTORY_ROOT/workspace/home"\n')
+        sync.chmod(0o755)
+        # A Machine's variables come only from the delivered environment file.
+        guest_env = {k: v for k, v in os.environ.items() if k not in {"GITHUB_TOKEN", "GH_TOKEN"}}
+        self.processes[machine_id] = start_guest(
+            {
+                **guest_env,
+                "FACTORY_ROOT": str(root),
+                "FACTORY_WATCHDOG_SECONDS": "0.2",
+                "FACTORY_DEADLINE_EPOCH": str(int(time.time()) + 3600),
+            },
+            quiet=True,
+        )
+
+    def close(self) -> None:
+        for process in self.processes.values():
+            stop_guest(process)
+
+    def run_dir(self, name: str, manifest: dict[str, object], launch: dict[str, object]) -> Path:
+        run = self.tmp / name
+        (run / ".factory").mkdir(parents=True)
+        (run / ".factory/manifest.json").write_text(json.dumps(manifest))
+        (run / ".factory/parsed-launch.json").write_text(json.dumps({"dry_run": True, **launch}))
+        return run
+
+    def manifest(self, unit_key: str, **extra: object) -> dict[str, object]:
+        return {
+            "schema": "archon-fly-eval/1",
+            "engine": "archon",
+            "owner": "agent-evals-archon",
+            "run_id": unit_key,
+            "claim_id": "e1",
+            "unit_key": unit_key,
+            "nonce": f"nonce-{unit_key}",
+            "deadline": {"total_seconds": 600, "collection_grace_seconds": 60},
+            "repositories": {"workflows": str(self.workflows)},
+            "commits": {"workflows": self.workflows_commit, "archon": self.archon_commit},
+            **extra,
+        }
+
+    def cli(self, command: str, run: Path, *extra: str) -> tuple[int, dict[str, object]]:
+        from agent_factory import eval_cli
+
+        argv = [command, "--config", "c", "--run-dir", str(run), *extra]
+        code = eval_cli.main(argv)
+        return code, self.output
+
+    output: dict[str, object] = {}
+
+    def creates(self) -> list[dict[str, Any]]:
+        return [
+            cast(dict[str, Any], r["body"])
+            for r in self.api.requests
+            if r["method"] == "POST" and str(r["path"]).endswith("/machines")
+        ]
+
+
+@pytest.fixture
+def machines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> Iterator[Machines]:
+    import functools
+    from types import SimpleNamespace
+
+    from agent_factory import eval_cli
+    from agent_factory.fly.codex_login import CodexLogin
+
+    with FakeMachinesApi() as api:
+        fleet = Machines(tmp_path, api)
+        bin_dir = tmp_path / "bin"
+        write_guest_flyctl(
+            bin_dir, fleet.roots, tmp_path / "flyctl.log", tmp_path / "none", per_machine=True
+        )
+        token = tmp_path / "token"
+        token.write_text("secret-deploy-token\n", encoding="utf-8")
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("HOME", str(fleet.home))
+        monkeypatch.setenv("AGENT_FACTORY_FLY_API_URL", api.base_url)
+        # The Claude login comes from the test HOME's file, never this Mac's Keychain.
+        monkeypatch.setattr(
+            transport,
+            "resolve_claude_login",
+            functools.partial(transport.resolve_claude_login, platform="linux"),
+        )
+        fly = SimpleNamespace(
+            app="app",
+            token_file=token,
+            region="ewr",
+            cpu_kind="shared",
+            cpus=2,
+            memory_mb=4096,
+            heartbeat_seconds=1,
+        )
+
+        def fly_settings(_config: Path) -> tuple[None, object]:
+            return None, fly
+
+        def login(_minimum: int) -> CodexLogin:
+            return CodexLogin("id-secret", "access-secret", "acct-1", 0)
+
+        monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+        monkeypatch.setattr(eval_cli, "delivered_login", login)
+        original_emit = eval_cli._emit  # pyright: ignore[reportPrivateUsage]
+
+        def emit(value: dict[str, object]) -> None:
+            fleet.output = dict(value)
+            original_emit(value)
+
+        monkeypatch.setattr(eval_cli, "_emit", emit)
+        try:
+            yield fleet
+        finally:
+            fleet.close()
+            capsys.readouterr()
+
+
+def _finish(fleet: Machines, run: Path) -> str:
+    """Start, wait for, collect and destroy one repetition step; return its Machine."""
+    code, started = fleet.cli("start", run, "--image-file", str(fleet.image))
+    assert code == 0, started
+    machine_id = str(started["machine"])
+    fleet.boot(machine_id)
+    state = ""
+    for _ in range(300):
+        state = str(fleet.cli("poll", run)[1]["state"])
+        if state == "done":
+            break
+        time.sleep(0.1)
+    assert state == "done"
+    assert fleet.cli("collect", run)[0] == 0
+    assert fleet.cli("destroy", run)[0] == 0
+    return machine_id
+
+
+_SEEN = (
+    "{ "
+    'echo "env_file=$([ -e /run/factory/env ] && echo yes || echo no)"; '
+    'echo "github_token=${GITHUB_TOKEN:+yes}"; echo "gh_token=${GH_TOKEN:+yes}"; '
+    "ls -A /host-home/codex /host-home/claude; "
+    "(cd /eval-input && find . -type f | sort); "
+    "(cd /lib/panel-judging && find . -type f | sort); "
+    "} > /artifacts/{step}/seen.txt"
+)
+
+
+def test_scoring_machine_runs_after_the_run_machine_without_a_github_token(
+    machines: Machines,
+) -> None:
+    from agent_factory.fly.guest import job_script
+
+    fleet = machines
+    suite, panel = fleet.suite, fleet.panel
+    run_script = (
+        "mkdir -p /artifacts/run; "
+        + _SEEN.replace("{step}", "run")
+        + "; echo '{}' > /artifacts/run/delivery.json"
+    )
+    run_manifest = fleet.manifest(
+        "e1-rep-1",
+        delivery=[str(suite / "fixture"), str(suite / "AGENTS-runbook.md"), str(panel)],
+        private=[str(suite / "hidden"), str(suite / "score"), str(suite / "calibration")],
+    )
+    run = fleet.run_dir(
+        "run",
+        run_manifest,
+        {
+            "script": run_script,
+            "input_dir": str(suite),
+            "deliveries": [[str(panel), "/lib/panel-judging"]],
+            "env_files": [str(fleet.env_file)],
+            "env_names": [],
+            "mount_codex_auth": True,
+            "mount_claude_auth": True,
+        },
+    )
+    score_script = (
+        "mkdir -p /artifacts/score; "
+        + _SEEN.replace("{step}", "score")
+        + '; echo \'{"evaluation_status": "completed"}\' > /artifacts/score/result.json'
+    )
+    score = fleet.run_dir(
+        "score",
+        fleet.manifest(
+            "e1-rep-1-score",
+            job="score",
+            machine={"cpu_kind": "performance", "cpus": 4, "memory_mb": 16384},
+            delivery=[str(suite / "score"), str(suite / "hidden"), str(panel)],
+        ),
+        {
+            "script": score_script,
+            "input_dir": str(suite),
+            "deliveries": [[str(panel), "/lib/panel-judging"]],
+            "mount_codex_auth": True,
+            "mount_claude_auth": True,
+        },
+    )
+
+    run_machine = _finish(fleet, run)
+    score_machine = _finish(fleet, score)
+
+    ran = (run / "run/seen.txt").read_text().splitlines()
+    assert "env_file=yes" in ran and "github_token=yes" in ran
+    # Only the run list reached the run machine: no hidden tests, scorer or calibration.
+    inputs = [line for line in ran if line.startswith("./")]
+    assert inputs == ["./AGENTS-runbook.md", "./fixture/start.json", "./judge.mjs"]
+    scored = (score / "score/seen.txt").read_text().splitlines()
+    assert "env_file=no" in scored
+    assert "github_token=" in scored and "gh_token=" in scored
+    assert "auth.json" in scored and ".credentials.json" in scored
+    inputs = [line for line in scored if line.startswith("./")]
+    assert inputs == ["./hidden/MenuTest.java", "./score/score.mjs", "./judge.mjs"]
+    assert json.loads((score / "score/result.json").read_text())["evaluation_status"]
+    # The scoring job built nothing and checked no commit, and it finished and cleaned up.
+    job = fleet.roots / score_machine / "artifacts/.factory/job/1"
+    script = (job / "job.sh").read_text()
+    # It sources no environment file.
+    for absent in ("git clone", "rev-parse", "go build", "set -a"):
+        assert absent not in script
+    assert (job / "DONE").is_file()
+    assert [p for p in (fleet.roots / score_machine / "host-home").rglob("*") if p.is_file()] == []
+    assert not (fleet.roots / score_machine / "run/factory/env").exists()
+    # The run machine's job is the Archon job, unchanged.
+    assert (fleet.roots / run_machine / "artifacts/.factory/job/1/DONE").is_file()
+    delivered = json.loads((run / ".factory/manifest.json").read_text())
+    assert job_script(delivered, run_script) == job_script(
+        {key: value for key, value in delivered.items() if key not in {"delivery", "private"}},
+        run_script,
+    )
+    # Sizes: the run machine keeps the configured size; the scoring machine has its own.
+    run_create, score_create = fleet.creates()
+
+    def size(create: dict[str, Any]) -> dict[str, object]:
+        guest = create["config"]["guest"]
+        return {key: guest[key] for key in ("cpu_kind", "cpus", "memory_mb")}
+
+    assert size(run_create) == {"cpu_kind": "shared", "cpus": 2, "memory_mb": 4096}
+    assert size(score_create) == {"cpu_kind": "performance", "cpus": 4, "memory_mb": 16384}
+    assert score_create["config"]["metadata"]["unit_key"] == "e1-rep-1-score"
+    assert "secret" not in json.dumps(fleet.creates())
+    for folder in (run, score):
+        everything = "".join(
+            p.read_text(errors="replace") for p in folder.rglob("*") if p.is_file()
+        )
+        assert "github-secret" not in everything and "access-secret" not in everything
+    assert run_machine not in fleet.api.machines and score_machine not in fleet.api.machines
+
+
+def test_archon_job_script_is_unchanged_and_an_unknown_job_is_refused() -> None:
+    import hashlib
+
+    from agent_factory.fly.guest import job_script
+
+    manifest: dict[str, object] = {
+        "engine": "archon",
+        "repositories": {"workflows": "git@github.com:o/w.git"},
+        "commits": {"workflows": "w1", "archon": "ar1"},
+    }
+    # Pinned from the Archon job script before the scoring job existed.
+    assert (
+        hashlib.sha256(job_script(manifest, "exec /suite/run").encode()).hexdigest()
+        == "96ad85a0d9340f89cd796b45139f95492870cb1af988bb15c3444de9540d742e"
+    )
+    with pytest.raises(ValueError, match="unknown guest job"):
+        job_script({**manifest, "job": "scoring"}, "exec /suite/run")
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [
+        # A harness folder that is not on the delivery list.
+        ({"deliveries": "calibration"}, "calibration"),
+        # A listed path under a private path, as a run list naming hidden tests would be.
+        ({"delivery": "hidden"}, "hidden"),
+        # With only a private list, an input folder that holds a private path.
+        ({"delivery": None}, "hidden"),
+    ],
+)
+def test_delivery_outside_the_lists_is_refused_before_any_machine(
+    machines: Machines, change: dict[str, object], named: str
+) -> None:
+    fleet = machines
+    suite = fleet.suite
+    delivery: list[str] | None = [str(suite / "fixture"), str(fleet.panel)]
+    deliveries = [[str(fleet.panel), "/lib/panel-judging"]]
+    if change.get("deliveries"):
+        deliveries.append([str(suite / "calibration"), "/lib/panel-judging/extra"])
+    if "delivery" in change:
+        delivery = None if change["delivery"] is None else [*delivery, str(suite / "hidden")]
+    extra: dict[str, object] = {"private": [str(suite / "hidden")]}
+    if delivery is not None:
+        extra["delivery"] = delivery
+    run = fleet.run_dir(
+        "run",
+        fleet.manifest("e1-rep-1", **extra),
+        {
+            "script": "true",
+            "input_dir": str(suite),
+            "deliveries": deliveries,
+            "env_files": [str(fleet.env_file)],
+            "mount_claude_auth": True,
+        },
+    )
+    code, output = fleet.cli("start", run, "--image-file", str(fleet.image))
+    assert code == 1
+    assert str(suite / named) in str(output["error"])
+    assert fleet.creates() == []
+
+
+def test_scoring_launch_plan_with_an_environment_file_is_refused(machines: Machines) -> None:
+    fleet = machines
+    run = fleet.run_dir(
+        "score",
+        fleet.manifest("e1-rep-1-score", job="score"),
+        {"script": "true", "input_dir": str(fleet.suite), "env_files": [str(fleet.env_file)]},
+    )
+    code, output = fleet.cli("start", run, "--image-file", str(fleet.image))
+    assert code == 1 and "no environment file" in str(output["error"])
+    assert fleet.creates() == []
+
+
+def test_machine_size_must_be_well_formed(machines: Machines) -> None:
+    fleet = machines
+    for size in ({"cpus": 0}, {"gpus": 1}, {"cpu_kind": "huge"}, {"memory_mb": "16g"}):
+        run = fleet.run_dir(
+            f"run-{len(fleet.creates())}-{sorted(size)[0]}",
+            fleet.manifest("e1-rep-1", machine=size),
+            {"script": "true", "input_dir": str(fleet.suite), "env_files": []},
+        )
+        code, output = fleet.cli("start", run, "--image-file", str(fleet.image))
+        assert code == 1 and "machine" in str(output["error"]), size
+    assert fleet.creates() == []
+
+
+def test_teardown_destroys_the_evals_run_and_scoring_machines_only(
+    machines: Machines,
+) -> None:
+    from agent_factory import eval_cli
+
+    fleet = machines
+    for unit, owner in (
+        ("e1-rep-1", "agent-evals-archon"),
+        ("e1-rep-1-score", "agent-evals-archon"),
+        ("e10-rep-1-score", "agent-evals-archon"),
+        ("e1-rep-1-scorex", "agent-evals-archon"),
+        ("e1-rep-2", "agent-factory"),
+    ):
+        fleet.api.machines[unit] = {
+            "id": unit,
+            "state": "started",
+            "config": {"metadata": {"factory-owner": owner, "unit_key": unit}},
+        }
+    assert eval_cli.main(["teardown", "--config", "c", "--eval-id", "e1", "--destroy"]) == 0
+    destroyed = sorted(
+        str(r["path"]).rsplit("/", 1)[-1].split("?")[0]
+        for r in fleet.api.requests
+        if r["method"] == "DELETE"
+    )
+    assert destroyed == ["e1-rep-1", "e1-rep-1-score"]
+
+
+def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import hashlib
+    from types import SimpleNamespace
+
+    from agent_factory import eval_cli
+
+    bin_dir = tmp_path / "bin"
+    write_guest_flyctl(bin_dir, tmp_path / "guest", tmp_path / "flyctl.log", tmp_path / "none")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    token = tmp_path / "token"
+    token.write_text("secret-deploy-token\n", encoding="utf-8")
+    fly = SimpleNamespace(app="app", token_file=token, region="ewr")
+
+    def fly_settings(_config: Path) -> tuple[None, object]:
+        return None, fly
+
+    monkeypatch.setattr(eval_cli, "_fly", fly_settings)
+    runner = tmp_path / "runner"
+    runner_commit = _commit(
+        runner,
+        {
+            "docker/dev/Dockerfile": "FROM node:22\nUSER pwuser\nWORKDIR /workspace\n",
+            "scripts/sandbox-sync-home.sh": "#!/bin/sh\n",
+        },
+    )
+    archon = tmp_path / "archon"
+    archon_commit = _commit(archon, {"package.json": '{"engines": {"bun": "1.2.3"}}'})
+    layer_file = tmp_path / "halo.Dockerfile"
+    layer_file.write_text("USER root\nCOPY suite/tools.sh /opt/halo/tools.sh\n")
+    layer_context = tmp_path / "image"
+    (layer_context / "start").mkdir(parents=True)
+    (layer_context / "tools.sh").write_text("#!/bin/sh\n")
+    (layer_context / "tools.sh").chmod(0o755)
+    (layer_context / "start/build.gradle").write_text("// halo")
+
+    def image(work: Path, *extra: str) -> dict[str, object]:
+        argv = [
+            "image", "start", "--config", "c", "--work-dir", str(work), "--eval-id", "e1",
+            "--archon-dir", str(archon), "--archon-commit", archon_commit,
+            "--runner-dir", str(runner), "--runner-commit", runner_commit,
+            "--codex-version", "0.169.0", "--claude-code-version", "2.1.311", *extra,
+        ]  # fmt: skip
+        assert eval_cli.main(argv) == 0
+        for _ in range(100):
+            if (work / "build.exit").is_file():
+                break
+            time.sleep(0.1)
+        # The double pushes under its own tag; name the eval's image, as Fly does.
+        (work / "build.log").write_text(
+            "#14 pushing manifest for registry.fly.io/app:archon-eval-e1@sha256:" + "b" * 64 + "\n"
+        )
+        capsys.readouterr()
+        assert eval_cli.main(["image", "status", "--config", "c", "--work-dir", str(work)]) == 0
+        return cast(dict[str, object], json.loads(capsys.readouterr().out))
+
+    layered = tmp_path / "layered"
+    status = image(
+        layered, "--extra-dockerfile", str(layer_file), "--extra-context", str(layer_context)
+    )
+    recipe = (layered / "context/Dockerfile.archon").read_text()
+    archon_tail = recipe.index("ENV AGENT_RUNNER_SOURCE_COMMIT=")
+    assert archon_tail < recipe.index("COPY suite/tools.sh /opt/halo/tools.sh")
+    # The base image's user and folder hold after the suite layer.
+    assert recipe.rstrip().endswith(
+        "COPY suite/tools.sh /opt/halo/tools.sh\nUSER pwuser\nWORKDIR /workspace"
+    )
+    assert (layered / "context/suite/tools.sh").read_text() == "#!/bin/sh\n"
+    assert (layered / "context/suite/start/build.gradle").read_text() == "// halo"
+    assert status["state"] == "built" and status["digest"] == "sha256:" + "b" * 64
+    assert status["layer_dockerfile_sha256"] == hashlib.sha256(layer_file.read_bytes()).hexdigest()
+    assert status["layer_context_sha256"] == eval_cli.tree_sha256(layer_context)
+    assert (
+        json.loads((layered / "image.json").read_text())["layer_context_sha256"]
+        == (status["layer_context_sha256"])
+    )
+    # A changed file in the context changes its hash.
+    before = eval_cli.tree_sha256(layer_context)
+    (layer_context / "tools.sh").chmod(0o644)
+    assert eval_cli.tree_sha256(layer_context) != before
+
+    plain = tmp_path / "plain"
+    status = image(plain)
+    assert not (plain / "context/suite").exists()
+    assert "layer_dockerfile_sha256" not in status and "layer_context_sha256" not in status
+    # Without a layer the recipe is the Archon recipe alone, as before.
+    unlayered = recipe[: recipe.index("\nUSER root\nCOPY suite")]
+    assert (plain / "context/Dockerfile.archon").read_text() == unlayered
+
+
+@pytest.mark.parametrize("case", ["link-outside", "link-inside", "link-to-harness", "unused"])
+def test_listed_path_that_would_not_arrive_where_it_names_is_refused(
+    machines: Machines, case: str
+) -> None:
+    fleet = machines
+    suite = fleet.suite
+    elsewhere = fleet.tmp / "elsewhere"
+    elsewhere.mkdir()
+    if case == "link-outside":
+        (suite / "linked").symlink_to(elsewhere)
+        entry = suite / "linked"
+    elif case == "link-inside":
+        (suite / "linked").symlink_to(suite / "fixture")
+        entry = suite / "linked"
+    elif case == "link-to-harness":
+        # The link's target is also sent as a harness folder, but not to /eval-input.
+        (suite / "linked").symlink_to(fleet.panel)
+        entry = suite / "linked"
+    else:
+        # Outside the input folder, and holding none of the harness folders sent.
+        entry = elsewhere
+    run = fleet.run_dir(
+        "run",
+        fleet.manifest("e1-rep-1", delivery=[str(suite / "AGENTS-runbook.md"), str(entry)]),
+        {
+            "script": "true",
+            "input_dir": str(suite),
+            "deliveries": [[str(fleet.panel), "/lib/panel-judging"]]
+            if case == "link-to-harness"
+            else [],
+            "env_files": [str(fleet.env_file)],
+        },
+    )
+    code, output = fleet.cli("start", run, "--image-file", str(fleet.image))
+    assert code == 1
+    assert str(entry) in str(output["error"])
+    assert fleet.creates() == []

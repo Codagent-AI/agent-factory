@@ -130,8 +130,16 @@ done
     return script.replace("RUNNER_SCRATCH_GLOB_VALUE", shlex.quote("./" + RUNNER_SCRATCH_GLOB))
 
 
+SCORE_JOB = "score"
+
+
 def job_script(manifest: Mapping[str, object], suite_script: str) -> str:
     """Build the guest job wrapper from non-secret manifest data and suite text."""
+    job = manifest.get("job")
+    if job == SCORE_JOB:
+        return _score_job_script(suite_script)
+    if job is not None:
+        raise ValueError(f"unknown guest job: {job!r}")
     if manifest.get("engine") == "archon":
         return _archon_job_script(manifest, suite_script)
     repositories = mapping_field(manifest, "repositories")
@@ -252,6 +260,40 @@ def _archon_job_script(manifest: Mapping[str, object], suite_script: str) -> str
             "cd /workspace",
             "set -a; . /run/factory/env; set +a",
             *_VERSIONS_PYTHON,
+            'touch "$(dirname "$0")/setup-complete"',
+            suite_script,
+            "",
+        )
+    )
+
+
+_SCORE_VERSIONS_PYTHON = (
+    *_VERSIONS_PYTHON[:-3],
+    'with open(sys.argv[1], "w") as output:',
+    "    json.dump({name: version(name) for name in "
+    '("claude", "codex", "node", "java", "pnpm", "lizard", "jscpd")}, output)',
+    "PY",
+)
+
+
+def _score_job_script(suite_script: str) -> str:
+    """The job wrapper for a scoring machine.
+
+    It scores work another machine already did, so it clones nothing, checks no
+    Archon or workflows commit, and builds nothing. It gets no environment file:
+    the judge logins reach it only through ``/host-home``.
+    """
+    return "\n".join(
+        (
+            "#!/usr/bin/env bash",
+            "set -euo pipefail",
+            # Armed first, as in every job: the logins must not outlive the job.
+            f"trap '{_CREDENTIAL_CLEANUP}; "
+            "rm -rf /workspace/home/.codex /workspace/home/.claude' EXIT",
+            "/opt/archon-eval/sandbox-sync-home.sh",
+            "export CI=1 HOME=/workspace/home",
+            "cd /workspace",
+            *_SCORE_VERSIONS_PYTHON,
             'touch "$(dirname "$0")/setup-complete"',
             suite_script,
             "",
