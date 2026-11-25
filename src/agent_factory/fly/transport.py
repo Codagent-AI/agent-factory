@@ -1409,9 +1409,12 @@ def _value(machine: Mapping[str, object], *keys: str) -> object:
     return value
 
 
-def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str:
+def environment_text(
+    env_files: Sequence[Path], env_names: Sequence[str], *, inherit: bool = True
+) -> str:
     # The guest sources this file, but env files hold Docker-style literal values:
-    # each one is re-quoted so quotes, spaces, and substitutions stay data.
+    # each one is re-quoted so quotes, spaces, and substitutions stay data. Without
+    # ``inherit``, a bare name takes nothing from this process's environment.
     lines: list[str] = []
     for path in env_files:
         for raw in path.read_text(encoding="utf-8").splitlines():
@@ -1429,7 +1432,7 @@ def environment_text(env_files: Sequence[Path], env_names: Sequence[str]) -> str
                 if name == "CLAUDE_CODE_OAUTH_TOKEN":
                     value = _claude_token_value(value)
                 lines.append(f"{name}={shlex.quote(value)}")
-            elif name in os.environ:
+            elif inherit and name in os.environ:
                 lines.append(f"{name}={shlex.quote(os.environ[name])}")
     for name in env_names:
         if name in os.environ:

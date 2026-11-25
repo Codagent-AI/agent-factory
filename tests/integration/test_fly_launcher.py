@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import datetime
+import hashlib
 import json
 import os
 import subprocess
@@ -1084,6 +1085,9 @@ _SEEN = (
     'echo "env_file=$([ -e /run/factory/env ] && echo yes || echo no)"; '
     'echo "github_token=${GITHUB_TOKEN:+yes}"; echo "gh_token=${GH_TOKEN:+yes}"; '
     'echo "claude_token=${CLAUDE_CODE_OAUTH_TOKEN:+yes}"; '
+    # The token's digest, so its value is checked without being written down.
+    'python3 -c \'import hashlib, os; print("claude_digest=" + hashlib.sha256('
+    'os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").encode()).hexdigest())\'; '
     # The names in the environment file, never their values.
     "{ sed 's/=.*//; s/^/env_name=/' /run/factory/env 2>/dev/null || true; }; "
     "ls -A /host-home/codex /host-home/claude; "
@@ -1160,6 +1164,8 @@ def test_scoring_machine_runs_after_the_run_machine_with_only_the_claude_token(
     assert "github_token=" in scored and "gh_token=" in scored
     names = [line for line in scored if line.startswith("env_name=")]
     assert names == ["env_name=CLAUDE_CODE_OAUTH_TOKEN"]
+    digest = hashlib.sha256(b"claude-token-secret").hexdigest()
+    assert f"claude_digest={digest}" in scored
     # The token is the judges' whole Claude login: no credentials file goes with it.
     assert "auth.json" in scored and ".credentials.json" not in scored
     inputs = [line for line in scored if line.startswith("./")]
@@ -1261,14 +1267,15 @@ def test_delivery_outside_the_lists_is_refused_before_any_machine(
     assert fleet.creates() == []
 
 
+@pytest.mark.parametrize("entry", ["CLAUDE_CODE_OAUTH_TOKEN=", "CLAUDE_CODE_OAUTH_TOKEN"])
 def test_scoring_machine_without_a_claude_token_gets_no_environment_file(
-    machines: Machines,
+    machines: Machines, monkeypatch: pytest.MonkeyPatch, entry: str
 ) -> None:
     fleet = machines
     # No usable token: the GitHub token stays on the Mac and the login falls back.
-    fleet.env_file.write_text(
-        "GITHUB_TOKEN=github-secret\nCLAUDE_CODE_OAUTH_TOKEN=\n", encoding="utf-8"
-    )
+    # A bare name takes nothing from this process, even when it holds a token.
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "mac-token-secret")
+    fleet.env_file.write_text(f"GITHUB_TOKEN=github-secret\n{entry}\n", encoding="utf-8")
     score_script = "mkdir -p /artifacts/score; " + _SEEN.replace("{step}", "score")
     score = fleet.run_dir(
         "score",
@@ -1287,6 +1294,8 @@ def test_scoring_machine_without_a_claude_token_gets_no_environment_file(
     assert not [line for line in scored if line.startswith("env_name=")]
     # The test HOME's credentials file is the login, as with no environment file.
     assert ".credentials.json" in scored
+    everything = "".join(p.read_text(errors="replace") for p in score.rglob("*") if p.is_file())
+    assert "mac-token-secret" not in everything and "github-secret" not in everything
 
 
 def test_scoring_launch_plan_with_environment_variables_is_refused(machines: Machines) -> None:

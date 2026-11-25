@@ -673,9 +673,10 @@ def command_start(options: argparse.Namespace) -> int:
     scoring = manifest.get("job") == SCORE_JOB
     if scoring and env_names:
         raise CliError("a scoring machine takes no environment variables from the Mac")
-    environment = environment_text([Path(p) for p in env_files], env_names)
+    # Only a Claude token written in the file reaches a scoring machine: a bare name
+    # would take this Mac's own value.
+    environment = environment_text([Path(p) for p in env_files], env_names, inherit=not scoring)
     if scoring:
-        # Only the judges' Claude token leaves the environment file for a scoring machine.
         environment = claude_token_lines(environment)
     codex_login_file: bytes | None = None
     if launch.get("mount_codex_auth") is True:
