@@ -780,7 +780,8 @@ class Lifecycle:
                     # Created but never used: nothing was delivered, so replace it.
                     _log(self.factory, f"recorded Machine {recorded_id} is gone; creating another")
                     return self._create(
-                        [*_history(record), {"id": recorded_id, "disposal": "gone"}]
+                        [*_history(record), {"id": recorded_id, "disposal": "gone"}],
+                        seed=record.get("seed") == "pending",
                     )
                 if self._seeds_checkpoint():
                     # An operator resumed a settled repetition whose Machine was already
@@ -809,7 +810,10 @@ class Lifecycle:
             # it is rewritten after the Machine carries the new identity.
             self._update_record({"run_id": run_id, "deadline": deadline})
             return recorded_id, deadline
-        return self._create(_history(record))
+        # A settled attempt may have moved its launcher records into an archive.
+        # An explicit resume can still seed the retained checkpoint in that case.
+        seed = self.manifest.get("expect_checkpoint") is True and self._seeds_checkpoint()
+        return self._create(_history(record), seed=seed)
 
     def _seeds_checkpoint(self) -> bool:
         return (

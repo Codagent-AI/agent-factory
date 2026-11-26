@@ -547,6 +547,23 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
     assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
 
 
+def test_explicit_resume_seeds_after_archiving_the_prior_launcher_record(env: Environment) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
+    env.api.machines.clear()
+    artifacts = env.guest_root / "artifacts"
+    (artifacts / "run-state.json").unlink()
+    subprocess.run(["rm", "-rf", str(artifacts / ".factory/job/1")], check=True)
+    env.factory.rename(env.factory.with_name(".previous-factory"))
+    env.factory.mkdir()
+
+    resume = env.manifest("run-2", expect_checkpoint=True, seed_checkpoint=True)
+    lifecycle = env.lifecycle(resume)
+    request = env.request("cat /artifacts/run-state.json > /artifacts/seen-state.json", auth=False)
+    assert lifecycle.run(request) == 0
+    assert json.loads((env.artifact / "seen-state.json").read_text()) == {"schema_version": 1}
+    assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
+
+
 def test_job_script_without_an_engine_is_unchanged_and_archon_has_its_own() -> None:
     import hashlib
 
