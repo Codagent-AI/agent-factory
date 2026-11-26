@@ -1619,6 +1619,46 @@ def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     assert (plain / "context/Dockerfile.archon").read_text() == unlayered
 
 
+    # Hold the build behind a file gate so it cannot finish before image start
+    # returns. A bounded wait lets the test fail even if start stops detaching.
+    release = tmp_path / "release"
+    failed_build = bin_dir / "flyctl"
+    failed_build.write_text(
+        "#!/bin/sh\n"
+        'for attempt in $(seq 1 100); do [ -f "$EVAL_BUILD_RELEASE" ] && break; sleep 0.1; done\n'
+        "printf '%03000d\\n' 0\n"
+        "echo 'pinned tool version check failed' >&2\n"
+        "exit 17\n"
+    )
+    failed_build.chmod(0o755)
+    monkeypatch.setenv("EVAL_BUILD_RELEASE", str(release))
+    failing = tmp_path / "failing"
+    status_args = ["image", "status", "--config", "c", "--work-dir", str(failing)]
+    start_args = [
+        "image", "start", "--config", "c", "--work-dir", str(failing), "--eval-id", "e1",
+        "--archon-dir", str(archon), "--archon-commit", archon_commit,
+        "--runner-dir", str(runner), "--runner-commit", runner_commit,
+        "--codex-version", "0.169.0", "--claude-code-version", "2.1.311",
+    ]  # fmt: skip
+    assert eval_cli.main(start_args) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "building"
+    assert not (failing / "build.exit").exists()
+    assert eval_cli.main(status_args) == 0
+    assert json.loads(capsys.readouterr().out) == {"state": "building"}
+    release.touch()
+    for _ in range(100):
+        if (failing / "build.exit").is_file():
+            break
+        time.sleep(0.1)
+    assert (failing / "build.exit").read_text().strip() == "17"
+    assert eval_cli.main(status_args) == 1
+    failure = json.loads(capsys.readouterr().out)
+    assert failure["state"] == "failed"
+    assert "pinned tool version check failed" in failure["log_tail"]
+    assert len(failure["log_tail"].encode()) == 2000
+    assert not (failing / "image.json").exists()
+
+
 @pytest.mark.parametrize("case", ["link-outside", "link-inside", "link-to-harness", "unused"])
 def test_listed_path_that_would_not_arrive_where_it_names_is_refused(
     machines: Machines, case: str
