@@ -1080,6 +1080,80 @@ def _finish(fleet: Machines, run: Path) -> str:
     return machine_id
 
 
+@pytest.mark.parametrize(
+    ("fault", "diagnostic"),
+    [
+        ("fly-token", "deploy token file is unreadable"),
+        ("fly-app", "the Fly app is not reachable"),
+        ("claude", "no usable Claude login"),
+        ("codex", "no usable Codex login"),
+        ("github", "neither GITHUB_TOKEN nor GH_TOKEN"),
+    ],
+)
+def test_eval_preflight_refuses_missing_inputs_without_reporting_values(
+    machines: Machines,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fault: str,
+    diagnostic: str,
+) -> None:
+    from functools import partial
+
+    from agent_factory import eval_cli
+    from agent_factory.fly.api import FlyApiError
+    from agent_factory.fly.codex_login import delivered_login
+
+    if fault == "fly-token":
+        (machines.tmp / "token").unlink()
+    if fault == "fly-app":
+
+        def app_unavailable(_client: FlyMachinesClient) -> dict[str, object]:
+            raise FlyApiError("/v1/apps/app", 503, "unavailable")
+
+        monkeypatch.setattr(FlyMachinesClient, "get_app", app_unavailable)
+    if fault == "claude":
+        machines.env_file.write_text("GITHUB_TOKEN=github-secret\n", encoding="utf-8")
+        monkeypatch.setattr(
+            eval_cli,
+            "resolve_claude_login",
+            partial(
+                eval_cli.resolve_claude_login, home=machines.tmp / "no-login", platform="linux"
+            ),
+        )
+    if fault == "codex":
+        monkeypatch.setattr(
+            eval_cli,
+            "delivered_login",
+            partial(delivered_login, home=machines.tmp / "no-login", refresh=lambda: None),
+        )
+    if fault == "github":
+        machines.env_file.write_text(
+            "CLAUDE_CODE_OAUTH_TOKEN=claude-token-secret\n", encoding="utf-8"
+        )
+
+    code = eval_cli.main(
+        [
+            "preflight",
+            "--config",
+            "c",
+            "--owner",
+            "agent-evals-archon",
+            "--env-file",
+            str(machines.env_file),
+            "--claude-auth",
+            "--codex-auth",
+        ]
+    )
+    assert code == 1
+    assert machines.output["ok"] is False
+    assert diagnostic in str(machines.output["errors"])
+    captured = capsys.readouterr()
+    for secret in ("github-secret", "secret-deploy-token", "claude-token-secret", "access-secret"):
+        assert secret not in captured.out + captured.err
+    assert all(request["method"] == "GET" for request in machines.api.requests)
+    assert machines.creates() == []
+
+
 _SEEN = (
     "{ "
     'echo "env_file=$([ -e /run/factory/env ] && echo yes || echo no)"; '
