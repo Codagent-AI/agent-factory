@@ -547,6 +547,23 @@ def test_operator_resume_seeds_a_replacement_machine_from_the_collected_checkpoi
     assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
 
 
+def test_explicit_resume_seeds_after_archiving_the_prior_launcher_record(env: Environment) -> None:
+    assert env.lifecycle(env.manifest()).run(env.request(_SUITE)) == 7
+    env.api.machines.clear()
+    artifacts = env.guest_root / "artifacts"
+    (artifacts / "run-state.json").unlink()
+    subprocess.run(["rm", "-rf", str(artifacts / ".factory/job/1")], check=True)
+    env.factory.rename(env.factory.with_name(".previous-factory"))
+    env.factory.mkdir()
+
+    resume = env.manifest("run-2", expect_checkpoint=True, seed_checkpoint=True)
+    lifecycle = env.lifecycle(resume)
+    request = env.request("cat /artifacts/run-state.json > /artifacts/seen-state.json", auth=False)
+    assert lifecycle.run(request) == 0
+    assert json.loads((env.artifact / "seen-state.json").read_text()) == {"schema_version": 1}
+    assert json.loads((env.factory / "machine.json").read_text())["seed"] == "done"
+
+
 def test_job_script_without_an_engine_is_unchanged_and_archon_has_its_own() -> None:
     import hashlib
 
@@ -1080,6 +1097,80 @@ def _finish(fleet: Machines, run: Path) -> str:
     return machine_id
 
 
+@pytest.mark.parametrize(
+    ("fault", "diagnostic"),
+    [
+        ("fly-token", "deploy token file is unreadable"),
+        ("fly-app", "the Fly app is not reachable"),
+        ("claude", "no usable Claude login"),
+        ("codex", "no usable Codex login"),
+        ("github", "neither GITHUB_TOKEN nor GH_TOKEN"),
+    ],
+)
+def test_eval_preflight_refuses_missing_inputs_without_reporting_values(
+    machines: Machines,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fault: str,
+    diagnostic: str,
+) -> None:
+    from functools import partial
+
+    from agent_factory import eval_cli
+    from agent_factory.fly.api import FlyApiError
+    from agent_factory.fly.codex_login import delivered_login
+
+    if fault == "fly-token":
+        (machines.tmp / "token").unlink()
+    if fault == "fly-app":
+
+        def app_unavailable(_client: FlyMachinesClient) -> dict[str, object]:
+            raise FlyApiError("/v1/apps/app", 503, "unavailable")
+
+        monkeypatch.setattr(FlyMachinesClient, "get_app", app_unavailable)
+    if fault == "claude":
+        machines.env_file.write_text("GITHUB_TOKEN=github-secret\n", encoding="utf-8")
+        monkeypatch.setattr(
+            eval_cli,
+            "resolve_claude_login",
+            partial(
+                eval_cli.resolve_claude_login, home=machines.tmp / "no-login", platform="linux"
+            ),
+        )
+    if fault == "codex":
+        monkeypatch.setattr(
+            eval_cli,
+            "delivered_login",
+            partial(delivered_login, home=machines.tmp / "no-login", refresh=lambda: None),
+        )
+    if fault == "github":
+        machines.env_file.write_text(
+            "CLAUDE_CODE_OAUTH_TOKEN=claude-token-secret\n", encoding="utf-8"
+        )
+
+    code = eval_cli.main(
+        [
+            "preflight",
+            "--config",
+            "c",
+            "--owner",
+            "agent-evals-archon",
+            "--env-file",
+            str(machines.env_file),
+            "--claude-auth",
+            "--codex-auth",
+        ]
+    )
+    assert code == 1
+    assert machines.output["ok"] is False
+    assert diagnostic in str(machines.output["errors"])
+    captured = capsys.readouterr()
+    for secret in ("github-secret", "secret-deploy-token", "claude-token-secret", "access-secret"):
+        assert secret not in captured.out + captured.err
+    assert all(request["method"] == "GET" for request in machines.api.requests)
+    assert machines.creates() == []
+
+
 _SEEN = (
     "{ "
     'echo "env_file=$([ -e /run/factory/env ] && echo yes || echo no)"; '
@@ -1350,6 +1441,82 @@ def test_teardown_destroys_the_evals_run_and_scoring_machines_only(
     assert destroyed == ["e1-rep-1", "e1-rep-1-score"]
 
 
+@pytest.mark.parametrize(
+    ("condition", "deleted", "reason"),
+    [
+        ("unique", True, None),
+        ("shared", False, "shared with other-eval"),
+        ("missing", False, "the eval tag is absent"),
+        ("retagged", False, "registry tags changed"),
+        ("listed-late", False, "registry tags changed"),
+        ("kept", False, "kept machines still need the image"),
+    ],
+)
+def test_teardown_deletes_only_its_exclusive_registry_digest(
+    machines: Machines,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    condition: str,
+    deleted: bool,
+    reason: str | None,
+) -> None:
+    from agent_factory import eval_cli
+
+    assert machines.api.machines == {}
+    own = "archon-eval-e1"
+    digest = "sha256:" + "a" * 64
+    different = "sha256:" + "b" * 64
+    deletions: list[tuple[str, str]] = []
+    lists = 0
+    own_reads = 0
+
+    class Registry:
+        def list_machines(self, key: str, value: str) -> list[dict[str, object]]:
+            assert (key, value) == ("factory-owner", "agent-evals-archon")
+            return []
+
+        def list_tags(self, repository: str) -> list[str]:
+            nonlocal lists
+            assert repository == "registry.fly.io/app"
+            lists += 1
+            if condition == "missing":
+                return ["other-eval"]
+            names = [own, "other-eval"]
+            if condition == "listed-late" and lists == 2:
+                names.append("new-tag")
+            return names
+
+        def resolve_manifest(self, image: str) -> str:
+            nonlocal own_reads
+            assert image.startswith("registry.fly.io/app:")
+            if image.endswith(f":{own}"):
+                own_reads += 1
+                return different if condition == "retagged" and own_reads == 3 else digest
+            assert image.endswith(":other-eval")
+            return digest if condition == "shared" else different
+
+        def delete_manifest(self, repository: str, target: str) -> bool:
+            deletions.append((repository, target))
+            return True
+
+    def client(_fly: object) -> Registry:
+        return Registry()
+
+    monkeypatch.setattr(eval_cli, "_client", client)
+    options = ["--keep", "e1-rep-1"] if condition == "kept" else []
+    assert (
+        eval_cli.main(["teardown", "--config", "c", "--eval-id", "e1", "--delete-image", *options])
+        == 0
+    )
+    assert deletions == ([("registry.fly.io/app", digest)] if deleted else [])
+    report = json.loads(capsys.readouterr().out)["image"]
+    assert report["deleted"] is deleted
+    if reason:
+        assert reason in report["reason"]
+    if condition == "kept":
+        assert (lists, own_reads) == (0, 0)
+
+
 def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1453,6 +1620,45 @@ def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     # Without a layer the recipe is the Archon recipe alone, as before.
     unlayered = recipe[: recipe.index("\nUSER root\nCOPY suite")]
     assert (plain / "context/Dockerfile.archon").read_text() == unlayered
+
+    # Hold the build behind a file gate so it cannot finish before image start
+    # returns. A bounded wait lets the test fail even if start stops detaching.
+    release = tmp_path / "release"
+    failed_build = bin_dir / "flyctl"
+    failed_build.write_text(
+        "#!/bin/sh\n"
+        'for attempt in $(seq 1 100); do [ -f "$EVAL_BUILD_RELEASE" ] && break; sleep 0.1; done\n'
+        "printf '%03000d\\n' 0\n"
+        "echo 'pinned tool version check failed' >&2\n"
+        "exit 17\n"
+    )
+    failed_build.chmod(0o755)
+    monkeypatch.setenv("EVAL_BUILD_RELEASE", str(release))
+    failing = tmp_path / "failing"
+    status_args = ["image", "status", "--config", "c", "--work-dir", str(failing)]
+    start_args = [
+        "image", "start", "--config", "c", "--work-dir", str(failing), "--eval-id", "e1",
+        "--archon-dir", str(archon), "--archon-commit", archon_commit,
+        "--runner-dir", str(runner), "--runner-commit", runner_commit,
+        "--codex-version", "0.169.0", "--claude-code-version", "2.1.311",
+    ]  # fmt: skip
+    assert eval_cli.main(start_args) == 0
+    assert json.loads(capsys.readouterr().out)["state"] == "building"
+    assert not (failing / "build.exit").exists()
+    assert eval_cli.main(status_args) == 0
+    assert json.loads(capsys.readouterr().out) == {"state": "building"}
+    release.touch()
+    for _ in range(100):
+        if (failing / "build.exit").is_file():
+            break
+        time.sleep(0.1)
+    assert (failing / "build.exit").read_text().strip() == "17"
+    assert eval_cli.main(status_args) == 1
+    failure = json.loads(capsys.readouterr().out)
+    assert failure["state"] == "failed"
+    assert "pinned tool version check failed" in failure["log_tail"]
+    assert len(failure["log_tail"].encode()) == 2000
+    assert not (failing / "image.json").exists()
 
 
 @pytest.mark.parametrize("case", ["link-outside", "link-inside", "link-to-harness", "unused"])
