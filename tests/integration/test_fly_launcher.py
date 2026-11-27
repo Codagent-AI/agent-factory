@@ -1499,7 +1499,10 @@ def test_teardown_deletes_only_its_exclusive_registry_digest(
             deletions.append((repository, target))
             return True
 
-    monkeypatch.setattr(eval_cli, "_client", lambda _: Registry())
+    def client(_fly: object) -> Registry:
+        return Registry()
+
+    monkeypatch.setattr(eval_cli, "_client", client)
     options = ["--keep", "e1-rep-1"] if condition == "kept" else []
     assert (
         eval_cli.main(["teardown", "--config", "c", "--eval-id", "e1", "--delete-image", *options])
