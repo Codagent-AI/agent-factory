@@ -894,6 +894,21 @@ def test_built_codex_login_replaces_the_macs_file_on_the_machine(env: Environmen
     assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []
 
 
+def test_forwarded_claude_settings_leave_auto_mode_on_the_mac(env: Environment) -> None:
+    settings = {"model": "opus", "autoMode": {"environment": ["Trusted repo: org/private-evals"]}}
+    (env.home / ".claude/settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    (env.home / ".claude/settings.local.json").write_text("not json", encoding="utf-8")
+    suite = (
+        "cat /host-home/claude/settings.json > /artifacts/seen-settings.json; "
+        "cat /host-home/claude/settings.local.json > /artifacts/seen-local.txt; "
+        'echo \'{"evaluation_status": "completed"}\' > /artifacts/result.json'
+    )
+    assert env.lifecycle(env.manifest()).run(env.request(suite)) == 0
+    assert json.loads((env.artifact / "seen-settings.json").read_text()) == {"model": "opus"}
+    assert (env.artifact / "seen-local.txt").read_text() == "not json"
+    assert [p for p in (env.guest_root / "host-home").rglob("*") if p.is_file()] == []
+
+
 # -- INT-001 (Halo eval suite): scoring machine, sizes, delivery limits, teardown ------
 
 
