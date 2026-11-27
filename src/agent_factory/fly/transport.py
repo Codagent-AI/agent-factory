@@ -50,6 +50,26 @@ _CLAUDE_FILES = (
     (".claude/settings.json", "claude/settings.json", False),
     (".claude/settings.local.json", "claude/settings.local.json", False),
 )
+_CLAUDE_SETTINGS = frozenset({"claude/settings.json", "claude/settings.local.json"})
+
+
+def forwarded_claude_settings(path: Path) -> bytes:
+    """Return the Claude settings a Machine receives: the file without ``autoMode``.
+
+    Machines run Claude in ``bypassPermissions`` mode, so auto mode's classifier
+    settings do nothing there. They describe the Mac's own environment, such as its
+    private repositories, so they stay on the Mac. Eval suites that scan forwarded
+    configuration scan this same content.
+    """
+    data = path.read_bytes()
+    try:
+        document = json.loads(data)
+    except ValueError:
+        return data
+    if not isinstance(document, dict) or "autoMode" not in document:
+        return data
+    del document["autoMode"]
+    return (json.dumps(document, indent=2) + "\n").encode()
 
 
 class FlyTransportError(RuntimeError):
@@ -1054,7 +1074,10 @@ class Lifecycle:
                 f"chmod -R a+rX,go-w {delivery_targets}"
             )
         for path, target in credentials:
-            self.transport.put_file(path, f"/host-home/{target}", prepare=False)
+            if target in _CLAUDE_SETTINGS:
+                self.transport.put_bytes(forwarded_claude_settings(path), f"/host-home/{target}")
+            else:
+                self.transport.put_file(path, f"/host-home/{target}", prepare=False)
         if self._claude_login.kind == "keychain":
             self.transport.put_bytes(self._claude_login.data, "/host-home/claude/.credentials.json")
         if request.codex_login_file is not None:
