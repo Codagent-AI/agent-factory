@@ -1618,7 +1618,6 @@ def test_image_start_appends_the_suite_layer_and_status_reports_its_hashes(
     unlayered = recipe[: recipe.index("\nUSER root\nCOPY suite")]
     assert (plain / "context/Dockerfile.archon").read_text() == unlayered
 
-
     # Hold the build behind a file gate so it cannot finish before image start
     # returns. A bounded wait lets the test fail even if start stops detaching.
     release = tmp_path / "release"
